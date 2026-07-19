@@ -7,9 +7,6 @@ import kotlinx.coroutines.flow.asStateFlow
 /** The TCP port the embedded HTTP server binds to (shared contract value). */
 const val SERVER_PORT: Int = 8080
 
-/** Bind address for the embedded server: every interface, so the TV can reach it. */
-const val SERVER_HOST: String = "0.0.0.0"
-
 /** High-level lifecycle of the media server, as reflected in the UI. */
 enum class ServerStatus { IDLE, STARTING, RUNNING, ERROR }
 
@@ -24,9 +21,13 @@ data class ServerUiState(
     val sizeBytes: Long = -1L,
     val lanIp: String? = null,
     val port: Int = SERVER_PORT,
+    val token: String? = null,
     val errorMessage: String? = null,
 ) {
-    val videoUrl: String? get() = lanIp?.let { "http://$it:$port/video" }
+    // The cast URL only exists once the session token is minted: without it there
+    // is no servable path, so the UI must not display a bare host:port link.
+    val videoUrl: String? get() =
+        if (lanIp != null && token != null) "http://$lanIp:$port/v/$token" else null
     val pingUrl: String? get() = lanIp?.let { "http://$it:$port/ping" }
 }
 
@@ -54,12 +55,13 @@ object ServerStateHolder {
         )
     }
 
-    fun setRunning(name: String?, size: Long, ip: String) {
+    fun setRunning(name: String?, size: Long, ip: String, token: String) {
         _state.value = ServerUiState(
             status = ServerStatus.RUNNING,
             displayName = name,
             sizeBytes = size,
             lanIp = ip,
+            token = token,
         )
     }
 

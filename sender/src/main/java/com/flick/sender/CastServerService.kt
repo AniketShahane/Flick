@@ -13,9 +13,11 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +70,10 @@ class CastServerService : Service() {
                 val name = intent.getStringExtra(EXTRA_NAME)
                 val size = intent.getLongExtra(EXTRA_SIZE, -1L)
 
+                // Fresh 128-bit token per ACTION_START: re-picking a video rotates it,
+                // so a previously-shared URL stops working the moment the source changes.
+                val token = newSessionToken()
+
                 // A foreground service MUST post its notification promptly, so do
                 // it synchronously before any I/O.
                 startInForeground(buildNotification(text = getString(R.string.notif_text_serving)))
@@ -96,15 +102,18 @@ class CastServerService : Service() {
                         var started = false
                         synchronized(lockGuard) {
                             if (generation.get() == startGen) {
-                                httpServer.start(uri)
+                                // Bind to the LAN IP only (never 0.0.0.0): removes the
+                                // loopback co-resident-app vector and lets the handler
+                                // pin the Host header to this address.
+                                httpServer.start(uri, token, ip)
                                 TransferTelemetry.reset()
                                 acquireLocks()
-                                ServerStateHolder.setRunning(name, size, ip)
+                                ServerStateHolder.setRunning(name, size, ip, token)
                                 started = true
                             }
                         }
                         if (!started) return@launch
-                        updateNotification(text = "http://$ip:$SERVER_PORT/video")
+                        updateNotification(text = "http://$ip:$SERVER_PORT/v/$token")
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start media server", e)
                         ServerStateHolder.setError(getString(R.string.error_server_start))
@@ -194,6 +203,22 @@ class CastServerService : Service() {
         }
     }
 
+    // --- Session token ------------------------------------------------------
+
+    /**
+     * Mint a fresh 128-bit session token: 16 SecureRandom bytes, URL-safe base64
+     * with no padding/newlines, giving a compact (~22-char) path segment free of
+     * '+', '/', '=' so it drops straight into the cast URL.
+     */
+    private fun newSessionToken(): String {
+        val bytes = ByteArray(TOKEN_BYTES)
+        SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
+        )
+    }
+
     // --- Notification -------------------------------------------------------
 
     private fun startInForeground(notification: Notification) {
@@ -262,6 +287,9 @@ class CastServerService : Service() {
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
         private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
+
+        // 16 bytes = 128 bits of SecureRandom entropy per session token.
+        private const val TOKEN_BYTES = 16
 
         const val ACTION_START = "com.flick.sender.action.START"
         const val ACTION_STOP = "com.flick.sender.action.STOP"

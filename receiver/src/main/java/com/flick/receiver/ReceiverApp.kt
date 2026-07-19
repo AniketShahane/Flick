@@ -44,6 +44,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Button
@@ -65,10 +66,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Pre-filled URL — the user types the phone's LAN IP into the blank between
- * "//" and ":8080". Matches the shared HTTP contract (GET /video on :8080).
+ * Pre-filled URL hint — the user types the phone's LAN IP into the blank between
+ * "//" and ":8080", then appends the per-session token shown on the phone screen.
+ * Matches the shared HTTP contract (GET /v/{token} on :8080).
  */
-const val DEFAULT_VIDEO_URL: String = "http://:8080/video"
+const val DEFAULT_VIDEO_URL: String = "http://:8080/v/"
 
 /** Overlay refresh cadence: ~2x/sec. */
 private const val OVERLAY_REFRESH_MS = 500L
@@ -153,10 +155,14 @@ fun ReceiverApp(window: Window) {
     }
 
     // Poll the controller ~2x/sec and push a fresh snapshot into Compose state.
-    LaunchedEffect(controller) {
-        while (isActive) {
-            snapshot = controller.snapshot()
-            delay(OVERLAY_REFRESH_MS)
+    // Gated on STARTED so the loop (and its per-tick WifiManager binder call)
+    // stops while backgrounded instead of polling a released player.
+    LaunchedEffect(controller, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                snapshot = controller.snapshot()
+                delay(OVERLAY_REFRESH_MS)
+            }
         }
     }
 
@@ -256,7 +262,7 @@ private fun ControlBar(
                 value = url,
                 onValueChange = onUrlChange,
                 singleLine = true,
-                label = { androidx.compose.material3.Text("Sender video URL — type phone IP into the blank") },
+                label = { androidx.compose.material3.Text("Sender URL — type phone IP + the token shown on the phone") },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Done,

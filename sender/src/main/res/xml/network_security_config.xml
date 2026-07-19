@@ -1,23 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Phase 0 spike: permit cleartext (plain http) traffic on the LAN.
+  The sender is a *server*, not a client: it hosts an embedded Ktor CIO listening
+  socket on the LAN and makes NO outbound platform HTTP of its own. Android's
+  network-security-config governs only the app's OWN outbound traffic — it does
+  NOT apply to the bytes served over the CIO server socket — so forbidding
+  cleartext here does not affect (and cannot break) the plain-http LAN serving the
+  TV consumes.
 
-  The sender serves original file bytes over http://0.0.0.0:8080/video, and the
-  Android TV receiver connects to it in cleartext.
-
-  IMPORTANT: Android's network security config CANNOT scope cleartext to IP
-  address ranges. <domain> entries are matched as literal hostname strings only;
-  CIDR / IP-range notation (e.g. 192.168.0.0/16) is not supported and would match
-  nothing, effectively disabling LAN cleartext. Because peers here are addressed
-  by raw LAN IPs (not hostnames), the only way to express "allow cleartext on the
-  LAN" is a permissive base-config. We therefore permit cleartext globally for
-  this spike while keeping the system trust anchors for any TLS traffic.
-
-  Phase 1 TODO: move to TLS (e.g. a self-signed/ephemeral cert pinned to the
-  negotiated peer) so this blanket cleartext allowance can be removed.
+  We therefore set cleartextTrafficPermitted="false": with no outbound cleartext
+  anywhere in the app, this closes the door on any accidental future plaintext
+  request while leaving the LAN media server fully functional. System trust anchors
+  are kept for any TLS the platform might do.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

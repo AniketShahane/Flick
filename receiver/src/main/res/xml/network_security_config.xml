@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Phase 0 spike: permit cleartext (plain http) traffic.
-
-  The receiver opens http://<phone-lan-ip>:8080/video in cleartext.
+  Cleartext (plain http) traffic is REQUIRED and must stay enabled: ExoPlayer
+  makes outbound plain-http requests to the LAN sender (GET /v/{token} on :8080),
+  so disabling this breaks playback. Do not set cleartextTrafficPermitted="false"
+  until Phase-1 TLS lands.
 
   NOTE: Android Network Security Config <domain> rules match hostnames or exact
   literal IP strings ONLY — CIDR notation (e.g. 192.168.0.0/16) is NOT supported

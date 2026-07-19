@@ -14,7 +14,10 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.applicationEnvironment
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondOutputStream
@@ -22,21 +25,32 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.head
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.OutputStream
+import java.security.MessageDigest
+import java.util.concurrent.Semaphore
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Embedded Ktor (CIO) HTTP server that direct-plays the currently selected video
- * to the Android TV over the LAN. Implements the Phase 0 contract:
+ * to the Android TV over the LAN. Implements the hardened contract:
  *
- *   GET/HEAD /video  — full 200 or ranged 206 with correct byte-range headers,
- *                      streamed straight off the content:// file descriptor.
- *   GET      /ping   — 200 "ok" health check.
+ *   GET/HEAD /v/{token} — full 200 or ranged 206 with correct byte-range headers,
+ *                         streamed straight off the content:// file descriptor.
+ *                         {token} must match the current per-session token or the
+ *                         request is answered 404 (never revealing why).
+ *   GET      /ping      — 200 "ok" health check (unauthenticated: exposes no bytes).
  *
  * The whole point of the spike is zero-stall direct play: we NEVER copy the file
  * into cache and NEVER transcode — we seek the fd and copy exactly the requested
  * slice.
+ *
+ * The socket binds ONLY the phone's LAN IP (not 0.0.0.0), the video handler pins
+ * the Host header to that IP (anti-DNS-rebinding), and concurrent body transfers
+ * are capped so a LAN flood cannot exhaust the engine.
  *
  * Start/stop are synchronized and idempotent so the owning foreground service can
  * call them freely (e.g. re-picking a video while already serving).
@@ -49,22 +63,64 @@ class MediaHttpServer(context: Context) {
     private val lock = Any()
     private var server: EmbeddedServer<*, *>? = null
 
+    // Caps concurrent GET *body* transfers so a LAN flood can't exhaust the CIO
+    // engine (HEAD/404/403/416 are cheap and stay ungated). Fair so a burst of
+    // clients can't starve an earlier waiter. Process-wide: one server at a time.
+    private val transferPermits = Semaphore(MAX_CONCURRENT_TRANSFERS, true)
+
     /** The URI currently being served. Read on every request thread. */
     @Volatile
     var currentUri: Uri? = null
         private set
 
+    /** The per-session token gating [currentUri]. Rotated on every (re)start. */
+    @Volatile
+    var currentToken: String? = null
+        private set
+
+    // The LAN IP the socket is bound to; the video handler pins the request Host
+    // to this literal to reject DNS-rebinding. Read on every request thread.
+    @Volatile
+    private var boundHost: String? = null
+
     val isRunning: Boolean get() = synchronized(lock) { server != null }
 
     /**
-     * Start serving [uri]. If the server is already up, just swaps the served
-     * URI (no restart). Throws if the socket cannot be bound.
+     * Start serving [uri] under [token], bound to [bindHost] (the phone's LAN IP).
+     * If the server is already up on the same host, just swaps the served URI +
+     * token (no restart). If the host changed (LAN IP moved), the engine is torn
+     * down and rebound. Throws if the socket cannot be bound.
      */
-    fun start(uri: Uri) {
+    fun start(uri: Uri, token: String, bindHost: String) {
         synchronized(lock) {
+            // Publish the new session target before (re)binding so no request can
+            // observe a live socket with a stale token/URI.
             currentUri = uri
-            if (server != null) return
-            val engine = embeddedServer(CIO, port = SERVER_PORT, host = SERVER_HOST) {
+            currentToken = token
+
+            val running = server
+            if (running != null && boundHost == bindHost) return
+            if (running != null) {
+                // Bound host changed: stop the old engine before rebinding so we
+                // never keep a socket listening on a stale address.
+                stopEngine(running)
+                server = null
+            }
+
+            boundHost = bindHost
+            val engine = embeddedServer(
+                CIO,
+                environment = applicationEnvironment { },
+                configure = {
+                    connector {
+                        host = bindHost
+                        port = SERVER_PORT
+                    }
+                    // Reap idle sockets so a client that opens a connection and
+                    // then stalls can't hold an engine slot indefinitely.
+                    connectionIdleTimeoutSeconds = IDLE_TIMEOUT_SECONDS
+                },
+            ) {
                 configureRouting()
             }
             engine.start(false)
@@ -72,24 +128,28 @@ class MediaHttpServer(context: Context) {
         }
     }
 
-    /** Stop the server and clear the served URI. Safe to call repeatedly. */
+    /** Stop the server and clear the served URI/token. Safe to call repeatedly. */
     fun stop() {
         val engine: EmbeddedServer<*, *>?
         synchronized(lock) {
             currentUri = null
+            currentToken = null
+            boundHost = null
             engine = server
             server = null
         }
-        if (engine != null) {
-            try {
-                // Keep the grace/timeout small: stop() blocks the calling thread
-                // until the engine drains, and this is invoked from the service's
-                // main-thread teardown (onDestroy / ACTION_STOP). A short window is
-                // plenty to release the listening socket without janking the UI.
-                engine.stop(100, 300)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error while stopping server", e)
-            }
+        if (engine != null) stopEngine(engine)
+    }
+
+    private fun stopEngine(engine: EmbeddedServer<*, *>) {
+        try {
+            // Keep the grace/timeout small: stop() blocks the calling thread until
+            // the engine drains, and this is invoked from the service's main-thread
+            // teardown (onDestroy / ACTION_STOP). A short window is plenty to
+            // release the listening socket without janking the UI.
+            engine.stop(100, 300)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error while stopping server", e)
         }
     }
 
@@ -100,25 +160,40 @@ class MediaHttpServer(context: Context) {
             get("/ping") { call.respondText("ok", status = HttpStatusCode.OK) }
             // Serve GET and HEAD from the same handler; handleVideo() branches on
             // the request method to emit a body (GET) or headers only (HEAD).
-            get("/video") { handleVideo(call) }
-            head("/video") { handleVideo(call) }
+            // pathParameters (not the query-merged parameters) so a "?token=" query
+            // can never shadow the real path segment we authenticate against.
+            get("/v/{token}") { handleVideo(call, call.pathParameters["token"]) }
+            head("/v/{token}") { handleVideo(call, call.pathParameters["token"]) }
         }
     }
 
-    private suspend fun handleVideo(call: ApplicationCall) {
+    private suspend fun handleVideo(call: ApplicationCall, pathToken: String?) {
         TransferTelemetry.markRequest()
+
+        // Anti-DNS-rebinding: the real TV addresses us by the bound LAN IP literal,
+        // so its Host is "<ip>:8080" and host() == <ip>. A rebinding page carries a
+        // DNS name instead. Reject anything that doesn't pin to the bound IP.
+        val boundIp = boundHost
+        if (boundIp == null ||
+            !call.request.host().trim().equals(boundIp, ignoreCase = true)
+        ) {
+            call.respondText("Forbidden", status = HttpStatusCode.Forbidden)
+            return
+        }
+
+        // Per-session token gate. Constant-time compare, and answer any miss (no
+        // session, wrong/absent token) with an identical 404 so a probe learns
+        // nothing about whether a valid token exists.
+        val expectedToken = currentToken
         val uri = currentUri
+        if (expectedToken == null || uri == null || pathToken == null ||
+            !MessageDigest.isEqual(pathToken.toByteArray(), expectedToken.toByteArray())
+        ) {
+            call.respondText("Not found", status = HttpStatusCode.NotFound)
+            return
+        }
+
         val method = call.request.httpMethod
-
-        if (uri == null) {
-            call.respondText("No video selected", status = HttpStatusCode.NotFound)
-            return
-        }
-        if (method != HttpMethod.Get && method != HttpMethod.Head) {
-            call.respondText("Method not allowed", status = HttpStatusCode.MethodNotAllowed)
-            return
-        }
-
         val contentType = safeContentType(runCatching { resolver.getType(uri) }.getOrNull())
         val total = MediaMeta.resolveSize(resolver, uri)
 
@@ -150,38 +225,52 @@ class MediaHttpServer(context: Context) {
                 }
             }
 
-        // No usable range: serve the whole thing as 200.
+        // Collapse the 200/206 cases to a single set of stream parameters, so the
+        // HEAD-vs-GET split (and the concurrency gate around the GET body) is
+        // expressed once.
+        val status: HttpStatusCode
+        val bodyLength: Long?
+        val streamStart: Long
+        val streamMax: Long
         if (partial == null) {
-            val length = if (total >= 0) total else null
-            if (method == HttpMethod.Head) {
-                call.respond(HeadResponse(HttpStatusCode.OK, contentType, length))
-            } else {
-                call.respondOutputStream(
-                    contentType = contentType,
-                    status = HttpStatusCode.OK,
-                    contentLength = length,
-                ) {
-                    streamSlice(uri, start = 0L, maxLength = length ?: Long.MAX_VALUE, out = this)
-                }
-            }
+            status = HttpStatusCode.OK
+            bodyLength = if (total >= 0) total else null
+            streamStart = 0L
+            streamMax = bodyLength ?: Long.MAX_VALUE
+        } else {
+            status = HttpStatusCode.PartialContent
+            bodyLength = partial.end - partial.start + 1
+            streamStart = partial.start
+            streamMax = bodyLength
+            call.response.headers.append(
+                HttpHeaders.ContentRange,
+                "bytes ${partial.start}-${partial.end}/$total",
+            )
+        }
+
+        // HEAD is cheap (headers only): answer it without touching the transfer cap.
+        if (method == HttpMethod.Head) {
+            call.respond(HeadResponse(status, contentType, bodyLength))
             return
         }
 
-        val start = partial.start
-        val end = partial.end
-        val length = end - start + 1
-        call.response.headers.append(HttpHeaders.ContentRange, "bytes $start-$end/$total")
-
-        if (method == HttpMethod.Head) {
-            call.respond(HeadResponse(HttpStatusCode.PartialContent, contentType, length))
-        } else {
+        // GET body: bound concurrent transfers. tryAcquire() is non-blocking, so a
+        // flood is shed with 503 rather than queued. The permit is released in a
+        // finally so it survives a client disconnect or streaming exception.
+        if (!transferPermits.tryAcquire()) {
+            call.respondText("Server busy", status = HttpStatusCode.ServiceUnavailable)
+            return
+        }
+        try {
             call.respondOutputStream(
                 contentType = contentType,
-                status = HttpStatusCode.PartialContent,
-                contentLength = length,
+                status = status,
+                contentLength = bodyLength,
             ) {
-                streamSlice(uri, start = start, maxLength = length, out = this)
+                streamSlice(uri, start = streamStart, maxLength = streamMax, out = this)
             }
+        } finally {
+            transferPermits.release()
         }
     }
 
@@ -193,31 +282,39 @@ class MediaHttpServer(context: Context) {
      * — never buffers the whole file. Client disconnects and revoked grants are
      * swallowed so the server stays up.
      */
-    private fun streamSlice(uri: Uri, start: Long, maxLength: Long, out: OutputStream) {
+    private suspend fun streamSlice(uri: Uri, start: Long, maxLength: Long, out: OutputStream) {
         TransferTelemetry.enterTransfer()
         try {
-            val pfd = resolver.openFileDescriptor(uri, "r")
-                ?: throw FileNotFoundException("Cannot open $uri")
-            // AutoCloseInputStream owns the ParcelFileDescriptor, so a single
-            // .use closes both the stream and the fd with no double-close.
-            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
-                if (start > 0L) {
-                    // FileInputStream and its channel share the fd offset, so
-                    // seeking the channel positions subsequent reads.
-                    input.channel.position(start)
+            // The fd seek + read/write loop is blocking; run it on Dispatchers.IO so
+            // a stalled socket write can never pin a CIO engine worker thread.
+            withContext(Dispatchers.IO) {
+                val pfd = resolver.openFileDescriptor(uri, "r")
+                    ?: throw FileNotFoundException("Cannot open $uri")
+                // AutoCloseInputStream owns the ParcelFileDescriptor, so a single
+                // .use closes both the stream and the fd with no double-close.
+                ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                    if (start > 0L) {
+                        // FileInputStream and its channel share the fd offset, so
+                        // seeking the channel positions subsequent reads.
+                        input.channel.position(start)
+                    }
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var remaining = maxLength
+                    while (remaining > 0L) {
+                        val toRead = if (remaining < buffer.size) remaining.toInt() else buffer.size
+                        val read = input.read(buffer, 0, toRead)
+                        if (read == -1) break
+                        out.write(buffer, 0, read)
+                        TransferTelemetry.recordBytes(read)
+                        remaining -= read
+                    }
+                    out.flush()
                 }
-                val buffer = ByteArray(BUFFER_SIZE)
-                var remaining = maxLength
-                while (remaining > 0L) {
-                    val toRead = if (remaining < buffer.size) remaining.toInt() else buffer.size
-                    val read = input.read(buffer, 0, toRead)
-                    if (read == -1) break
-                    out.write(buffer, 0, read)
-                    TransferTelemetry.recordBytes(read)
-                    remaining -= read
-                }
-                out.flush()
             }
+        } catch (e: CancellationException) {
+            // A client disconnect cancels the call's coroutine: propagate it so the
+            // engine tears the exchange down cleanly (don't mistake it for an error).
+            throw e
         } catch (e: IOException) {
             // Typically the TV closed the connection mid-transfer (seek/stop).
             Log.d(TAG, "Streaming stopped: ${e.message}")
@@ -244,6 +341,11 @@ class MediaHttpServer(context: Context) {
     companion object {
         private const val TAG = "MediaHttpServer"
         private const val BUFFER_SIZE = 256 * 1024
+
+        // One TV plays one stream; a small pool absorbs its parallel range probes
+        // while capping what a LAN flood can open at once.
+        private const val MAX_CONCURRENT_TRANSFERS = 4
+        private const val IDLE_TIMEOUT_SECONDS = 30
 
         private val FALLBACK_TYPE = ContentType("video", "mp4")
 

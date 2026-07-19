@@ -38,3 +38,9 @@ captures/
 
 # Kotlin
 .kotlin/
+
+# Local-only security working artifact: the raw audit contains step-by-step
+# exploit recipes for issues that are only partly closed (e.g. LAN cleartext),
+# so it is deliberately NOT published to this public repo. SECURITY.md is the
+# public-facing summary.
+docs/security-audit.md

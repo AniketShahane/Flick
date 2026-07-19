@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required: the receiver opens http://<phone-lan-ip>:8080/video. -->
+    <!-- Required: the receiver opens http://<phone-lan-ip>:8080/v/<token>. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Read the TV's own Wi-Fi link (band / link speed / RSSI) for the diagnostics

@@ -35,7 +35,7 @@ import com.flick.receiver.util.WifiTelemetry
  * The player is built for LAN direct-play of large 4K files: hardware decoding
  * only (no transcode, no software fallback rendering), a generous time- and
  * byte-based buffer, and an HTTP data source with byte-range support (ExoPlayer
- * issues Range requests against the sender's GET /video endpoint automatically).
+ * issues Range requests against the sender's GET /v/{token} endpoint automatically).
  *
  * Lifecycle: [onStart]/[onStop] follow the Media3 recommendation for API 24+
  * (minSdk here is 26) — the decoder is released whenever the Activity is
@@ -393,7 +393,16 @@ class PlayerController(context: Context) {
         pendingPlayWhenReady = false
         cancelPendingRecovery()
         stableReadySinceMs = 0L
+        // Stop must be terminal for the media. Without clearing these, a later
+        // ON_STOP/ON_START cycle (background then foreground) would re-capture a
+        // still-true playWhenReady, see currentUrl != null in onStart(), and
+        // silently re-prepare — re-allocating the buffer + decoder and resuming
+        // playback under an Idle UI. Backgrounding DURING playback still resumes,
+        // because that path never calls stop() (only onStop keeps currentUrl set).
+        currentUrl = null
+        savedPositionMs = 0L
         player?.let { exo ->
+            exo.playWhenReady = false
             exo.stop()
             exo.clearMediaItems()
         }

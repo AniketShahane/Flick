@@ -30,12 +30,16 @@ Gradle multi-module project. Two Android **application** modules:
 | Module      | Runs on        | Package                  | Role                                                                 |
 |-------------|----------------|--------------------------|---------------------------------------------------------------------|
 | `:sender`   | Phone          | `com.flick.sender`   | Pick a local video; run an embedded HTTP server (Ktor CIO) on `:8080`. |
-| `:receiver` | Android TV     | `com.flick.receiver` | Enter the phone IP; play `http://<phone-ip>:8080/video` with ExoPlayer (Media3) + debug overlay. |
+| `:receiver` | Android TV     | `com.flick.receiver` | Enter the phone IP + token; play `http://<phone-ip>:8080/v/<token>` with ExoPlayer (Media3) + debug overlay. |
 
-**HTTP contract** (both sides agree exactly): the sender binds `0.0.0.0:8080` and
-serves `GET /video` with full byte-range support (`Accept-Ranges: bytes`,
-`206 Partial Content` + `Content-Range` for `Range` requests, `HEAD` supported)
-plus `GET /ping` → `ok`. The receiver opens `http://<phone-lan-ip>:8080/video`.
+**HTTP contract** (both sides agree exactly): the sender binds its **LAN IP** on
+`:8080` (not `0.0.0.0`) and serves `GET /v/{token}` with full byte-range support
+(`Accept-Ranges: bytes`, `206 Partial Content` + `Content-Range` for `Range`
+requests, `HEAD` supported) plus `GET /ping` → `ok`. `{token}` is a per-session
+128-bit secret minted on the phone and shown in the cast URL, so only a client
+that knows it can fetch the file; the handler also pins the `Host` header to the
+LAN IP (anti-DNS-rebinding) and caps concurrent transfers. The receiver opens
+`http://<phone-lan-ip>:8080/v/<token>`. See [`SECURITY.md`](SECURITY.md).
 
 ## Prerequisites
 
@@ -83,11 +87,13 @@ Or in Android Studio: select the `sender` run config → phone, and the
 
 1. **Phone:** open **Flick Sender**, grant media access, tap to **pick a
    local 4K/1080p video**. The app starts the LAN server and displays the exact
-   URL, e.g. `http://192.168.1.42:8080/video`. It keeps serving via a foreground
-   service, so the video keeps streaming while the screen is off.
+   URL, including the per-session token, e.g. `http://192.168.1.42:8080/v/Xk3q…`.
+   It keeps serving via a foreground service, so the video keeps streaming while
+   the screen is off.
 2. **TV:** open **Flick Receiver**. The URL field is pre-filled with
-   `http://:8080/video`. **Type the phone's IP** between `//` and `:8080` (from
-   step 1), so it reads `http://192.168.1.42:8080/video`.
+   `http://:8080/v/`. **Type the phone's IP and the token** shown on the phone so
+   the field matches the exact URL from step 1, e.g. `http://192.168.1.42:8080/v/Xk3q…`.
+   (A QR/pairing flow that removes the typing is the planned next step.)
 3. **TV:** press **Play**. The video decodes on the TV and the **debug overlay**
    appears.
 
@@ -151,13 +157,15 @@ impossible to miss.
 - **DRM content is out of scope by design.** Netflix, Disney+, etc. are
   encrypted and license-locked; you cannot serve their bytes over a plain HTTP
   server, and this spike does not try. It targets unencrypted, user-owned media.
-- **Cleartext HTTP is LAN-only for the spike.** Both apps ship a
-  `network_security_config.xml` permitting cleartext and reference it from their
-  manifests. Note: Android's network-security-config cannot scope cleartext to an
-  IP range (`<domain>` matches literal hostnames only, and peers here are raw LAN
-  IPs), so the base config permits cleartext globally for now. **Phase 1** will
-  move to TLS (ephemeral cert pinned to the negotiated peer) plus a request
-  token, removing the blanket cleartext allowance.
+- **Cleartext HTTP is LAN-only.** The **sender no longer permits cleartext at
+  all** — it only *serves* over a raw socket, which `network-security-config`
+  does not govern. The **receiver** still permits it because ExoPlayer fetches
+  over plain HTTP on the LAN, and Android's NSC cannot scope cleartext to an IP
+  range (`<domain>` matches literal hostnames only, and peers here are raw LAN
+  IPs), so that allowance stays global for now. The per-session **request token
+  is already implemented** (see [`SECURITY.md`](SECURITY.md)); **Phase 1** adds
+  TLS with an ephemeral cert pinned to the negotiated peer, which removes the
+  receiver's cleartext allowance too.
 
 ## Hardening layer
 

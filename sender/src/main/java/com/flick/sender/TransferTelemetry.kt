@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong
  * did the phone stop serving?".
  *
  * [lastRequestAtMs] is a [SystemClock.elapsedRealtime] stamp (monotonic), or 0 if
- * no /video request has arrived this session.
+ * no video request has arrived this session.
  */
 data class TransferStats(
     val bitsPerSec: Long = 0L,
@@ -67,7 +67,7 @@ object TransferTelemetry {
         if (count > 0) totalBytes.addAndGet(count.toLong())
     }
 
-    /** Stamp the arrival of a /video request (any method). */
+    /** Stamp the arrival of a video request (any method). */
     fun markRequest() {
         lastRequestAtMs.set(SystemClock.elapsedRealtime())
     }

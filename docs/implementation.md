@@ -20,8 +20,8 @@ degrading, and (c) tell the user *precisely* what is wrong when it can't.
 ```
 ┌─────────────── phone (:sender) ───────────────┐        ┌────────────── TV (:receiver) ──────────────┐
 │ Photo Picker → content:// URI                 │        │ Pre-flight probe (TCP + ranged GET)         │
-│ Ktor CIO HTTP server 0.0.0.0:8080             │  LAN   │  └─ ok → ExoPlayer (Media3) direct-play     │
-│  GET/HEAD /video  (byte-range, 206/416)       │ ─────► │     hardware decode only, 15s–180s buffer   │
+│ Ktor CIO HTTP server LAN IP :8080             │  LAN   │  └─ ok → ExoPlayer (Media3) direct-play     │
+│  GET/HEAD /v/{token} (byte-range, 206/416)    │ ─────► │     hardware decode only, 15s–180s buffer   │
 │  GET /ping → "ok"                             │  http  │     bounded auto-recovery + retry policy    │
 │ Foreground service + WifiLock + WakeLock      │        │ Live diagnostics overlay (the truth source) │
 │ Transfer telemetry + band warning             │        │ Media-key seeking (±15 s / ±5 min)          │
@@ -30,13 +30,13 @@ degrading, and (c) tell the user *precisely* what is wrong when it can't.
 
 ## HTTP contract
 
-The sender binds `0.0.0.0:8080` and both sides agree exactly on:
+The sender binds its **LAN IP** on `:8080` (not `0.0.0.0`) and both sides agree exactly on:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /video` | Full byte-range support: `Accept-Ranges: bytes`; `Range: bytes=a-b` → `206` + `Content-Range`; unsatisfiable range → `416`; malformed range → `200` full body; correct `Content-Type`/`Content-Length`. |
-| `HEAD /video` | Same headers, no body (ExoPlayer and probes use it). |
-| `GET /ping` | `ok` — cheap liveness check for humans and probes. |
+| `GET /v/{token}` | Gated by the per-session token (constant-time compare; any miss → an identical `404`) and a `Host` header equal to the bound LAN IP (anti-DNS-rebinding; else `403`). Then full byte-range support: `Accept-Ranges: bytes`; `Range: bytes=a-b` → `206` + `Content-Range`; unsatisfiable → `416`; malformed → `200` full body; correct `Content-Type`/`Content-Length`. Concurrent GET bodies are capped (`503` beyond the limit). |
+| `HEAD /v/{token}` | Same token/Host gate + headers, no body (ExoPlayer and probes use it); not counted against the transfer cap. |
+| `GET /ping` | `ok` — cheap **unauthenticated** liveness check for humans and probes (serves no file bytes). |
 
 Serving streams slices straight out of a `ParcelFileDescriptor` via
 `FileChannel.position(start)` — no copy of the file is ever made, so an 8 GB
@@ -167,8 +167,13 @@ Wi-Fi-Direct bypass on this hardware.
 - **Discovery:** the phone's IP is typed manually on the TV. NSD/mDNS as a
   hint plus QR pairing would remove that step (never as the transport check —
   that's the probe's job).
-- **Security:** cleartext HTTP, LAN-only, no auth token yet; plan is TLS with
-  an ephemeral pinned cert + request token.
+- **Security:** a per-session **token gates the media endpoint**, the socket
+  binds the **LAN IP only**, the handler **pins the `Host`** (anti-rebinding),
+  concurrent transfers are **capped**, and the **sender denies cleartext** (it
+  makes no outbound HTTP). Remaining Phase-1 work: **TLS** with an ephemeral
+  pinned cert (removes the receiver's cleartext allowance) and delivering the
+  token via **QR/pairing** instead of manual entry. Full model in
+  [`../SECURITY.md`](../SECURITY.md); the token is an interim until pairing lands.
 - **Android 16/17:** the Local Network Permission (`ACCESS_LOCAL_NETWORK`,
   mandatory at targetSdk 37) will gate the sender's inbound server — needs an
   explicit permission path distinct from the "unreachable" diagnosis.
