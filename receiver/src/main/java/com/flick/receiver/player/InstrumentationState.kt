@@ -45,6 +45,15 @@ class InstrumentationState {
     /** Cumulative silent auto-recoveries performed this session (for the overlay). */
     var autoRecoveryCount: Int = 0
 
+    /** User seeks performed after playback started. */
+    var seekCount: Int = 0
+
+    /** elapsedRealtime() when the latest seek began filling; 0 when no seek is settling. */
+    var seekFillStartMs: Long = 0L
+
+    /** How long the most recent seek took to reach STATE_READY (ms); 0 until first seek. */
+    var lastSeekFillMs: Long = 0L
+
     /** Clears everything for a fresh playback session (called from [PlayerController.play]). */
     fun reset() {
         playbackStarted = false
@@ -62,5 +71,8 @@ class InstrumentationState {
         errorCode = 0
         errorCodeName = null
         autoRecoveryCount = 0
+        seekCount = 0
+        seekFillStartMs = 0L
+        lastSeekFillMs = 0L
     }
 }

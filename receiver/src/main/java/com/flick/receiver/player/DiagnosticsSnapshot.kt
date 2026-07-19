@@ -30,6 +30,10 @@ data class DiagnosticsSnapshot(
     val errorCodeName: String?,
     /** Count of silent bounded auto-recoveries performed this session. */
     val autoRecoveryCount: Int,
+    /** User seeks performed after playback started. */
+    val seekCount: Int,
+    /** Time the most recent seek took to reach READY (ms); 0 until first seek. */
+    val lastSeekFillMs: Long,
     /** Pre-flight probe round-trip in ms; <= 0 when no probe has run. */
     val probeLatencyMs: Long,
     /** TV's own Wi-Fi band ("2.4 GHz"/"5 GHz"/"6 GHz"); null on Ethernet/unknown. */
@@ -86,6 +90,8 @@ data class DiagnosticsSnapshot(
             errorCode = 0,
             errorCodeName = null,
             autoRecoveryCount = 0,
+            seekCount = 0,
+            lastSeekFillMs = 0L,
             probeLatencyMs = 0L,
             wifiBand = null,
             wifiLinkSpeedMbps = -1,

@@ -122,6 +122,11 @@ fun DebugOverlay(
             value = snapshot.autoRecoveryCount.toString(),
             valueColor = if (snapshot.autoRecoveryCount == 0) IdleColor else WarnColor,
         )
+        MetricLine(
+            label = "Seeks / last fill",
+            value = if (snapshot.seekCount == 0) "0 / —"
+            else "${snapshot.seekCount} / ${snapshot.lastSeekFillMs} ms",
+        )
         MetricLine("Pre-flight probe", formatProbe(snapshot.probeLatencyMs))
         MetricLine(
             "Position",

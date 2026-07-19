@@ -88,8 +88,12 @@ class PlayerController(context: Context) {
                     // Buffering interrupts the stable stretch that re-arms recovery.
                     stableReadySinceMs = 0L
                     // Only count buffering that happens AFTER playback has started;
-                    // the initial fill is not a rebuffer/stall.
-                    if (instrumentation.playbackStarted && instrumentation.currentRebufferStartMs == 0L) {
+                    // the initial fill is not a rebuffer/stall, and buffering caused
+                    // by a user seek is tracked as a seek fill, not a rebuffer.
+                    if (instrumentation.playbackStarted &&
+                        instrumentation.currentRebufferStartMs == 0L &&
+                        instrumentation.seekFillStartMs == 0L
+                    ) {
                         instrumentation.rebufferCount++
                         instrumentation.currentRebufferStartMs = SystemClock.elapsedRealtime()
                     }
@@ -97,6 +101,7 @@ class PlayerController(context: Context) {
                 Player.STATE_READY -> {
                     instrumentation.playbackStarted = true
                     if (stableReadySinceMs == 0L) stableReadySinceMs = SystemClock.elapsedRealtime()
+                    closeSeekFillWindow()
                     closeRebufferWindow()
                 }
                 Player.STATE_ENDED, Player.STATE_IDLE -> {
@@ -109,6 +114,17 @@ class PlayerController(context: Context) {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             instrumentation.isPlaying = isPlaying
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK && instrumentation.playbackStarted) {
+                instrumentation.seekCount++
+                instrumentation.seekFillStartMs = SystemClock.elapsedRealtime()
+            }
         }
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -166,6 +182,14 @@ class PlayerController(context: Context) {
             initializationDurationMs: Long,
         ) {
             instrumentation.decoderName = decoderName
+        }
+    }
+
+    private fun closeSeekFillWindow() {
+        if (instrumentation.seekFillStartMs != 0L) {
+            instrumentation.lastSeekFillMs =
+                SystemClock.elapsedRealtime() - instrumentation.seekFillStartMs
+            instrumentation.seekFillStartMs = 0L
         }
     }
 
@@ -237,6 +261,7 @@ class PlayerController(context: Context) {
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .setTargetBufferBytes(TARGET_BUFFER_BYTES)
+            .setBackBuffer(BACK_BUFFER_MS, /* retainBackBufferFromKeyframe = */ true)
             .build()
 
         // Byte-range aware HTTP source. Cross-protocol redirects OFF (we only
@@ -249,7 +274,7 @@ class PlayerController(context: Context) {
             .setUserAgent(USER_AGENT)
 
         // Generous LAN direct-play retry policy replacing Media3's default (3
-        // tries). With the 15-60s buffer, ~100s of quiet capped-backoff retrying
+        // tries). With the 15-180s buffer, ~100s of quiet capped-backoff retrying
         // rides out router blips, phone roams and brief peer-block episodes with
         // zero visible stall — every byte-range retry is a perfect resume. 4xx
         // (except 416 Range-Not-Satisfiable) fail fast so the diagnosis UI takes
@@ -379,6 +404,21 @@ class PlayerController(context: Context) {
         probeLatencyMs = latencyMs
     }
 
+    /** Seek relative to the current position, clamped to [0, duration). Main-thread only. */
+    fun seekBy(deltaMs: Long) {
+        val exo = player ?: return
+        if (currentUrl == null) return
+        val duration = exo.duration
+        val target = (exo.currentPosition + deltaMs)
+            .coerceAtLeast(0L)
+            .let { if (duration != C.TIME_UNSET) it.coerceAtMost((duration - 1_000L).coerceAtLeast(0L)) else it }
+        exo.seekTo(target)
+    }
+
+    fun togglePlayPause() {
+        player?.let { it.playWhenReady = !it.playWhenReady }
+    }
+
     // --- Telemetry snapshot --------------------------------------------------
 
     /** Build an immutable snapshot of all live metrics. Main-thread only. */
@@ -408,6 +448,14 @@ class PlayerController(context: Context) {
         ) {
             recoveryGateCount = 0
         }
+        // A seek that landed inside the buffer never leaves STATE_READY, so no
+        // state change closes its fill window — close it here once settled.
+        if (instrumentation.seekFillStartMs != 0L &&
+            instrumentation.playbackState == Player.STATE_READY &&
+            SystemClock.elapsedRealtime() - instrumentation.seekFillStartMs >= SEEK_SETTLE_MS
+        ) {
+            closeSeekFillWindow()
+        }
 
         val wifi = WifiTelemetry.read(appContext)
 
@@ -431,6 +479,8 @@ class PlayerController(context: Context) {
             errorCode = instrumentation.errorCode,
             errorCodeName = instrumentation.errorCodeName,
             autoRecoveryCount = instrumentation.autoRecoveryCount,
+            seekCount = instrumentation.seekCount,
+            lastSeekFillMs = instrumentation.lastSeekFillMs,
             probeLatencyMs = probeLatencyMs,
             wifiBand = wifi?.band,
             wifiLinkSpeedMbps = wifi?.linkSpeedMbps ?: -1,
@@ -439,11 +489,25 @@ class PlayerController(context: Context) {
     }
 
     companion object {
-        // LoadControl tuning for LAN direct-play of large 4K files.
+        // LoadControl tuning for LAN direct-play of large 4K files. 180s of
+        // forward buffer rides out ~3min serving outages invisibly (an observed
+        // real-world ~70s wireless event drained the previous 60s cap and caused
+        // a 12s stall); at typical 4K bitrates this is ~50-150 MB, still under
+        // the byte target below.
         const val MIN_BUFFER_MS = 15_000
-        const val MAX_BUFFER_MS = 60_000
+        const val MAX_BUFFER_MS = 180_000
         const val BUFFER_FOR_PLAYBACK_MS = 2_500
         const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
+
+        // Retain the last 30s behind the playhead so short backward seeks replay
+        // from memory instead of refetching over the network.
+        const val BACK_BUFFER_MS = 30_000
+
+        // A seek that lands inside the buffer never leaves STATE_READY, so the
+        // seek-fill window is closed from the snapshot tick once this settle time
+        // has passed (long enough that a genuine post-seek BUFFERING transition —
+        // same main-loop burst as the discontinuity — always arrives first).
+        const val SEEK_SETTLE_MS = 700L
 
         // Generous byte target for 4K (~256 MB). With largeHeap enabled and
         // prioritizeTimeOverSizeThresholds(true), typical 4K bitrates buffer

@@ -31,6 +31,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -166,7 +171,21 @@ fun ReceiverApp(window: Window) {
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
-        Surface(modifier = Modifier.fillMaxSize()) {
+        // Media transport keys must work no matter which control holds D-pad
+        // focus (usually the URL field), so tunnel them at the root before any
+        // child sees them. FF/RW = +/-15s, next/previous = +/-5min.
+        val mediaKeys = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.MediaFastForward -> { controller.seekBy(15_000L); true }
+                Key.MediaRewind -> { controller.seekBy(-15_000L); true }
+                Key.MediaNext -> { controller.seekBy(300_000L); true }
+                Key.MediaPrevious -> { controller.seekBy(-300_000L); true }
+                Key.MediaPlayPause -> { controller.togglePlayPause(); true }
+                else -> false
+            }
+        }
+        Surface(modifier = Modifier.fillMaxSize().then(mediaKeys)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
