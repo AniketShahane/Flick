@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phase 0 spike: permit cleartext (plain http) traffic on the LAN.
+
+  The sender serves original file bytes over http://0.0.0.0:8080/video, and the
+  Android TV receiver connects to it in cleartext.
+
+  IMPORTANT: Android's network security config CANNOT scope cleartext to IP
+  address ranges. <domain> entries are matched as literal hostname strings only;
+  CIDR / IP-range notation (e.g. 192.168.0.0/16) is not supported and would match
+  nothing, effectively disabling LAN cleartext. Because peers here are addressed
+  by raw LAN IPs (not hostnames), the only way to express "allow cleartext on the
+  LAN" is a permissive base-config. We therefore permit cleartext globally for
+  this spike while keeping the system trust anchors for any TLS traffic.
+
+  Phase 1 TODO: move to TLS (e.g. a self-signed/ephemeral cert pinned to the
+  negotiated peer) so this blanket cleartext allowance can be removed.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

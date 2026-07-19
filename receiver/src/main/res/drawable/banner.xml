@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Leanback launcher banner (320x180 dp). Simple, self-contained vector so no
+     raster assets are needed for the Phase 0 spike. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#0D1B2A"
+        android:pathData="M0,0h320v180H0z" />
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M138,66 L138,114 L180,90 Z" />
+    <path
+        android:fillColor="#ECEFF1"
+        android:pathData="M40,150 h240 v6 H40 z" />
+    <path
+        android:fillColor="#546E7A"
+        android:pathData="M40,162 h150 v4 H40 z" />
+</vector>

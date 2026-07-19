@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phase 0 spike: permit cleartext (plain http) traffic.
+
+  The receiver opens http://<phone-lan-ip>:8080/video in cleartext.
+
+  NOTE: Android Network Security Config <domain> rules match hostnames or exact
+  literal IP strings ONLY — CIDR notation (e.g. 192.168.0.0/16) is NOT supported
+  and never matches a real sender IP like 192.168.1.42. Because the sender's LAN
+  IP is negotiated at runtime and unknown ahead of time, cleartext cannot be
+  scoped by IP range here. We therefore permit cleartext globally via base-config.
+  Intent remains LAN-only direct-play; there are no other network endpoints.
+
+  Phase 1 TODO: pin to the exact negotiated sender IP (add it as a literal
+  <domain> at runtime is not possible via static config) or move to TLS with a
+  self-signed/ephemeral cert to drop this blanket cleartext allowance.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

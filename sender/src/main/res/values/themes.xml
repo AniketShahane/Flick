@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose supplies the real Material3 theming (see CastSpikeTheme in Kotlin);
+      this window theme just needs to be a no-action-bar shell that Compose draws
+      into. Parented on the platform Material theme so no AppCompat/Material
+      library XML dependency is required.
+    -->
+    <style name="Theme.CastSpikeSender" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>

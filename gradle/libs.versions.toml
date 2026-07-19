@@ -1,0 +1,43 @@
+[versions]
+# --- Build tooling (mutually compatible set) ---
+# AGP 8.9.x + Gradle 8.11.1 + Kotlin 2.1.20. AGP 8.9 is the first line to
+# officially support compileSdk 36 (Android 16). Requires Gradle >= 8.11.1
+# (see gradle/wrapper/gradle-wrapper.properties).
+agp = "8.9.1"
+# Kotlin 2.1.20. Since Kotlin 2.0, the Compose compiler ships with Kotlin and
+# is applied via the org.jetbrains.kotlin.plugin.compose plugin, whose version
+# MUST track the Kotlin version exactly (see kotlin-compose below).
+kotlin = "2.1.20"
+
+# --- Android SDK levels (shared by both modules) ---
+compileSdk = "36"
+minSdk = "26"
+targetSdk = "36"
+
+# --- Common runtime libraries (module agents add the rest as needed) ---
+coreKtx = "1.16.0"
+lifecycleRuntimeKtx = "2.9.0"
+activityCompose = "1.10.1"
+composeBom = "2025.05.01"
+# Media3 is pinned by contract; declared here for module convenience only.
+media3 = "1.10.1"
+
+[libraries]
+# Minimal, widely-used baseline libraries. Module agents own their own
+# dependency lists; these are here so the baseline module builds resolve.
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+
+[plugins]
+# These three aliases are referenced by the root build.gradle.kts (apply false)
+# and by each module's build.gradle.kts via alias(libs.plugins.*).
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
