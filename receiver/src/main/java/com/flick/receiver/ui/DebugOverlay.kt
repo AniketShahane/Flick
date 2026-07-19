@@ -103,6 +103,26 @@ fun DebugOverlay(
 
         MetricLine("Est. bandwidth", formatMbps(snapshot.bitrateEstimateBps))
         MetricLine("Decoder", snapshot.decoderName ?: "—")
+        if (snapshot.wifiBand != null) {
+            MetricLine(
+                label = "TV Wi-Fi",
+                // Some drivers report linkSpeed -1 (LINK_SPEED_UNKNOWN) / rssi 0 even
+                // with a valid band; omit those rather than render "-1 Mb/s" / "0 dBm".
+                value = buildString {
+                    append(snapshot.wifiBand)
+                    if (snapshot.wifiLinkSpeedMbps > 0) append(" - ${snapshot.wifiLinkSpeedMbps} Mb/s")
+                    if (snapshot.wifiRssiDbm < 0) append(" - ${snapshot.wifiRssiDbm} dBm")
+                },
+            )
+        } else {
+            MetricLine("TV net", "wired/unknown")
+        }
+        MetricLine(
+            label = "Auto-recoveries",
+            value = snapshot.autoRecoveryCount.toString(),
+            valueColor = if (snapshot.autoRecoveryCount == 0) IdleColor else WarnColor,
+        )
+        MetricLine("Pre-flight probe", formatProbe(snapshot.probeLatencyMs))
         MetricLine(
             "Position",
             "${formatClock(snapshot.positionMs)} / ${formatClock(snapshot.durationMs)}",
@@ -171,6 +191,9 @@ private fun formatFps(fps: Float): String =
 
 private fun formatMbps(bps: Long): String =
     if (bps <= 0L) "n/a" else String.format(Locale.US, "%.1f Mbps", bps / 1_000_000.0)
+
+private fun formatProbe(ms: Long): String =
+    if (ms <= 0L) "n/a" else "$ms ms"
 
 private fun formatSeconds(ms: Long): String =
     String.format(Locale.US, "%.1f s", ms / 1000.0)

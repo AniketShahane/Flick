@@ -4,6 +4,10 @@
     <!-- Required: the receiver opens http://<phone-lan-ip>:8080/video. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Read the TV's own Wi-Fi link (band / link speed / RSSI) for the diagnostics
+         overlay. Frequency/linkSpeed/RSSI need no location permission (SSID/BSSID
+         would, and are never read). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- Android TV: Leanback UI is required, touchscreen is not. -->
     <uses-feature

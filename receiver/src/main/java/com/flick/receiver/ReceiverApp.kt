@@ -23,6 +23,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,12 +46,18 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import androidx.tv.material3.darkColorScheme
+import com.flick.receiver.net.PreflightProbe
+import com.flick.receiver.net.ProbeResult
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.PlayerController
+import com.flick.receiver.ui.CheckingCard
 import com.flick.receiver.ui.DebugOverlay
+import com.flick.receiver.ui.DiagnosisCard
 import com.flick.receiver.util.RefreshRateHelper
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Pre-filled URL — the user types the phone's LAN IP into the blank between
@@ -60,6 +67,18 @@ const val DEFAULT_VIDEO_URL: String = "http://:8080/video"
 
 /** Overlay refresh cadence: ~2x/sec. */
 private const val OVERLAY_REFRESH_MS = 500L
+
+/**
+ * Drives what the play area shows: the live overlay ([Idle]/[Playing]), the brief
+ * pre-flight [Checking] state, or a [Failed] diagnosis card. A pre-flight probe
+ * gates every user-initiated session so a doomed cast never starts silently.
+ */
+private sealed interface SessionState {
+    data object Idle : SessionState
+    data object Checking : SessionState
+    data object Playing : SessionState
+    data class Failed(val result: ProbeResult) : SessionState
+}
 
 @Composable
 fun ReceiverApp(window: Window) {
@@ -89,6 +108,44 @@ fun ReceiverApp(window: Window) {
     var urlText by rememberSaveable { mutableStateOf(DEFAULT_VIDEO_URL) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
+    var sessionState by remember { mutableStateOf<SessionState>(SessionState.Idle) }
+
+    // Pre-flight probe job — cancelled (and superseded) on every re-run so a stale
+    // probe can never resolve over a newer one. The scope is composition-bound, so
+    // the probe is torn down with the screen.
+    val scope = rememberCoroutineScope()
+    var probeJob by remember { mutableStateOf<Job?>(null) }
+
+    // URL known -> probe off the main thread -> play only on success, else diagnose.
+    val startSession: () -> Unit = {
+        val url = urlText.trim()
+        probeJob?.cancel()
+        sessionState = SessionState.Checking
+        probeJob = scope.launch {
+            when (val result = PreflightProbe.probe(url)) {
+                is ProbeResult.Ok -> {
+                    // If ON_STOP fired mid-probe (Home pressed during the 1-8s window),
+                    // controller.onStop() already released the player. Never start a new
+                    // session into a stopped activity — that would create + prepare an
+                    // ExoPlayer and play audio into the home screen, holding the decoder
+                    // and network while backgrounded (breaks onStop's contract).
+                    if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                        controller.play(url)
+                        controller.recordProbeLatency(result.latencyMs)
+                        sessionState = SessionState.Playing
+                    } else {
+                        sessionState = SessionState.Idle
+                    }
+                }
+                else -> sessionState = SessionState.Failed(result)
+            }
+        }
+    }
+    val stopSession: () -> Unit = {
+        probeJob?.cancel()
+        controller.stop()
+        sessionState = SessionState.Idle
+    }
 
     // Poll the controller ~2x/sec and push a fresh snapshot into Compose state.
     LaunchedEffect(controller) {
@@ -118,8 +175,8 @@ fun ReceiverApp(window: Window) {
                 ControlBar(
                     url = urlText,
                     onUrlChange = { urlText = it },
-                    onPlay = { controller.play(urlText.trim()) },
-                    onStop = { controller.stop() },
+                    onPlay = startSession,
+                    onStop = stopSession,
                 )
                 Spacer(Modifier.height(12.dp))
                 Box(
@@ -132,13 +189,22 @@ fun ReceiverApp(window: Window) {
                         onViewAvailable = { playerView = it },
                         modifier = Modifier.fillMaxSize(),
                     )
-                    DebugOverlay(
-                        snapshot = snapshot,
-                        url = urlText,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(16.dp),
-                    )
+                    val cardModifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(16.dp)
+                    when (val state = sessionState) {
+                        SessionState.Checking -> CheckingCard(modifier = cardModifier)
+                        is SessionState.Failed -> DiagnosisCard(
+                            result = state.result,
+                            onRetry = startSession,
+                            modifier = cardModifier,
+                        )
+                        else -> DebugOverlay(
+                            snapshot = snapshot,
+                            url = urlText,
+                            modifier = cardModifier,
+                        )
+                    }
                 }
             }
         }

@@ -9,11 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +33,20 @@ class CastServerService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var httpServer: MediaHttpServer
+
+    // Held only while serving. Guarded so acquire/release stay balanced across the
+    // start (IO) and stop (main) threads even if they interleave.
+    private val lockGuard = Any()
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    // Bumped by every teardown path (ACTION_STOP, error, onDestroy). A start
+    // coroutine captures this at launch and, under lockGuard, refuses to start the
+    // engine or acquire the locks if a teardown has since run — otherwise a Stop
+    // that lands during the start window (getSiteLocalIpv4 + engine spin-up) would
+    // leave a resurrected engine holding port 8080 and freshly-acquired locks that
+    // no stop path can ever release.
+    private val generation = AtomicInteger(0)
 
     override fun onCreate() {
         super.onCreate()
@@ -61,6 +78,7 @@ class CastServerService : Service() {
                     return START_NOT_STICKY
                 }
 
+                val startGen = generation.get()
                 serviceScope.launch {
                     val ip = NetworkUtils.getSiteLocalIpv4()
                     if (ip == null) {
@@ -69,8 +87,23 @@ class CastServerService : Service() {
                         return@launch
                     }
                     try {
-                        httpServer.start(uri)
-                        ServerStateHolder.setRunning(name, size, ip)
+                        // Start the engine, acquire the locks and publish RUNNING as one
+                        // critical section gated on the session still being live. If a
+                        // teardown ran during the IP lookup / engine spin-up it bumped
+                        // the generation, so bail before touching anything — the teardown
+                        // (which always runs releaseLocks + httpServer.stop after bumping)
+                        // stays the last word, leaving no orphaned engine or leaked locks.
+                        var started = false
+                        synchronized(lockGuard) {
+                            if (generation.get() == startGen) {
+                                httpServer.start(uri)
+                                TransferTelemetry.reset()
+                                acquireLocks()
+                                ServerStateHolder.setRunning(name, size, ip)
+                                started = true
+                            }
+                        }
+                        if (!started) return@launch
                         updateNotification(text = "http://$ip:$SERVER_PORT/video")
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start media server", e)
@@ -90,13 +123,21 @@ class CastServerService : Service() {
     }
 
     override fun onDestroy() {
-        // Belt-and-braces: make sure the socket is released and coroutines die.
+        // Invalidate any in-flight start coroutine before tearing down (coroutine
+        // cancellation alone can't interrupt its blocking start/acquire sequence).
+        generation.incrementAndGet()
+        // Belt-and-braces: make sure the locks, socket and coroutines all die.
+        releaseLocks()
         httpServer.stop()
         serviceScope.cancel()
         super.onDestroy()
     }
 
     private fun stopEverything(setIdle: Boolean) {
+        // Invalidate any in-flight start coroutine before we release/stop, so it
+        // can't resurrect the engine or acquire locks after this teardown ran.
+        generation.incrementAndGet()
+        releaseLocks()
         httpServer.stop()
         // Don't wipe an error surfaced by someone else (e.g. the Activity stopping
         // a stale server after losing its LAN IP, then setting ERROR) back to
@@ -107,6 +148,50 @@ class CastServerService : Service() {
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    // --- Wake / Wi-Fi locks -------------------------------------------------
+
+    /**
+     * Take the Wi-Fi and CPU locks that keep the server serving at full rate with
+     * the screen off. Idempotent: re-arming while already held (the re-target
+     * case) is a no-op, so acquire/release stay balanced.
+     */
+    private fun acquireLocks() {
+        synchronized(lockGuard) {
+            if (wifiLock == null) wifiLock = newWifiLock()
+            if (wakeLock == null) wakeLock = newWakeLock()
+            wifiLock?.let { if (!it.isHeld) it.acquire() }
+            // Generous safety timeout so a lifecycle bug can never pin the CPU
+            // forever; a healthy session releases long before it elapses.
+            wakeLock?.let { if (!it.isHeld) it.acquire(WAKE_LOCK_TIMEOUT_MS) }
+        }
+    }
+
+    /** Release both locks. Safe to call when they were never acquired. */
+    private fun releaseLocks() {
+        synchronized(lockGuard) {
+            wifiLock?.let { if (it.isHeld) it.release() }
+            wakeLock?.let { if (it.isHeld) it.release() }
+        }
+    }
+
+    // WIFI_MODE_FULL_LOW_LATENCY is only honoured while the app is foreground with
+    // the screen ON; this server must serve at full rate with the screen OFF, so
+    // FULL_HIGH_PERF is the correct mode despite its API 34 deprecation.
+    @Suppress("DEPRECATION")
+    private fun newWifiLock(): WifiManager.WifiLock? {
+        val wifiManager = applicationContext.getSystemService(WifiManager::class.java) ?: return null
+        return wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WIFI_LOCK_TAG).apply {
+            setReferenceCounted(false)
+        }
+    }
+
+    private fun newWakeLock(): PowerManager.WakeLock? {
+        val powerManager = getSystemService(PowerManager::class.java) ?: return null
+        return powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+            setReferenceCounted(false)
+        }
     }
 
     // --- Notification -------------------------------------------------------
@@ -173,6 +258,10 @@ class CastServerService : Service() {
         private const val NOTIF_ID = 42
         private const val REQ_OPEN = 1
         private const val REQ_STOP = 2
+
+        private const val WIFI_LOCK_TAG = "flick:cast-wifi"
+        private const val WAKE_LOCK_TAG = "flick:cast-wake"
+        private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
 
         const val ACTION_START = "com.flick.sender.action.START"
         const val ACTION_STOP = "com.flick.sender.action.STOP"

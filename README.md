@@ -153,6 +153,24 @@ impossible to miss.
   move to TLS (ephemeral cert pinned to the negotiated peer) plus a request
   token, removing the blanket cleartext allowance.
 
+## Hardening layer
+
+Phase 0 proved the physics; this layer keeps plain home Wi-Fi from *silently*
+degrading it (see `research/03-plain-wifi-re-diagnosis.md`).
+
+- **Phone (sender):** while serving it holds a `WifiLock` (`WIFI_MODE_FULL_HIGH_PERF`)
+  and a partial `WakeLock` so screen-off Wi-Fi power-save and CPU sleep can't
+  throttle the socket, and it offers an optional battery-optimization exemption
+  prompt for OEM task-killers. The UI shows live transfer stats (throughput,
+  last-request age) and warns when the phone is on a 2.4 GHz band.
+- **TV (receiver):** the ExoPlayer `LoadErrorHandlingPolicy` retries byte-range
+  requests generously and auto-recovers from transient outages within a bounded
+  cap (a micro-outage becomes a silent resume, not a dead player). A pre-flight
+  reachability probe (TCP connect + real byte-range GET) runs before playback and
+  diagnoses the specific failure — **unreachable** (peer block / wrong IP) vs
+  **not serving** (server down) vs **server error** — instead of a generic
+  timeout. The debug overlay adds the TV's own Wi-Fi band and RSSI.
+
 ---
 
 *Do not run a Gradle/Android build without an Android SDK present. Build on a

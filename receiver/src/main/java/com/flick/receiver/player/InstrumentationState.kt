@@ -42,6 +42,9 @@ class InstrumentationState {
     var errorCode: Int = 0
     var errorCodeName: String? = null
 
+    /** Cumulative silent auto-recoveries performed this session (for the overlay). */
+    var autoRecoveryCount: Int = 0
+
     /** Clears everything for a fresh playback session (called from [PlayerController.play]). */
     fun reset() {
         playbackStarted = false
@@ -58,5 +61,6 @@ class InstrumentationState {
         errorMessage = null
         errorCode = 0
         errorCodeName = null
+        autoRecoveryCount = 0
     }
 }

@@ -28,6 +28,16 @@ data class DiagnosticsSnapshot(
     val errorMessage: String?,
     val errorCode: Int,
     val errorCodeName: String?,
+    /** Count of silent bounded auto-recoveries performed this session. */
+    val autoRecoveryCount: Int,
+    /** Pre-flight probe round-trip in ms; <= 0 when no probe has run. */
+    val probeLatencyMs: Long,
+    /** TV's own Wi-Fi band ("2.4 GHz"/"5 GHz"/"6 GHz"); null on Ethernet/unknown. */
+    val wifiBand: String?,
+    /** TV Wi-Fi link speed in Mb/s; -1 when unavailable. */
+    val wifiLinkSpeedMbps: Int,
+    /** TV Wi-Fi RSSI in dBm; 0 when unavailable. */
+    val wifiRssiDbm: Int,
 ) {
     /** True 4K UHD (>= 3840x2160). This is the flag the spike is proving out. */
     val is4k: Boolean get() = width >= 3840 && height >= 2160
@@ -75,6 +85,11 @@ data class DiagnosticsSnapshot(
             errorMessage = null,
             errorCode = 0,
             errorCodeName = null,
+            autoRecoveryCount = 0,
+            probeLatencyMs = 0L,
+            wifiBand = null,
+            wifiLinkSpeedMbps = -1,
+            wifiRssiDbm = 0,
         )
     }
 }

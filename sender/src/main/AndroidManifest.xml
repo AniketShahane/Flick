@@ -12,6 +12,11 @@
          media server lives in a foreground service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Keeps the CPU servicing the socket threads while the screen is off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the user exempt Flick from OEM battery managers that would
+         otherwise kill even a foreground service mid-cast. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- API 33+: the persistent foreground-service notification requires the
          POST_NOTIFICATIONS runtime permission to be visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

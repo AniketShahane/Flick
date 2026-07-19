@@ -106,6 +106,7 @@ class MediaHttpServer(context: Context) {
     }
 
     private suspend fun handleVideo(call: ApplicationCall) {
+        TransferTelemetry.markRequest()
         val uri = currentUri
         val method = call.request.httpMethod
 
@@ -193,6 +194,7 @@ class MediaHttpServer(context: Context) {
      * swallowed so the server stays up.
      */
     private fun streamSlice(uri: Uri, start: Long, maxLength: Long, out: OutputStream) {
+        TransferTelemetry.enterTransfer()
         try {
             val pfd = resolver.openFileDescriptor(uri, "r")
                 ?: throw FileNotFoundException("Cannot open $uri")
@@ -211,6 +213,7 @@ class MediaHttpServer(context: Context) {
                     val read = input.read(buffer, 0, toRead)
                     if (read == -1) break
                     out.write(buffer, 0, read)
+                    TransferTelemetry.recordBytes(read)
                     remaining -= read
                 }
                 out.flush()
@@ -221,6 +224,8 @@ class MediaHttpServer(context: Context) {
         } catch (e: Exception) {
             // Revoked URI grant, etc. Never let it take down the server.
             Log.w(TAG, "Streaming failed for $uri", e)
+        } finally {
+            TransferTelemetry.exitTransfer()
         }
     }
 

@@ -1,7 +1,24 @@
 package com.flick.sender
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import java.net.Inet4Address
 import java.net.NetworkInterface
+
+/** Wi-Fi band classified from the link frequency (MHz). */
+enum class WifiBand { GHZ_6, GHZ_5, GHZ_24 }
+
+/**
+ * Snapshot of THIS phone's own Wi-Fi link, for the serving diagnostics.
+ * Deliberately carries no SSID/BSSID (reading those needs a location permission
+ * and is privacy-sensitive).
+ */
+data class WifiLinkInfo(
+    val band: WifiBand,
+    val frequencyMhz: Int,
+    val linkSpeedMbps: Int,
+    val rssiDbm: Int,
+)
 
 /**
  * LAN address discovery via [NetworkInterface] enumeration. Deliberately avoids
@@ -45,5 +62,34 @@ object NetworkUtils {
             return fallback
         }
         return fallback
+    }
+
+    /**
+     * Reads this phone's own Wi-Fi link (band / link speed / RSSI), or `null` when
+     * Wi-Fi isn't the active link or its frequency can't be read.
+     */
+    @Suppress("DEPRECATION")
+    fun getWifiLinkInfo(context: Context): WifiLinkInfo? {
+        // WifiManager.connectionInfo is deprecated since API 31, but it is the
+        // only permission-cheap way (ACCESS_WIFI_STATE, already held) to read our
+        // own link's band/speed/RSSI; the API 31+ replacement routes through a
+        // NetworkCallback and surfaces no extra data we need here.
+        val wifiManager = context.applicationContext
+            .getSystemService(WifiManager::class.java) ?: return null
+        val info = wifiManager.connectionInfo ?: return null
+        val freq = info.frequency
+        if (freq <= 0) return null
+        return WifiLinkInfo(
+            band = bandOf(freq),
+            frequencyMhz = freq,
+            linkSpeedMbps = info.linkSpeed,
+            rssiDbm = info.rssi,
+        )
+    }
+
+    private fun bandOf(frequencyMhz: Int): WifiBand = when {
+        frequencyMhz >= 5925 -> WifiBand.GHZ_6
+        frequencyMhz >= 4900 -> WifiBand.GHZ_5
+        else -> WifiBand.GHZ_24
     }
 }

@@ -1,21 +1,29 @@
 package com.flick.sender
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.os.SystemClock
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -28,21 +36,32 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -83,6 +102,20 @@ private fun SenderApp() {
         }
     }
 
+    // Whether the OS may kill the server for battery reasons. Re-checked on every
+    // resume so the exemption card disappears once the user grants it in Settings.
+    var ignoringBattery by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                ignoringBattery = isIgnoringBatteryOptimizations(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val pickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri: Uri? ->
@@ -110,20 +143,38 @@ private fun SenderApp() {
 
     SenderScreen(
         state = state,
+        showBatteryWarning = !ignoringBattery,
         onPick = {
             pickerLauncher.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
             )
         },
         onStop = { CastServerService.stop(context) },
+        onRequestBatteryExemption = {
+            runCatching {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:${context.packageName}"),
+                    ),
+                )
+            }
+        },
     )
+}
+
+private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+    val pm = context.getSystemService(PowerManager::class.java) ?: return true
+    return pm.isIgnoringBatteryOptimizations(context.packageName)
 }
 
 @Composable
 private fun SenderScreen(
     state: ServerUiState,
+    showBatteryWarning: Boolean,
     onPick: () -> Unit,
     onStop: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -149,7 +200,13 @@ private fun SenderScreen(
         when (state.status) {
             ServerStatus.IDLE -> IdleContent(onPick)
             ServerStatus.STARTING -> StartingContent(state)
-            ServerStatus.RUNNING -> RunningContent(state, onPick, onStop)
+            ServerStatus.RUNNING -> RunningContent(
+                state = state,
+                showBatteryWarning = showBatteryWarning,
+                onPick = onPick,
+                onStop = onStop,
+                onRequestBatteryExemption = onRequestBatteryExemption,
+            )
             ServerStatus.ERROR -> ErrorContent(state, onPick)
         }
     }
@@ -183,9 +240,22 @@ private fun StartingContent(state: ServerUiState) {
 @Composable
 private fun RunningContent(
     state: ServerUiState,
+    showBatteryWarning: Boolean,
     onPick: () -> Unit,
     onStop: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
 ) {
+    if (showBatteryWarning) {
+        var batteryCardDismissed by remember { mutableStateOf(false) }
+        if (!batteryCardDismissed) {
+            BatteryOptimizationCard(
+                onAllow = onRequestBatteryExemption,
+                onDismiss = { batteryCardDismissed = true },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -198,6 +268,9 @@ private fun RunningContent(
             LabeledValue("Size", formatBytes(state.sizeBytes))
         }
     }
+
+    Spacer(Modifier.height(16.dp))
+    ServingDiagnostics()
 
     Spacer(Modifier.height(24.dp))
 
@@ -254,6 +327,134 @@ private fun RunningContent(
 }
 
 @Composable
+private fun BatteryOptimizationCard(onAllow: () -> Unit, onDismiss: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.battery_opt_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.battery_opt_body),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.battery_opt_dismiss))
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onAllow) {
+                    Text(stringResource(R.string.battery_opt_allow))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Live serving diagnostics: server throughput / total / last-request age and this
+ * phone's own Wi-Fi band. Owns its own ~1s (telemetry) and ~3s (Wi-Fi) tickers,
+ * gated on the Activity being STARTED so it only polls while the session is
+ * actually on screen — backgrounding / screen-off pauses the polling.
+ */
+@Composable
+private fun ServingDiagnostics() {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val stats by TransferTelemetry.stats.collectAsState()
+    var nowMs by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
+    var wifi by remember { mutableStateOf<WifiLinkInfo?>(null) }
+
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                TransferTelemetry.refresh()
+                nowMs = SystemClock.elapsedRealtime()
+                delay(TELEMETRY_REFRESH_MS)
+            }
+        }
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                wifi = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) }
+                delay(WIFI_POLL_MS)
+            }
+        }
+    }
+
+    val lastRequestText = if (stats.lastRequestAtMs == 0L) {
+        stringResource(R.string.telemetry_last_request_idle)
+    } else {
+        val agoS = ((nowMs - stats.lastRequestAtMs) / 1000L).coerceAtLeast(0L)
+        stringResource(R.string.telemetry_last_request_value, agoS)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            LabeledValue(
+                stringResource(R.string.telemetry_throughput),
+                stringResource(R.string.telemetry_throughput_value, stats.bitsPerSec / 1_000_000.0),
+            )
+            Spacer(Modifier.height(4.dp))
+            LabeledValue(stringResource(R.string.telemetry_total), formatBytes(stats.totalBytes))
+            Spacer(Modifier.height(4.dp))
+            LabeledValue(stringResource(R.string.telemetry_last_request), lastRequestText)
+            Spacer(Modifier.height(4.dp))
+            LabeledValue(stringResource(R.string.telemetry_inflight), stats.inFlight.toString())
+            wifi?.let { link ->
+                Spacer(Modifier.height(4.dp))
+                LabeledValue(stringResource(R.string.wifi_link_label), wifiLinkText(link))
+            }
+        }
+    }
+
+    if (wifi?.band == WifiBand.GHZ_24) {
+        Spacer(Modifier.height(16.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Text(
+                text = stringResource(R.string.wifi_24ghz_warning),
+                modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun wifiLinkText(link: WifiLinkInfo): String {
+    val band = when (link.band) {
+        WifiBand.GHZ_6 -> stringResource(R.string.wifi_band_6ghz)
+        WifiBand.GHZ_5 -> stringResource(R.string.wifi_band_5ghz)
+        WifiBand.GHZ_24 -> stringResource(R.string.wifi_band_24ghz)
+    }
+    return stringResource(R.string.wifi_link_value, band, link.linkSpeedMbps, link.rssiDbm)
+}
+
+@Composable
 private fun ErrorContent(state: ServerUiState, onPick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -285,6 +486,9 @@ private fun LabeledValue(label: String, value: String) {
         Text(text = value, style = MaterialTheme.typography.bodyLarge)
     }
 }
+
+private const val TELEMETRY_REFRESH_MS = 1000L
+private const val WIFI_POLL_MS = 3000L
 
 private fun formatBytes(bytes: Long): String {
     if (bytes < 0) return "Unknown size"

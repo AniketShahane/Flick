@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Flick</string>
+
+    <!-- Pre-flight connection probe (shown before playback / on probe failure). -->
+    <string name="preflight_checking_title">Checking connection…</string>
+    <string name="preflight_checking_detail">Verifying the phone is reachable and serving video…</string>
+    <string name="preflight_unreachable_title">Phone unreachable</string>
+    <string name="preflight_unreachable_detail">Are both devices on the same Wi-Fi? The router may be blocking device-to-device traffic (a security feature, or AP/client isolation). Try rebooting the router — a reboot or whitelisting both devices usually fixes it.</string>
+    <string name="preflight_refused_title">App not serving</string>
+    <string name="preflight_refused_detail">The phone was reached but nothing is serving video on the port. Open Flick on the phone (or restart the cast), then retry.</string>
+    <string name="preflight_http_error_title">Server error %1$d</string>
+    <string name="preflight_http_error_detail">The phone answered with HTTP status %1$d instead of video. Restart the cast on the phone, then retry.</string>
+    <string name="preflight_bad_url_title">Incomplete URL</string>
+    <string name="preflight_bad_url_detail">Enter the phone\'s IP address into the URL — the blank between // and :8080 — then retry.</string>
+    <string name="preflight_retry">Retry</string>
 </resources>

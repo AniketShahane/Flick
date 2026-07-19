@@ -1,6 +1,8 @@
 package com.flick.receiver.player
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,7 +13,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import androidx.media3.common.util.StuckPlayerException
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -20,6 +24,9 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import com.flick.receiver.util.WifiTelemetry
 
 /**
  * Owns the ExoPlayer lifecycle and all playback instrumentation for the
@@ -56,12 +63,30 @@ class PlayerController(context: Context) {
     private var pendingPlayWhenReady: Boolean = false
     private var savedPositionMs: Long = 0L
 
+    // --- Bounded auto-recovery state (all touched on the main thread only) ------
+    private val recoveryHandler = Handler(Looper.getMainLooper())
+    private var pendingRecovery: Runnable? = null
+
+    /** Attempts within the current rough patch; gates [MAX_RECOVERY_ATTEMPTS], re-armed after a stable stretch. */
+    private var recoveryGateCount: Int = 0
+
+    /** Most recent healthy playing position — the seek target a recovery resumes from. */
+    private var lastGoodPositionMs: Long = 0L
+
+    /** elapsedRealtime() when the current uninterrupted STATE_READY stretch began; 0 otherwise. */
+    private var stableReadySinceMs: Long = 0L
+
+    /** Latest pre-flight probe round-trip (ms); <= 0 until [recordProbeLatency]. */
+    private var probeLatencyMs: Long = 0L
+
     // --- Listeners -----------------------------------------------------------
 
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
+                    // Buffering interrupts the stable stretch that re-arms recovery.
+                    stableReadySinceMs = 0L
                     // Only count buffering that happens AFTER playback has started;
                     // the initial fill is not a rebuffer/stall.
                     if (instrumentation.playbackStarted && instrumentation.currentRebufferStartMs == 0L) {
@@ -71,9 +96,13 @@ class PlayerController(context: Context) {
                 }
                 Player.STATE_READY -> {
                     instrumentation.playbackStarted = true
+                    if (stableReadySinceMs == 0L) stableReadySinceMs = SystemClock.elapsedRealtime()
                     closeRebufferWindow()
                 }
-                Player.STATE_ENDED, Player.STATE_IDLE -> closeRebufferWindow()
+                Player.STATE_ENDED, Player.STATE_IDLE -> {
+                    stableReadySinceMs = 0L
+                    closeRebufferWindow()
+                }
             }
             instrumentation.playbackState = playbackState
         }
@@ -90,6 +119,17 @@ class PlayerController(context: Context) {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            if (isTransientError(error) && recoveryGateCount < MAX_RECOVERY_ATTEMPTS) {
+                // Bounded, SILENT auto-recovery: don't surface the error UI — after a
+                // backoff, seek to the last good position and re-prepare the SAME
+                // player. Byte-range makes the resume seamless, and the buffer hides it.
+                recoveryGateCount++
+                instrumentation.autoRecoveryCount++
+                scheduleRecovery(recoveryGateCount)
+                return
+            }
+            // Non-transient (4xx, decoder init) or the recovery budget is spent →
+            // hand off to the diagnosis UI.
             instrumentation.errorMessage = error.message ?: "Playback error"
             instrumentation.errorCode = error.errorCode
             instrumentation.errorCodeName = error.errorCodeName
@@ -137,6 +177,49 @@ class PlayerController(context: Context) {
         }
     }
 
+    // --- Bounded auto-recovery ----------------------------------------------
+
+    /**
+     * Plausibly-transient = worth silently riding out with a re-prepare:
+     * network / IO / timeout, plus Media3's [StuckPlayerException] (a wedged
+     * pipeline). Everything else (4xx, decoder init) is fatal → diagnosis UI.
+     */
+    private fun isTransientError(error: PlaybackException): Boolean {
+        // StuckPlayerException arrives wrapped, so walk the whole cause chain.
+        var cause: Throwable? = error.cause
+        while (cause != null) {
+            if (cause is StuckPlayerException) return true
+            cause = cause.cause
+        }
+        return when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_TIMEOUT -> true
+            else -> false
+        }
+    }
+
+    /** Post a delayed re-prepare of the current player at [lastGoodPositionMs]. */
+    private fun scheduleRecovery(attempt: Int) {
+        cancelPendingRecovery()
+        val delayMs = RECOVERY_BACKOFF_MS[(attempt - 1).coerceIn(0, RECOVERY_BACKOFF_MS.lastIndex)]
+        val runnable = Runnable {
+            pendingRecovery = null
+            val exo = player ?: return@Runnable
+            exo.seekTo(lastGoodPositionMs)
+            exo.prepare()
+            exo.playWhenReady = true
+        }
+        pendingRecovery = runnable
+        recoveryHandler.postDelayed(runnable, delayMs)
+    }
+
+    private fun cancelPendingRecovery() {
+        pendingRecovery?.let { recoveryHandler.removeCallbacks(it) }
+        pendingRecovery = null
+    }
+
     // --- Player construction -------------------------------------------------
 
     private fun createPlayer(): ExoPlayer {
@@ -165,8 +248,35 @@ class PlayerController(context: Context) {
             .setReadTimeoutMs(READ_TIMEOUT_MS)
             .setUserAgent(USER_AGENT)
 
+        // Generous LAN direct-play retry policy replacing Media3's default (3
+        // tries). With the 15-60s buffer, ~100s of quiet capped-backoff retrying
+        // rides out router blips, phone roams and brief peer-block episodes with
+        // zero visible stall — every byte-range retry is a perfect resume. 4xx
+        // (except 416 Range-Not-Satisfiable) fail fast so the diagnosis UI takes
+        // over instead of hammering a dead/blocking endpoint.
+        val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy(MAX_LOAD_RETRY_COUNT) {
+            override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+                // Preserve the default policy's fail-fast classification for non-HTTP
+                // fatal errors (ParserException, FileNotFoundException,
+                // CleartextNotPermittedException, position-out-of-range
+                // DataSourceExceptions): it returns TIME_UNSET for those. Retrying
+                // unplayable content ~20x behind the buffer would only delay the
+                // diagnosis by ~100s (e.g. the URL points at an HTML page → sniffing
+                // throws ParserException). InvalidResponseCodeException stays retriable
+                // in the default, so the 4xx check below still governs HTTP codes.
+                if (super.getRetryDelayMsFor(loadErrorInfo) == C.TIME_UNSET) return C.TIME_UNSET
+                val exception = loadErrorInfo.exception
+                if (exception is HttpDataSource.InvalidResponseCodeException) {
+                    val code = exception.responseCode
+                    if (code in 400..499 && code != 416) return C.TIME_UNSET
+                }
+                return minOf(1000L * (loadErrorInfo.errorCount + 1), MAX_LOAD_RETRY_DELAY_MS)
+            }
+        }
+
         val mediaSourceFactory = DefaultMediaSourceFactory(appContext)
             .setDataSourceFactory(httpDataSourceFactory)
+            .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
 
         // Hardware decoders only (no software/extension renderers) — the whole
         // point is to prove the TV decodes the original bytes in hardware.
@@ -208,6 +318,9 @@ class PlayerController(context: Context) {
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
         val exo = player ?: return
+        // Drop any queued recovery: it targets the player we're about to release;
+        // onStart() re-prepares from savedPositionMs instead.
+        cancelPendingRecovery()
         // Close any in-progress rebuffer window BEFORE removing listeners so the
         // decoder release doesn't leave currentRebufferStartMs non-zero and
         // corrupt cumulativeRebufferMs with backgrounded wall-clock time.
@@ -222,6 +335,7 @@ class PlayerController(context: Context) {
 
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
+        cancelPendingRecovery()
         val exo = player ?: return
         // Close any in-progress rebuffer window before tearing down.
         closeRebufferWindow()
@@ -238,6 +352,11 @@ class PlayerController(context: Context) {
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
+        cancelPendingRecovery()
+        recoveryGateCount = 0
+        lastGoodPositionMs = 0L
+        stableReadySinceMs = 0L
+        probeLatencyMs = 0L
         instrumentation.reset()
         val exo = player ?: createPlayer().also { player = it }
         exo.setMediaItem(MediaItem.fromUri(url))
@@ -247,10 +366,17 @@ class PlayerController(context: Context) {
 
     fun stop() {
         pendingPlayWhenReady = false
+        cancelPendingRecovery()
+        stableReadySinceMs = 0L
         player?.let { exo ->
             exo.stop()
             exo.clearMediaItems()
         }
+    }
+
+    /** Record the pre-flight probe round-trip so the overlay can surface it. */
+    fun recordProbeLatency(latencyMs: Long) {
+        probeLatencyMs = latencyMs
     }
 
     // --- Telemetry snapshot --------------------------------------------------
@@ -271,6 +397,20 @@ class PlayerController(context: Context) {
             SystemClock.elapsedRealtime() - instrumentation.currentRebufferStartMs
         } else 0L
 
+        // Per-tick bookkeeping (main thread): remember the last healthy playing
+        // position as the recovery seek target, and re-arm the recovery budget
+        // once playback has been stably READY for a stretch.
+        if (exo != null && instrumentation.playbackState == Player.STATE_READY && position > 0L) {
+            lastGoodPositionMs = position
+        }
+        if (recoveryGateCount > 0 && stableReadySinceMs != 0L &&
+            SystemClock.elapsedRealtime() - stableReadySinceMs >= RECOVERY_RESET_STABLE_MS
+        ) {
+            recoveryGateCount = 0
+        }
+
+        val wifi = WifiTelemetry.read(appContext)
+
         return DiagnosticsSnapshot(
             playbackState = instrumentation.playbackState,
             isPlaying = exo?.isPlaying ?: false,
@@ -290,6 +430,11 @@ class PlayerController(context: Context) {
             errorMessage = instrumentation.errorMessage,
             errorCode = instrumentation.errorCode,
             errorCodeName = instrumentation.errorCodeName,
+            autoRecoveryCount = instrumentation.autoRecoveryCount,
+            probeLatencyMs = probeLatencyMs,
+            wifiBand = wifi?.band,
+            wifiLinkSpeedMbps = wifi?.linkSpeedMbps ?: -1,
+            wifiRssiDbm = wifi?.rssiDbm ?: 0,
         )
     }
 
@@ -308,5 +453,17 @@ class PlayerController(context: Context) {
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 30_000
         const val USER_AGENT = "FlickReceiver/0.1 (Media3 direct-play)"
+
+        // Load-error retry policy: ~20 tries with capped backoff (min(1000*(n+1), 5000)ms)
+        // ≈ 100s of quiet retrying, hidden by the 15-60s buffer.
+        const val MAX_LOAD_RETRY_COUNT = 20
+        const val MAX_LOAD_RETRY_DELAY_MS = 5_000L
+
+        // Bounded fatal-error auto-recovery: backoff per attempt (1-4), then give up.
+        private val RECOVERY_BACKOFF_MS = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L)
+        val MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.size
+
+        // Re-arm the recovery budget after this long uninterrupted in STATE_READY.
+        const val RECOVERY_RESET_STABLE_MS = 30_000L
     }
 }

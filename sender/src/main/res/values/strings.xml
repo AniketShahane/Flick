@@ -12,4 +12,28 @@
     <!-- User-facing errors. -->
     <string name="error_no_lan">No Wi-Fi or LAN connection found. Connect this phone to the same Wi-Fi network as your TV, then try again.</string>
     <string name="error_server_start">Could not start the media server. Make sure port 8080 is free and try again.</string>
+
+    <!-- Battery-optimization exemption prompt (OEM battery managers can kill even
+         a foreground service mid-cast). -->
+    <string name="battery_opt_title">Casting may be interrupted</string>
+    <string name="battery_opt_body">Your phone may pause casting when the screen is off. Allow Flick to ignore battery optimization to keep the stream steady.</string>
+    <string name="battery_opt_allow">Allow</string>
+    <string name="battery_opt_dismiss">Dismiss</string>
+
+    <!-- Live serving diagnostics. -->
+    <string name="telemetry_throughput">Throughput</string>
+    <string name="telemetry_throughput_value">%1$.1f Mb/s</string>
+    <string name="telemetry_total">Total served</string>
+    <string name="telemetry_last_request">Last request</string>
+    <string name="telemetry_last_request_value">%1$ds ago</string>
+    <string name="telemetry_last_request_idle">No requests yet</string>
+    <string name="telemetry_inflight">In-flight requests</string>
+
+    <!-- This phone's own Wi-Fi link. -->
+    <string name="wifi_link_label">Wi-Fi</string>
+    <string name="wifi_link_value">%1$s - %2$d Mb/s (%3$d dBm)</string>
+    <string name="wifi_band_6ghz">6 GHz</string>
+    <string name="wifi_band_5ghz">5 GHz</string>
+    <string name="wifi_band_24ghz">2.4 GHz</string>
+    <string name="wifi_24ghz_warning">This phone is on 2.4 GHz Wi-Fi. That band can\'t sustain 4K peaks, so playback may stall. Switch this phone to the 5 GHz network for reliable casting.</string>
 </resources>
