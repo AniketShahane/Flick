@@ -5,11 +5,13 @@
       leanback Activity. Parented on the platform Material theme (minSdk 26) so
       no AppCompat/Material XML dependency is required — all UI is Compose.
     -->
+    <!-- Background is the Flick "canvas" (#08070C, near-black violet-warmed) —
+         never pure #000, per design-tokens.md §1.1. -->
     <style name="Theme.Flick" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:colorBackground">@android:color/black</item>
-        <item name="android:statusBarColor">@android:color/black</item>
-        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowBackground">#FF08070C</item>
+        <item name="android:colorBackground">#FF08070C</item>
+        <item name="android:statusBarColor">#FF08070C</item>
+        <item name="android:navigationBarColor">#FF08070C</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:windowFullscreen">true</item>

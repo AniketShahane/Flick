@@ -1,21 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Leanback launcher banner (320x180 dp). Simple, self-contained vector so no
-     raster assets are needed for the Phase 0 spike. -->
+<!-- Leanback launcher banner (320x180 dp): the Flick lockup — mark + wordmark
+     stand-in — on the dark canvas. Self-contained vector; no raster assets. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="320dp"
     android:height="180dp"
     android:viewportWidth="320"
     android:viewportHeight="180">
     <path
-        android:fillColor="#0D1B2A"
+        android:fillColor="#0F0D14"
         android:pathData="M0,0h320v180H0z" />
+    <!-- brand mark, scaled/positioned left -->
+    <group
+        android:translateX="86"
+        android:translateY="58"
+        android:scaleX="1"
+        android:scaleY="1">
+        <path
+            android:fillColor="#FF4B24"
+            android:fillAlpha="0.85"
+            android:pathData="M9,22.5h13a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H9a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
+        <path
+            android:fillColor="#FF4B24"
+            android:fillAlpha="0.5"
+            android:pathData="M5,31.5h10a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H5a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
+        <path
+            android:fillColor="#FF4B24"
+            android:strokeColor="#FF4B24"
+            android:strokeWidth="6"
+            android:strokeLineJoin="round"
+            android:pathData="M28,17 L51,32 L28,47 Z" />
+    </group>
+    <!-- wordmark underline accents -->
     <path
-        android:fillColor="#00E676"
-        android:pathData="M138,66 L138,114 L180,90 Z" />
+        android:fillColor="#EDEAF2"
+        android:pathData="M150,84 h130 v7 H150 z" />
     <path
-        android:fillColor="#ECEFF1"
-        android:pathData="M40,150 h240 v6 H40 z" />
-    <path
-        android:fillColor="#546E7A"
-        android:pathData="M40,162 h150 v4 H40 z" />
+        android:fillColor="#6A6478"
+        android:pathData="M150,98 h96 v4 H150 z" />
 </vector>

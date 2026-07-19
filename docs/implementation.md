@@ -42,6 +42,34 @@ Serving streams slices straight out of a `ParcelFileDescriptor` via
 `FileChannel.position(start)` — no copy of the file is ever made, so an 8 GB
 file costs no storage and starts serving instantly.
 
+## Control channel, discovery & pairing (redesign)
+
+The front-end redesign turns the phone into a **remote** and adds the synchronized phone↔TV scrub.
+That needs the TV to accept inbound control, so alongside the media path there is now a **second
+server — a control server on the TV** (Ktor CIO + WebSocket). The phone is the control **client**.
+The full wire contract is `docs/design/control-channel.md`; the essentials:
+
+- **Discovery (NSD/mDNS):** the TV advertises `_flick._tcp.` (name, `model`, `v`, `state` TXT); the
+  phone browses and lists nearby TVs with live status. Manual address entry survives as a fallback.
+- **Pairing:** first connect, the TV shows a **4-digit code** (and an equivalent QR); the phone
+  supplies it (typed, or manual). The gate is hardened like the media server: bound to the TV's LAN
+  IP (never `0.0.0.0`), `Host`-pinned, constant-time compare, a **failed-attempt cap + escalating
+  lockout + code rotation**, an **auth deadline**, and a **cap on unauthenticated connections**.
+  Success mints a persistent per-phone key so later connects are one-tap (`resume`).
+- **Control WebSocket** (`ws://<tvIp>:<ctrlPort>/control`, compact JSON via `org.json`): phone→TV
+  `loadMedia/play/pause/seek/skip/setVolume/stop`; TV→phone `state{posMs,durationMs,playing,`
+  `bufferedMs,phase,volume,seq}` at ~10 Hz plus `paired/denied/error/pong`. `loadMedia` is validated
+  to exactly `http://<paired-phone>:<port>/v/<url-safe-token>` — the control surface carries **only
+  playback verbs**, never file access. A single active session is enforced with a mutex + generation
+  counter; `install(WebSockets)` ping/timeout reaps a vanished phone.
+- **The hero (optimistic/ghost):** the phone renders a **solid** target playhead (moves instantly
+  with the thumb) and a **ghost ○** confirmed playhead (last TV `state.posMs`); on a hiccup the
+  ghost trails with a "SYNCING…" shimmer, and on release reconciles to target with `syncSpring`.
+  Cross-surface commands (a TV D-pad seek/pause) arrive as `state` frames the phone animates to.
+
+The media direct-play path above is **unchanged** by all of this. The redesigned Compose UI (both
+apps) is specified in `docs/design/design-tokens.md` + `docs/design/redesign-plan.md`.
+
 ## Sender (`:sender`, phone)
 
 | Piece | What it does |

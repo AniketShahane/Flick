@@ -8,6 +8,15 @@
     <!-- Used to resolve this device's Wi-Fi/LAN IP to display the cast URL. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!-- The library is a real MediaStore-backed video gallery, so it needs read
+         access to the user's videos. READ_MEDIA_VIDEO (33+) / the partial
+         VISUAL_USER_SELECTED (34+) / READ_EXTERNAL_STORAGE (<=32). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <!-- Serving must survive with the screen off while the TV plays, so the
          media server lives in a foreground service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -28,10 +37,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FlickSender">
 
-        <!-- Picker + server-control UI. -->
+        <!-- Picker + server-control UI. The activity handles config changes itself
+             (Compose re-reads the new Configuration) so rotation / dark-mode / split-
+             screen / locale / font-scale never recreate it and tear down the live
+             FlickController — the control WS, PlaybackSession, route and casting item
+             all survive, mirroring the receiver activity. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

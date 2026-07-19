@@ -32,6 +32,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -68,15 +69,17 @@ class MediaHttpServer(context: Context) {
     // clients can't starve an earlier waiter. Process-wide: one server at a time.
     private val transferPermits = Semaphore(MAX_CONCURRENT_TRANSFERS, true)
 
-    /** The URI currently being served. Read on every request thread. */
-    @Volatile
-    var currentUri: Uri? = null
-        private set
+    /**
+     * The (uri, token) pair currently served, published as ONE immutable object via a
+     * single atomic reference. They were two separate @Volatile fields, which let a
+     * retarget from A/tokenA to B/tokenB be observed half-applied (new uri B still
+     * paired with the not-yet-overwritten tokenA) — a TOCTOU that could stream video B
+     * under the stale token. Each request captures this reference once, so uri and
+     * token are always the matched pair the session actually published.
+     */
+    private data class ServedSession(val uri: Uri, val token: String)
 
-    /** The per-session token gating [currentUri]. Rotated on every (re)start. */
-    @Volatile
-    var currentToken: String? = null
-        private set
+    private val servedSession = AtomicReference<ServedSession?>(null)
 
     // The LAN IP the socket is bound to; the video handler pins the request Host
     // to this literal to reject DNS-rebinding. Read on every request thread.
@@ -93,10 +96,9 @@ class MediaHttpServer(context: Context) {
      */
     fun start(uri: Uri, token: String, bindHost: String) {
         synchronized(lock) {
-            // Publish the new session target before (re)binding so no request can
-            // observe a live socket with a stale token/URI.
-            currentUri = uri
-            currentToken = token
+            // Publish the new session target atomically before (re)binding so no request
+            // can observe a live socket with a stale token/URI (or a mismatched pair).
+            servedSession.set(ServedSession(uri, token))
 
             val running = server
             if (running != null && boundHost == bindHost) return
@@ -132,8 +134,7 @@ class MediaHttpServer(context: Context) {
     fun stop() {
         val engine: EmbeddedServer<*, *>?
         synchronized(lock) {
-            currentUri = null
-            currentToken = null
+            servedSession.set(null)
             boundHost = null
             engine = server
             server = null
@@ -181,17 +182,18 @@ class MediaHttpServer(context: Context) {
             return
         }
 
-        // Per-session token gate. Constant-time compare, and answer any miss (no
-        // session, wrong/absent token) with an identical 404 so a probe learns
-        // nothing about whether a valid token exists.
-        val expectedToken = currentToken
-        val uri = currentUri
-        if (expectedToken == null || uri == null || pathToken == null ||
-            !MessageDigest.isEqual(pathToken.toByteArray(), expectedToken.toByteArray())
+        // Per-session token gate. Capture the served (uri, token) as ONE object so the
+        // pair is always consistent (no TOCTOU across a retarget). Constant-time compare,
+        // and answer any miss (no session, wrong/absent token) with an identical 404 so
+        // a probe learns nothing about whether a valid token exists.
+        val served = servedSession.get()
+        if (served == null || pathToken == null ||
+            !MessageDigest.isEqual(pathToken.toByteArray(), served.token.toByteArray())
         ) {
             call.respondText("Not found", status = HttpStatusCode.NotFound)
             return
         }
+        val uri = served.uri
 
         val method = call.request.httpMethod
         val contentType = safeContentType(runCatching { resolver.getType(uri) }.getOrNull())

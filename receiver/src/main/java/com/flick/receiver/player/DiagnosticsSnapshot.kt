@@ -1,9 +1,19 @@
 package com.flick.receiver.player
 
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 
 /** Overall health of the current direct-play session, for the overlay. */
 enum class PlaybackStatus { IDLE, PASS, WARN, ERROR }
+
+/**
+ * The high-dynamic-range class the TV is ACTUALLY decoding, derived from the
+ * live decoder/format — so the on-screen badge tells the truth (design's honest-
+ * badges rule) instead of hardcoding Dolby Vision for every stream.
+ */
+enum class HdrType { NONE, HDR10, DOLBY_VISION }
 
 /**
  * An immutable, point-in-time view of every metric shown on the debug overlay.
@@ -23,6 +33,10 @@ data class DiagnosticsSnapshot(
     val droppedFrames: Long,
     val bitrateEstimateBps: Long,
     val decoderName: String?,
+    /** Sample MIME of the decoded video (e.g. "video/dolby-vision"); null until known. */
+    val videoMimeType: String? = null,
+    /** Color transfer of the decoded video (C.COLOR_TRANSFER_*); [Format.NO_VALUE] until known. */
+    val colorTransfer: Int = Format.NO_VALUE,
     val positionMs: Long,
     val durationMs: Long,
     val errorMessage: String?,
@@ -45,6 +59,26 @@ data class DiagnosticsSnapshot(
 ) {
     /** True 4K UHD (>= 3840x2160). This is the flag the spike is proving out. */
     val is4k: Boolean get() = width >= 3840 && height >= 2160
+
+    /**
+     * What the decoder is actually decoding — Dolby Vision (DV decoder or the DV
+     * MIME), else HDR10/HLG (PQ/HLG transfer), else SDR. Returns [HdrType.NONE]
+     * until the format is known, so an unknown stream shows no badge rather than
+     * a false one.
+     */
+    val hdrType: HdrType
+        get() {
+            val dec = decoderName?.lowercase()
+            if (videoMimeType == MimeTypes.VIDEO_DOLBY_VISION ||
+                (dec != null && (dec.contains("dvhe") || dec.contains("dvav") || dec.contains("dolby")))
+            ) {
+                return HdrType.DOLBY_VISION
+            }
+            return when (colorTransfer) {
+                C.COLOR_TRANSFER_ST2084, C.COLOR_TRANSFER_HLG -> HdrType.HDR10
+                else -> HdrType.NONE
+            }
+        }
 
     /**
      * PASS condition for zero-stall direct play: playback started, no error,

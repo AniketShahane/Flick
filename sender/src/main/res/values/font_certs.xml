@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Certificate array for the Google Play Services downloadable-font provider.
+
+  Type.kt loads Space Grotesk / Roboto Mono through this provider and FALLS BACK
+  gracefully to the platform default when the provider or its certificates are
+  unavailable (design-tokens.md §2 mandates "do not hard-fail"). This ships as an
+  empty array so the app builds and runs cleanly on any machine without embedding
+  third-party certificate blobs into this PUBLIC repo. To actually stream the
+  downloadable faces, drop in Google's published `com_google_android_gms_fonts_certs`
+  array (their downloadable-fonts sample's font_certs.xml) here.
+-->
+<resources>
+    <array name="com_google_android_gms_fonts_certs">
+    </array>
+</resources>

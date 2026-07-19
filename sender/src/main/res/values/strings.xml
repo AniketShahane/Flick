@@ -9,18 +9,17 @@
     <string name="notif_text_serving">Streaming over Wi-Fi. Tap to manage.</string>
     <string name="notif_action_stop">Stop</string>
 
-    <!-- User-facing errors. -->
+    <!-- Server errors surfaced by the foreground service. -->
     <string name="error_no_lan">No Wi-Fi or LAN connection found. Connect this phone to the same Wi-Fi network as your TV, then try again.</string>
     <string name="error_server_start">Could not start the media server. Make sure port 8080 is free and try again.</string>
 
-    <!-- Battery-optimization exemption prompt (OEM battery managers can kill even
-         a foreground service mid-cast). -->
+    <!-- Battery-optimization exemption prompt. -->
     <string name="battery_opt_title">Casting may be interrupted</string>
     <string name="battery_opt_body">Your phone may pause casting when the screen is off. Allow Flick to ignore battery optimization to keep the stream steady.</string>
     <string name="battery_opt_allow">Allow</string>
     <string name="battery_opt_dismiss">Dismiss</string>
 
-    <!-- Live serving diagnostics. -->
+    <!-- Live serving diagnostics (telemetry / this phone\'s Wi-Fi link). -->
     <string name="telemetry_throughput">Throughput</string>
     <string name="telemetry_throughput_value">%1$.1f Mb/s</string>
     <string name="telemetry_total">Total served</string>
@@ -28,12 +27,120 @@
     <string name="telemetry_last_request_value">%1$ds ago</string>
     <string name="telemetry_last_request_idle">No requests yet</string>
     <string name="telemetry_inflight">In-flight requests</string>
-
-    <!-- This phone's own Wi-Fi link. -->
     <string name="wifi_link_label">Wi-Fi</string>
     <string name="wifi_link_value">%1$s - %2$d Mb/s (%3$d dBm)</string>
     <string name="wifi_band_6ghz">6 GHz</string>
     <string name="wifi_band_5ghz">5 GHz</string>
     <string name="wifi_band_24ghz">2.4 GHz</string>
     <string name="wifi_24ghz_warning">This phone is on 2.4 GHz Wi-Fi. That band can\'t sustain 4K peaks, so playback may stall. Switch this phone to the 5 GHz network for reliable casting.</string>
+
+    <!-- S1 · Connect &amp; pair. -->
+    <string name="connect_title">Connect your TV</string>
+    <string name="connect_wifi_note">On your Wi-Fi · no account, ever</string>
+    <string name="connect_found_label">ON HOMENET — %1$d FOUND</string>
+    <string name="connect_searching">Looking for TVs on your network…</string>
+    <string name="connect_qr_title">Scan the TV\'s QR</string>
+    <string name="connect_qr_sub">Point the camera at your TV screen</string>
+    <string name="connect_code_title">Enter code</string>
+    <string name="connect_code_sub">Shown on the TV</string>
+    <string name="connect_manual">enter address manually</string>
+    <string name="pair_code_heading">Enter the code on %1$s</string>
+    <string name="pair_code_sub">It\'s the 4-digit code on your TV screen.</string>
+    <string name="pair_connect">Connect</string>
+    <string name="manual_heading">Enter TV address</string>
+    <string name="manual_host_label">TV IP address</string>
+    <string name="manual_port_label">Control port</string>
+    <string name="manual_code_label">Code (if shown)</string>
+    <string name="manual_connect">Connect</string>
+
+    <!-- S2 · Empty state. -->
+    <string name="empty_title">Nothing to flick yet</string>
+    <string name="empty_body">Movies you shoot, rip or download live here — and play on your TV at full 4K quality, straight off this phone.</string>
+    <string name="empty_choose">Choose a folder</string>
+    <string name="empty_tv_ready">%1$s is ready when you are</string>
+    <string name="empty_no_tv">Connect a TV to start casting</string>
+
+    <!-- S3 · Library. -->
+    <string name="library_title">Your videos</string>
+    <string name="library_filter_recents">Recents</string>
+    <string name="library_filter_camera">Camera</string>
+    <string name="library_filter_downloads">Downloads</string>
+    <string name="library_connected_hint">Connected to %1$s · tap any film to flick it</string>
+    <string name="library_not_connected_hint">Tap the cast icon to connect a TV</string>
+
+    <!-- S4 · Detail. -->
+    <string name="detail_back">Back</string>
+    <string name="detail_directplay_title">Will direct-play at full quality.</string>
+    <string name="detail_directplay_body">Your TV decodes this file natively — no transcode, no downscale, nothing leaves your Wi-Fi.</string>
+    <string name="detail_cta">Flick to %1$s</string>
+    <string name="detail_cta_noconnect">Flick to your TV</string>
+    <string name="detail_play_here">play on this phone instead</string>
+
+    <!-- S5 · Connecting. -->
+    <string name="connecting_title">Waking %1$s…</string>
+    <string name="connecting_title_generic">Connecting…</string>
+    <string name="connecting_step_found">Found on your network</string>
+    <string name="connecting_step_handshake">Shaking hands over your LAN</string>
+    <string name="connecting_step_directplay">Confirming direct-play</string>
+    <string name="connecting_status">Connecting · usually under 2 s</string>
+
+    <!-- Pairing outcome messages (mapped from a PairErrorKind, never raw exception text). -->
+    <string name="pair_error_code">That code didn\'t match. Check the TV and try again.</string>
+    <string name="pair_error_unreachable">Couldn\'t reach that TV.</string>
+
+    <!-- S6–S9 · Now Playing / Paused / Seeking / Buffering. -->
+    <string name="syncing">SYNCING…</string>
+    <string name="np_tv_generic">Your TV</string>
+    <string name="np_sub">%1$s · %2$s · direct-play off this phone</string>
+    <string name="np_following">TV following your thumb</string>
+    <string name="np_footer">Serving from this phone · screen can turn off</string>
+    <string name="np_stop">Stop casting</string>
+    <string name="np_paused_badge">PAUSED</string>
+    <string name="buffering_title">Topping up the buffer</string>
+    <string name="buffering_body">Your Wi-Fi took a breath — the reserve is absorbing it. Quality stays full; nothing is being downgraded.</string>
+    <string name="buffering_chip">%1$s · brief dip</string>
+
+    <!-- S10 · Signal &amp; quality sheet. -->
+    <string name="quality_title">Signal &amp; quality</string>
+    <string name="quality_healthy">all healthy</string>
+    <string name="quality_watch">watch this</string>
+    <string name="quality_throughput">THROUGHPUT</string>
+    <string name="quality_buffer">BUFFER HEALTH</string>
+    <string name="quality_playing">Playing</string>
+    <string name="quality_network">Network</string>
+    <string name="quality_needs">%1$s / needs %2$d</string>
+    <string name="quality_reserve">%1$.1f s reserve</string>
+    <string name="quality_direct">Phone → TV directly · nothing leaves your Wi-Fi</string>
+
+    <!-- S11 · Advisories. -->
+    <string name="advisories_title">Two quick tune-ups</string>
+    <string name="advisories_sub">Optional — but they make zero-buffer a guarantee.</string>
+    <string name="advisory_band_title">You\'re on 2.4 GHz Wi-Fi.</string>
+    <string name="advisory_band_body">4K peaks may outrun this band. Switch this phone to your 5 GHz network for guaranteed zero-buffer.</string>
+    <string name="advisory_band_primary">Switch network</string>
+    <string name="advisory_band_secondary">Cast anyway</string>
+    <string name="advisory_battery_title">Let Flick serve with the screen off.</string>
+    <string name="advisory_battery_body">Android\'s battery saver can pause the stream mid-movie; exempting Flick keeps it alive to the credits.</string>
+    <string name="advisory_battery_primary">Allow</string>
+    <string name="advisory_battery_secondary">Later</string>
+    <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
+    <string name="advisories_alltuned">You\'re all tuned up.</string>
+
+    <!-- S12 · Errors. -->
+    <string name="error_reachable_title">Your TV is there — but not listening</string>
+    <string name="error_reachable_body">%1$s answers on the network, but the Flick receiver isn\'t running. It probably fell asleep or was closed.</string>
+    <string name="error_reachable_primary">Wake the TV app</string>
+    <string name="error_reachable_secondary">Run a 10-second checkup</string>
+    <string name="error_reachable_pill">Reachable · not serving</string>
+    <string name="error_unreachable_title">Can\'t find %1$s</string>
+    <string name="error_unreachable_body">Put both devices on the same Wi-Fi and Flick will find it instantly.</string>
+    <string name="error_unreachable_primary">Rescan network</string>
+    <string name="error_unreachable_secondary">Pair again</string>
+    <string name="error_unreachable_pill">TV unreachable</string>
+    <string name="error_nolan_title">No Wi-Fi connection</string>
+    <string name="error_nolan_body">Connect this phone to the same Wi-Fi network as your TV, then try again.</string>
+    <string name="error_nolan_primary">Open Wi-Fi settings</string>
+    <string name="error_generic_title">Something went wrong</string>
+    <string name="error_generic_body">Flick couldn\'t start this cast. Try again.</string>
+    <string name="error_generic_primary">Try again</string>
 </resources>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Certificate set for the Google Play Services downloadable-fonts provider
+  (androidx.compose.ui:ui-text-google-fonts). The array below is the standard
+  GMS fonts certificate structure (dev + prod). The canonical base64 certificate
+  strings are long, publicly documented boilerplate (Android "Downloadable
+  fonts > Adding certificates"); substitute them into the two string-arrays to
+  enable Space Grotesk / Roboto Mono downloads.
+
+  Font loading is best-effort by design: if the provider cannot verify (missing
+  or non-matching certs, or a device without Play Services), Compose falls back
+  to the platform default typeface WITHOUT crashing. That fallback is an
+  explicitly supported state (design-tokens.md §2), so the UI is correct either
+  way — the certs only govern whether the intended faces are fetched.
+-->
+<resources>
+    <array name="com_google_android_gms_fonts_certs">
+        <item>@array/com_google_android_gms_fonts_certs_dev</item>
+        <item>@array/com_google_android_gms_fonts_certs_prod</item>
+    </array>
+    <string-array name="com_google_android_gms_fonts_certs_dev">
+        <!-- Substitute the canonical GMS "dev" fonts certificate string here. -->
+        <item></item>
+    </string-array>
+    <string-array name="com_google_android_gms_fonts_certs_prod">
+        <!-- Substitute the canonical GMS "prod" fonts certificate string here. -->
+        <item></item>
+    </string-array>
+</resources>

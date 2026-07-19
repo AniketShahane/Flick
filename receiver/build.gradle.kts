@@ -92,4 +92,23 @@ dependencies {
 
     // --- Coroutines ---
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+
+    // --- Downloadable Google Fonts (Space Grotesk / Roboto Mono), BOM-aligned.
+    //     Loading is best-effort: the families fall back to the platform default
+    //     if the provider is unavailable, so nothing hard-fails on a device
+    //     without Google Play Services. ---
+    implementation("androidx.compose.ui:ui-text-google-fonts")
+
+    // --- TV control server (control-channel.md): Ktor CIO + WebSockets. This is
+    //     the SECOND server on the TV — control-only, pairing-gated, LAN-bound;
+    //     it carries no media and no file access. The media path stays direct-play
+    //     on the phone. slf4j-simple is Ktor's logging backend. ---
+    implementation("io.ktor:ktor-server-core:3.1.3")
+    implementation("io.ktor:ktor-server-cio:3.1.3")
+    implementation("io.ktor:ktor-server-websockets:3.1.3")
+    implementation("org.slf4j:slf4j-simple:2.0.16")
+
+    // --- QR bitmap generation for first-run pairing (rendered to a Compose
+    //     Canvas; no camera needed to display). ---
+    implementation("com.google.zxing:core:3.5.3")
 }

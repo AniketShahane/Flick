@@ -79,6 +79,9 @@ class PlayerController(context: Context) {
     /** Latest pre-flight probe round-trip (ms); <= 0 until [recordProbeLatency]. */
     private var probeLatencyMs: Long = 0L
 
+    /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
+    private var lastVolume: Float = 1f
+
     // --- Listeners -----------------------------------------------------------
 
     private val playerListener = object : Player.Listener {
@@ -172,6 +175,12 @@ class PlayerController(context: Context) {
             if (format.width > 0 && format.height > 0) {
                 instrumentation.videoWidth = format.width
                 instrumentation.videoHeight = format.height
+            }
+            // Capture the real decoded format so the on-screen quality badge is
+            // honest (DV vs HDR10 vs SDR) instead of a hardcoded "DOLBY VISION".
+            format.sampleMimeType?.let { instrumentation.videoMimeType = it }
+            format.colorInfo?.colorTransfer?.takeIf { it != Format.NO_VALUE }?.let {
+                instrumentation.colorTransfer = it
             }
         }
 
@@ -321,6 +330,9 @@ class PlayerController(context: Context) {
             .also { exo ->
                 exo.addListener(playerListener)
                 exo.addAnalyticsListener(analyticsListener)
+                // Restore the last commanded volume so it survives player rebuilds
+                // (background/foreground) and the control channel stays authoritative.
+                exo.volume = lastVolume
             }
     }
 
@@ -428,6 +440,73 @@ class PlayerController(context: Context) {
         player?.let { it.playWhenReady = !it.playWhenReady }
     }
 
+    // --- Control-channel command surface -------------------------------------
+    // These map the WS verbs (control-channel.md §4) onto the player. They are
+    // additive and must be called on the main thread (the control server
+    // marshals to it); none of them touch the terminal-stop / hardware-decode /
+    // pre-flight guarantees.
+
+    /** WS `play`: resume only if a session is loaded (never re-prepares from Idle). */
+    fun resume() {
+        if (currentUrl == null) return
+        player?.let { it.playWhenReady = true }
+    }
+
+    /** WS `pause`. */
+    fun pause() {
+        player?.let { it.playWhenReady = false }
+    }
+
+    /** WS `seek`: absolute (optimistic target), clamped to [0, duration). */
+    fun seekTo(posMs: Long) {
+        val exo = player ?: return
+        if (currentUrl == null) return
+        val duration = exo.duration
+        val target = posMs.coerceAtLeast(0L).let {
+            if (duration != C.TIME_UNSET) it.coerceAtMost((duration - 1_000L).coerceAtLeast(0L)) else it
+        }
+        exo.seekTo(target)
+    }
+
+    /** WS `setVolume`: 0..1. Persisted so it survives player rebuilds. */
+    fun setVolume(level: Float) {
+        lastVolume = level.coerceIn(0f, 1f)
+        player?.volume = lastVolume
+    }
+
+    /** Whether a media session is currently loaded (drives idle-vs-playing UI). */
+    fun hasSession(): Boolean = currentUrl != null
+
+    /**
+     * The confirmed playback frame streamed to the phone at ~10 Hz. Cheap,
+     * main-thread only (reads live ExoPlayer getters).
+     */
+    fun readPlaybackState(): PlaybackFrame {
+        val exo = player
+        val pos = (exo?.currentPosition ?: 0L).coerceAtLeast(0L)
+        val duration = exo?.duration?.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+        val buffered = exo?.bufferedPosition?.takeIf { it != C.TIME_UNSET } ?: 0L
+        val playing = exo?.isPlaying ?: false
+        val volume = exo?.volume ?: lastVolume
+        val phase = when {
+            instrumentation.errorMessage != null -> PlaybackPhase.Error
+            exo == null || currentUrl == null -> PlaybackPhase.Idle
+            exo.playbackState == Player.STATE_BUFFERING -> PlaybackPhase.Buffering
+            exo.playbackState == Player.STATE_ENDED -> PlaybackPhase.Ended
+            exo.playbackState == Player.STATE_READY ->
+                if (exo.playWhenReady) PlaybackPhase.Playing else PlaybackPhase.Paused
+            else -> PlaybackPhase.Idle
+        }
+        return PlaybackFrame(
+            posMs = pos,
+            durationMs = duration,
+            playing = playing,
+            bufferedMs = buffered,
+            phase = phase,
+            volume = volume,
+        )
+    }
+
     // --- Telemetry snapshot --------------------------------------------------
 
     /** Build an immutable snapshot of all live metrics. Main-thread only. */
@@ -482,6 +561,8 @@ class PlayerController(context: Context) {
             droppedFrames = instrumentation.droppedFrames,
             bitrateEstimateBps = bandwidthMeter.bitrateEstimate,
             decoderName = instrumentation.decoderName,
+            videoMimeType = instrumentation.videoMimeType,
+            colorTransfer = instrumentation.colorTransfer,
             positionMs = position.coerceAtLeast(0L),
             durationMs = duration,
             errorMessage = instrumentation.errorMessage,

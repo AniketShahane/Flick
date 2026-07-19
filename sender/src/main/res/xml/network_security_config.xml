@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The sender is a *server*, not a client: it hosts an embedded Ktor CIO listening
-  socket on the LAN and makes NO outbound platform HTTP of its own. Android's
-  network-security-config governs only the app's OWN outbound traffic — it does
-  NOT apply to the bytes served over the CIO server socket — so forbidding
-  cleartext here does not affect (and cannot break) the plain-http LAN serving the
-  TV consumes.
+  The sender denies cleartext app-wide. It makes NO outbound request through any
+  platform HTTP stack (HttpURLConnection/OkHttp/WebView/Cronet), so the only stacks
+  that consult this policy have nothing to permit — keeping the flag "false" closes
+  the door on any future/accidental plaintext request without costing a feature.
 
-  We therefore set cleartextTrafficPermitted="false": with no outbound cleartext
-  anywhere in the app, this closes the door on any accidental future plaintext
-  request while leaving the LAN media server fully functional. System trust anchors
-  are kept for any TLS the platform might do.
+  Both of the sender's own sockets bypass this policy entirely, by construction:
+    - the embedded Ktor CIO media server (plain HTTP byte-range on :8080), and
+    - the outbound Ktor CIO WebSocket control client (ws://<tvIp>:<ctrlPort>/control,
+      control-channel.md §4/§6).
+  Android's NetworkSecurityPolicy.isCleartextTrafficPermitted() is best-effort and
+  only honored by stacks that voluntarily check it; Ktor CIO runs on raw java.nio
+  sockets and never does. So the ws:// control client (and the media server) connect
+  identically with cleartext denied — verified on hardware — and need no allowance.
+  System trust anchors are kept for any TLS the platform might do.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">

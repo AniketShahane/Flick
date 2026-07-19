@@ -87,6 +87,10 @@ object PreflightProbe {
                 requestMethod = "GET"
                 connectTimeout = HTTP_TIMEOUT_MS
                 readTimeout = HTTP_TIMEOUT_MS
+                // Never follow redirects: the probe must confirm the paired phone
+                // itself serves media bytes, not chase a Location header to some
+                // other LAN host (SSRF). The caller has already pinned the URL.
+                instanceFollowRedirects = false
                 setRequestProperty("Range", RANGE_HEADER)
                 setRequestProperty("User-Agent", USER_AGENT)
             }

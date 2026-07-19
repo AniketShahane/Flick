@@ -1,5 +1,6 @@
 package com.flick.receiver.player
 
+import androidx.media3.common.Format
 import androidx.media3.common.Player
 
 /**
@@ -38,6 +39,12 @@ class InstrumentationState {
     /** Name of the video decoder (e.g. "c2.qti.hevc.decoder") — proves hardware decode. */
     var decoderName: String? = null
 
+    /** Sample MIME of the decoded video track (e.g. "video/dolby-vision") — drives the honest HDR badge. */
+    var videoMimeType: String? = null
+
+    /** Color transfer from the decoded Format (C.COLOR_TRANSFER_*), or [Format.NO_VALUE] when unknown. */
+    var colorTransfer: Int = Format.NO_VALUE
+
     var errorMessage: String? = null
     var errorCode: Int = 0
     var errorCodeName: String? = null
@@ -67,6 +74,8 @@ class InstrumentationState {
         currentRebufferStartMs = 0L
         droppedFrames = 0L
         decoderName = null
+        videoMimeType = null
+        colorTransfer = Format.NO_VALUE
         errorMessage = null
         errorCode = 0
         errorCodeName = null
