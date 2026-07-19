@@ -1,7 +1,13 @@
-# Flick — Phase 0 Direct-Play Casting Spike
+# Flick — zero-buffer local casting, phone → Android TV
 
-A two-app Android spike that casts your **own local 4K / 1080p videos** from a
-phone to an Android TV over the LAN, and **proves zero-stall direct play**.
+A two-app Android project that casts your **own local 4K / 1080p videos**
+(including HDR / Dolby Vision) from a phone to an Android TV over plain home
+Wi-Fi, with **zero-stall direct play proven on real hardware** — plus a
+hardening layer, instant seeking, and live diagnostics on both ends.
+
+**Docs:** [`docs/implementation.md`](docs/implementation.md) — the complete
+implementation reference (every component, tuning constant, and measured
+result) · [`research/`](research/) — the network deep-dives behind the design.
 
 ## What Phase 0 proves
 
@@ -170,6 +176,18 @@ degrading it (see `research/03-plain-wifi-re-diagnosis.md`).
   diagnoses the specific failure — **unreachable** (peer block / wrong IP) vs
   **not serving** (server down) vs **server error** — instead of a generic
   timeout. The debug overlay adds the TV's own Wi-Fi band and RSSI.
+
+## Buffering & seeking
+
+The receiver buffers up to **180 s ahead** (~50–150 MB at 4K bitrates; a
+real-world ~70 s wireless outage motivated the size) and keeps a **30 s
+back-buffer** so short rewinds replay from memory. Media transport keys work
+from any remote or `adb`: **FF/RW = ±15 s**, **next/previous = ±5 min**,
+**play/pause**. Seek-induced buffering is tracked as a separate "seek fill"
+metric — never as a rebuffer — and measured on hardware a **+5 min cold jump
+resumes in ~1.9 s**, a −5 min jump in ~0.7 s, and in-buffer skips are instant.
+
+See [`docs/implementation.md`](docs/implementation.md) for the full reference.
 
 ---
 

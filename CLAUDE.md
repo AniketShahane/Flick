@@ -36,6 +36,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:assembleDebug :receiver
 
 ## Key context
 
+- `docs/implementation.md` is the implementation reference — keep it in sync when
+  changing player tuning, the HTTP contract, or the hardening behaviors.
 - `research/` holds the decision record: 01 (streaming over home Wi-Fi), 02 (fast
   transfer to TV), 03 (re-diagnosis: the home-LAN failure was a **dynamic, pair-specific
   router-side peer block** — not static AP isolation; both devices were healthy on the
