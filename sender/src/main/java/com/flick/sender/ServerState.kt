@@ -1,4 +1,4 @@
-package com.castspike.sender
+package com.flick.sender
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

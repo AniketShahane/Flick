@@ -1,4 +1,4 @@
-package com.castspike.sender
+package com.flick.sender
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            CastSpikeTheme {
+            FlickTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -133,7 +133,7 @@ private fun SenderScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = "CastSpike Sender",
+            text = "Flick Sender",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
         )

@@ -1,4 +1,4 @@
-# CastSpike — Phase 0 Direct-Play Casting Spike
+# Flick — Phase 0 Direct-Play Casting Spike
 
 A two-app Android spike that casts your **own local 4K / 1080p videos** from a
 phone to an Android TV over the LAN, and **proves zero-stall direct play**.
@@ -23,8 +23,8 @@ Gradle multi-module project. Two Android **application** modules:
 
 | Module      | Runs on        | Package                  | Role                                                                 |
 |-------------|----------------|--------------------------|---------------------------------------------------------------------|
-| `:sender`   | Phone          | `com.castspike.sender`   | Pick a local video; run an embedded HTTP server (Ktor CIO) on `:8080`. |
-| `:receiver` | Android TV     | `com.castspike.receiver` | Enter the phone IP; play `http://<phone-ip>:8080/video` with ExoPlayer (Media3) + debug overlay. |
+| `:sender`   | Phone          | `com.flick.sender`   | Pick a local video; run an embedded HTTP server (Ktor CIO) on `:8080`. |
+| `:receiver` | Android TV     | `com.flick.receiver` | Enter the phone IP; play `http://<phone-ip>:8080/video` with ExoPlayer (Media3) + debug overlay. |
 
 **HTTP contract** (both sides agree exactly): the sender binds `0.0.0.0:8080` and
 serves `GET /video` with full byte-range support (`Accept-Ranges: bytes`,
@@ -75,11 +75,11 @@ Or in Android Studio: select the `sender` run config → phone, and the
 
 ## Run the spike end to end
 
-1. **Phone:** open **CastSpike Sender**, grant media access, tap to **pick a
+1. **Phone:** open **Flick Sender**, grant media access, tap to **pick a
    local 4K/1080p video**. The app starts the LAN server and displays the exact
    URL, e.g. `http://192.168.1.42:8080/video`. It keeps serving via a foreground
    service, so the video keeps streaming while the screen is off.
-2. **TV:** open **CastSpike Receiver**. The URL field is pre-filled with
+2. **TV:** open **Flick Receiver**. The URL field is pre-filled with
    `http://:8080/video`. **Type the phone's IP** between `//` and `:8080` (from
    step 1), so it reads `http://192.168.1.42:8080/video`.
 3. **TV:** press **Play**. The video decodes on the TV and the **debug overlay**

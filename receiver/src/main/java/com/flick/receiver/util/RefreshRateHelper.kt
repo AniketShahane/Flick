@@ -1,4 +1,4 @@
-package com.castspike.receiver.util
+package com.flick.receiver.util
 
 import android.os.Build
 import android.view.Surface

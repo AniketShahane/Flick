@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.castspike.receiver"
+    namespace = "com.flick.receiver"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.castspike.receiver"
+        applicationId = "com.flick.receiver"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

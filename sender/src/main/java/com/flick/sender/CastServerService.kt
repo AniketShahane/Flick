@@ -1,4 +1,4 @@
-package com.castspike.sender
+package com.flick.sender
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -174,10 +174,10 @@ class CastServerService : Service() {
         private const val REQ_OPEN = 1
         private const val REQ_STOP = 2
 
-        const val ACTION_START = "com.castspike.sender.action.START"
-        const val ACTION_STOP = "com.castspike.sender.action.STOP"
-        private const val EXTRA_NAME = "com.castspike.sender.extra.NAME"
-        private const val EXTRA_SIZE = "com.castspike.sender.extra.SIZE"
+        const val ACTION_START = "com.flick.sender.action.START"
+        const val ACTION_STOP = "com.flick.sender.action.STOP"
+        private const val EXTRA_NAME = "com.flick.sender.extra.NAME"
+        private const val EXTRA_SIZE = "com.flick.sender.extra.SIZE"
 
         private fun pendingFlags(): Int {
             var flags = PendingIntent.FLAG_UPDATE_CURRENT

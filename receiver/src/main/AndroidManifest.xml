@@ -21,7 +21,7 @@
         android:largeHeap="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.CastSpike">
+        android:theme="@style/Theme.Flick">
 
         <!-- Single leanback Activity. Compose renders the whole UI (URL entry,
              Play/Stop, the ExoPlayer surface, and the live debug overlay).
@@ -33,7 +33,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.CastSpike">
+            android:theme="@style/Theme.Flick">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

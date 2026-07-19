@@ -1,4 +1,4 @@
-package com.castspike.receiver.player
+package com.flick.receiver.player
 
 import android.content.Context
 import android.os.SystemClock
@@ -307,6 +307,6 @@ class PlayerController(context: Context) {
 
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 30_000
-        const val USER_AGENT = "CastSpikeReceiver/0.1 (Media3 direct-play)"
+        const val USER_AGENT = "FlickReceiver/0.1 (Media3 direct-play)"
     }
 }

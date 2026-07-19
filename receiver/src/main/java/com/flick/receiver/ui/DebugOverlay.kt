@@ -1,4 +1,4 @@
-package com.castspike.receiver.ui
+package com.flick.receiver.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,8 +18,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
-import com.castspike.receiver.player.DiagnosticsSnapshot
-import com.castspike.receiver.player.PlaybackStatus
+import com.flick.receiver.player.DiagnosticsSnapshot
+import com.flick.receiver.player.PlaybackStatus
 import java.util.Locale
 
 private val LabelColor = Color(0xFF90A4AE)

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">CastSpike Sender</string>
+    <string name="app_name">Flick</string>
 
     <!-- Foreground-service notification. -->
     <string name="notif_channel_name">Casting server</string>
     <string name="notif_channel_desc">Keeps the LAN media server alive while your TV plays.</string>
-    <string name="notif_title">CastSpike is serving your video</string>
+    <string name="notif_title">Flick is serving your video</string>
     <string name="notif_text_serving">Streaming over Wi-Fi. Tap to manage.</string>
     <string name="notif_action_stop">Stop</string>
 

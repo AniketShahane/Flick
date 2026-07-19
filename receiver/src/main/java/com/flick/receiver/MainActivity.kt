@@ -1,4 +1,4 @@
-package com.castspike.receiver
+package com.flick.receiver
 
 import android.os.Bundle
 import android.view.WindowManager

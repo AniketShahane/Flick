@@ -1,4 +1,4 @@
-package com.castspike.receiver
+package com.flick.receiver
 
 import android.graphics.Color as AndroidColor
 import android.view.SurfaceView
@@ -45,10 +45,10 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import androidx.tv.material3.darkColorScheme
-import com.castspike.receiver.player.DiagnosticsSnapshot
-import com.castspike.receiver.player.PlayerController
-import com.castspike.receiver.ui.DebugOverlay
-import com.castspike.receiver.util.RefreshRateHelper
+import com.flick.receiver.player.DiagnosticsSnapshot
+import com.flick.receiver.player.PlayerController
+import com.flick.receiver.ui.DebugOverlay
+import com.flick.receiver.util.RefreshRateHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 

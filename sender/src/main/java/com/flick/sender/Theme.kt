@@ -1,4 +1,4 @@
-package com.castspike.sender
+package com.flick.sender
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -16,7 +16,7 @@ import androidx.compose.ui.platform.LocalContext
  * light/dark setting.
  */
 @Composable
-fun CastSpikeTheme(content: @Composable () -> Unit) {
+fun FlickTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val context = LocalContext.current
     val colorScheme = when {

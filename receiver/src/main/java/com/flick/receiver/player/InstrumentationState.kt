@@ -1,4 +1,4 @@
-package com.castspike.receiver.player
+package com.flick.receiver.player
 
 import androidx.media3.common.Player
 

@@ -1,4 +1,4 @@
-package com.castspike.sender
+package com.flick.sender
 
 import android.content.ContentResolver
 import android.content.Context
