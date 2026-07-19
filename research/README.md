@@ -4,6 +4,7 @@ Two deep-research efforts (each: 5 Sonnet 5 research agents + 5 adversarial veri
 
 - [`01-streaming-over-home-wifi.md`](./01-streaming-over-home-wifi.md) — can *live streaming* just work over home Wi-Fi (beat client isolation + band/VBR limits) without a hotspot?
 - [`02-fast-transfer-to-tv.md`](./02-fast-transfer-to-tv.md) — what's the *absolute fastest* way to copy an ≤8 GB file to the TV's storage and play it locally (32 GB, watch-then-delete)?
+- [`03-plain-wifi-re-diagnosis.md`](./03-plain-wifi-re-diagnosis.md) — **forensic re-read of the Phase-0 evidence: the home-LAN block is *dynamic and pair-specific*, not static client isolation.** Partially supersedes 01's framing for *this* network; general conclusions in 01/02 still stand.
 
 ## Combined verdict (the decision-relevant bottom line)
 
