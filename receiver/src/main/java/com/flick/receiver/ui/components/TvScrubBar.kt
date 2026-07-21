@@ -52,7 +52,7 @@ fun TvScrubBar(
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .height(28.dp)
+            .height(24.dp)
             .semantics {
                 contentDescription = accessibilityLabel
                 if (lagging) stateDescription = syncingLabel

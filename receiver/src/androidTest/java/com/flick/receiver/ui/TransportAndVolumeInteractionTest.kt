@@ -5,12 +5,15 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.requestFocus
+import androidx.compose.ui.unit.dp
 import com.flick.receiver.ui.components.TransportCluster
 import com.flick.receiver.ui.components.VolumeCells
 import com.flick.receiver.ui.theme.FlickTvTheme
@@ -51,6 +54,29 @@ class TransportAndVolumeInteractionTest {
             assertEquals(1, backCalls)
             assertEquals(1, playPauseCalls)
             assertEquals(1, forwardCalls)
+        }
+    }
+
+    @Test
+    fun transportTargetsStayAtLeast48DpAfterTheCompactRedesign() {
+        composeRule.setContent {
+            FlickTvTheme {
+                TransportCluster(
+                    playing = true,
+                    onBack10 = {},
+                    onPlayPause = {},
+                    onForward10 = {},
+                    back10ContentDescription = "Skip back 10 seconds",
+                    playPauseContentDescription = "Pause",
+                    forward10ContentDescription = "Skip forward 10 seconds",
+                )
+            }
+        }
+
+        listOf("Skip back 10 seconds", "Pause", "Skip forward 10 seconds").forEach { label ->
+            composeRule.onNodeWithContentDescription(label)
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
         }
     }
 

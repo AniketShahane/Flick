@@ -2,7 +2,7 @@
 
 Flick is a two-app Android project for casting your own local 4K/1080p video from an Android phone to Android TV. The phone serves the original bytes over the home LAN and the TV hardware-decodes them. Flick never transcodes and never screen-mirrors.
 
-Control protocol v2 is implemented in both apps at `versionCode=2` / `versionName=0.2.0`. Install the sender and receiver together; mixed v1/v2 use is unsupported. The normative protocol is [docs/design/control-channel.md](docs/design/control-channel.md).
+Control protocol v2 is implemented in both apps at `versionCode=3` / `versionName=0.2.1`. Install the sender and receiver together; mixed builds are unsupported. The normative protocol is [docs/design/control-channel.md](docs/design/control-channel.md).
 
 ## Project structure
 
@@ -64,7 +64,7 @@ If something goes wrong, both apps keep a memory-only diagnostics log: TV **Sett
 
 **The scan opened an empty form.** That is expected. Copy the host, port, and current four-digit code from the TV. The custom-scheme QR is launch-only by design.
 
-**Update required.** Confirm both apps are 0.2.0. A v2 sender will not fall back to optimistic v1 control, and it will not send a pairing code until the receiver answers the harmless v2 negotiation.
+**Update required.** Confirm both apps are 0.2.1. A v2 sender will not fall back to optimistic v1 control, and it will not send a pairing code until the receiver answers the harmless v2 negotiation.
 
 **The TV is not listed.** mDNS is best-effort and some routers suppress it. Open Connect, choose manual entry, and copy all three values from the TV. An unpaired discovery result is advisory and cannot prefill the target.
 

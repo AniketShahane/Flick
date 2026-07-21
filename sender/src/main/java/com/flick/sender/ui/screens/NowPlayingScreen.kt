@@ -18,8 +18,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
@@ -32,10 +36,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +67,7 @@ import com.flick.sender.ui.components.TransportCluster
 import com.flick.sender.ui.components.VolumeSlider
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.LocalFlickColors
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -78,6 +86,8 @@ fun NowPlayingScreen(controller: FlickController) {
     val tv by controller.connectedTv.collectAsState()
     val item by controller.castingItem.collectAsState()
     val signal = rememberSignalInfo()
+    val minimizeDescription = stringResource(R.string.a11y_minimize_now_playing)
+    val compactWidth = isCompactWidth(LocalConfiguration.current.screenWidthDp)
 
     val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
         val uri = item?.uri
@@ -122,12 +132,32 @@ fun NowPlayingScreen(controller: FlickController) {
         ) {
             Row(
                 Modifier.fillMaxWidth().padding(top = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ConnectChip(name = tv?.name ?: stringResource(R.string.np_tv_generic))
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(colors.surfaceRaised)
+                        .semantics { contentDescription = minimizeDescription }
+                        .clickable(role = Role.Button) { controller.minimizeNowPlaying() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        FlickIcons.Back,
+                        contentDescription = null,
+                        tint = colors.onSurface,
+                        modifier = Modifier.size(20.dp).rotate(-90f),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                ConnectChip(
+                    name = tv?.name ?: stringResource(R.string.np_tv_generic),
+                    modifier = Modifier.widthIn(max = if (compactWidth) 104.dp else 144.dp),
+                )
+                Spacer(Modifier.weight(1f))
                 SignalChip(
-                    text = signal.chipText(),
+                    text = if (compactWidth) signal.bandLabel() else signal.chipText(),
                     onClick = { controller.toggleQualitySheet(true) },
                     healthy = signal.healthy,
                 )

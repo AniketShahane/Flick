@@ -1,11 +1,8 @@
 package com.flick.receiver.ui.theme
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -20,15 +17,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Text
 
 /**
  * The Flick icon set (design-tokens.md §5): 24dp grid, 1.8px stroke, round
  * caps/joins. Icons are drawn white and tinted at the call site (via
  * `Icon(tint = …)`), so the same vector serves any accent.
- *
- * Glyphs that carry a numeral ("back-10"/"fwd-10") are composables, not vectors,
- * because the "10" is set text — see [SkipGlyph].
+ * Numbered transport actions use the rounded Material icon library directly.
  */
 object FlickIcons {
 
@@ -123,53 +117,5 @@ fun BrandMark(
         }
         drawPath(tri, color = tint)
         drawPath(tri, color = tint, style = Stroke(width = 6f * f, join = StrokeJoin.Round))
-    }
-}
-
-/**
- * back-10 / fwd-10 transport glyph: a circular arrow with the numeral "10". The
- * arc curls the opposite way for [forward].
- */
-@Composable
-fun SkipGlyph(
-    forward: Boolean,
-    modifier: Modifier = Modifier,
-    size: Dp = 32.dp,
-    tint: Color = FlickColor.OnSurface,
-) {
-    // The numeral is visible TV copy, not incidental vector geometry: keep it at
-    // the ten-foot minimum and let the circular arrow scale around it.
-    val monoStyle = remember(size) { FlickType.monoTabular(sizeSp = 24) }
-    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
-        Canvas(modifier = Modifier.size(size)) {
-            val s = this.size.minDimension
-            val stroke = Stroke(width = s * 0.075f, cap = StrokeCap.Round)
-            val inset = s * 0.14f
-            val arcSize = Size(s - inset * 2, s - inset * 2)
-            // ~270° open arc; the gap sits at the top where the arrowhead lands.
-            val start = if (forward) -40f else 220f
-            val sweep = if (forward) 300f else -300f
-            drawArc(
-                color = tint,
-                startAngle = start,
-                sweepAngle = sweep,
-                useCenter = false,
-                topLeft = Offset(inset, inset),
-                size = arcSize,
-                style = stroke,
-            )
-            // Arrowhead at the open end (top).
-            val cx = s / 2f
-            val headY = inset
-            val hx = if (forward) cx + s * 0.06f else cx - s * 0.06f
-            val head = Path().apply {
-                moveTo(hx, headY - s * 0.09f)
-                lineTo(hx + (if (forward) -s * 0.11f else s * 0.11f), headY)
-                lineTo(hx, headY + s * 0.09f)
-                close()
-            }
-            drawPath(head, color = tint)
-        }
-        Text(text = "10", style = monoStyle, color = tint)
     }
 }

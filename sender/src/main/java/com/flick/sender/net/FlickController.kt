@@ -7,7 +7,9 @@ import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
 import com.flick.sender.SourceServerTerminalKind
+import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
+import com.flick.sender.media.MediaLibraryLoadGate
 import com.flick.sender.model.CastErrorKind
 import com.flick.sender.model.CastFailure
 import com.flick.sender.model.ConnectionStatus
@@ -47,9 +49,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         ?: appContext.getString(R.string.sender_device_generic)
     private var pairingJob: Job? = null
     private var castJob: Job? = null
+    private var libraryJob: Job? = null
     private val pairingGate = PairingAttemptGate()
     private val pairCodeReset = PairCodeReset()
     private val castGate = CastGenerationGate()
+    private val libraryGate = MediaLibraryLoadGate()
     private var currentCastId: String? = null
     private var accepted: CompletableDeferred<JSONObject>? = null
     private var ready: CompletableDeferred<JSONObject>? = null
@@ -67,7 +71,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     val devices = nsd.devices
     private val _mediaItems = MutableStateFlow<List<MediaItem>>(emptyList()); val mediaItems = _mediaItems.asStateFlow()
     private val _libraryLoading = MutableStateFlow(false); val libraryLoading = _libraryLoading.asStateFlow()
-    private val _hasPermission = MutableStateFlow(false); val hasPermission = _hasPermission.asStateFlow()
+    private val _mediaAccess = MutableStateFlow(MediaAccess.NONE); val mediaAccess = _mediaAccess.asStateFlow()
     val connection = control.connection
     private val _connectedTv = MutableStateFlow(store.last()?.let { PairedTv(it.name, it.host, it.port, it.tvId) }); val connectedTv = _connectedTv.asStateFlow()
     private val _pairTarget = MutableStateFlow<DiscoveredTv?>(null); val pairTarget = _pairTarget.asStateFlow()
@@ -93,17 +97,48 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     fun onStart() { nsd.start() }
-    fun onPermissionResult(granted: Boolean) { _hasPermission.value = granted; if (granted) loadLibrary() }
-    fun loadLibrary() = scope.launch { _libraryLoading.value = true; _mediaItems.value = MediaLibrary.query(appContext); _libraryLoading.value = false }
+    fun onMediaAccess(access: MediaAccess) {
+        val load = libraryGate.begin(access)
+        libraryJob?.cancel()
+        libraryJob = null
+        _mediaAccess.value = access
+        if (access == MediaAccess.NONE) {
+            _mediaItems.value = emptyList()
+            _libraryLoading.value = false
+            return
+        }
+        _libraryLoading.value = true
+        libraryJob = scope.launch {
+            val items = MediaLibrary.query(appContext)
+            libraryGate.runIfLatest(load) {
+                _mediaItems.value = items
+                _libraryLoading.value = false
+                libraryJob = null
+            }
+        }
+    }
+    fun refreshMediaLibrary() {
+        _mediaAccess.value.takeIf { it != MediaAccess.NONE }?.let(::onMediaAccess)
+    }
     fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
     fun openLibrary() { _route.value = Route.Library }
     fun openDetail(item: MediaItem) { _route.value = Route.Detail(item) }
     fun back() {
-        if (_route.value == Route.Connecting) cancelCast()
-        else {
-            if (_route.value == Route.Connect) cancelPairing()
-            _route.value = Route.Library
+        when (SenderNavigationPolicy.backDisposition(_route.value, _connectFromLibrary.value)) {
+            BackDisposition.SYSTEM -> Unit
+            BackDisposition.CANCEL_CAST -> cancelCast()
+            BackDisposition.CLOSE_PAIRING -> {
+                cancelPairing()
+                _route.value = Route.Library
+            }
+            BackDisposition.SHOW_LIBRARY -> _route.value = Route.Library
         }
+    }
+    fun minimizeNowPlaying() {
+        if (_route.value == Route.NowPlaying && canRestoreNowPlaying()) _route.value = Route.Library
+    }
+    fun restoreNowPlaying() {
+        if (canRestoreNowPlaying()) _route.value = Route.NowPlaying
     }
     fun toggleQualitySheet(show: Boolean) { _showQualitySheet.value = show }
     fun toggleAdvisories(show: Boolean) { _showAdvisories.value = show }
@@ -475,6 +510,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         _castFailure.value = CastFailure("active_cast_busy", retryable = retryItem != null)
         _route.value = Route.Failure(errorKind("active_cast_busy"), _castFailure.value!!)
+    }
+    private fun canRestoreNowPlaying(): Boolean {
+        val active = _castStart.value as? CastStartState.Active ?: return false
+        return SenderNavigationPolicy.canRestoreNowPlaying(active, _castingItem.value != null) &&
+            active.castId == currentCastId
     }
     private val _pairCodeRevision = MutableStateFlow(0L); val pairCodeRevision = _pairCodeRevision.asStateFlow()
     private fun clearEnteredCode() { _pairCodeRevision.value = pairCodeReset.clear() }

@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,8 +49,11 @@ import androidx.tv.material3.Icon
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
-import com.flick.receiver.ui.theme.SkipGlyph
 import com.flick.receiver.ui.theme.rememberReducedMotion
+
+internal val SecondaryTransportTargetSize = 48.dp
+internal val PrimaryTransportTargetSize = 56.dp
+internal val TransportGlyphSize = 32.dp
 
 /**
  * A circular transport button with the standard TV focus treatment (scale 1.08 +
@@ -154,7 +160,7 @@ fun PlayPauseGlyph(
 
 /**
  * The transport cluster (§7): back-10 / play-pause / fwd-10. The primary play
- * circle is a 64dp Spark gradient; skip buttons are 48dp outlined ghosts. On
+ * circle is a 56dp Spark gradient; skip buttons are 48dp outlined ghosts. On
  * entry, focus lands on play via [playFocusRequester].
  */
 @Composable
@@ -173,35 +179,45 @@ fun TransportCluster(
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         TransportButton(
             onClick = onBack10,
-            diameter = 48.dp,
+            diameter = SecondaryTransportTargetSize,
             primary = false,
             contentDescription = back10ContentDescription,
             enabled = enabled,
         ) {
-            SkipGlyph(forward = false, size = 32.dp, tint = FlickColor.OnSurface)
+            Icon(
+                imageVector = Icons.Rounded.Replay10,
+                contentDescription = null,
+                tint = FlickColor.OnSurface,
+                modifier = Modifier.size(TransportGlyphSize),
+            )
         }
         TransportButton(
             onClick = onPlayPause,
-            diameter = 64.dp,
+            diameter = PrimaryTransportTargetSize,
             primary = true,
             focusRequester = playFocusRequester,
             contentDescription = playPauseContentDescription,
             enabled = enabled,
         ) {
-            PlayPauseGlyph(playing = playing, size = 30.dp, tint = FlickColor.Canvas)
+            PlayPauseGlyph(playing = playing, size = TransportGlyphSize, tint = FlickColor.Canvas)
         }
         TransportButton(
             onClick = onForward10,
-            diameter = 48.dp,
+            diameter = SecondaryTransportTargetSize,
             primary = false,
             contentDescription = forward10ContentDescription,
             enabled = enabled,
         ) {
-            SkipGlyph(forward = true, size = 32.dp, tint = FlickColor.OnSurface)
+            Icon(
+                imageVector = Icons.Rounded.Forward10,
+                contentDescription = null,
+                tint = FlickColor.OnSurface,
+                modifier = Modifier.size(TransportGlyphSize),
+            )
         }
     }
 }

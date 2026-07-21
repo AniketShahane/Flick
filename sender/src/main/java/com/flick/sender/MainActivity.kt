@@ -31,6 +31,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.flick.sender.media.MediaAccess
 import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.screens.FlickApp
@@ -90,13 +91,15 @@ private fun FlickRoot(controller: com.flick.sender.net.CastCoordinator, events: 
     // Video access for the MediaStore gallery.
     val videoLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { result ->
-        controller.onPermissionResult(result.values.any { it } || hasVideoAccess(context))
+    ) {
+        // Query the authoritative permission state. On Android 14+, the callback
+        // can represent either full-library or user-selected access.
+        controller.onMediaAccess(currentVideoAccess(context))
     }
 
     LaunchedEffect(Unit) {
         controller.onStart()
-        if (hasVideoAccess(context)) controller.onPermissionResult(true)
+        controller.onMediaAccess(currentVideoAccess(context))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context, Manifest.permission.POST_NOTIFICATIONS,
@@ -116,6 +119,9 @@ private fun FlickRoot(controller: com.flick.sender.net.CastCoordinator, events: 
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryExempt = isIgnoringBatteryOptimizations(context)
+                // Selected Photos Access can change while Flick is backgrounded.
+                // Re-query MediaStore even when access remains granted.
+                controller.onMediaAccess(currentVideoAccess(context))
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -145,17 +151,24 @@ private fun FlickRoot(controller: com.flick.sender.net.CastCoordinator, events: 
 private fun videoPermissions(): Array<String> = when {
     Build.VERSION.SDK_INT >= 34 -> arrayOf(
         Manifest.permission.READ_MEDIA_VIDEO,
-        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
     )
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
     else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 }
 
-private fun hasVideoAccess(context: Context): Boolean {
-    val perms = videoPermissions()
-    return perms.any {
-        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+private fun currentVideoAccess(context: Context): MediaAccess {
+    val fullPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_VIDEO
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
     }
+    val full = ContextCompat.checkSelfPermission(context, fullPermission) == PackageManager.PERMISSION_GRANTED
+    val partial = Build.VERSION.SDK_INT >= 34 && ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+    ) == PackageManager.PERMISSION_GRANTED
+    return MediaAccess.fromGrants(fullGranted = full, partialGranted = partial)
 }
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {

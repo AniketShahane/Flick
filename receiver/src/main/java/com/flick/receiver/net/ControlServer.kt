@@ -319,7 +319,7 @@ class ControlServer(
                     }
                     val clientNonce = obj.string("clientNonce")!!.value
                     negotiation = clientNonce to randomId()
-                    emit(json(linkedMapOf("t" to "negotiated", "v" to 2, "clientNonce" to clientNonce, "serverNonce" to negotiation.second, "tvId" to pairing.tvId, "cap" to CAP)))
+                    emit(json(negotiatedFrameFields(clientNonce, negotiation.second, pairing.tvId, CAP)))
                 }
                 "pair" -> {
                     val negotiated = negotiation
@@ -561,9 +561,7 @@ class ControlServer(
     // Android's org.json does NOT wrap a java.util.List into a JSONArray: put()
     // stores it raw and JSONStringer then emits it via toString() as a quoted
     // string, so `cap` would ship as "[a, b]" and fail the sender's array schema.
-    private fun json(values: Map<String, Any?>): String = JSONObject().also { target ->
-        values.forEach { (key, value) -> target.put(key, if (value is Collection<*>) JSONArray(value) else value) }
-    }.toString()
+    private fun json(values: Map<String, Any?>): String = controlFrameJson(values)
 
     private fun ascii(value: String?, max: Int) = value != null && value.length <= max && value.all { it.code in 0x20..0x7e }
     private fun id(value: String?) = value?.matches(ID) == true
@@ -676,6 +674,27 @@ internal fun pairedFrameFields(
     "serverPort" to serverPort,
     "cap" to capabilities,
 )
+
+internal fun negotiatedFrameFields(
+    clientNonce: String,
+    serverNonce: String,
+    tvId: String,
+    capabilities: List<String>,
+): LinkedHashMap<String, Any?> = linkedMapOf(
+    "t" to "negotiated",
+    "v" to 2,
+    "clientNonce" to clientNonce,
+    "serverNonce" to serverNonce,
+    "tvId" to tvId,
+    "cap" to capabilities,
+)
+
+/** Converts protocol collections explicitly because Android's JSONObject does not. */
+internal fun controlFrameJson(values: Map<String, Any?>): String = JSONObject().also { target ->
+    values.forEach { (key, value) ->
+        target.put(key, if (value is Collection<*>) JSONArray(value) else value)
+    }
+}.toString()
 
 internal fun stoppedFrameFields(castId: String): LinkedHashMap<String, Any?> = linkedMapOf(
     "t" to "stopped",

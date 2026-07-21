@@ -65,7 +65,7 @@
     <!-- S2 · Empty state. -->
     <string name="empty_title">Nothing to flick yet</string>
     <string name="empty_body">Movies you shoot, rip or download live here — and play on your TV at full 4K quality, straight off this phone.</string>
-    <string name="empty_choose">Choose a folder</string>
+    <string name="empty_choose">Choose videos</string>
     <string name="empty_tv_ready">%1$s is ready when you are</string>
     <string name="empty_no_tv">Connect a TV to start casting</string>
 
@@ -74,6 +74,13 @@
     <string name="library_filter_recents">Recents</string>
     <string name="library_filter_camera">Camera</string>
     <string name="library_filter_downloads">Downloads</string>
+    <string name="library_add_videos">Add videos</string>
+    <string name="library_refresh_videos">Refresh</string>
+    <string name="library_now_playing_playing">PLAYING ON %1$s</string>
+    <string name="library_now_playing_paused">PAUSED ON %1$s</string>
+    <string name="library_now_playing_buffering">BUFFERING ON %1$s</string>
+    <string name="library_now_playing_ended">ENDED ON %1$s</string>
+    <string name="library_now_playing_controls">Controls</string>
     <string name="library_connected_hint">Connected to %1$s · tap any film to flick it</string>
     <string name="library_not_connected_hint">Tap the cast icon to connect a TV</string>
 
@@ -194,6 +201,8 @@
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
     <string name="a11y_open_quality">Open signal and quality</string>
     <string name="a11y_back_to_library">Back to your videos</string>
+    <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
+    <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>
     <string name="a11y_dismiss_sheet">Dismiss sheet</string>
     <string name="a11y_sheet">Flick sheet</string>
     <string name="a11y_pairing_status">Pairing status: %1$s</string>

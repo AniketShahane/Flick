@@ -27,9 +27,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -61,7 +63,7 @@ data class QualityInfo(
 
 // Hoisted once (pure functions of size/weight) so the ~10 Hz chrome doesn't
 // allocate a fresh TextStyle every tick while the clock runs.
-private val TimecodeStyle = FlickType.monoTabular(sizeSp = 40, weight = FontWeight.Bold)
+private val TimecodeStyle = FlickType.monoTabular(sizeSp = 28, weight = FontWeight.Bold)
 private val CaptionStyle = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Medium)
 
 /**
@@ -99,9 +101,9 @@ fun PlaybackScreen(
 
         // Dim while paused / seeking / buffering — the frame stays visible.
         val dim = when {
-            phase == PlaybackPhase.Paused -> 0.5f
-            seeking -> 0.42f
-            phase == PlaybackPhase.Buffering -> 0.5f
+            phase == PlaybackPhase.Paused -> 0.34f
+            seeking -> 0.30f
+            phase == PlaybackPhase.Buffering -> 0.38f
             else -> 0f
         }
         if (dim > 0f) {
@@ -177,6 +179,7 @@ private fun ChromeControls(
     safeArea: androidx.compose.foundation.layout.PaddingValues,
     interactive: Boolean,
 ) {
+    val layoutDirection = LocalLayoutDirection.current
     // On each reveal, land focus on play so there is always exactly one focused
     // element while chrome is up (design §1.7).
     LaunchedEffect(interactive) {
@@ -195,8 +198,13 @@ private fun ChromeControls(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(safeArea),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(
+                    start = safeArea.calculateLeftPadding(layoutDirection),
+                    top = 8.dp,
+                    end = safeArea.calculateRightPadding(layoutDirection),
+                    bottom = safeArea.calculateBottomPadding(),
+                ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Title / badges / timecode
             Row(
@@ -206,15 +214,17 @@ private fun ChromeControls(
             ) {
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
                         text = title ?: "",
                         fontFamily = FlickType.Display,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 40.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 30.sp,
                         letterSpacing = (-0.01).em,
                         color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     if (seeking) {
                         SyncingPill()
@@ -237,6 +247,8 @@ private fun ChromeControls(
                                     ?: stringResource(R.string.now_playing_source),
                                 fontSize = 24.sp,
                                 color = FlickColor.OnSurfaceDim,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -279,7 +291,7 @@ private fun ChromeControls(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 TransportCluster(
                     playing = playing,

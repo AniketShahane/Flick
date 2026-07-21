@@ -2,7 +2,7 @@
 
 Status: **implemented and JVM/build validated; real-device acceptance pending**. This document is the binding contract for the v2 sender and receiver. The fixtures in [control-v2-fixtures.md](control-v2-fixtures.md) are byte-for-byte test inputs. Production code must not invent variants.
 
-Both modules are `versionCode=2` / `versionName=0.2.0`. All 29 sender and 38 receiver JVM tests pass, and the synchronized build produces both debug APKs as of 2026-07-20. Cold/warm system-camera ingress, actual pair/resume, first-frame delivery, lifecycle/LAN transitions, and sustained media playback have not yet run on a real phone/TV pair.
+Both modules are `versionCode=3` / `versionName=0.2.1`. The maintenance release preserves control protocol v2 while fixing Android wire serialization and partial video-library reselection. The synchronized build and hardware acceptance status are recorded by the release verification that accompanies it.
 
 Flick direct-plays original phone bytes. The phone serves an authenticated HTTP byte-range resource on `:8080`; the TV pulls and hardware-decodes it. The TV also owns a small WebSocket **control** server. There is no transcoding, screen mirroring, file browser, arbitrary fetch, or one-scan authorization.
 
@@ -13,7 +13,7 @@ There are two independent version domains:
 - `flick://pair?v=3` is an app-launch envelope carrying a **non-secret endpoint prefill**. `flick://pair?v=2` remains a valid launch-only envelope with no prefill, so an un-updated TV still opens the app.
 - WebSocket control protocol `v=2` is the pairing, resume, and cast protocol. NSD TXT `v` is `2`; TXT `id` is the non-secret stable `tvId`.
 
-This is a synchronized pre-1.0 release: both APKs advance from `versionCode=1`/`versionName=0.1.0` to `versionCode=2`/`versionName=0.2.0` and are installed together. A v2 sender never falls back to v1's optimistic cast or bearer-key resume. If NSD advertises `<2`, show **Update Flick on your TV** and send no cast command. When NSD is absent (including manual first pairing), send the v2-only `negotiate` frame before a code. A missing/non-exact v2 response within the six-second authentication deadline is the sender-local `update_required` result; no code is then transmitted. A v2 receiver may generically deny v1; it must not accept an unversioned command as v2.
+This is a synchronized pre-1.0 release. Protocol v2 first shipped in `versionCode=2`/`versionName=0.2.0`; the matched maintenance build is `versionCode=3`/`versionName=0.2.1`. A v2 sender never falls back to v1's optimistic cast or bearer-key resume. If NSD advertises `<2`, show **Update Flick on your TV** and send no cast command. When NSD is absent (including manual first pairing), send the v2-only `negotiate` frame before a code. A missing/non-exact v2 response within the six-second authentication deadline is the sender-local `update_required` result; no code is then transmitted. A v2 receiver may generically deny v1; it must not accept an unversioned command as v2.
 
 Rollback installs the previous implementation on **both** apps with a newly higher `versionCode`; do not reuse version code 1. Debug downgrade is only an explicit, signature-matching development operation. Uninstall/reinstall loses pairing data.
 

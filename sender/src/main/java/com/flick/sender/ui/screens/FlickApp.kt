@@ -22,6 +22,8 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
+import com.flick.sender.net.BackDisposition
+import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.rememberReduceMotion
 
@@ -69,7 +71,8 @@ fun FlickApp(
     // yet). When it was opened in-flow from Library (cast icon / flick with no TV),
     // back returns to Library instead of exiting the app.
     BackHandler(
-        enabled = activeOverlay == null && route !is Route.Library && (route !is Route.Connect || connectFromLibrary),
+        enabled = activeOverlay == null &&
+            SenderNavigationPolicy.backDisposition(route, connectFromLibrary) != BackDisposition.SYSTEM,
     ) {
         controller.back()
     }

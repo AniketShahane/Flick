@@ -4,7 +4,7 @@ This document describes the implemented v2 pair-to-play path. The binding schema
 
 ## Validation status
 
-Both modules are synchronized at `versionCode=2` / `versionName=0.2.0`.
+Both modules are synchronized at `versionCode=3` / `versionName=0.2.1`.
 
 ### Automated build, JVM, and lint gate
 
@@ -175,6 +175,8 @@ Each Flick action creates a random 128-bit `castId` and:
 
 Every non-ready path invalidates the cast generation, cancels waiters, best-effort sends `cancelLoad`, and sends a cast-correlated service Stop. The service clears its atomic media session and releases its socket/locks only when that generation still owns them. Retry is user initiated and creates a new cast ID/token.
 
+Once Active, phone navigation is independent from cast ownership. The explicit downward minimize action and system Back route Now Playing to Library without sending `stop`, cancelling the cast job, or releasing the source service. Library renders a cast-backed mini-player that restores controls only while the same current `castId` remains Active. Android partial video access exposes a persistent user-triggered **Add videos** action; full MediaStore access exposes **Refresh**. Media queries are cancellation- and generation-gated so a stale result cannot republish videos after reselection or revocation.
+
 ## Receiver validation and playback
 
 Before adopting media, `ControlServer` strictly validates `loadMedia` and the canonical URL: HTTP, port 8080, raw `/v/<22-character-token>`, authenticated numeric peer host, and no user-info/query/fragment/percent encoding. `loadAccepted` is the synchronous adoption boundary and duplicates replay the retained accepted/ready/failed result.
@@ -186,6 +188,10 @@ For playback, each Media3 `DataSpec` creates one `HttpURLConnection` with `insta
 The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind an opaque Connecting overlay, then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
 
 After first frame, the existing player tuning remains: 15/180-second min/max forward buffer, 2.5-second initial threshold, five-second post-rebuffer threshold, 30-second back buffer, 256 MiB byte target, up to 20 load retries with five-second capped backoff, and four bounded fatal-transient recovery attempts at 2/4/8/15 seconds.
+
+Playback chrome is a compact bottom scrim: the media title is a single ellipsized 30sp line, timecode is 28sp tabular, transport targets remain 48dp/56dp with at least 32dp rounded Material seek glyphs, and the movie frame stays visible behind lighter pause/seek/buffering dimming. Media3 subtitles retain its viewport-derived/user-scaled baseline minus exactly 2sp, use white text with a 60%-opaque black background and drop shadow, and ignore embedded cue styling that would override this treatment. Caption font-scale changes are applied in place without recreating the Activity or tearing down the cast.
+
+Android TV remote input is routed first at `Activity.dispatchKeyEvent`, independent of Compose focus. During Active playback with chrome hidden, DPAD center/Enter toggles play-pause once per press; left/right seek by ten seconds and repeated key-down events provide held scrubbing; up/down reveal and re-arm the chrome. The matching key-up is consumed so the newly revealed chrome cannot receive the tail of that gesture a second time. With chrome visible, DPAD falls through to the transport/volume focus graph; dedicated media play, pause, play-pause, rewind, and fast-forward keys remain global. Outside Active playback all keys fall through to normal Compose/system navigation.
 
 ## Lifecycle and structured failure
 
@@ -232,4 +238,4 @@ adb logcat -s FlickPhone:V
 
 ## Release and rollback
 
-Sender and receiver 0.2.0 must ship together. A v2 sender neither authenticates unversioned control nor falls back to optimistic v1 playback. Rollback installs a matched prior implementation on both devices using a newly higher `versionCode`; uninstall/reinstall clears pairing data. Host/token validation, explicit LAN binding, generic auth denial, no-redirect playback, and hardware-only decoding are not independently rolled back.
+Sender and receiver 0.2.1 must ship together. A v2 sender neither authenticates unversioned control nor falls back to optimistic v1 playback. Rollback installs a matched prior implementation on both devices using a newly higher `versionCode`; uninstall/reinstall clears pairing data. Host/token validation, explicit LAN binding, generic auth denial, no-redirect playback, and hardware-only decoding are not independently rolled back.

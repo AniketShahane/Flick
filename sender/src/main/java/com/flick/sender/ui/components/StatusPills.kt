@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickIcons
@@ -106,6 +107,8 @@ fun ConnectChip(name: String, modifier: Modifier = Modifier) {
         Text(
             text = name,
             style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.link),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -44,15 +45,25 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.flick.sender.R
+import com.flick.sender.media.MediaAccess
+import com.flick.sender.media.MediaLibraryAction
+import com.flick.sender.media.MediaLibraryActionPolicy
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
+import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.ConnectChip
+import com.flick.sender.ui.components.FlickTonalButton
 import com.flick.sender.ui.components.LiveDot
+import com.flick.sender.ui.components.MiniNowPlayingBar
 import com.flick.sender.ui.components.VideoTile
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickIcons
@@ -71,19 +82,35 @@ fun LibraryScreen(
     val colors = LocalFlickColors.current
     val items by controller.mediaItems.collectAsState()
     val loading by controller.libraryLoading.collectAsState()
-    val hasPermission by controller.hasPermission.collectAsState()
+    val mediaAccess by controller.mediaAccess.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
+    val castingItem by controller.castingItem.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val connectLabel = stringResource(R.string.a11y_open_connect)
     val compactHeight = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     var filter by remember { mutableStateOf(LibFilter.RECENTS) }
+    val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
 
-    if (!hasPermission || (items.isEmpty() && !loading)) {
-        EmptyState(
-            connectedTvName = connectedTv?.name,
-            onChoose = onRequestVideoPermission,
-            onConnect = { controller.openConnect() },
-        )
+    if (mediaAccess == MediaAccess.NONE || (items.isEmpty() && !loading)) {
+        Box(Modifier.fillMaxSize()) {
+            EmptyState(
+                connectedTvName = connectedTv?.name,
+                onChoose = onRequestVideoPermission,
+                onConnect = { controller.openConnect() },
+            )
+            castingItem?.let { item ->
+                LibraryNowPlayingBar(
+                    controller = controller,
+                    item = item,
+                    tvName = connectedTv?.name,
+                    imageLoader = imageLoader,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
+        }
         return
     }
 
@@ -114,7 +141,27 @@ fun LibraryScreen(
                 stringResource(R.string.library_title),
                 style = FlickText.heading.copy(color = colors.onSurface),
                 modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
+            if (mediaAction != MediaLibraryAction.HIDDEN) {
+                FlickTonalButton(
+                    text = stringResource(
+                        if (mediaAction == MediaLibraryAction.SELECT_MORE) {
+                            R.string.library_add_videos
+                        } else {
+                            R.string.library_refresh_videos
+                        },
+                    ),
+                    onClick = {
+                        when (mediaAction) {
+                            MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
+                            MediaLibraryAction.REFRESH -> controller.refreshMediaLibrary()
+                            MediaLibraryAction.HIDDEN -> Unit
+                        }
+                    },
+                )
+            }
             Box(
                 modifier = Modifier
                     .size(48.dp)
@@ -184,7 +231,15 @@ fun LibraryScreen(
                 .padding(if (compactHeight) 6.dp else 14.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (connectedTv != null) {
+            if (castingItem != null) {
+                LibraryNowPlayingBar(
+                    controller = controller,
+                    item = castingItem!!,
+                    tvName = connectedTv?.name,
+                    imageLoader = imageLoader,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else if (connectedTv != null) {
                 Row(
                     Modifier
                         .clip(PillShape)
@@ -212,6 +267,54 @@ fun LibraryScreen(
             }
         }
     }
+}
+
+@Composable
+private fun LibraryNowPlayingBar(
+    controller: FlickController,
+    item: MediaItem,
+    tvName: String?,
+    imageLoader: coil.ImageLoader,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val playback by controller.playback.collectAsState()
+    val displayTv = tvName ?: stringResource(R.string.np_tv_generic)
+    val status = when (playback.phase) {
+        PlaybackPhase.BUFFERING -> stringResource(R.string.library_now_playing_buffering, displayTv)
+        PlaybackPhase.PAUSED -> stringResource(R.string.library_now_playing_paused, displayTv)
+        PlaybackPhase.ENDED -> stringResource(R.string.library_now_playing_ended, displayTv)
+        else -> if (playback.playing) {
+            stringResource(R.string.library_now_playing_playing, displayTv)
+        } else {
+            stringResource(R.string.library_now_playing_paused, displayTv)
+        }
+    }
+    val request = remember(item.uri, item.durationMs) {
+        ImageRequest.Builder(context)
+            .data(item.uri)
+            .videoFrameMillis((item.durationMs / 3L).coerceAtLeast(1_000L))
+            .crossfade(true)
+            .build()
+    }
+    MiniNowPlayingBar(
+        title = item.name,
+        status = status,
+        actionLabel = stringResource(R.string.library_now_playing_controls),
+        accessibilityLabel = stringResource(R.string.a11y_restore_now_playing, item.name),
+        playing = playback.playing,
+        onClick = { controller.restoreNowPlaying() },
+        modifier = modifier,
+        poster = {
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        },
+    )
 }
 
 @Composable

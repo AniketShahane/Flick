@@ -1,12 +1,32 @@
 package com.flick.receiver.net
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /** Fixed frozen control-v2 proof vector; protects transcript ordering and length prefixes. */
 class ControlV2FixturesTest {
+    @Test fun negotiatedCapabilitiesRemainAJsonArrayInput() {
+        val fields = negotiatedFrameFields(
+            clientNonce = "ERITFBUWFxgZGhscHR4fIA",
+            serverNonce = "ISIjJCUmJygpKissLS4vMA",
+            tvId = "ABEiM0RVZneImaq7zN3u_w",
+            capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+        )
+
+        assertEquals(
+            listOf("t", "v", "clientNonce", "serverNonce", "tvId", "cap"),
+            fields.keys.toList(),
+        )
+        assertTrue(fields["cap"] is List<*>)
+        assertEquals(
+            listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+            fields["cap"],
+        )
+    }
+
     @Test fun clientProofMatchesFrozenFixture() {
         val fields = listOf(
             "Flick-Control-Resume-V2", "client", "2", "ABEiM0RVZneImaq7zN3u_w",

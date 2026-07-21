@@ -133,10 +133,11 @@ Faces (all via Compose; no bundled files):
 ### TV scale (ten feet) — **no text smaller than 24dp anywhere on TV**
 | Role | ~size | weight | tracking |
 |---|---|---|---|
-| Now playing | 48dp | 700 | −1% |
+| Full-screen/display title | 48dp | 700 | −1% |
+| Playback chrome title | 30dp, one line | 600 | −1% |
 | Section / dialog | 32dp | 600 | +1% |
 | Body | 24dp min | 500 | +1% |
-| Seek timecode | 40dp mono | 700 | tabular |
+| Playback timecode | 28dp mono | 700 | tabular |
 
 10-ft rule: one weight step heavier, +1% tracking, high-contrast on scrim.
 
@@ -182,8 +183,9 @@ Faces (all via Compose; no bundled files):
 ## 5. Iconography
 
 24dp grid, **1.8px stroke**, round caps/joins. Filled counterparts only for play/pause at ≥48dp
-transport size. On TV, icons render 32–48dp at the same stroke ratio. Set (draw as `ImageVector`
-or Canvas paths per the HTML §1.5): `play, pause, back-10, fwd-10, previous, next, volume, cast,
+transport size. On TV, icons render 32–48dp at the same stroke ratio. Use the rounded Material
+`Replay10` / `Forward10` glyphs for TV seeking rather than drawing numerals into custom arrows;
+the phone may retain its compact tactile skip treatment. Set: `play, pause, previous, next, volume, cast,
 qr-pair, wi-fi, hdr/dv, private(lock), settings, metrics`. The **brand mark** = rounded play
 triangle + 3 motion streaks (streaks drop below 24px; triangle alone survives to 16px).
 
@@ -222,8 +224,12 @@ release, single confirm pulse on play/pause, soft ripple on grip.
     target `●` in solid coral, confirmed `○` in high-contrast pale ring, and cyan shimmer only
     when lagging. See §Hero. Do not use cyan as a second playhead color.
 - **Transport cluster:** back-10 / play-pause / fwd-10. Play/pause morphs (triangle ↔ bars via
-  `flickSettle`)—never a hard swap. Phone primary play is a 56dp coral circle with warm lift;
-  TV primary play is large enough for 10-foot reading and takes the sole playback focus.
+  `flickSettle`)—never a hard swap. Phone primary play is a 56dp coral circle with warm lift.
+  TV uses 48dp skip targets and a 56dp primary target with glyphs at least 32dp; the primary
+  control takes the sole initial playback focus.
+- **Minimized playback:** phone Now Playing exposes a downward minimize action that never stops
+  the cast. Library keeps a raised mini-player with thumbnail, state, title, and one-tap restore.
+  Partial media access keeps a prominent **Add videos** action; full access exposes **Refresh**.
 - **Status strip/pills:** phone status is a quiet top strip, `Serving from this phone · 5 GHz`
   with a green dot; `Connecting…` uses cyan; `TV unreachable` uses crimson. **Signal chip:**
   `61 Mb/s · 5 GHz` (mono tabular, Wi-Fi glyph) expands to the quality sheet. Never claim a

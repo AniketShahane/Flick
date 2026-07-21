@@ -1,9 +1,11 @@
 package com.flick.sender.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -109,4 +111,27 @@ fun FlickSubtleButton(
         colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceDim),
         modifier = modifier.heightIn(min = 48.dp),
     ) { Text(text, style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold)) }
+}
+
+/** Compact high-contrast action for persistent library tasks such as media reselection. */
+@Composable
+fun FlickTonalButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalFlickColors.current
+    Button(
+        onClick = onClick,
+        shape = PillShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = colors.spark.copy(alpha = 0.14f),
+            contentColor = if (colors.isLight) colors.spark else colors.sparkLight,
+        ),
+        border = BorderStroke(1.dp, colors.spark.copy(alpha = 0.34f)),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+        modifier = modifier.heightIn(min = 48.dp),
+    ) {
+        Text(text, style = FlickText.caption.copy(fontWeight = FontWeight.Bold))
+    }
 }

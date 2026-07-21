@@ -107,7 +107,7 @@ NSD TXT attribute `v` advertises the WebSocket control version and changes from 
 
 This is a synchronized pre-1.0 paired-APK release. Sender and receiver must be installed together.
 
-Both implementation APKs increment from `versionCode=1` / `versionName=0.1.0` to `versionCode=2` / `versionName=0.2.0`. A rollback build must use a code greater than every distributed build rather than reusing 1.
+Protocol v2 initially incremented both APKs from `versionCode=1` / `versionName=0.1.0` to `versionCode=2` / `versionName=0.2.0`. The matched maintenance build is `versionCode=3` / `versionName=0.2.1`; it fixes Android capability-array serialization and partial video-library reselection without changing the control protocol. A rollback build must use a code greater than every distributed build rather than reusing an earlier code.
 
 - A v2 sender must not fall back to optimistic v1 casting.
 - If NSD advertises a version lower than 2, the sender shows **Update Flick on your TV** and sends no cast command.
@@ -977,7 +977,7 @@ Forbidden:
 
 ### 13.3 Build, docs, and tests
 
-- module Gradle files: synchronized 0.2.0/versionCode 2 bump, JUnit/coroutines-test, and required Android test dependencies only.
+- module Gradle files: initial synchronized 0.2.0/versionCode 2 protocol bump, followed by the matched 0.2.1/versionCode 3 maintenance release; JUnit/coroutines-test and required Android test dependencies only.
 - `docs/design/control-channel.md`: normative QR grammar, v2 protocol, frames, state machines, compatibility.
 - `docs/implementation.md`: actual pair/control/media flow, player startup policy, hardening.
 - `README.md`: replace obsolete manual TV URL instructions with install/pair/cast/troubleshooting.

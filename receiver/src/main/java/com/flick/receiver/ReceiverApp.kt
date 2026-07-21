@@ -1,9 +1,16 @@
 package com.flick.receiver
 
+import android.content.ComponentCallbacks
+import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
 import android.os.Build
+import android.util.TypedValue
+import android.view.KeyEvent as AndroidKeyEvent
 import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
 import android.view.Window
+import android.view.accessibility.CaptioningManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -21,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,11 +36,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.flick.receiver.net.ControlPortStore
@@ -60,6 +64,7 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.PlayerController
+import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
 import com.flick.receiver.ui.components.FlickWordmark
@@ -103,7 +108,7 @@ private const val DIAGNOSTICS_VISIBLE = 14
  * hardened media path (pre-flight probe, terminal-stop, hardware-only decode).
  */
 @Composable
-fun ReceiverApp(window: Window) {
+internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -158,6 +163,7 @@ fun ReceiverApp(window: Window) {
     var metricsEnabled by rememberSaveable { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
+    var capturedRemoteButton by remember { mutableStateOf<TvRemoteButton?>(null) }
 
 
     val playFocus = remember { FocusRequester() }
@@ -324,7 +330,8 @@ fun ReceiverApp(window: Window) {
     }
 
     // With chrome hidden there is no focusable transport, so park focus on the
-    // root catcher; any D-pad press then re-summons the chrome (see rootKeys).
+    // root catcher. Activity-level remote routing handles playback commands;
+    // keeping a Compose focus owner also preserves ordinary fallback dispatch.
     LaunchedEffect(stage, chromeVisible) {
         if (stage is MediaStage.Active && !chromeVisible) {
             runCatching { rootFocus.requestFocus() }
@@ -339,6 +346,7 @@ fun ReceiverApp(window: Window) {
             showQuality = false
         } else {
             showQuality = false
+            capturedRemoteButton = null
         }
     }
 
@@ -363,27 +371,42 @@ fun ReceiverApp(window: Window) {
 
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
 
-    // Root: media transport keys are tunnelled so the remote drives playback no
-    // matter what holds D-pad focus; any key reveals the chrome.
-    val rootKeys = Modifier.onPreviewKeyEvent { event ->
-        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        val active = stage is MediaStage.Active
-        if (active) session.pokeChrome()
-        when (event.key) {
-            Key.MediaFastForward -> { session.onSkip(15_000L); true }
-            Key.MediaRewind -> { session.onSkip(-15_000L); true }
-            Key.MediaNext -> { session.onSkip(300_000L); true }
-            Key.MediaPrevious -> { session.onSkip(-300_000L); true }
-            Key.MediaPlay -> { session.onPlay(); true }
-            Key.MediaPause -> { session.onPause(); true }
-            Key.MediaPlayPause -> {
-                if (frame.playing) session.onPause() else session.onPlay(); true
-            }
-            // While the chrome is hidden the root holds focus; the first D-pad
-            // press only reveals the chrome (poked above) and is consumed so it
-            // doesn't also activate a control on the way in.
-            else -> active && !chromeVisible && isDpadKey(event.key)
+    val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
+        val button = event.toTvRemoteButton()
+        val eventType = when (event.action) {
+            AndroidKeyEvent.ACTION_DOWN -> TvRemoteEventType.Down
+            AndroidKeyEvent.ACTION_UP -> TvRemoteEventType.Up
+            else -> TvRemoteEventType.Other
         }
+        val active = stage is MediaStage.Active
+        val decision = tvRemoteDecision(
+            button = button,
+            eventType = eventType,
+            repeatCount = event.repeatCount,
+            playbackActive = active,
+            chromeVisible = chromeVisible,
+            capturedButton = capturedRemoteButton,
+        )
+        if (decision.capture) capturedRemoteButton = button
+        if (decision.releaseCapture) capturedRemoteButton = null
+        if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other) {
+            session.pokeChrome()
+        }
+        when (val command = decision.command) {
+            TvRemoteCommand.RevealChrome -> Unit // pokeChrome above is the reveal signal.
+            TvRemoteCommand.TogglePlayPause -> if (frame.playing) session.onPause() else session.onPlay()
+            TvRemoteCommand.Play -> session.onPlay()
+            TvRemoteCommand.Pause -> session.onPause()
+            is TvRemoteCommand.SeekBy -> session.onSkip(command.deltaMs)
+            null -> Unit
+        }
+        decision.consume
+    }
+
+    DisposableEffect(remoteKeys) {
+        val bridge: (AndroidKeyEvent) -> Boolean = { handleRemoteKey(it) }
+        remoteKeys.attach(bridge)
+        onDispose { remoteKeys.detach(bridge) }
     }
 
     // TV Back convention: dismiss the top surface rather than kill the app + the
@@ -410,7 +433,6 @@ fun ReceiverApp(window: Window) {
             modifier = Modifier
                 .fillMaxSize()
                 .background(FlickColor.Canvas)
-                .then(rootKeys)
                 .focusRequester(rootFocus)
                 .focusable(enabled = stage is MediaStage.Active && !chromeVisible),
         ) {
@@ -577,6 +599,7 @@ private fun PlayerSurface(
                 setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                 setBackgroundColor(FlickColor.Canvas.toArgb())
+                configureSubtitles(ctx.getSystemService(CaptioningManager::class.java))
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -589,15 +612,95 @@ private fun PlayerSurface(
     )
 }
 
+private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
+    val subtitles = subtitleView ?: return
+    subtitles.setApplyEmbeddedStyles(false)
+    subtitles.setStyle(
+        CaptionStyleCompat(
+            AndroidColor.WHITE,
+            AndroidColor.argb(153, 0, 0, 0),
+            AndroidColor.TRANSPARENT,
+            CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+            AndroidColor.BLACK,
+            null,
+        ),
+    )
+
+    fun applyTextSize(captionScale: Float = if (captions?.isEnabled == true) captions.fontScale else 1f) {
+        subtitles.setFixedTextSize(
+            TypedValue.COMPLEX_UNIT_SP,
+            reducedSubtitleTextSizeSp(
+                viewHeightPx = subtitles.height,
+                scaledDensity = subtitles.resources.displayMetrics.scaledDensity,
+                captionFontScale = captionScale,
+                defaultTextSizeFraction = androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION,
+            ),
+        )
+    }
+
+    val captionListener = object : CaptioningManager.CaptioningChangeListener() {
+        override fun onFontScaleChanged(fontScale: Float) {
+            applyTextSize(if (captions?.isEnabled == true) fontScale else 1f)
+        }
+        override fun onEnabledChanged(enabled: Boolean) = applyTextSize()
+    }
+    val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyTextSize() }
+    val configurationListener = object : ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: Configuration) = applyTextSize()
+        override fun onLowMemory() = Unit
+    }
+    var listening = false
+    fun startListening() {
+        if (listening) return
+        captions?.addCaptioningChangeListener(captionListener)
+        subtitles.addOnLayoutChangeListener(layoutListener)
+        subtitles.context.registerComponentCallbacks(configurationListener)
+        listening = true
+        applyTextSize()
+    }
+    fun stopListening() {
+        if (!listening) return
+        captions?.removeCaptioningChangeListener(captionListener)
+        subtitles.removeOnLayoutChangeListener(layoutListener)
+        subtitles.context.unregisterComponentCallbacks(configurationListener)
+        listening = false
+    }
+    subtitles.addOnAttachStateChangeListener(
+        object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) {
+                startListening()
+                applyTextSize()
+            }
+
+            override fun onViewDetachedFromWindow(view: View) = stopListening()
+        },
+    )
+    if (subtitles.isAttachedToWindow) startListening()
+}
+
 private fun nextName(current: String): String {
     val idx = TV_NAME_PRESETS.indexOf(current)
     return TV_NAME_PRESETS[(idx + 1).mod(TV_NAME_PRESETS.size)]
 }
 
-private fun isDpadKey(key: Key): Boolean =
-    key == Key.DirectionLeft || key == Key.DirectionRight ||
-        key == Key.DirectionUp || key == Key.DirectionDown ||
-        key == Key.DirectionCenter || key == Key.Enter
+private fun AndroidKeyEvent.toTvRemoteButton(): TvRemoteButton = when (keyCode) {
+    AndroidKeyEvent.KEYCODE_DPAD_CENTER,
+    AndroidKeyEvent.KEYCODE_ENTER,
+    AndroidKeyEvent.KEYCODE_NUMPAD_ENTER,
+    AndroidKeyEvent.KEYCODE_BUTTON_SELECT,
+    AndroidKeyEvent.KEYCODE_BUTTON_A,
+    AndroidKeyEvent.KEYCODE_BUTTON_START -> TvRemoteButton.Select
+    AndroidKeyEvent.KEYCODE_DPAD_LEFT -> TvRemoteButton.Left
+    AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> TvRemoteButton.Right
+    AndroidKeyEvent.KEYCODE_DPAD_UP -> TvRemoteButton.Up
+    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> TvRemoteButton.Down
+    AndroidKeyEvent.KEYCODE_MEDIA_PLAY -> TvRemoteButton.MediaPlay
+    AndroidKeyEvent.KEYCODE_MEDIA_PAUSE -> TvRemoteButton.MediaPause
+    AndroidKeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> TvRemoteButton.MediaPlayPause
+    AndroidKeyEvent.KEYCODE_MEDIA_REWIND -> TvRemoteButton.MediaRewind
+    AndroidKeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> TvRemoteButton.MediaFastForward
+    else -> TvRemoteButton.Other
+}
 
 internal enum class PlayerSurfaceMode { Hidden, CoveredConnecting, VisiblePlayback }
 

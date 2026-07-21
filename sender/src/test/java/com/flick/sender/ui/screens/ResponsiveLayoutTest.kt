@@ -11,4 +11,11 @@ class ResponsiveLayoutTest {
         assertFalse(isCompactHeight(480))
         assertFalse(isCompactHeight(800))
     }
+
+    @Test
+    fun compactWidthShortensDenseHeadersOnlyOnNarrowPhones() {
+        assertTrue(isCompactWidth(360))
+        assertFalse(isCompactWidth(380))
+        assertFalse(isCompactWidth(411))
+    }
 }
