@@ -33,9 +33,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -69,6 +73,7 @@ fun LibraryScreen(
     val connectedTv by controller.connectedTv.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val connectLabel = stringResource(R.string.a11y_open_connect)
+    val compactHeight = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     var filter by remember { mutableStateOf(LibFilter.RECENTS) }
 
     if (!hasPermission || (items.isEmpty() && !loading)) {
@@ -96,7 +101,11 @@ fun LibraryScreen(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 18.dp, end = 18.dp, top = 16.dp),
+                .padding(
+                    start = 18.dp,
+                    end = 18.dp,
+                    top = if (compactHeight) 6.dp else 16.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -130,12 +139,21 @@ fun LibraryScreen(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = if (compactHeight) 5.dp else 12.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(stringResource(R.string.library_filter_recents), filter == LibFilter.RECENTS) { filter = LibFilter.RECENTS }
-            FilterChip(stringResource(R.string.library_filter_camera), filter == LibFilter.CAMERA) { filter = LibFilter.CAMERA }
-            FilterChip(stringResource(R.string.library_filter_downloads), filter == LibFilter.DOWNLOADS) { filter = LibFilter.DOWNLOADS }
+            FilterChip(
+                text = stringResource(R.string.library_filter_recents),
+                selected = filter == LibFilter.RECENTS,
+            ) { filter = LibFilter.RECENTS }
+            FilterChip(
+                text = stringResource(R.string.library_filter_camera),
+                selected = filter == LibFilter.CAMERA,
+            ) { filter = LibFilter.CAMERA }
+            FilterChip(
+                text = stringResource(R.string.library_filter_downloads),
+                selected = filter == LibFilter.DOWNLOADS,
+            ) { filter = LibFilter.DOWNLOADS }
         }
 
         LazyVerticalGrid(
@@ -148,12 +166,18 @@ fun LibraryScreen(
                 LibraryTile(
                     item = item,
                     imageLoader = imageLoader,
+                    compact = compactHeight,
                     onClick = { controller.openDetail(item) },
                 )
             }
         }
 
-        Box(Modifier.fillMaxWidth().padding(14.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(if (compactHeight) 6.dp else 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
             if (connectedTv != null) {
                 Row(
                     Modifier
@@ -188,13 +212,20 @@ fun LibraryScreen(
 private fun LibraryTile(
     item: MediaItem,
     imageLoader: coil.ImageLoader,
+    compact: Boolean,
     onClick: () -> Unit,
 ) {
     val context = LocalContext.current
     val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
-    VideoTile(item = item, hdr = hdr, imageLoader = imageLoader, onClick = onClick)
+    VideoTile(
+        item = item,
+        hdr = hdr,
+        imageLoader = imageLoader,
+        compact = compact,
+        onClick = onClick,
+    )
 }
 
 @Composable
@@ -209,6 +240,10 @@ private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
         ),
         modifier = Modifier
             .clip(PillShape)
+            .semantics {
+                role = Role.Tab
+                this.selected = selected
+            }
             .then(
                 if (selected) Modifier.background(colors.onSurface)
                 else Modifier.border(1.dp, colors.outline, PillShape),

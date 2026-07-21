@@ -81,6 +81,7 @@ fun VideoTile(
     hdr: HdrType,
     imageLoader: ImageLoader,
     onClick: () -> Unit,
+    compact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
@@ -146,7 +147,12 @@ fun VideoTile(
                     .padding(horizontal = 5.dp, vertical = 2.dp),
             )
         }
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+        Column(
+            Modifier.padding(
+                horizontal = 10.dp,
+                vertical = if (compact) 6.dp else 9.dp,
+            ),
+        ) {
             Text(
                 text = item.name,
                 style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.onSurface),

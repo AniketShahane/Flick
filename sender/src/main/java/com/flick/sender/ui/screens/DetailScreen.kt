@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -31,11 +33,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -63,6 +67,7 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val imageLoader = rememberVideoImageLoader()
+    val compactHeight = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     val castDescription = stringResource(
         R.string.a11y_cast_video,
         item.name,
@@ -85,7 +90,7 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(240.dp),
+                .height(if (compactHeight) 152.dp else 240.dp),
         ) {
             AsyncImage(
                 model = request,
@@ -121,9 +126,15 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             Column(
                 Modifier
                     .align(Alignment.BottomStart)
-                    .padding(16.dp),
+                    .padding(16.dp)
+                    .padding(start = if (compactHeight) 56.dp else 0.dp),
             ) {
-                Text(item.name, style = FlickText.heading.copy(color = Color.White))
+                Text(
+                    text = item.name,
+                    style = FlickText.heading.copy(color = Color.White),
+                    maxLines = if (compactHeight) 2 else 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     "${Format.durationHuman(item.durationMs)} · ${item.resolutionLabel}",
                     style = FlickText.caption.copy(color = Color.White.copy(alpha = 0.7f)),
@@ -132,7 +143,12 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             }
         }
 
-        Column(Modifier.padding(16.dp)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (item.width > 0 && item.height > 0) {
                     TechBadge("${item.resolutionLabel} · ${item.width}×${item.height}")
@@ -168,8 +184,6 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                 }
             }
         }
-
-        Spacer(Modifier.weight(1f))
 
         Column(
             Modifier
