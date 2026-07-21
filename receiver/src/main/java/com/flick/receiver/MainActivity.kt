@@ -19,9 +19,10 @@ class MainActivity : ComponentActivity() {
     private val remoteKeys = TvRemoteKeyDispatcher()
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // TV remote input arrives here before Compose focus dispatch. Handled
-        // playback keys stop here; unhandled D-pad navigation continues into
-        // Compose exactly once through the normal Activity path.
+        // TV remote input arrives here before Compose focus dispatch. Custom
+        // hidden-chrome D-pad commands stop here; unhandled focus navigation and
+        // every dedicated media key continue exactly once to Compose/the system
+        // MediaSession route.
         return remoteKeys.dispatch(event) || super.dispatchKeyEvent(event)
     }
 

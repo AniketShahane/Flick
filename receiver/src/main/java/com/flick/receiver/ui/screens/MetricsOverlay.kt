@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.DiagnosticsSnapshot
+import com.flick.receiver.player.SubtitleCueKind
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.glass
@@ -65,6 +66,7 @@ fun MetricsOverlay(
         )
         MetricRow(stringResource(R.string.metrics_vid), vidLine(snapshot), FlickColor.OnSurface)
         MetricRow(stringResource(R.string.metrics_dec), decLine(snapshot), FlickColor.OnSurface)
+        MetricRow(stringResource(R.string.metrics_sub), subtitleLine(snapshot), FlickColor.OnSurface)
         MetricRow(stringResource(R.string.metrics_bitrate), mbps(snapshot.bitrateEstimateBps), FlickColor.OnSurface)
         MetricRow(
             stringResource(R.string.metrics_dropped),
@@ -116,6 +118,22 @@ private fun vidLine(s: DiagnosticsSnapshot): String {
 @Composable
 private fun decLine(s: DiagnosticsSnapshot): String =
     stringResource(R.string.metrics_decoder_value, s.decoderName ?: stringResource(R.string.metrics_unavailable))
+
+@Composable
+private fun subtitleLine(s: DiagnosticsSnapshot): String {
+    if (!s.subtitleTrackSelected) return stringResource(R.string.metrics_subtitle_none)
+    val cueKind = when (s.subtitleCueKind) {
+        SubtitleCueKind.NONE -> stringResource(R.string.metrics_subtitle_cue_idle)
+        SubtitleCueKind.TEXT -> stringResource(R.string.metrics_subtitle_cue_text)
+        SubtitleCueKind.BITMAP -> stringResource(R.string.metrics_subtitle_cue_bitmap)
+        SubtitleCueKind.MIXED -> stringResource(R.string.metrics_subtitle_cue_mixed)
+    }
+    return stringResource(
+        R.string.metrics_subtitle_value,
+        s.subtitleTrackMimeType ?: stringResource(R.string.metrics_unavailable),
+        cueKind,
+    )
+}
 
 private fun mbps(bps: Long): String =
     if (bps <= 0L) "—" else String.format(Locale.US, "%.1f Mb/s", bps / 1_000_000.0)

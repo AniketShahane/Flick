@@ -50,6 +50,8 @@
     <string name="transport_play">Play</string>
     <string name="transport_pause">Pause</string>
     <string name="transport_forward_10">Skip forward 10 seconds</string>
+    <string name="remote_seek_step">%1$s%2$d s</string>
+    <string name="remote_seek_hold">%1$s%2$d s · %3$d×</string>
     <string name="volume">Volume</string>
     <string name="volume_state">%1$d percent</string>
 
@@ -104,6 +106,7 @@
     <string name="metrics_buf">BUF</string>
     <string name="metrics_vid">VID</string>
     <string name="metrics_dec">DEC</string>
+    <string name="metrics_sub">SUB</string>
     <string name="metrics_bitrate">BITRATE</string>
     <string name="metrics_dropped">DROPPED</string>
     <string name="metrics_footer">metrics overlay · settings › playback</string>
@@ -111,6 +114,12 @@
     <string name="metrics_buffer_value">%1$s · %2$d stalls</string>
     <string name="metrics_dropped_value">%1$d · %2$s</string>
     <string name="metrics_decoder_value">%1$s · hardware decoder</string>
+    <string name="metrics_subtitle_none">none selected</string>
+    <string name="metrics_subtitle_value">%1$s · %2$s</string>
+    <string name="metrics_subtitle_cue_idle">cue idle</string>
+    <string name="metrics_subtitle_cue_text">text cue</string>
+    <string name="metrics_subtitle_cue_bitmap">bitmap cue</string>
+    <string name="metrics_subtitle_cue_mixed">mixed cues</string>
 
     <!-- Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). -->
     <string-array name="tv_name_presets">

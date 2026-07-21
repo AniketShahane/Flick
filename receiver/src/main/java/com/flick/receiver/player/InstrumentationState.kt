@@ -45,6 +45,11 @@ class InstrumentationState {
     /** Color transfer from the decoded Format (C.COLOR_TRANSFER_*), or [Format.NO_VALUE] when unknown. */
     var colorTransfer: Int = Format.NO_VALUE
 
+    /** Selected subtitle metadata only; cue payloads are never stored. */
+    var subtitleTrackSelected: Boolean = false
+    var subtitleTrackMimeType: String? = null
+    var subtitleCueKind: SubtitleCueKind = SubtitleCueKind.NONE
+
     var errorMessage: String? = null
     var errorCode: Int = 0
     var errorCodeName: String? = null
@@ -76,6 +81,9 @@ class InstrumentationState {
         decoderName = null
         videoMimeType = null
         colorTransfer = Format.NO_VALUE
+        subtitleTrackSelected = false
+        subtitleTrackMimeType = null
+        subtitleCueKind = SubtitleCueKind.NONE
         errorMessage = null
         errorCode = 0
         errorCodeName = null

@@ -1,10 +1,12 @@
 package com.flick.receiver.player
 
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,7 +17,9 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.StuckPlayerException
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
@@ -29,6 +33,8 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionResult
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.WifiTelemetry
 
@@ -62,6 +68,39 @@ class PlayerController(context: Context) {
     /** Compose-observable current player instance (null while released/stopped). */
     var player by mutableStateOf<ExoPlayer?>(null)
         private set
+
+    /** Platform media-button owner for the current foreground player. */
+    private var mediaSession: MediaSession? = null
+
+    private val mediaSessionCallback = object : MediaSession.Callback {
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            intent: Intent,
+        ): Boolean {
+            @Suppress("DEPRECATION")
+            val keyEvent = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+            val button = when (keyEvent?.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_STOP -> MediaButtonKind.STOP
+                KeyEvent.KEYCODE_MEDIA_NEXT -> MediaButtonKind.NEXT
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> MediaButtonKind.PREVIOUS
+                else -> MediaButtonKind.OTHER
+            }
+            // Returning true blocks Media3's default Player.stop()/playlist
+            // mutation path, which would bypass SessionController terminal state.
+            return consumesUnsupportedMediaButton(button)
+        }
+
+        override fun onPlayerCommandRequest(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            playerCommand: Int,
+        ): Int = if (rejectsExternalPlayerCommand(playerCommand)) {
+            SessionResult.RESULT_ERROR_NOT_SUPPORTED
+        } else {
+            SessionResult.RESULT_SUCCESS
+        }
+    }
 
     private var currentUrl: String? = null
     private var pendingPlayWhenReady: Boolean = false
@@ -149,6 +188,40 @@ class PlayerController(context: Context) {
                 instrumentation.videoWidth = videoSize.width
                 instrumentation.videoHeight = videoSize.height
             }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            var selected = false
+            var selectedMimeType: String? = null
+            for (group in tracks.groups) {
+                if (group.type != C.TRACK_TYPE_TEXT) continue
+                for (index in 0 until group.length) {
+                    if (!group.isTrackSelected(index)) continue
+                    selected = true
+                    selectedMimeType = group.getTrackFormat(index).sampleMimeType
+                    break
+                }
+                if (selected) break
+            }
+            val selectionChanged = selected != instrumentation.subtitleTrackSelected ||
+                selectedMimeType != instrumentation.subtitleTrackMimeType
+            instrumentation.subtitleTrackSelected = selected
+            instrumentation.subtitleTrackMimeType = selectedMimeType
+            if (selectionChanged) instrumentation.subtitleCueKind = SubtitleCueKind.NONE
+            // MIME + selection only: never log a cue's text or bitmap payload.
+            if (selectionChanged) {
+                FlickLog.i(
+                    "subtitle",
+                    "selected=$selected mime=${selectedMimeType ?: if (selected) "unknown" else "none"}",
+                )
+            }
+        }
+
+        override fun onCues(cueGroup: CueGroup) {
+            instrumentation.subtitleCueKind = subtitleCueKind(
+                hasText = cueGroup.cues.any { it.text != null },
+                hasBitmap = cueGroup.cues.any { it.bitmap != null },
+            )
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -407,6 +480,8 @@ class PlayerController(context: Context) {
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
             .setBandwidthMeter(bandwidthMeter)
+            .setSeekBackIncrementMs(10_000L)
+            .setSeekForwardIncrementMs(10_000L)
             .build()
             .also { exo ->
                 exo.addListener(playerListener)
@@ -419,13 +494,39 @@ class PlayerController(context: Context) {
 
     // --- Lifecycle -----------------------------------------------------------
 
+    /**
+     * Media3 owns platform media-button dispatch. When ExoPlayer is rebuilt,
+     * switch the session first so no controller can target a released player.
+     * All players use the main application looper, as required by setPlayer.
+     */
+    private fun bindMediaSession(exo: ExoPlayer) {
+        val existing = mediaSession
+        if (existing == null) {
+            mediaSession = MediaSession.Builder(appContext, exo)
+                .setCallback(mediaSessionCallback)
+                .build()
+        } else if (existing.player !== exo) {
+            existing.setPlayer(exo)
+        }
+    }
+
+    /** MediaSession must be released before its underlying player. */
+    private fun releaseMediaSession() {
+        mediaSession?.release()
+        mediaSession = null
+    }
+
     /** Create the player if needed and restore any previous media (called on ON_START). */
     fun onStart() {
-        if (player != null) return
+        player?.let { existing ->
+            if (currentUrl != null && mediaSession == null) bindMediaSession(existing)
+            return
+        }
         val exo = createPlayer()
         player = exo
         val url = currentUrl
         if (url != null) {
+            bindMediaSession(exo)
             exo.setMediaItem(MediaItem.fromUri(url))
             exo.prepare()
             if (savedPositionMs > 0L) exo.seekTo(savedPositionMs)
@@ -435,7 +536,10 @@ class PlayerController(context: Context) {
 
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
-        val exo = player ?: return
+        val exo = player ?: run {
+            releaseMediaSession()
+            return
+        }
         // Drop any queued recovery: it targets the player we're about to release;
         // onStart() re-prepares from savedPositionMs instead.
         cancelPendingRecovery()
@@ -445,6 +549,7 @@ class PlayerController(context: Context) {
         closeRebufferWindow()
         savedPositionMs = exo.currentPosition.coerceAtLeast(0L)
         pendingPlayWhenReady = exo.playWhenReady
+        releaseMediaSession()
         exo.removeListener(playerListener)
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
@@ -454,6 +559,7 @@ class PlayerController(context: Context) {
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
         cancelPendingRecovery()
+        releaseMediaSession()
         val exo = player ?: return
         // Close any in-progress rebuffer window before tearing down.
         closeRebufferWindow()
@@ -479,6 +585,9 @@ class PlayerController(context: Context) {
         probeLatencyMs = 0L
         instrumentation.reset()
         val exo = player ?: createPlayer().also { player = it }
+        // stop() releases the terminal session but intentionally keeps this
+        // foreground player instance reusable. Rebind before any new playback.
+        bindMediaSession(exo)
         exo.setMediaItem(MediaItem.fromUri(url))
         exo.prepare()
         exo.playWhenReady = true
@@ -501,15 +610,17 @@ class PlayerController(context: Context) {
         recoveryGateCount = 0
         instrumentation.reset()
         // A startup adoption always gets a fresh listener/renderer instance.
-        // Releasing A before B is armed is a second fail-closed barrier against
-        // a late A renderer callback being observed as B.
-        player?.let { previous ->
-            previous.removeListener(playerListener)
-            previous.removeAnalyticsListener(analyticsListener)
-            previous.release()
-            player = null
+        // Switch the platform session to B before releasing A, then publish B
+        // to Compose. This prevents a physical media key targeting released A.
+        val previous = player
+        val exo = createPlayer()
+        bindMediaSession(exo)
+        player = exo
+        previous?.let {
+            it.removeListener(playerListener)
+            it.removeAnalyticsListener(analyticsListener)
+            it.release()
         }
-        val exo = createPlayer().also { player = it }
         exo.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(mediaId).build())
         if (startMs > 0) exo.seekTo(startMs)
         exo.prepare()
@@ -528,6 +639,10 @@ class PlayerController(context: Context) {
         pendingPlayWhenReady = false
         cancelPendingRecovery()
         stableReadySinceMs = 0L
+        // Terminal stop must withdraw the platform session as well as clear the
+        // media. Otherwise Android keeps advertising an idle empty player and
+        // can continue routing physical media buttons to a dead cast.
+        releaseMediaSession()
         // Stop must be terminal for the media. Without clearing these, a later
         // ON_STOP/ON_START cycle (background then foreground) would re-capture a
         // still-true playWhenReady, see currentUrl != null in onStart(), and
@@ -698,6 +813,9 @@ class PlayerController(context: Context) {
             wifiBand = wifi?.band,
             wifiLinkSpeedMbps = wifi?.linkSpeedMbps ?: -1,
             wifiRssiDbm = wifi?.rssiDbm ?: 0,
+            subtitleTrackSelected = instrumentation.subtitleTrackSelected,
+            subtitleTrackMimeType = instrumentation.subtitleTrackMimeType,
+            subtitleCueKind = instrumentation.subtitleCueKind,
         )
     }
 

@@ -87,6 +87,10 @@ fun PlaybackScreen(
     hdr: HdrType,
     chromeVisible: Boolean,
     quality: QualityInfo?,
+    remoteSeekDeltaMs: Long? = null,
+    remoteSeekSpeedLevel: Int = 1,
+    remoteSeekHeld: Boolean = false,
+    remoteSeekVisible: Boolean = false,
     onBack10: () -> Unit,
     onPlayPause: () -> Unit,
     onForward10: () -> Unit,
@@ -127,6 +131,19 @@ fun PlaybackScreen(
             QualityCard(quality, Modifier.align(Alignment.TopEnd).padding(safeArea))
         }
 
+        AnimatedVisibility(
+            visible = remoteSeekVisible && remoteSeekDeltaMs != null,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(180)),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            RemoteSeekPill(
+                deltaMs = remoteSeekDeltaMs ?: 0L,
+                speedLevel = remoteSeekSpeedLevel,
+                held = remoteSeekHeld,
+            )
+        }
+
         // T3/T5/T6 chrome
         AnimatedVisibility(
             visible = chromeVisible,
@@ -155,6 +172,33 @@ fun PlaybackScreen(
                 interactive = chromeVisible,
             )
         }
+    }
+}
+
+@Composable
+private fun RemoteSeekPill(deltaMs: Long, speedLevel: Int, held: Boolean) {
+    val sign = if (deltaMs < 0L) "−" else "+"
+    val seconds = kotlin.math.abs(deltaMs / 1_000L)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(FlickColor.Canvas.copy(alpha = 0.68f))
+            .padding(horizontal = 22.dp, vertical = 12.dp),
+    ) {
+        Text(
+            text = if (held) {
+                stringResource(
+                    R.string.remote_seek_hold,
+                    sign,
+                    seconds,
+                    speedLevel.coerceIn(1, 3),
+                )
+            } else {
+                stringResource(R.string.remote_seek_step, sign, seconds)
+            },
+            style = FlickType.monoTabular(sizeSp = 28, weight = FontWeight.Bold),
+            color = Color.White,
+        )
     }
 }
 

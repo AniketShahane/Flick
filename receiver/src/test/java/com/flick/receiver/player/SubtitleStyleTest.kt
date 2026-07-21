@@ -5,6 +5,18 @@ import org.junit.Test
 
 class SubtitleStyleTest {
 
+    @Test fun subtitleUsesOneTranslucentWindowInsteadOfStackedGlyphBackgrounds() {
+        assertEquals(0, SUBTITLE_GLYPH_BACKGROUND_ALPHA)
+        assertEquals((255f * 0.55f).toInt(), SUBTITLE_WINDOW_ALPHA)
+    }
+
+    @Test fun cueDiagnosticsClassifyShapeWithoutReadingPayloads() {
+        assertEquals(SubtitleCueKind.NONE, subtitleCueKind(hasText = false, hasBitmap = false))
+        assertEquals(SubtitleCueKind.TEXT, subtitleCueKind(hasText = true, hasBitmap = false))
+        assertEquals(SubtitleCueKind.BITMAP, subtitleCueKind(hasText = false, hasBitmap = true))
+        assertEquals(SubtitleCueKind.MIXED, subtitleCueKind(hasText = true, hasBitmap = true))
+    }
+
     @Test fun media3BaselineIsReducedByExactlyTwoSp() {
         val currentSizeSp = 1080f * 0.0533f / 2f
         val reduced = reducedSubtitleTextSizeSp(

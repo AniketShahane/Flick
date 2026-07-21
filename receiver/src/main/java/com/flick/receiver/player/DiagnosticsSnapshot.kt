@@ -56,6 +56,12 @@ data class DiagnosticsSnapshot(
     val wifiLinkSpeedMbps: Int,
     /** TV Wi-Fi RSSI in dBm; 0 when unavailable. */
     val wifiRssiDbm: Int,
+    /** True when Media3 currently reports a selected text-renderer track. */
+    val subtitleTrackSelected: Boolean = false,
+    /** Selected subtitle sample MIME only; no language, text, or bitmap payload. */
+    val subtitleTrackMimeType: String? = null,
+    /** Shape of the current cue group; payload contents are intentionally excluded. */
+    val subtitleCueKind: SubtitleCueKind = SubtitleCueKind.NONE,
 ) {
     /** True 4K UHD (>= 3840x2160). This is the flag the spike is proving out. */
     val is4k: Boolean get() = width >= 3840 && height >= 2160
@@ -130,6 +136,9 @@ data class DiagnosticsSnapshot(
             wifiBand = null,
             wifiLinkSpeedMbps = -1,
             wifiRssiDbm = 0,
+            subtitleTrackSelected = false,
+            subtitleTrackMimeType = null,
+            subtitleCueKind = SubtitleCueKind.NONE,
         )
     }
 }

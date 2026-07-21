@@ -64,6 +64,8 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.PlayerController
+import com.flick.receiver.player.SUBTITLE_GLYPH_BACKGROUND_ALPHA
+import com.flick.receiver.player.SUBTITLE_WINDOW_ALPHA
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
@@ -164,6 +166,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var capturedRemoteButton by remember { mutableStateOf<TvRemoteButton?>(null) }
+    var remoteSeekDeltaMs by remember { mutableStateOf<Long?>(null) }
+    var remoteSeekSpeedLevel by remember { mutableStateOf(1) }
+    var remoteSeekHeld by remember { mutableStateOf(false) }
+    var remoteSeekGestureActive by remember { mutableStateOf(false) }
+    var remoteSeekVisible by remember { mutableStateOf(false) }
 
 
     val playFocus = remember { FocusRequester() }
@@ -347,6 +354,24 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         } else {
             showQuality = false
             capturedRemoteButton = null
+            remoteSeekDeltaMs = null
+            remoteSeekHeld = false
+            remoteSeekGestureActive = false
+            remoteSeekVisible = false
+        }
+    }
+
+    // Hold the final seek delta briefly after key-up, then settle back to the
+    // normal playback canvas. A new gesture cancels the pending dismissal.
+    LaunchedEffect(remoteSeekGestureActive, remoteSeekDeltaMs) {
+        if (!remoteSeekGestureActive && remoteSeekDeltaMs != null) {
+            delay(700L)
+            remoteSeekVisible = false
+            delay(200L)
+            if (remoteSeekGestureActive) return@LaunchedEffect
+            remoteSeekDeltaMs = null
+            remoteSeekHeld = false
+            remoteSeekSpeedLevel = 1
         }
     }
 
@@ -379,6 +404,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             else -> TvRemoteEventType.Other
         }
         val active = stage is MediaStage.Active
+        val capturedBefore = capturedRemoteButton
+        val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
         val decision = tvRemoteDecision(
             button = button,
             eventType = eventType,
@@ -387,17 +414,37 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             chromeVisible = chromeVisible,
             capturedButton = capturedRemoteButton,
         )
+        if (active && eventType == TvRemoteEventType.Down && seekButton &&
+            (decision.capture || capturedBefore == button)
+        ) {
+            if (decision.capture) {
+                remoteSeekDeltaMs = 0L
+                remoteSeekSpeedLevel = 1
+                remoteSeekHeld = event.repeatCount > 0
+                remoteSeekGestureActive = true
+                remoteSeekVisible = true
+            } else if (event.repeatCount > 0) {
+                remoteSeekHeld = true
+            }
+        }
         if (decision.capture) capturedRemoteButton = button
         if (decision.releaseCapture) capturedRemoteButton = null
+        if (decision.releaseCapture &&
+            (capturedBefore == TvRemoteButton.Left || capturedBefore == TvRemoteButton.Right)
+        ) {
+            remoteSeekGestureActive = false
+        }
         if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other) {
             session.pokeChrome()
         }
         when (val command = decision.command) {
             TvRemoteCommand.RevealChrome -> Unit // pokeChrome above is the reveal signal.
             TvRemoteCommand.TogglePlayPause -> if (frame.playing) session.onPause() else session.onPlay()
-            TvRemoteCommand.Play -> session.onPlay()
-            TvRemoteCommand.Pause -> session.onPause()
-            is TvRemoteCommand.SeekBy -> session.onSkip(command.deltaMs)
+            is TvRemoteCommand.SeekBy -> {
+                remoteSeekDeltaMs = (remoteSeekDeltaMs ?: 0L) + command.deltaMs
+                remoteSeekSpeedLevel = command.speedLevel
+                session.onSkip(command.deltaMs)
+            }
             null -> Unit
         }
         decision.consume
@@ -452,6 +499,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         hdr = snapshot.hdrType,
                         chromeVisible = chromeVisible,
                         quality = if (showQuality) qualityInfo(snapshot) else null,
+                        remoteSeekDeltaMs = remoteSeekDeltaMs,
+                        remoteSeekSpeedLevel = remoteSeekSpeedLevel,
+                        remoteSeekHeld = remoteSeekHeld,
+                        remoteSeekVisible = remoteSeekVisible,
                         onBack10 = { session.onSkip(-10_000L) },
                         onPlayPause = { if (frame.playing) session.onPause() else session.onPlay() },
                         onForward10 = { session.onSkip(10_000L) },
@@ -614,12 +665,17 @@ private fun PlayerSurface(
 
 private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
     val subtitles = subtitleView ?: return
+    // Text cues use one Media3 cue window as the translucent plate. A partially
+    // transparent BACKGROUND_COLOR is painted per glyph/run and overlaps into a
+    // harsh near-opaque block. Bitmap subtitles (PGS/VobSub/etc.) have styling
+    // baked into their pixels and remain unchanged as the safe fallback.
     subtitles.setApplyEmbeddedStyles(false)
+    subtitles.setApplyEmbeddedFontSizes(false)
     subtitles.setStyle(
         CaptionStyleCompat(
             AndroidColor.WHITE,
-            AndroidColor.argb(153, 0, 0, 0),
-            AndroidColor.TRANSPARENT,
+            AndroidColor.argb(SUBTITLE_GLYPH_BACKGROUND_ALPHA, 0, 0, 0),
+            AndroidColor.argb(SUBTITLE_WINDOW_ALPHA, 0, 0, 0),
             CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
             AndroidColor.BLACK,
             null,
@@ -631,7 +687,11 @@ private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
             TypedValue.COMPLEX_UNIT_SP,
             reducedSubtitleTextSizeSp(
                 viewHeightPx = subtitles.height,
-                scaledDensity = subtitles.resources.displayMetrics.scaledDensity,
+                scaledDensity = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_SP,
+                    1f,
+                    subtitles.resources.displayMetrics,
+                ),
                 captionFontScale = captionScale,
                 defaultTextSizeFraction = androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION,
             ),
@@ -647,6 +707,7 @@ private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
     val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyTextSize() }
     val configurationListener = object : ComponentCallbacks {
         override fun onConfigurationChanged(newConfig: Configuration) = applyTextSize()
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onLowMemory() = Unit
     }
     var listening = false
@@ -694,11 +755,9 @@ private fun AndroidKeyEvent.toTvRemoteButton(): TvRemoteButton = when (keyCode) 
     AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> TvRemoteButton.Right
     AndroidKeyEvent.KEYCODE_DPAD_UP -> TvRemoteButton.Up
     AndroidKeyEvent.KEYCODE_DPAD_DOWN -> TvRemoteButton.Down
-    AndroidKeyEvent.KEYCODE_MEDIA_PLAY -> TvRemoteButton.MediaPlay
-    AndroidKeyEvent.KEYCODE_MEDIA_PAUSE -> TvRemoteButton.MediaPause
-    AndroidKeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> TvRemoteButton.MediaPlayPause
-    AndroidKeyEvent.KEYCODE_MEDIA_REWIND -> TvRemoteButton.MediaRewind
-    AndroidKeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> TvRemoteButton.MediaFastForward
+    // Dedicated media keys intentionally fall through Activity.dispatchKeyEvent
+    // to Media3's platform-backed MediaSession. Intercepting them here would
+    // double-handle the same physical button.
     else -> TvRemoteButton.Other
 }
 

@@ -30,26 +30,24 @@ class TvRemoteKeyPolicyTest {
         assertTrue(up.releaseCapture)
     }
 
-    @Test fun hiddenLeftAndRightSeekOnInitialAndRepeatedDownEvents() {
+    @Test fun leftAndRightSeekRegardlessOfChromeOrFocus() {
         val left = decide(TvRemoteButton.Left)
-        assertEquals(TvRemoteCommand.SeekBy(-10_000L), left.command)
+        assertEquals(TvRemoteCommand.SeekBy(-10_000L, speedLevel = 1), left.command)
         assertTrue(left.capture)
 
         val heldRight = decide(
             button = TvRemoteButton.Right,
-            repeatCount = 4,
+            repeatCount = 9,
             chromeVisible = true,
             capturedButton = TvRemoteButton.Right,
         )
         assertTrue(heldRight.consume)
-        assertEquals(TvRemoteCommand.SeekBy(10_000L), heldRight.command)
+        assertEquals(TvRemoteCommand.SeekBy(20_000L, speedLevel = 2), heldRight.command)
     }
 
-    @Test fun visibleChromeLeavesDpadToComposeFocus() {
+    @Test fun visibleChromeLeavesCenterAndVerticalDpadToComposeFocus() {
         listOf(
             TvRemoteButton.Select,
-            TvRemoteButton.Left,
-            TvRemoteButton.Right,
             TvRemoteButton.Up,
             TvRemoteButton.Down,
         ).forEach { button ->
@@ -57,6 +55,42 @@ class TvRemoteKeyPolicyTest {
             assertFalse(decision.consume)
             assertNull(decision.command)
         }
+    }
+
+    @Test fun heldSeekUsesGatedProgressiveAndBoundedPulses() {
+        assertEquals(TvRemoteSeekPulse(10_000L, 1), tvRemoteSeekPulse(0))
+        assertEquals(TvRemoteSeekPulse(10_000L, 1), tvRemoteSeekPulse(1))
+        assertNull(tvRemoteSeekPulse(2))
+        assertEquals(TvRemoteSeekPulse(10_000L, 1), tvRemoteSeekPulse(5))
+        assertEquals(TvRemoteSeekPulse(20_000L, 2), tvRemoteSeekPulse(9))
+        assertEquals(TvRemoteSeekPulse(30_000L, 3), tvRemoteSeekPulse(21))
+        assertEquals(TvRemoteSeekPulse(TV_REMOTE_SEEK_MAX_STEP_MS, 3), tvRemoteSeekPulse(101))
+    }
+
+    @Test fun crossingHorizontalKeyCannotStealTheCapturedGesture() {
+        val crossingDown = decide(
+            button = TvRemoteButton.Right,
+            capturedButton = TvRemoteButton.Left,
+        )
+        assertTrue(crossingDown.consume)
+        assertFalse(crossingDown.capture)
+        assertFalse(crossingDown.releaseCapture)
+        assertNull(crossingDown.command)
+
+        val ownerUp = decide(
+            button = TvRemoteButton.Left,
+            eventType = TvRemoteEventType.Up,
+            capturedButton = TvRemoteButton.Left,
+        )
+        assertTrue(ownerUp.consume)
+        assertTrue(ownerUp.releaseCapture)
+
+        val crossingUp = decide(
+            button = TvRemoteButton.Right,
+            eventType = TvRemoteEventType.Up,
+        )
+        assertTrue(crossingUp.consume)
+        assertFalse(crossingUp.releaseCapture)
     }
 
     @Test fun hiddenUpAndDownRevealWithoutRepeating() {
@@ -73,31 +107,12 @@ class TvRemoteKeyPolicyTest {
         assertNull(repeated.command)
     }
 
-    @Test fun dedicatedMediaKeysRemainGlobalAndRewindFastForwardRepeat() {
-        assertEquals(
-            TvRemoteCommand.Play,
-            decide(TvRemoteButton.MediaPlay, chromeVisible = true).command,
-        )
-        assertEquals(
-            TvRemoteCommand.Pause,
-            decide(TvRemoteButton.MediaPause, chromeVisible = true).command,
-        )
-        assertEquals(
-            TvRemoteCommand.TogglePlayPause,
-            decide(TvRemoteButton.MediaPlayPause, chromeVisible = true).command,
-        )
-        assertEquals(
-            TvRemoteCommand.SeekBy(-10_000L),
-            decide(TvRemoteButton.MediaRewind, repeatCount = 3, chromeVisible = true).command,
-        )
-        assertEquals(
-            TvRemoteCommand.SeekBy(10_000L),
-            decide(TvRemoteButton.MediaFastForward, repeatCount = 3, chromeVisible = true).command,
-        )
-    }
+    @Test fun nonDpadKeysAreNeverStolenFromThePlatformMediaSession() {
+        val active = decide(TvRemoteButton.Other)
+        assertFalse(active.consume)
+        assertNull(active.command)
 
-    @Test fun inactivePlaybackDoesNotStealRemoteKeys() {
-        val decision = decide(TvRemoteButton.MediaPlay, playbackActive = false)
+        val decision = decide(TvRemoteButton.Other, playbackActive = false)
         assertFalse(decision.consume)
         assertNull(decision.command)
     }
