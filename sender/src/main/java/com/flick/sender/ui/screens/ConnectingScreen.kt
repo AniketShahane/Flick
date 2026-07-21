@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.CastStartState
+import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.StatusKind
 import com.flick.sender.ui.components.StatusPill
@@ -46,12 +48,13 @@ private enum class StepState { DONE, ACTIVE, PENDING }
 @Composable
 fun ConnectingScreen(controller: FlickController) {
     val colors = LocalFlickColors.current
-    val connection by controller.connection.collectAsState()
+    val castStart by controller.castStart.collectAsState()
     val tv by controller.connectedTv.collectAsState()
 
-    val connected = connection == ConnectionStatus.CONNECTED
-    val handshake = if (connected) StepState.DONE else StepState.ACTIVE
-    val directPlay = if (connected) StepState.ACTIVE else StepState.PENDING
+    val control = if (castStart is CastStartState.ConnectingControl) StepState.ACTIVE else StepState.DONE
+    val prepare = when (castStart) { is CastStartState.StartingSource -> StepState.ACTIVE; is CastStartState.AwaitingAcceptance, is CastStartState.AwaitingFirstFrame, is CastStartState.Active -> StepState.DONE; else -> StepState.PENDING }
+    val checking = when (castStart) { is CastStartState.AwaitingAcceptance, is CastStartState.AwaitingFirstFrame -> StepState.ACTIVE; is CastStartState.Active -> StepState.DONE; else -> StepState.PENDING }
+    val firstFrame = if (castStart is CastStartState.AwaitingFirstFrame) StepState.ACTIVE else if (castStart is CastStartState.Active) StepState.DONE else StepState.PENDING
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
@@ -71,10 +74,13 @@ fun ConnectingScreen(controller: FlickController) {
             )
             Spacer(Modifier.height(18.dp))
             Column(horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                StepRow(stringResource(R.string.connecting_step_found), StepState.DONE)
-                StepRow(stringResource(R.string.connecting_step_handshake), handshake)
-                StepRow(stringResource(R.string.connecting_step_directplay), directPlay)
+                StepRow(stringResource(R.string.connecting_step_handshake), control)
+                StepRow(stringResource(R.string.connecting_step_prepare), prepare)
+                StepRow(stringResource(R.string.connecting_step_checking), checking)
+                StepRow(stringResource(R.string.connecting_step_starting), firstFrame)
             }
+            Spacer(Modifier.height(18.dp))
+            FlickSubtleButton(text = stringResource(R.string.connecting_cancel), onClick = controller::cancelCast)
         }
 
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) {

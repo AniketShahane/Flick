@@ -12,8 +12,8 @@ android {
         applicationId = "com.flick.sender"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -91,4 +91,9 @@ dependencies {
     implementation("io.coil-kt:coil-video:2.7.0")
     // Lightweight SLF4J binding so Ktor's logging initialises cleanly on device.
     implementation("org.slf4j:slf4j-simple:2.0.16")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

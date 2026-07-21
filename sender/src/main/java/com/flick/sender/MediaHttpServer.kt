@@ -32,7 +32,6 @@ import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.Semaphore
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -79,7 +78,7 @@ class MediaHttpServer(context: Context) {
      */
     private data class ServedSession(val uri: Uri, val token: String)
 
-    private val servedSession = AtomicReference<ServedSession?>(null)
+    private val servedSession = AtomicMediaSession<ServedSession>()
 
     // The LAN IP the socket is bound to; the video handler pins the request Host
     // to this literal to reject DNS-rebinding. Read on every request thread.
@@ -98,7 +97,7 @@ class MediaHttpServer(context: Context) {
         synchronized(lock) {
             // Publish the new session target atomically before (re)binding so no request
             // can observe a live socket with a stale token/URI (or a mismatched pair).
-            servedSession.set(ServedSession(uri, token))
+            servedSession.publish(ServedSession(uri, token))
 
             val running = server
             if (running != null && boundHost == bindHost) return
@@ -134,7 +133,7 @@ class MediaHttpServer(context: Context) {
     fun stop() {
         val engine: EmbeddedServer<*, *>?
         synchronized(lock) {
-            servedSession.set(null)
+            servedSession.clear()
             boundHost = null
             engine = server
             server = null
@@ -186,7 +185,7 @@ class MediaHttpServer(context: Context) {
         // pair is always consistent (no TOCTOU across a retarget). Constant-time compare,
         // and answer any miss (no session, wrong/absent token) with an identical 404 so
         // a probe learns nothing about whether a valid token exists.
-        val served = servedSession.get()
+        val served = servedSession.snapshot()
         if (served == null || pathToken == null ||
             !MessageDigest.isEqual(pathToken.toByteArray(), served.token.toByteArray())
         ) {
@@ -319,10 +318,10 @@ class MediaHttpServer(context: Context) {
             throw e
         } catch (e: IOException) {
             // Typically the TV closed the connection mid-transfer (seek/stop).
-            Log.d(TAG, "Streaming stopped: ${e.message}")
+            Log.d(TAG, "Streaming stopped")
         } catch (e: Exception) {
             // Revoked URI grant, etc. Never let it take down the server.
-            Log.w(TAG, "Streaming failed for $uri", e)
+            Log.w(TAG, "Streaming failed")
         } finally {
             TransferTelemetry.exitTransfer()
         }

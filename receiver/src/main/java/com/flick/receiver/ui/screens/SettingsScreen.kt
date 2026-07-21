@@ -13,6 +13,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,10 +44,12 @@ fun SettingsScreen(
     metricsEnabled: Boolean,
     onRename: () -> Unit,
     onToggleMetrics: () -> Unit,
+    onForgetAll: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val metricsFocus = remember { FocusRequester() }
+    var confirmForget by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { runCatching { metricsFocus.requestFocus() } }
 
     Box(
@@ -103,6 +108,19 @@ fun SettingsScreen(
                     summary = stringResource(R.string.settings_metrics_summary),
                 )
                 ToggleGlyph(enabled = metricsEnabled)
+            }
+
+            FlickTvRow(
+                onClick = {
+                    if (confirmForget) onForgetAll() else confirmForget = true
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                LabeledColumn(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(R.string.settings_forget_all),
+                    summary = stringResource(if (confirmForget) R.string.settings_forget_all_confirm else R.string.settings_forget_all_summary),
+                )
             }
 
             Box(Modifier.padding(top = 10.dp)) {

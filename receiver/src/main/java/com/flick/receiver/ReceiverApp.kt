@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,8 +48,11 @@ import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.flick.receiver.net.ControlServer
 import com.flick.receiver.net.LanAddress
+import com.flick.receiver.net.LanBindingMonitor
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.net.PairingManager
+import com.flick.receiver.net.PairingSurface
+import com.flick.receiver.net.ReceiverBindingGate
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackFrame
@@ -71,6 +75,7 @@ import com.flick.receiver.ui.theme.OverscanSafe
 import com.flick.receiver.util.RefreshRateHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 
 /** Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). */
@@ -89,38 +94,47 @@ fun ReceiverApp(window: Window) {
 
     val controller = remember { PlayerController(context) }
     val pairing = remember { PairingManager(context) }
+    val pairingSnapshot by pairing.snapshot.collectAsState()
     val nsd = remember { NsdAdvertiser(context) }
+    val lanMonitor = remember { LanBindingMonitor(context) }
     val scope = rememberCoroutineScope()
     val playbackFlow = remember { MutableStateFlow(PlaybackFrame.IDLE) }
+    var lifecycleStarted by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    }
+    val bindingGate = remember { ReceiverBindingGate(lifecycleStarted) }
     val session = remember {
         SessionController(
             controller = controller,
             scope = scope,
             lifecycleStarted = {
-                lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                lifecycleStarted
             },
         )
     }
     val server = remember { ControlServer(pairing, session, { playbackFlow.value }) }
-
     var boundHost by remember { mutableStateOf<String?>(null) }
     var boundPort by remember { mutableStateOf(-1) }
     var tvName by remember { mutableStateOf(pairing.tvName) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
+    // Movable content preserves the same AndroidView/Surface across the opaque
+    // preparing overlay and the visible playback chrome.
+    val playerSurface = remember(controller) {
+        movableContentOf {
+            PlayerSurface(
+                controller = controller,
+                onViewAvailable = { playerView = it },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
 
     var showSettings by remember { mutableStateOf(false) }
-    var forcePairing by remember { mutableStateOf(false) }
     var metricsEnabled by rememberSaveable { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
 
-    // Pairing state read from private storage. Mirrored into Compose state (below)
-    // because the pairing write happens off-composition on a control thread; the
-    // poll loop republishes it so the UI reacts when a phone pairs.
-    var paired by remember { mutableStateOf(pairing.isPaired()) }
-    var pairedLabel by remember { mutableStateOf(pairing.pairedLabel()) }
-    var pairCode by remember { mutableStateOf(pairing.currentCode()) }
 
     val playFocus = remember { FocusRequester() }
     // Holds D-pad focus while the transport chrome is hidden, so the remote never
@@ -130,35 +144,62 @@ fun ReceiverApp(window: Window) {
     // Player lifecycle (preserved): create on ON_START, release decoder on ON_STOP,
     // terminal release + control server + NSD teardown on dispose (no leaks).
     DisposableEffect(lifecycleOwner) {
+        lanMonitor.start()
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> {
+                    lifecycleStarted = true
+                    bindingGate.onForeground()
                     controller.onStart()
+                    pairing.onForeground()
                     if (boundPort > 0) {
-                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY)
+                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                     }
                 }
                 Lifecycle.Event.ON_STOP -> {
+                    // Stop reconciliation before it can rebind/advertise a released player.
+                    lifecycleStarted = false
+                    bindingGate.onBackground()
+                    pairing.onBackground()
+                    val teardown = session.forceLocalTeardown()
+                    teardown.castId?.let { server.sendTerminal(it, com.flick.receiver.net.CastFailureCode.TV_BACKGROUNDED, false, beforeReady = teardown.beforeReady) }
                     controller.onStop()
                     // Publish a terminal sample so the phone stops rendering a
                     // healthy, playing, frozen playhead while the decoder is
                     // released and the TV is backgrounded (the state feed keeps
                     // emitting whatever value this flow holds).
                     playbackFlow.value = PlaybackFrame.IDLE
-                    if (boundPort > 0) {
-                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_SLEEPING)
-                    }
+                    // No control is advertised or accepted while the decoder is released.
+                    nsd.unregister()
+                    server.stop()
+                    boundHost = null
+                    boundPort = -1
                 }
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        controller.onStart()
+        if (lifecycleStarted) controller.onStart()
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            lifecycleStarted = false
+            bindingGate.onBackground()
+            session.forceLocalTeardown()
             controller.release()
             server.stop()
             nsd.unregister()
+            lanMonitor.stop()
+        }
+    }
+
+    // A connectivity callback forces a fresh bind even when DHCP restores the same IPv4.
+    LaunchedEffect(lanMonitor, lifecycleStarted) {
+        if (!lifecycleStarted || !bindingGate.mayBindOrAdvertise()) return@LaunchedEffect
+        lanMonitor.changed.drop(1).collect {
+            if (boundHost != null) {
+                session.forceLocalTeardown()
+                server.stop(); nsd.unregister(); boundHost = null; boundPort = -1
+            }
         }
     }
 
@@ -166,11 +207,27 @@ fun ReceiverApp(window: Window) {
     // polling until the LAN IP is available and re-binding whenever it changes.
     // A one-shot bring-up left the TV undiscoverable forever when the app opened
     // before Wi-Fi associated, or bound to a dead IP after a DHCP lease change.
-    LaunchedEffect(Unit) {
-        while (isActive) {
+    LaunchedEffect(lifecycleStarted) {
+        while (isActive && lifecycleStarted && bindingGate.mayBindOrAdvertise()) {
             val host = LanAddress.current()
+            if (host == null && boundHost != null) {
+                session.forceLocalTeardown()
+                server.stop()
+                nsd.unregister()
+                boundHost = null
+                boundPort = -1
+            }
             if (host != null && host != boundHost) {
-                // server.start() stops any previous binding before rebinding.
+                // A new address is a control-loss boundary, even when the old
+                // address still exists. Invalidate the cast before advertising a
+                // new endpoint so an A callback cannot reach a re-bound server.
+                if (boundHost != null) {
+                    session.forceLocalTeardown()
+                    server.stop()
+                    nsd.unregister()
+                    boundHost = null
+                    boundPort = -1
+                }
                 val port = runCatching { server.start(host) }.getOrDefault(-1)
                 if (port > 0) {
                     boundHost = host
@@ -180,6 +237,7 @@ fun ReceiverApp(window: Window) {
                         port = port,
                         model = Build.MODEL ?: "Android TV",
                         state = NsdAdvertiser.STATE_READY,
+                        tvId = pairing.tvId,
                     )
                 }
             }
@@ -199,11 +257,7 @@ fun ReceiverApp(window: Window) {
                 if (frame.phase == PlaybackPhase.Error) session.onFatalPlaybackError()
                 if (tick % 5 == 0) {
                     snapshot = controller.snapshot()
-                    // Republish pairing state (mutableStateOf ignores equal writes,
-                    // so this only recomposes when it actually changes).
-                    paired = pairing.isPaired()
-                    pairedLabel = pairing.pairedLabel()
-                    pairCode = pairing.currentCode()
+                    pairing.tick()
                 }
                 tick++
                 delay(100L)
@@ -213,33 +267,29 @@ fun ReceiverApp(window: Window) {
 
     val frame by playbackFlow.collectAsState()
     val stage = session.stage
+    val surfaceMode = playerSurfaceMode(stage)
 
     // Let the session push TV→phone `error` frames through the live control
     // socket (preflight/backgrounded/fatal → phone S12 instead of a frozen UI).
-    LaunchedEffect(server, session) { session.attachErrorChannel(server::sendError) }
-
-    // Gate code-pairing on the pairing screen actually being displayed, so the
-    // 4-digit code is never attackable while shown to no one (idle/playing).
-    val pairScreenShown = stage == MediaStage.None && !showSettings && (forcePairing || !paired)
-    LaunchedEffect(pairScreenShown) { server.acceptingPairings = pairScreenShown }
+    LaunchedEffect(server, session) { session.attachTerminal(server::sendTerminal); session.attachReady(server::sendReady) }
 
     // Return to baseline between casts: drop the detached PlayerView (+ its
     // SurfaceView) once the session leaves Active rather than holding it for hours.
-    LaunchedEffect(stage) {
-        if (stage != MediaStage.Active) playerView = null
+    LaunchedEffect(surfaceMode) {
+        if (surfaceMode == PlayerSurfaceMode.Hidden) playerView = null
     }
 
     // With chrome hidden there is no focusable transport, so park focus on the
     // root catcher; any D-pad press then re-summons the chrome (see rootKeys).
     LaunchedEffect(stage, chromeVisible) {
-        if (stage == MediaStage.Active && !chromeVisible) {
+        if (stage is MediaStage.Active && !chromeVisible) {
             runCatching { rootFocus.requestFocus() }
         }
     }
 
     // Quality flourish (T8): show briefly whenever a fresh session becomes active.
     LaunchedEffect(stage) {
-        if (stage == MediaStage.Active) {
+        if (stage is MediaStage.Active) {
             showQuality = true
             delay(4500L)
             showQuality = false
@@ -267,13 +317,13 @@ fun ReceiverApp(window: Window) {
         }
     }
 
-    val deviceLabel = pairedLabel
+    val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
 
     // Root: media transport keys are tunnelled so the remote drives playback no
     // matter what holds D-pad focus; any key reveals the chrome.
     val rootKeys = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        val active = stage == MediaStage.Active
+        val active = stage is MediaStage.Active
         if (active) session.pokeChrome()
         when (event.key) {
             Key.MediaFastForward -> { session.onSkip(15_000L); true }
@@ -295,14 +345,15 @@ fun ReceiverApp(window: Window) {
     // TV Back convention: dismiss the top surface rather than kill the app + the
     // whole cast (finish() would release the player and tear down the servers).
     BackHandler(
-        enabled = showSettings || forcePairing ||
-            stage == MediaStage.Active || stage is MediaStage.Error,
+        enabled = showSettings || pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked ||
+            stage is MediaStage.Checking || stage is MediaStage.Preparing || stage is MediaStage.Active || stage is MediaStage.Error,
     ) {
         when {
             showSettings -> showSettings = false
-            forcePairing -> forcePairing = false
-            stage == MediaStage.Active && chromeVisible -> chromeVisible = false
-            stage == MediaStage.Active -> session.backToStandby()
+            pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
+            stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
+            stage is MediaStage.Active && chromeVisible -> chromeVisible = false
+            stage is MediaStage.Active -> if (!server.stopLocalCast()) session.backToStandby()
             stage is MediaStage.Error -> session.backToStandby()
         }
     }
@@ -314,10 +365,10 @@ fun ReceiverApp(window: Window) {
                 .background(FlickColor.Canvas)
                 .then(rootKeys)
                 .focusRequester(rootFocus)
-                .focusable(enabled = stage == MediaStage.Active && !chromeVisible),
+                .focusable(enabled = stage is MediaStage.Active && !chromeVisible),
         ) {
             when (stage) {
-                MediaStage.Active -> {
+                is MediaStage.Active -> if (surfaceMode == PlayerSurfaceMode.VisiblePlayback) {
                     PlaybackScreen(
                         playing = frame.playing,
                         phase = frame.phase,
@@ -337,13 +388,7 @@ fun ReceiverApp(window: Window) {
                         onForward10 = { session.onSkip(10_000L) },
                         onSetVolume = { session.onSetVolume(it) },
                         playFocusRequester = playFocus,
-                    ) {
-                        PlayerSurface(
-                            controller = controller,
-                            onViewAvailable = { playerView = it },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
+                    ) { playerSurface() }
                     if (metricsEnabled) {
                         MetricsOverlay(
                             snapshot = snapshot,
@@ -354,14 +399,13 @@ fun ReceiverApp(window: Window) {
                     }
                 }
 
-                MediaStage.Checking -> ConnectingScreen()
+                is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) ConnectingScreen { playerSurface() }
 
                 is MediaStage.Error -> ErrorScreen(
                     kind = stage.kind,
                     deviceLabel = deviceLabel,
-                    // Both primaries re-probe: "Try again" now, "Keep waiting"
-                    // retries until the phone is back (the position is held).
-                    onPrimary = { session.retry() },
+                    // A failed v2 cast must get a fresh sender cast ID/token.
+                    onPrimary = null,
                     onSecondary = { session.backToStandby() },
                 )
 
@@ -372,39 +416,48 @@ fun ReceiverApp(window: Window) {
                     when {
                         showSettings -> SettingsScreen(
                             tvName = tvName,
-                            pairedSummary = deviceLabel
-                                ?: stringResource(R.string.settings_paired_none),
+                            pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
+                                else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
                             metricsEnabled = metricsEnabled,
                             onRename = {
                                 val next = nextName(tvName)
                                 pairing.tvName = next
                                 tvName = next
                                 if (boundPort > 0) {
-                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY)
+                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                                 }
                             },
                             onToggleMetrics = { metricsEnabled = !metricsEnabled },
+                            onForgetAll = {
+                                if (server.forgetAllPairings()) showSettings = false
+                            },
                             onDone = { showSettings = false },
                         )
 
-                        forcePairing || !paired -> PairScreen(
+                        pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked || pairingSnapshot.pairedCount == 0 -> PairScreen(
                             tvName = tvName,
-                            code = pairCode,
-                            qrPayload = pairing.qrPayload(boundHost ?: "", boundPort),
+                            code = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: "—",
+                            qrPayload = pairing.qrPayload(),
+                            host = boundHost ?: "",
+                            port = boundPort,
                             networkReady = boundHost != null && boundPort > 0,
                             onRename = {
                                 val next = nextName(tvName)
                                 pairing.tvName = next
                                 tvName = next
                                 if (boundPort > 0) {
-                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY)
+                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                                 }
                             },
                         )
 
+                        pairingSnapshot.surface is PairingSurface.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(stringResource(R.string.pair_success), fontSize = 32.sp, color = FlickColor.OnSurface)
+                        }
+
                         else -> IdleScreen(
                             pairedLabel = deviceLabel,
-                            onPairAnother = { forcePairing = true },
+                            onPairAnother = { pairing.requestOpen() },
                             onOpenSettings = { showSettings = true },
                         )
                     }
@@ -413,37 +466,40 @@ fun ReceiverApp(window: Window) {
         }
     }
 
-    // A pairing screen forced from Idle returns to Idle once a new phone attaches.
-    LaunchedEffect(forcePairing, stage) {
-        if (forcePairing && stage != MediaStage.None) forcePairing = false
+    LaunchedEffect(pairingSnapshot.surface) {
+        if (pairingSnapshot.surface is PairingSurface.Success) { delay(1_500); pairing.finishSuccess() }
     }
 }
 
 @Composable
-private fun ConnectingScreen() {
+private fun ConnectingScreen(videoContent: @Composable () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(FlickColor.Canvas),
-        contentAlignment = Alignment.Center,
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+        videoContent()
+        Box(
+            modifier = Modifier.fillMaxSize().background(FlickColor.Canvas),
+            contentAlignment = Alignment.Center,
         ) {
-            FlickWordmark()
-            Text(
-                text = stringResource(R.string.connecting_title),
-                fontFamily = FlickType.Display,
-                fontWeight = FontWeight.Bold,
-                fontSize = 34.sp,
-                color = FlickColor.OnSurface,
-            )
-            Text(
-                text = stringResource(R.string.connecting_detail),
-                fontSize = 24.sp,
-                color = FlickColor.OnSurfaceDim,
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                FlickWordmark()
+                Text(
+                    text = stringResource(R.string.connecting_title),
+                    fontFamily = FlickType.Display,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 34.sp,
+                    color = FlickColor.OnSurface,
+                )
+                Text(
+                    text = stringResource(R.string.connecting_detail),
+                    fontSize = 24.sp,
+                    color = FlickColor.OnSurfaceDim,
+                )
+            }
         }
     }
 }
@@ -484,6 +540,14 @@ private fun isDpadKey(key: Key): Boolean =
     key == Key.DirectionLeft || key == Key.DirectionRight ||
         key == Key.DirectionUp || key == Key.DirectionDown ||
         key == Key.DirectionCenter || key == Key.Enter
+
+internal enum class PlayerSurfaceMode { Hidden, CoveredConnecting, VisiblePlayback }
+
+internal fun playerSurfaceMode(stage: MediaStage): PlayerSurfaceMode = when (stage) {
+    is MediaStage.Checking, is MediaStage.Preparing -> PlayerSurfaceMode.CoveredConnecting
+    is MediaStage.Active -> PlayerSurfaceMode.VisiblePlayback
+    else -> PlayerSurfaceMode.Hidden
+}
 
 private fun qualityInfo(s: DiagnosticsSnapshot): QualityInfo {
     // Honest quality read: real resolution + the HDR class actually being decoded

@@ -27,6 +27,16 @@ data class WifiLinkInfo(
  */
 object NetworkUtils {
 
+    fun isOwnedLanIpv4(ip: String): Boolean {
+        if (!com.flick.sender.net.PairLaunch.isCanonicalIpv4(ip)) return false
+        return try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return false
+            interfaces.asSequence().filter { it.isUp && !it.isLoopback && !it.isVirtual }.any { nif ->
+                nif.inetAddresses.asSequence().filterIsInstance<Inet4Address>().any { it.hostAddress == ip }
+            }
+        } catch (_: Exception) { false }
+    }
+
     /**
      * Returns this device's site-local IPv4 address (RFC 1918: 10/8, 172.16/12,
      * 192.168/16) that a TV on the same LAN can reach, or `null` if the phone

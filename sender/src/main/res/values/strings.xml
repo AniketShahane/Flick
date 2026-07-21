@@ -5,8 +5,8 @@
     <!-- Foreground-service notification. -->
     <string name="notif_channel_name">Casting server</string>
     <string name="notif_channel_desc">Keeps the LAN media server alive while your TV plays.</string>
-    <string name="notif_title">Flick is serving your video</string>
-    <string name="notif_text_serving">Streaming over Wi-Fi. Tap to manage.</string>
+    <string name="notif_title">Flick direct-play</string>
+    <string name="notif_text_serving">Direct-play server active</string>
     <string name="notif_action_stop">Stop</string>
 
     <!-- Server errors surfaced by the foreground service. -->
@@ -47,11 +47,11 @@
     <string name="pair_code_heading">Enter the code on %1$s</string>
     <string name="pair_code_sub">It\'s the 4-digit code on your TV screen.</string>
     <string name="pair_connect">Connect</string>
-    <string name="manual_heading">Enter TV address</string>
+    <string name="manual_heading">Enter all three values shown on your TV</string>
     <string name="manual_host_label">TV IP address</string>
     <string name="manual_port_label">Control port</string>
-    <string name="manual_code_label">Code (if shown)</string>
-    <string name="manual_connect">Connect</string>
+    <string name="manual_code_label">4-digit code</string>
+    <string name="manual_connect">Pair</string>
 
     <!-- S2 · Empty state. -->
     <string name="empty_title">Nothing to flick yet</string>
@@ -82,11 +82,22 @@
     <string name="connecting_step_found">Found on your network</string>
     <string name="connecting_step_handshake">Shaking hands over your LAN</string>
     <string name="connecting_step_directplay">Confirming direct-play</string>
+    <string name="connecting_step_prepare">Preparing the original video on this phone</string>
+    <string name="connecting_step_checking">TV is checking direct-play</string>
+    <string name="connecting_step_starting">Starting hardware playback</string>
+    <string name="connecting_cancel">Cancel</string>
     <string name="connecting_status">Connecting · usually under 2 s</string>
 
     <!-- Pairing outcome messages (mapped from a PairErrorKind, never raw exception text). -->
     <string name="pair_error_code">That code didn\'t match. Check the TV and try again.</string>
     <string name="pair_error_unreachable">Couldn\'t reach that TV.</string>
+    <string name="pair_error_invalid">Enter the current host, port, and four-digit code exactly as shown on your TV.</string>
+    <string name="pair_error_update">Update Flick on your TV, then try again.</string>
+    <string name="pair_error_qr">This QR code cannot be used. Update Flick on both devices and scan the current TV code.</string>
+    <string name="pair_error_pair_required">This TV needs pairing first. Scan its QR, then enter the host, port, and code shown on screen.</string>
+    <string name="pair_error_storage">Flick couldn’t save this pairing on your phone. Check storage, then pair again with the current TV code.</string>
+    <string name="sender_device_generic">Phone</string>
+    <string name="media_title_generic">Video</string>
 
     <!-- S6–S9 · Now Playing / Paused / Seeking / Buffering. -->
     <string name="syncing">SYNCING…</string>

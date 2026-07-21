@@ -17,12 +17,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -30,29 +30,46 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.flick.sender.net.FlickController
+import com.flick.sender.net.IncomingPairEvent
+import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.screens.FlickApp
 import com.flick.sender.ui.theme.FlickTheme
 
 class MainActivity : ComponentActivity() {
+    private val pairEvents = kotlinx.coroutines.flow.MutableStateFlow<IncomingPairEvent?>(null)
+    private var nextPairEventId = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        acceptPairIntent(intent)
         setContent {
             FlickTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    FlickRoot()
+                    FlickRoot((application as FlickApplication).coordinator, pairEvents) { pairEvents.value = null }
                 }
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        acceptPairIntent(intent)
+    }
+
+    /** Intent data is erased before composition has a chance to observe task state. */
+    private fun acceptPairIntent(incoming: Intent?) {
+        val raw = incoming?.data
+        val sanitized = incoming?.let { Intent(it).apply { data = null } }
+        if (incoming != null) incoming.data = null
+        setIntent(sanitized)
+        if (raw != null) pairEvents.value = IncomingPairEvent(++nextPairEventId, PairLaunch.parse(raw))
+    }
 }
 
 @Composable
-private fun FlickRoot() {
+private fun FlickRoot(controller: com.flick.sender.net.CastCoordinator, events: kotlinx.coroutines.flow.StateFlow<IncomingPairEvent?>, acknowledge: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val controller = remember { FlickController(context.applicationContext, scope) }
+    val event by events.collectAsState()
 
     // POST_NOTIFICATIONS (API 33+) so the foreground-service notification shows.
     val notifLauncher = rememberLauncherForActivityResult(
@@ -77,6 +94,10 @@ private fun FlickRoot() {
         }
     }
 
+    LaunchedEffect(event?.eventId) {
+        event?.let { controller.acceptPairLaunch(it); acknowledge() }
+    }
+
     // Battery-exemption state, re-checked on resume so the advisory clears once granted.
     var batteryExempt by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -88,10 +109,6 @@ private fun FlickRoot() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { controller.dispose() }
     }
 
     FlickApp(

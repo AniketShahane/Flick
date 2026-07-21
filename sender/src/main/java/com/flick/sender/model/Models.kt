@@ -34,6 +34,8 @@ data class DiscoveredTv(
     val name: String,
     val host: String,
     val port: Int,
+    val tvId: String? = null,
+    val protocolVersion: Int? = null,
     val model: String?,
     val state: TvAvailability,
 )
@@ -71,3 +73,10 @@ data class PlaybackUiState(
 
 /** Which error face S12 shows. */
 enum class CastErrorKind { REACHABLE_NOT_SERVING, UNREACHABLE, NO_LAN, GENERIC }
+
+/** Stable terminal taxonomy retained alongside the friendly error face. */
+data class CastFailure(
+    val code: String,
+    val retryable: Boolean,
+    val httpStatus: Int? = null,
+)

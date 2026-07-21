@@ -1,213 +1,106 @@
 # Flick — implementation reference
 
-What is actually built, why each piece exists, and what was measured on real
-hardware. Companion docs: [`../README.md`](../README.md) (build & run),
-[`../research/`](../research/) (the network research that drove the design),
-[`../casting-app-plan.md`](../casting-app-plan.md) (original plan).
+This document describes the implemented v2 pair-to-play path. The binding schemas and timing rules are in [control-channel.md](design/control-channel.md), with executable reference bytes in [control-v2-fixtures.md](design/control-v2-fixtures.md). Direct-play remains the product invariant: Flick never transcodes or screen-mirrors.
 
-Verified end-to-end on a Samsung Galaxy S25 Ultra (sender) → Google TV Streamer
-2024 (receiver), same home Wi-Fi (5 GHz, same AP), **no hotspot, no Ethernet**.
+## Validation status
 
-## The core thesis
+Both modules are synchronized at `versionCode=2` / `versionName=0.2.0`. As of 2026-07-20, all 29 sender and 38 receiver JVM unit tests pass and the required synchronized build produces both debug APKs.
 
-For a user's **own local files**, never transcode and never screen-mirror. The
-phone serves the original file bytes over HTTP with byte-range support; the TV
-pulls exactly the slices it wants and decodes them in **hardware**. If the
-network can move the bits, playback is glass-smooth — everything else in this
-repo exists to (a) prove that, (b) keep the network path from silently
-degrading, and (c) tell the user *precisely* what is wrong when it can't.
+The JVM tests cover focused pure/helper seams; they do not execute the production `SharedPreferences` stores, Ktor client/server sockets, Activity intent/lifecycle integration, or a Media3 hardware decoder. No Android instrumentation result is claimed. No v2 APK pair has been installed and exercised on a real phone/TV for this release. System-camera cold/warm launch, actual pairing/resume, first-frame delivery, lifecycle/LAN transitions, and sustained 4K/Dolby Vision remain device-acceptance work. Earlier manual direct-play measurements are a transport/tuning baseline, not v2 validation.
 
-```
-┌─────────────── phone (:sender) ───────────────┐        ┌────────────── TV (:receiver) ──────────────┐
-│ Photo Picker → content:// URI                 │        │ Pre-flight probe (TCP + ranged GET)         │
-│ Ktor CIO HTTP server LAN IP :8080             │  LAN   │  └─ ok → ExoPlayer (Media3) direct-play     │
-│  GET/HEAD /v/{token} (byte-range, 206/416)    │ ─────► │     hardware decode only, 15s–180s buffer   │
-│  GET /ping → "ok"                             │  http  │     bounded auto-recovery + retry policy    │
-│ Foreground service + WifiLock + WakeLock      │        │ Live diagnostics overlay (the truth source) │
-│ Transfer telemetry + band warning             │        │ Media-key seeking (±15 s / ±5 min)          │
-└───────────────────────────────────────────────┘        └─────────────────────────────────────────────┘
+## Architecture
+
+```text
+phone (:sender)                                           TV (:receiver)
+content:// media ── CastServerService ── HTTP ranges ──> Media3 hardware decoder
+       ^                   :8080 /v/<token>                    ^
+       |                  exact owned peer IP                   |
+       └──── application CastCoordinator <── WebSocket v2 ──────┘
+                                                    control server
 ```
 
-## HTTP contract
+The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/`FileChannel`; it does not cache or copy the whole file. The TV's Ktor CIO WebSocket server carries pairing/control/state only and cannot browse files or request arbitrary URLs.
 
-The sender binds its **LAN IP** on `:8080` (not `0.0.0.0`) and both sides agree exactly on:
+## Media HTTP contract
 
-| Endpoint | Behavior |
+`CastServerService` creates a fresh 128-bit URL-safe token per start and binds port 8080 on the exact currently owned RFC1918 address observed by the authenticated TV. `MediaHttpServer` publishes URI and token as one immutable atomic session so retargeting cannot mix an old authorization token with a new source.
+
+| Endpoint | Implemented behavior |
 |---|---|
-| `GET /v/{token}` | Gated by the per-session token (constant-time compare; any miss → an identical `404`) and a `Host` header equal to the bound LAN IP (anti-DNS-rebinding; else `403`). Then full byte-range support: `Accept-Ranges: bytes`; `Range: bytes=a-b` → `206` + `Content-Range`; unsatisfiable → `416`; malformed → `200` full body; correct `Content-Type`/`Content-Length`. Concurrent GET bodies are capped (`503` beyond the limit). |
-| `HEAD /v/{token}` | Same token/Host gate + headers, no body (ExoPlayer and probes use it); not counted against the transfer cap. |
-| `GET /ping` | `ok` — cheap **unauthenticated** liveness check for humans and probes (serves no file bytes). |
+| `GET /v/{token}` | Bound-host `Host` check, constant-time token check, identical `404` for absent/wrong session, MIME/length headers, full or single-range streaming, `206`/`416`, malformed-range fallback to full `200`, and at most four concurrent response bodies (`503` beyond the cap). |
+| `HEAD /v/{token}` | Same Host/token and range semantics, headers only, outside the body-transfer cap. |
+| `GET /ping` | Unauthenticated `ok` liveness response; it exposes no media bytes. |
 
-Serving streams slices straight out of a `ParcelFileDescriptor` via
-`FileChannel.position(start)` — no copy of the file is ever made, so an 8 GB
-file costs no storage and starts serving instantly.
+The service uses `WIFI_MODE_FULL_HIGH_PERF` and a six-hour-bounded partial wake lock while it owns the source. The foreground notification is private, contains generic direct-play status only, and carries a unique immutable Stop intent for its `castId`. Latest-start/resource ownership gates prevent delayed A startup/failure/stop from publishing, releasing, or stopping B. `START_NOT_STICKY` and unknown intents never reconstruct a cast.
 
-## Control channel, discovery & pairing (redesign)
+## Launch and initial pairing
 
-The front-end redesign turns the phone into a **remote** and adds the synchronized phone↔TV scrub.
-That needs the TV to accept inbound control, so alongside the media path there is now a **second
-server — a control server on the TV** (Ktor CIO + WebSocket). The phone is the control **client**.
-The full wire contract is `docs/design/control-channel.md`; the essentials:
+The TV QR payload is exactly `flick://pair?v=2`. The sender's `singleTask` activity routes both `onCreate` and `onNewIntent` through one ingress. It copies the URI locally, clears both incoming and stored intent data synchronously, parses only the copy, and publishes an unsaved process-local event. A valid event keys a new empty host/port/code form; it does not prefill or connect.
 
-- **Discovery (NSD/mDNS):** the TV advertises `_flick._tcp.` (name, `model`, `v`, `state` TXT); the
-  phone browses and lists nearby TVs with live status. Manual address entry survives as a fallback.
-- **Pairing:** first connect, the TV shows a **4-digit code** (and an equivalent QR); the phone
-  supplies it (typed, or manual). The gate is hardened like the media server: bound to the TV's LAN
-  IP (never `0.0.0.0`), `Host`-pinned, constant-time compare, a **failed-attempt cap + escalating
-  lockout + code rotation**, an **auth deadline**, and a **cap on unauthenticated connections**.
-  Success mints a persistent per-phone key so later connects are one-tap (`resume`).
-- **Control WebSocket** (`ws://<tvIp>:<ctrlPort>/control`, compact JSON via `org.json`): phone→TV
-  `loadMedia/play/pause/seek/skip/setVolume/stop`; TV→phone `state{posMs,durationMs,playing,`
-  `bufferedMs,phase,volume,seq}` at ~10 Hz plus `paired/denied/error/pong`. `loadMedia` is validated
-  to exactly `http://<paired-phone>:<port>/v/<url-safe-token>` — the control surface carries **only
-  playback verbs**, never file access. A single active session is enforced with a mutex + generation
-  counter; `install(WebSockets)` ping/timeout reaps a vanished phone.
-- **The hero (optimistic/ghost):** the phone renders a **solid** target playhead (moves instantly
-  with the thumb) and a **ghost ○** confirmed playhead (last TV `state.posMs`); on a hiccup the
-  ghost trails with a "SYNCING…" shimmer, and on release reconciles to target with `syncSpring`.
-  Cross-surface commands (a TV D-pad seek/pause) arrive as `state` frames the phone animates to.
+Host entry accepts canonical dotted-decimal RFC1918 IPv4 only; port is canonical decimal `1..65535`; code is exactly four ASCII digits. Manual Connect uses the same full form. Unpaired NSD results are advisory and cannot supply a target.
 
-The media direct-play path above is **unchanged** by all of this. The redesigned Compose UI (both
-apps) is specified in `docs/design/design-tokens.md` + `docs/design/redesign-plan.md`.
+The sender opens the typed endpoint and sends `negotiate(v=2,minV=2,maxV=2)` with a fresh nonce. It sends `pair` only after the exact strict `negotiated` response, so an old receiver cannot consume the code during version detection. A valid `paired` result is durable before routing away.
 
-## Sender (`:sender`, phone)
+`PairingManager` is the receiver's sole authorization/UI source. An Open code is stable for five minutes and valid only while displayed. Four global failures retain it; failure five begins a 30-second lockout, with rounds doubling to an eight-minute maximum. The global round/deadline survives process restart; per-host state is bounded to 32 records and throttles a host for 10 seconds after three failures. Pair success atomically commits key/keyId/label, consumes the code, shows 1.5 seconds of Success, then returns to Standby without exposing a replacement code.
 
-| Piece | What it does |
-|---|---|
-| `MainActivity` | Compose UI: Photo-Picker video selection, serving state, live transfer stats, Wi-Fi band readout + **2.4 GHz warning**, battery-exemption card. |
-| `CastServerService` | Foreground service (`mediaPlayback` type) that owns the HTTP server for the whole session so serving survives screen-off and backgrounding. |
-| `MediaHttpServer` | The Ktor CIO server implementing the contract above; instruments every served chunk. |
-| `TransferTelemetry` | Thread-safe counters (atomics; zero allocation in the per-chunk hot path) → throughput EMA, total bytes, last-request age, in-flight request count, published as a `StateFlow` and rendered ~1 s in the UI. Answers the diagnostic question: *"did the TV stop asking, or did the phone stop serving?"* |
-| `NetworkUtils` | Site-local IPv4 discovery for the displayed URL; Wi-Fi link sampling (frequency → band, link speed, RSSI — never the SSID, which is both a privacy leak and a location-permission tax). |
+The receiver caps unauthenticated WebSockets at four and applies a six-second auth deadline. Malformed pre-auth input has a three-frame budget. Both sides enforce the 16 KiB decoded frame cap, unfragmented UTF-8 text/object input, duplicate/trailing-data rejection, exact fields/types/ranges, and no unknown v2 message types. Device, TV, and title labels are normalized to canonical single-line values before sending; the receiver rejects noncanonical control/format/whitespace variants rather than silently changing an authorization transcript or command.
 
-**Wireless hygiene (the #1 stall killer for phone-server casting apps):** while
-serving, the service holds a `WifiLock` (`WIFI_MODE_FULL_HIGH_PERF` — the
-`LOW_LATENCY` mode is only honored while the screen is ON, and this server must
-run full-rate with the screen OFF) plus a partial `WakeLock` (6 h safety
-timeout). Lock acquisition and the server start run as one generation-guarded
-critical section, so a Stop that races a Start can never leak a lock or
-resurrect an orphaned server; every teardown path releases both locks. A
-dismissible card offers the OS battery-optimization exemption
-(`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`) because OEM task-killers
-(Samsung especially) will otherwise kill even foreground services mid-movie.
+Closing/hiding the pairing surface invalidates its open generation immediately; a late pair attempt is generically denied. TV Settings implements confirmed **Forget all phones**: it stops/revokes the active controller, clears credentials only after the durable write succeeds, resets throttle/lockout state, and reopens visible first-run pairing.
 
-Manifest permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`,
-`FOREGROUND_SERVICE` (+`_MEDIA_PLAYBACK`), `POST_NOTIFICATIONS`, `WAKE_LOCK`,
-`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+## Resume, discovery, and persistence
 
-## Receiver (`:receiver`, Android TV)
+The receiver persists a random non-secret `tvId` and advertises `_flick._tcp.` with actual port plus TXT `v=2`, `id`, model, and state. The sender treats all resolved values as candidates. It tries the last mutually verified endpoint first, then at most three same-`tvId` candidates in deterministic host/port order.
 
-### Player configuration (`PlayerController`)
+Resume uses fresh 128-bit client/server nonces and HmacSHA256 over the frozen versioned, role-separated, length-prefixed transcript. The receiver consumes one challenge and compares the client proof in constant time. The sender verifies the server proof before marking the socket authenticated or committing endpoint/name changes. The 256-bit pairing key is transmitted only by initial `paired`, never by resume.
 
-Media3 ExoPlayer, built for LAN direct-play of large 4K files:
+An unauthenticated denial cannot erase key bytes. If all bounded candidates fail authentication/protocol verification, the record is marked `needsRepair` and automatic retry is suppressed; transport-only failure retains it for explicit retry. Replacing a v2 key tombstones the superseded key ID.
 
-| Setting | Value | Why |
-|---|---|---|
-| Renderers | Hardware only — decoder fallback **off**, extension renderers **off** | A hardware-decode failure must surface as a visible error, never silently fall back to software (which would mask the exact failure this app exists to expose). |
-| Min / max buffer | 15 s / **180 s** | A real-world ~70 s wireless outage drained the original 60 s cap and caused a 12 s stall; 180 s makes that entire class of event invisible. At typical 4K bitrates this is ~50–150 MB. |
-| Playback / post-rebuffer threshold | 2.5 s / 5 s | Fast start and fast seek resume. |
-| Byte target | 256 MB, `prioritizeTimeOverSizeThresholds(true)`, `largeHeap` | Time drives buffering on a fast LAN; the byte cap bounds memory for very-high-bitrate files. |
-| Back-buffer | **30 s**, keyframe-aligned | Short backward seeks replay from memory with zero network. |
-| HTTP source | connect 15 s, read 30 s, no cross-protocol redirects | A dead sender surfaces as an error instead of hanging. |
+Legacy v1 host records are handled conservatively. The sender can identify a canonical stored host and derive the deterministic non-secret legacy key ID locally, but it sends no legacy key or proof and performs no automatic challenge migration because the receiver has no safe legacy TV-ID lookup. The user re-pairs with current TV-displayed values. Only a successful visible v2 pair at the exact stored host writes the migration marker and retires that legacy record; a changed host always requires visible re-pairing and leaves no proof spray across discovery candidates.
 
-### Resilience (what makes plain Wi-Fi survivable)
+After either initial pairing or resume, the sender waits 250 ms for the receiver's immediate `busy(active_cast)` disposition. A busy result after a successful initial pair is represented internally as `PairedBusy` so the newly issued key/endpoint is durably preserved before the user sees the busy failure. Accepted residual P2: v2 has no positive `available` frame, so silence after 250 ms is treated as available. A late busy can cause brief sender UI/foreground-service churn, but receiver ownership is decided independently under its mutex and the second phone cannot take the cast. A future protocol revision may add an explicit `available|busy` result.
 
-1. **Generous retry policy** — a custom `LoadErrorHandlingPolicy` (base retry
-   count 20, backoff `min(1000·(n+1), 5000)` ms ≈ 100 s of quiet retrying):
-   every retry is a byte-range request, i.e. a perfect resume. It delegates to
-   Media3's default classification first so genuinely-fatal errors
-   (`ParserException` etc.) still fail fast, and 4xx responses (except 416)
-   fail immediately so the diagnosis UI takes over.
-2. **Bounded auto-recovery** — on a fatal-but-plausibly-transient error
-   (network/IO/timeout error codes, or Media3's `StuckPlayerException` anywhere
-   in the cause chain): silently `seekTo(last good position)` + `prepare()` on
-   the same player after a backoff (2 s → 4 s → 8 s → 15 s, max 4 attempts;
-   budget re-arms after 30 s of stable playback). Non-transient errors (4xx,
-   decoder init) go straight to the error UI. Pending recoveries are cancelled
-   on stop/release/backgrounding.
-3. **Pre-flight probe** — before playback ever starts: raw TCP connect (2 s)
-   then a real `Range: bytes=0-1023` GET (3 s). The result maps to a *specific*
-   diagnosis card instead of a generic spinner-then-timeout: **unreachable**
-   (router peer-block / AP isolation / wrong IP — with recovery advice),
-   **not serving** (phone reached, app not running — including a TCP-connected
-   server that won't answer HTTP), **server error N**, **bad URL** (including
-   out-of-range ports, which `java.net.URL` accepts silently). Probe latency is
-   surfaced in the overlay. The probe is lifecycle-gated so backgrounding
-   mid-probe can never start playback into a stopped activity.
+NSD failures clear listener state and schedule one bounded retry; stop cancels it. On TV, connectivity callbacks plus two-second address reconciliation tear down control/cast/NSD on loss or change, then bind and advertise a fresh endpoint while foregrounded—even when the restored DHCP address is unchanged.
 
-### Seeking
+## Cast ownership and sender startup
 
-- Media transport keys are tunneled at the Compose root (they work regardless
-  of which control holds D-pad focus): **FF/RW = ±15 s**, **next/previous =
-  ±5 min**, **play/pause** toggles. Targets are clamped to `[0, duration−1 s]`.
-- Seek-induced buffering is tracked as a **seek fill** (`DISCONTINUITY_REASON_SEEK`
-  opens a window; reaching `STATE_READY` closes it; in-buffer seeks that never
-  leave READY are closed after a 700 ms settle from the snapshot tick) and is
-  **never counted as a rebuffer**, so the zero-stall pass metric stays honest.
-- The overlay shows `Seeks / last fill` (count + how long the last seek took to
-  render).
+`FlickApplication` owns one main-immediate application scope and one `CastCoordinator`. Activities/Composables observe its flows and forward events; they do not own the cast/control socket. One pairing-attempt generation and one cast job prevent stale completions from committing.
 
-### Diagnostics overlay (the truth source)
+Each Flick action creates a random 128-bit `castId` and:
 
-~2 Hz snapshot of: state, resolution + 4K flag, frame rate, **rebuffers**
-(post-start only, seek-aware) + cumulative rebuffer time (ticking live),
-dropped frames, buffered-ahead, bandwidth estimate, decoder name (proof of
-hardware decode), **TV's own Wi-Fi band / link speed / RSSI** (driver-invalid
-values omitted; wired/unknown labeled as such), auto-recoveries, seeks/last
-fill, probe latency, position/duration, source URL, and full error details.
-Banner: **DIRECT-PLAY OK** ⇔ `rebuffers == 0 && dropped == 0 && buffer > 0`
-while playing; anything else flips it to DEGRADED/ERROR so a stall is
-impossible to miss.
+1. Uses an authenticated v2 socket, resuming the saved pairing first if necessary.
+2. Confirms receiver-observed `peerIp` is still owned by an up, non-loopback phone interface.
+3. Requires a `content:` item with positive known size; starts the source service for that cast and waits up to nine seconds for matching RUNNING/ERROR.
+4. Registers `loadAccepted`/`loadReady` waiters, sends `loadMedia`, waits up to two seconds for acceptance, then up to 18 more seconds for first-frame readiness.
+5. Enters Now Playing only when the matching current-generation `loadReady` arrives.
 
-Lifecycle: the decoder is released whenever the activity stops and rebuilt
-(URL + position restored) on start, so the hardware decoder is never held in
-the background; refresh-rate matching is applied when the content frame rate
-becomes known.
+Every non-ready path invalidates the cast generation, cancels waiters, best-effort sends `cancelLoad`, and sends a cast-correlated service Stop. The service clears its atomic media session and releases its socket/locks only when that generation still owns them. Retry is user initiated and creates a new cast ID/token.
 
-## Measured results (real hardware, 2026-07-19)
+## Receiver validation and playback
 
-Setup: 5.3 GB 4K Dolby Vision MKV, phone → TV over home Wi-Fi (both on the
-same 5 GHz AP, TV link 780 Mb/s @ −53 dBm), no hotspot, no Ethernet.
+Before adopting media, `ControlServer` strictly validates `loadMedia` and the canonical URL: HTTP, port 8080, raw `/v/<22-character-token>`, authenticated numeric peer host, and no user-info/query/fragment/percent encoding. `loadAccepted` is the synchronous adoption boundary and duplicates replay the retained accepted/ready/failed result.
 
-| Measurement | Result |
-|---|---|
-| Pre-flight probe | **81 ms** |
-| Playback | Hardware Dolby Vision decode (`c2.mtk.dvhe.sth.decoder`), **0 rebuffers, 0 dropped frames** |
-| Buffer fill | ~54 s buffered within ~12 s of pressing Play; climbs to the 180 s target (refill observed at **>120 Mb/s**) |
-| Cold seek **+5 min** (far outside buffer) | picture back in **1.9 s** |
-| Seek **−5 min** | **0.73 s** (1 frame dropped at the seek boundary) |
-| In-buffer skips (±15 s) | effectively instant (back-buffer / forward buffer) |
-| Screen-off serving | Sustained — `WifiLock` + `WakeLock` doing their job |
-| Absorbed real outage | A ~70 s wireless delivery gap drained the old 60 s buffer with only a 12 s stall and **zero errors** (retry policy healed it); motivated the 180 s buffer, under which the same event is invisible |
+`PreflightProbe` has one absolute monotonic six-second deadline. It spends at most two seconds on a raw TCP connect, then at most three seconds per HTTP blocking phase while a scheduled disconnect enforces the absolute end. It sends `Range: bytes=0-1023`, disables redirects, requires 206 plus exact `Content-Range`/`Content-Length`, reads exactly the advertised bytes, and performs one EOF read. Drip-feed, early/extra body, 200, all 3xx, 4xx/5xx, and incoherent range data fail safely.
 
-Network findings that shaped all of this live in [`../research/`](../research/):
-notably, the home-LAN "client isolation" failure was re-diagnosed as a
-**dynamic, pair-specific router-side peer block** (research 03), and the
-Google TV Streamer **does not declare `android.hardware.wifi.direct`**
-(feature check on the real unit), permanently ruling out an automatic
-Wi-Fi-Direct bypass on this hardware.
+For playback, each Media3 `DataSpec` creates one `HttpURLConnection` with `instanceFollowRedirects=false`; every 3xx is rejected before any second request. The video codec selector filters software codecs (`OMX.google.*`, `c2.android.*`, known software names, or API 29+ non-hardware entries), disables decoder fallback, and disables extension renderers.
 
-## Known limitations / next steps
+The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind an opaque Connecting overlay, then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
 
-- **Seek UI:** the Streamer's minimal remote has no FF/RW keys — an on-screen
-  scrub bar driven by the D-pad is the natural next receiver feature (the seek
-  engine underneath is done and measured).
-- **Discovery:** the phone's IP is typed manually on the TV. NSD/mDNS as a
-  hint plus QR pairing would remove that step (never as the transport check —
-  that's the probe's job).
-- **Security:** a per-session **token gates the media endpoint**, the socket
-  binds the **LAN IP only**, the handler **pins the `Host`** (anti-rebinding),
-  concurrent transfers are **capped**, and the **sender denies cleartext** (it
-  makes no outbound HTTP). Remaining Phase-1 work: **TLS** with an ephemeral
-  pinned cert (removes the receiver's cleartext allowance) and delivering the
-  token via **QR/pairing** instead of manual entry. Full model in
-  [`../SECURITY.md`](../SECURITY.md); the token is an interim until pairing lands.
-- **Android 16/17:** the Local Network Permission (`ACCESS_LOCAL_NETWORK`,
-  mandatory at targetSdk 37) will gate the sender's inbound server — needs an
-  explicit permission path distinct from the "unreachable" diagnosis.
-- **The router experiment** (research 03 §"discriminating experiment") hasn't
-  been run to completion: the dynamic peer block hasn't re-engaged since the
-  hardening landed. If it does, the probe + telemetry are built to catch and
-  classify it live.
-- The strict pass banner counts a single dropped frame at a seek boundary as
-  "degraded" — arguably the threshold should tolerate ~a frame per seek.
+After first frame, the existing player tuning remains: 15/180-second min/max forward buffer, 2.5-second initial threshold, five-second post-rebuffer threshold, 30-second back buffer, 256 MiB byte target, up to 20 load retries with five-second capped backoff, and four bounded fatal-transient recovery attempts at 2/4/8/15 seconds.
+
+## Lifecycle and structured failure
+
+Control connection, cast ID, and receiver cast generation guard every queued mutation. A new cast supersedes the old generation; stale callbacks/commands cannot mutate the new player. A WebSocket close calls the lease-guarded `onControlLost(generation)`, so a displaced/stale socket cannot tear down its successor. Activity background, LAN loss/change, and endpoint rebind use `forceLocalTeardown()` before server teardown because those local-authority events must clear the current cast regardless of socket lease. While preparing/active, a resumed phone receives proof-bearing `resumed` then `busy(active_cast)`; a newly paired phone receives `paired` then `busy`, preserving the key through the internal `PairedBusy` result. Neither can displace the owner.
+
+`stop(castId)` is the canonical terminal command for the current Checking/Preparing or Active cast. The receiver clears player/session ownership, sends cast-correlated `stopped`, and replays that retained result for a duplicate stop. The sender reducer treats matching `stopped` as terminal, runs cast-correlated foreground-service cleanup, and returns to Library; local cleanup never waits indefinitely for the acknowledgement. `cancelLoad` remains the sender's best-effort pre-ready cancellation path; local TV Back uses the same stopped terminal path rather than silently clearing an active cast.
+
+TV background, LAN loss/change, control stop/loss, cancellation, and terminal failure invalidate the session before stopping/clearing media items, URL, title, startup callback, retry state, and decoder ownership. NSD/control are not advertised while backgrounded. Foreground return requires a fresh authenticated cast; v2 has no background playback resume.
+
+Wire failures are stable lowercase codes with required `retryable` and optional HTTP status only when observed. Raw exception text is never serialized. Classification is evidence-conservative: actual parser/decoder/network/status evidence is used, while ambiguous codec/HDR failures stay broad (`unsupported_video_format`, `decoder_init`, or `unknown`). Phone-local pre-control/source/bind failures remain phone-only; adopted receiver failure reaches both devices only while control is still usable.
+
+## Privacy and diagnostics
+
+Pairing preferences are excluded from legacy backup, cloud backup, and device transfer. The notification omits title, URL, token, and private address. Diagnostics may show redacted probe/startup time, HTTP status, Wi-Fi band/link speed/RSSI, decoder, resolution/HDR class, and buffer/rebuffer/drop/recovery counters; export/log/committed evidence must not include pairing material, full URL/token, raw private address, SSID/BSSID, serial, or title.
+
+## Release and rollback
+
+Sender and receiver 0.2.0 must ship together. A v2 sender neither authenticates unversioned control nor falls back to optimistic v1 playback. Rollback installs a matched prior implementation on both devices using a newly higher `versionCode`; uninstall/reinstall clears pairing data. Host/token validation, explicit LAN binding, generic auth denial, no-redirect playback, and hardware-only decoding are not independently rolled back.

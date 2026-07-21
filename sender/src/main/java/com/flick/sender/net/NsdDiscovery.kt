@@ -5,6 +5,11 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,15 +34,18 @@ class NsdDiscovery(context: Context) {
     private val pending = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private val retryScope = CoroutineScope(Dispatchers.Main.immediate)
+    private var retryJob: Job? = null
+    private val retryGate = NsdRetryGate()
 
     fun start() {
         synchronized(lock) {
-            if (discoveryListener != null) return
+            if (!retryGate.begin()) return
             val listener = object : NsdManager.DiscoveryListener {
-                override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {}
-                override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
+                override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) = discoveryFailed { retryGate.startFailed() }
+                override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) = discoveryFailed { retryGate.stopFailed() }
                 override fun onDiscoveryStarted(serviceType: String?) {}
-                override fun onDiscoveryStopped(serviceType: String?) {}
+                override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed { retryGate.stopped() }
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                     if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
                         enqueueResolve(serviceInfo)
@@ -50,6 +58,9 @@ class NsdDiscovery(context: Context) {
             discoveryListener = listener
             runCatching {
                 nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+            }.onFailure {
+                discoveryListener = null
+                if (retryGate.startFailed()) scheduleRetry()
             }
         }
     }
@@ -60,6 +71,8 @@ class NsdDiscovery(context: Context) {
             discoveryListener = null
             pending.clear()
             resolving = false
+            retryJob?.cancel(); retryJob = null
+            retryGate.stopRequested()
         }
     }
 
@@ -98,6 +111,8 @@ class NsdDiscovery(context: Context) {
             name = info.serviceName ?: "TV",
             host = host,
             port = info.port,
+            tvId = attr("id")?.takeIf { ControlProtocolV2.id(it) },
+            protocolVersion = attr("v")?.toIntOrNull(),
             model = attr("model"),
             state = when (attr("state")?.lowercase()) {
                 "ready" -> TvAvailability.READY
@@ -112,6 +127,27 @@ class NsdDiscovery(context: Context) {
     private fun removeByName(name: String?) {
         if (name == null) return
         _devices.value = _devices.value.filter { it.name != name }
+    }
+
+    private fun scheduleRetry() {
+        if (retryJob?.isActive == true) return
+        retryJob = retryScope.launch {
+            delay(1_000)
+            synchronized(lock) {
+                retryJob = null
+                if (discoveryListener == null && retryGate.retryFired()) start()
+            }
+        }
+    }
+
+    private fun discoveryFailed(retry: () -> Boolean) {
+        synchronized(lock) {
+            // Intentional stop clears the listener first, so its asynchronous callback
+            // cannot resurrect discovery behind the UI's back.
+            if (discoveryListener == null) return
+            discoveryListener = null
+            if (retry()) scheduleRetry()
+        }
     }
 
     private companion object {

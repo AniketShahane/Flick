@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +53,8 @@ fun ConnectScreen(controller: FlickController) {
     val devices by controller.devices.collectAsState()
     val pairTarget by controller.pairTarget.collectAsState()
     val pairError by controller.pairError.collectAsState()
+    val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
+    val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
     var manualOpen by remember { mutableStateOf(false) }
 
@@ -59,11 +62,22 @@ fun ConnectScreen(controller: FlickController) {
     val pairErrorText: String? = when (pairError) {
         PairErrorKind.CODE_MISMATCH -> stringResource(R.string.pair_error_code)
         PairErrorKind.UNREACHABLE -> stringResource(R.string.pair_error_unreachable)
+        PairErrorKind.INVALID_QR -> stringResource(R.string.pair_error_qr)
+        PairErrorKind.UPDATE_REQUIRED -> stringResource(R.string.pair_error_update)
+        PairErrorKind.INVALID_ENTRY -> stringResource(R.string.pair_error_invalid)
+        PairErrorKind.PAIRING_REQUIRED -> stringResource(R.string.pair_error_pair_required)
+        PairErrorKind.LOCAL_STORAGE -> stringResource(R.string.pair_error_storage)
         null -> null
     }
     val connecting = connection == ConnectionStatus.CONNECTING || connection == ConnectionStatus.PAIRING
 
     LaunchedEffect(Unit) { controller.onStart() }
+    // Every accepted QR is a new capability-free launch event. Keying the sheet by
+    // eventId discards prior host/port/code text before any pairing socket can open.
+    LaunchedEffect(pendingPairLaunch?.eventId) {
+        if (pendingPairLaunch != null) manualOpen = true
+    }
+    LaunchedEffect(pairError) { if (pairError == PairErrorKind.INVALID_QR) manualOpen = false }
 
     Column(
         Modifier
@@ -87,6 +101,13 @@ fun ConnectScreen(controller: FlickController) {
                 Text(
                     stringResource(R.string.connect_wifi_note),
                     style = FlickText.caption.copy(color = colors.onSurfaceDim),
+                )
+            }
+            if (pairErrorText != null && pairTarget == null && !manualOpen) {
+                Text(
+                    pairErrorText,
+                    style = FlickText.caption.copy(color = colors.trouble),
+                    modifier = Modifier.padding(top = 10.dp),
                 )
             }
 
@@ -159,6 +180,7 @@ fun ConnectScreen(controller: FlickController) {
             tvName = target.name,
             error = pairErrorText,
             connecting = connecting,
+            codeRevision = codeRevision,
             onSubmit = { controller.submitCode(it) },
             onDismiss = { controller.cancelPairing() },
         )
@@ -166,12 +188,19 @@ fun ConnectScreen(controller: FlickController) {
         // Kept open through the attempt so a wrong code / unreachable host on the manual
         // escape-hatch reports the result instead of dismissing silently; a successful
         // connect changes the route, which unmounts this screen (and the sheet).
-        ManualSheet(
-            error = pairErrorText,
-            connecting = connecting,
-            onConnect = { host, port, code -> controller.connectManual(host, port, code) },
-            onDismiss = { manualOpen = false },
-        )
+        val launchId = pendingPairLaunch?.eventId
+        key(launchId) {
+            ManualSheet(
+                error = pairErrorText,
+                connecting = connecting,
+                codeRevision = codeRevision,
+                onConnect = { host, port, code -> controller.submitTvDisplayedPair(launchId ?: 0L, host, port, code) },
+                onDismiss = {
+                    manualOpen = false
+                    if (launchId != null) controller.dismissPairLaunch(launchId) else controller.cancelPairing()
+                },
+            )
+        }
     }
 }
 
@@ -180,11 +209,13 @@ private fun CodeSheet(
     tvName: String,
     error: String?,
     connecting: Boolean,
+    codeRevision: Long,
     onSubmit: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     var code by remember { mutableStateOf("") }
+    LaunchedEffect(codeRevision) { code = "" }
     BottomSheet(onDismiss = onDismiss) {
         SheetGrabber()
         Text(
@@ -224,13 +255,15 @@ private fun CodeSheet(
 private fun ManualSheet(
     error: String?,
     connecting: Boolean,
-    onConnect: (String, Int, String) -> Unit,
+    codeRevision: Long,
+    onConnect: (String, String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    LaunchedEffect(codeRevision) { code = "" }
     BottomSheet(onDismiss = onDismiss) {
         SheetGrabber()
         Text(stringResource(R.string.manual_heading), style = FlickText.heading.copy(color = colors.onSurface))
@@ -276,12 +309,12 @@ private fun ManualSheet(
             FlickPrimaryButton(
                 text = stringResource(R.string.manual_connect),
                 onClick = {
-                    val p = port.toIntOrNull() ?: 0
                     // Stay open — the connect result (spinner → error) shows here; a
                     // successful connect changes the route, which unmounts the sheet.
-                    if (host.isNotBlank() && p > 0) onConnect(host.trim(), p, code)
+                    if (host.isNotBlank()) onConnect(host.trim(), port, code)
                 },
-                enabled = host.isNotBlank() && (port.toIntOrNull() ?: 0) > 0,
+                enabled = com.flick.sender.net.PairLaunch.isCanonicalIpv4(host) &&
+                    com.flick.sender.net.PairLaunch.isCanonicalPort(port) && com.flick.sender.net.PairLaunch.isCode(code),
             )
         }
         Spacer(Modifier.height(8.dp))

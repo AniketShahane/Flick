@@ -14,11 +14,10 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Base64
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.flick.sender.net.ControlProtocolV2
 import java.security.SecureRandom
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,14 +40,13 @@ class CastServerService : Service() {
     private val lockGuard = Any()
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val resourceOwnership = GenerationResourceOwnership()
 
-    // Bumped by every teardown path (ACTION_STOP, error, onDestroy). A start
-    // coroutine captures this at launch and, under lockGuard, refuses to start the
-    // engine or acquire the locks if a teardown has since run — otherwise a Stop
-    // that lands during the start window (getSiteLocalIpv4 + engine spin-up) would
-    // leave a resurrected engine holding port 8080 and freshly-acquired locks that
-    // no stop path can ever release.
-    private val generation = AtomicInteger(0)
+    private val startGate = LatestStartGate()
+    // Serializes lifecycle-wide effects (foreground notification and stopSelf) with
+    // the generation transition. The slow socket work deliberately stays outside it
+    // so a newer ACTION_START can supersede a blocked older start.
+    private val teardownGuard = Any()
 
     override fun onCreate() {
         super.onCreate()
@@ -61,7 +59,8 @@ class CastServerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopEverything(setIdle = true)
+                val castId = intent.getStringExtra(EXTRA_CAST_ID)
+                if (castId != null) stopCurrentCast(castId, startId)
                 return START_NOT_STICKY
             }
 
@@ -69,6 +68,8 @@ class CastServerService : Service() {
                 val uri = intent.data
                 val name = intent.getStringExtra(EXTRA_NAME)
                 val size = intent.getLongExtra(EXTRA_SIZE, -1L)
+                val castId = intent.getStringExtra(EXTRA_CAST_ID)
+                val bindHost = intent.getStringExtra(EXTRA_BIND_HOST)
 
                 // Fresh 128-bit token per ACTION_START: re-picking a video rotates it,
                 // so a previously-shared URL stops working the moment the source changes.
@@ -76,87 +77,124 @@ class CastServerService : Service() {
 
                 // A foreground service MUST post its notification promptly, so do
                 // it synchronously before any I/O.
-                startInForeground(buildNotification(text = getString(R.string.notif_text_serving)))
+                if (castId == null || !ControlCastId.valid(castId)) return START_NOT_STICKY
+                val session = synchronized(teardownGuard) {
+                    startGate.begin(castId).also { startInForeground(buildNotification(castId)) }
+                }
 
-                if (uri == null) {
-                    ServerStateHolder.setError(getString(R.string.error_server_start))
-                    stopEverything(setIdle = false)
+                if (uri == null || bindHost == null || !NetworkUtils.isOwnedLanIpv4(bindHost)) {
+                    failCurrentStart(session, startId, getString(R.string.error_server_start))
                     return START_NOT_STICKY
                 }
 
-                val startGen = generation.get()
                 serviceScope.launch {
-                    val ip = NetworkUtils.getSiteLocalIpv4()
-                    if (ip == null) {
-                        ServerStateHolder.setError(getString(R.string.error_no_lan))
-                        stopEverything(setIdle = false)
+                    if (!startGate.isLatest(session)) return@launch
+                    if (!NetworkUtils.isOwnedLanIpv4(bindHost)) {
+                        failCurrentStart(session, startId, getString(R.string.error_no_lan))
                         return@launch
                     }
+                    if (!startGate.isLatest(session)) return@launch
                     try {
-                        // Start the engine, acquire the locks and publish RUNNING as one
-                        // critical section gated on the session still being live. If a
-                        // teardown ran during the IP lookup / engine spin-up it bumped
-                        // the generation, so bail before touching anything — the teardown
-                        // (which always runs releaseLocks + httpServer.stop after bumping)
-                        // stays the last word, leaving no orphaned engine or leaked locks.
                         var started = false
                         synchronized(lockGuard) {
-                            if (generation.get() == startGen) {
+                            if (startGate.isLatest(session)) {
                                 // Bind to the LAN IP only (never 0.0.0.0): removes the
                                 // loopback co-resident-app vector and lets the handler
                                 // pin the Host header to this address.
-                                httpServer.start(uri, token, ip)
+                                resourceOwnership.claimServer(session)
+                                httpServer.start(uri, token, bindHost)
+                                if (!startGate.isLatest(session)) {
+                                    closeResourcesOwnedByLocked(session)
+                                    return@synchronized
+                                }
                                 TransferTelemetry.reset()
+                                resourceOwnership.claimLocks(session)
                                 acquireLocks()
-                                ServerStateHolder.setRunning(name, size, ip, token)
-                                started = true
+                                if (!startGate.runIfLatest(session) {
+                                        ServerStateHolder.setRunning(castId, name, size, bindHost, token)
+                                    }
+                                ) {
+                                    closeResourcesOwnedByLocked(session)
+                                } else {
+                                    started = true
+                                }
                             }
                         }
                         if (!started) return@launch
-                        updateNotification(text = "http://$ip:$SERVER_PORT/v/$token")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to start media server", e)
-                        ServerStateHolder.setError(getString(R.string.error_server_start))
-                        stopEverything(setIdle = false)
+                        failCurrentStart(session, startId, getString(R.string.error_server_start))
                     }
                 }
                 return START_NOT_STICKY
             }
 
             else -> {
-                // Unknown/relaunch intent: nothing to serve, so shut down cleanly.
-                stopEverything(setIdle = true)
+                // An unknown relaunch must not tear down an active newer generation.
                 return START_NOT_STICKY
             }
         }
     }
 
     override fun onDestroy() {
-        // Invalidate any in-flight start coroutine before tearing down (coroutine
-        // cancellation alone can't interrupt its blocking start/acquire sequence).
-        generation.incrementAndGet()
-        // Belt-and-braces: make sure the locks, socket and coroutines all die.
-        releaseLocks()
-        httpServer.stop()
+        synchronized(teardownGuard) {
+            startGate.clear()
+            closeAllResources()
+        }
         serviceScope.cancel()
         super.onDestroy()
     }
 
-    private fun stopEverything(setIdle: Boolean) {
-        // Invalidate any in-flight start coroutine before we release/stop, so it
-        // can't resurrect the engine or acquire locks after this teardown ran.
-        generation.incrementAndGet()
-        releaseLocks()
-        httpServer.stop()
-        // Don't wipe an error surfaced by someone else (e.g. the Activity stopping
-        // a stale server after losing its LAN IP, then setting ERROR) back to
-        // IDLE — the async ACTION_STOP that tears down that server would otherwise
-        // clobber the error the user needs to see.
-        if (setIdle && ServerStateHolder.state.value.status != ServerStatus.ERROR) {
+    private fun stopCurrentCast(castId: String, startId: Int) {
+        synchronized(teardownGuard) {
+            val session = startGate.stop(castId) ?: return
+            closeResourcesOwnedBy(session)
             ServerStateHolder.setIdle()
+            ServerStateHolder.publishTerminal(session, SourceServerTerminalKind.STOPPED)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelfResult(startId)
         }
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    }
+
+    private fun failCurrentStart(session: CastGeneration, startId: Int, message: String) {
+        synchronized(teardownGuard) {
+            // A stale failure can only clean up work it created. It must never set
+            // ERROR, remove the notification, or stop a newer cast.
+            if (!startGate.invalidateIfLatest(session)) {
+                closeResourcesOwnedBy(session)
+                return
+            }
+            closeResourcesOwnedBy(session)
+            ServerStateHolder.setError(session.castId, message)
+            ServerStateHolder.publishTerminal(
+                session,
+                SourceServerTerminalKind.FAILED,
+                SOURCE_SERVER_START_FAILED,
+            )
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelfResult(startId)
+        }
+    }
+
+    private fun closeResourcesOwnedBy(session: CastGeneration) {
+        synchronized(lockGuard) { closeResourcesOwnedByLocked(session) }
+    }
+
+    private fun closeResourcesOwnedByLocked(session: CastGeneration) {
+        val release = resourceOwnership.release(session)
+        if (release.locks) {
+            releaseLocks()
+        }
+        if (release.server) {
+            httpServer.stop()
+        }
+    }
+
+    private fun closeAllResources() {
+        synchronized(lockGuard) {
+            resourceOwnership.releaseAll()
+            releaseLocks()
+            httpServer.stop()
+        }
     }
 
     // --- Wake / Wi-Fi locks -------------------------------------------------
@@ -230,12 +268,7 @@ class CastServerService : Service() {
         )
     }
 
-    private fun updateNotification(text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.notify(NOTIF_ID, buildNotification(text))
-    }
-
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(castId: String): Notification {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -244,18 +277,19 @@ class CastServerService : Service() {
         )
 
         val stopIntent = Intent(this, CastServerService::class.java).setAction(ACTION_STOP)
+            .putExtra(EXTRA_CAST_ID, castId).setData(Uri.parse("flick-stop://$castId"))
         val stopPending = PendingIntent.getService(
-            this, REQ_STOP, stopIntent, pendingFlags(),
+            this, castId.hashCode(), stopIntent, pendingFlags(),
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(getString(R.string.notif_title))
-            .setContentText(text)
+            .setContentText(getString(R.string.notif_text_serving))
             .setContentIntent(openPending)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 getString(R.string.notif_action_stop),
@@ -277,16 +311,14 @@ class CastServerService : Service() {
     }
 
     companion object {
-        private const val TAG = "CastServerService"
-
         private const val CHANNEL_ID = "cast_server"
         private const val NOTIF_ID = 42
         private const val REQ_OPEN = 1
-        private const val REQ_STOP = 2
 
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
         private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
+        private const val SOURCE_SERVER_START_FAILED = "source_server_start_failed"
 
         // 16 bytes = 128 bits of SecureRandom entropy per session token.
         private const val TOKEN_BYTES = 16
@@ -295,6 +327,8 @@ class CastServerService : Service() {
         const val ACTION_STOP = "com.flick.sender.action.STOP"
         private const val EXTRA_NAME = "com.flick.sender.extra.NAME"
         private const val EXTRA_SIZE = "com.flick.sender.extra.SIZE"
+        private const val EXTRA_CAST_ID = "com.flick.sender.extra.CAST_ID"
+        private const val EXTRA_BIND_HOST = "com.flick.sender.extra.BIND_HOST"
 
         private fun pendingFlags(): Int {
             var flags = PendingIntent.FLAG_UPDATE_CURRENT
@@ -305,20 +339,22 @@ class CastServerService : Service() {
         }
 
         /** Start (or re-target) the foreground media server for [uri]. */
-        fun start(context: Context, uri: Uri, name: String?, size: Long) {
+        fun start(context: Context, castId: String, uri: Uri, name: String?, size: Long, bindHost: String) {
             val intent = Intent(context, CastServerService::class.java).apply {
                 action = ACTION_START
                 data = uri
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 putExtra(EXTRA_NAME, name)
                 putExtra(EXTRA_SIZE, size)
+                putExtra(EXTRA_CAST_ID, castId)
+                putExtra(EXTRA_BIND_HOST, bindHost)
             }
             startForegroundServiceCompat(context, intent)
         }
 
         /** Stop the media server and dismiss the foreground notification. */
-        fun stop(context: Context) {
-            val intent = Intent(context, CastServerService::class.java).setAction(ACTION_STOP)
+        fun stop(context: Context, castId: String) {
+            val intent = Intent(context, CastServerService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CAST_ID, castId)
             // Delivered as a normal start command; the service tears itself down.
             context.startService(intent)
         }
@@ -329,3 +365,5 @@ class CastServerService : Service() {
         }
     }
 }
+
+private object ControlCastId { fun valid(value: String) = ControlProtocolV2.id(value) }

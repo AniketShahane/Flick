@@ -10,6 +10,17 @@ const val SERVER_PORT: Int = 8080
 /** High-level lifecycle of the media server, as reflected in the UI. */
 enum class ServerStatus { IDLE, STARTING, RUNNING, ERROR }
 
+/** A cast-correlated terminal source-server outcome for the cast coordinator. */
+enum class SourceServerTerminalKind { STOPPED, FAILED }
+
+data class SourceServerEvent(
+    val sequence: Long,
+    val castId: String,
+    val generation: Long,
+    val kind: SourceServerTerminalKind,
+    val errorCode: String? = null,
+)
+
 /**
  * Immutable snapshot of what the phone UI should show. Produced by the service
  * (source of truth for RUNNING) and by the Activity (for the pre-flight
@@ -17,6 +28,7 @@ enum class ServerStatus { IDLE, STARTING, RUNNING, ERROR }
  */
 data class ServerUiState(
     val status: ServerStatus = ServerStatus.IDLE,
+    val castId: String? = null,
     val displayName: String? = null,
     val sizeBytes: Long = -1L,
     val lanIp: String? = null,
@@ -41,23 +53,30 @@ object ServerStateHolder {
     private val _state = MutableStateFlow(ServerUiState())
     val state: StateFlow<ServerUiState> = _state.asStateFlow()
 
+    private val _terminalEvent = MutableStateFlow<SourceServerEvent?>(null)
+    /** Last source-server terminal event, retained so a newly-attached coordinator can observe it. */
+    val terminalEvent: StateFlow<SourceServerEvent?> = _terminalEvent.asStateFlow()
+    private var terminalSequence = 0L
+
     /** A pick just happened; we are resolving metadata / the LAN IP. */
-    fun beginStarting() {
-        _state.value = ServerUiState(status = ServerStatus.STARTING)
+    fun beginStarting(castId: String) {
+        _state.value = ServerUiState(status = ServerStatus.STARTING, castId = castId)
     }
 
-    fun setStarting(name: String?, size: Long, ip: String?) {
+    fun setStarting(castId: String, name: String?, size: Long, ip: String?) {
         _state.value = ServerUiState(
             status = ServerStatus.STARTING,
+            castId = castId,
             displayName = name,
             sizeBytes = size,
             lanIp = ip,
         )
     }
 
-    fun setRunning(name: String?, size: Long, ip: String, token: String) {
+    fun setRunning(castId: String, name: String?, size: Long, ip: String, token: String) {
         _state.value = ServerUiState(
             status = ServerStatus.RUNNING,
+            castId = castId,
             displayName = name,
             sizeBytes = size,
             lanIp = ip,
@@ -65,11 +84,26 @@ object ServerStateHolder {
         )
     }
 
-    fun setError(message: String) {
-        _state.value = ServerUiState(status = ServerStatus.ERROR, errorMessage = message)
+    fun setError(castId: String?, message: String) {
+        _state.value = ServerUiState(status = ServerStatus.ERROR, castId = castId, errorMessage = message)
     }
 
     fun setIdle() {
         _state.value = ServerUiState()
+    }
+
+    @Synchronized
+    internal fun publishTerminal(
+        session: CastGeneration,
+        kind: SourceServerTerminalKind,
+        errorCode: String? = null,
+    ) {
+        _terminalEvent.value = SourceServerEvent(
+            sequence = ++terminalSequence,
+            castId = session.castId,
+            generation = session.value,
+            kind = kind,
+            errorCode = errorCode,
+        )
     }
 }

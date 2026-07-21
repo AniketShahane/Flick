@@ -1,6 +1,5 @@
 package com.flick.receiver.ui.screens
 
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +45,8 @@ fun PairScreen(
     tvName: String,
     code: String,
     qrPayload: String,
+    host: String,
+    port: Int,
     onRename: () -> Unit,
     networkReady: Boolean,
     modifier: Modifier = Modifier,
@@ -54,10 +55,6 @@ fun PairScreen(
     val showBiggerFocus = remember { FocusRequester() }
     val doneFocus = remember { FocusRequester() }
     val spacedCode = code.toCharArray().joinToString("  ")
-    // Manual fallback (QR/discovery blocked): the phone can type this in. Parsed
-    // from the QR payload so no extra call-site plumbing is needed.
-    val manualHost = remember(qrPayload) { runCatching { Uri.parse(qrPayload).getQueryParameter("host") }.getOrNull() }
-    val manualPort = remember(qrPayload) { runCatching { Uri.parse(qrPayload).getQueryParameter("port")?.toInt() }.getOrNull() }
 
     LaunchedEffect(bigCode) {
         runCatching { (if (bigCode) doneFocus else showBiggerFocus).requestFocus() }
@@ -140,13 +137,13 @@ fun PairScreen(
                         letterSpacing = 0.2.em,
                     )
                     Text(
-                        text = stringResource(R.string.pair_code_hint),
+                        text = if (code == "—") stringResource(R.string.pair_locked) else stringResource(R.string.pair_code_hint),
                         fontSize = 24.sp,
                         color = FlickColor.OnSurfaceFaint,
                     )
-                    if (manualHost != null && manualPort != null) {
+                    if (host.isNotBlank() && port > 0) {
                         Text(
-                            text = stringResource(R.string.pair_manual_hint, manualHost, manualPort),
+                            text = stringResource(R.string.pair_manual_hint, host, port),
                             style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Medium),
                             color = FlickColor.OnSurfaceFaint,
                         )

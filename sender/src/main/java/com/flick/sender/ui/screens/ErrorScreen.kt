@@ -24,6 +24,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.model.CastErrorKind
+import com.flick.sender.model.CastFailure
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
@@ -37,6 +38,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 fun ErrorScreen(
     controller: FlickController,
     kind: CastErrorKind,
+    failure: CastFailure,
     onOpenWifiSettings: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -54,7 +56,15 @@ fun ErrorScreen(
     val pillText: String
     val pillKind: StatusKind
 
-    when (kind) {
+    if (failure.retryable) {
+        title = stringResource(R.string.error_generic_title)
+        body = stringResource(R.string.error_generic_body)
+        primaryLabel = stringResource(R.string.error_generic_primary)
+        onPrimary = controller::retryCast
+        secondaryLabel = null
+        pillText = stringResource(R.string.error_unreachable_pill)
+        pillKind = StatusKind.TROUBLE
+    } else when (kind) {
         CastErrorKind.REACHABLE_NOT_SERVING -> {
             title = stringResource(R.string.error_reachable_title)
             body = stringResource(R.string.error_reachable_body, tvName)

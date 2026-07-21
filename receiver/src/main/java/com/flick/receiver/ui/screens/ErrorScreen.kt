@@ -40,12 +40,12 @@ import com.flick.receiver.ui.theme.FlickType
 fun ErrorScreen(
     kind: ErrorKind,
     deviceLabel: String?,
-    onPrimary: () -> Unit,
+    onPrimary: (() -> Unit)?,
     onSecondary: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val primaryFocus = remember { FocusRequester() }
-    LaunchedEffect(kind) { runCatching { primaryFocus.requestFocus() } }
+    LaunchedEffect(kind) { if (onPrimary != null) runCatching { primaryFocus.requestFocus() } }
 
     val accent = if (kind == ErrorKind.Unreachable) FlickColor.Trouble else FlickColor.Caution
     val device = deviceLabel ?: stringResource(R.string.device_fallback)
@@ -99,7 +99,7 @@ fun ErrorScreen(
                 textAlign = TextAlign.Center,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                FlickTvButton(onClick = onPrimary, focusRequester = primaryFocus) {
+                if (onPrimary != null) FlickTvButton(onClick = onPrimary, focusRequester = primaryFocus) {
                     Text(primaryLabel, fontSize = 24.sp, color = FlickColor.OnSurface)
                 }
                 FlickTvButton(onClick = onSecondary) {

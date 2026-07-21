@@ -5,14 +5,19 @@
 
     <!-- T1 · First-run pair -->
     <string name="pair_title">Bring your movies\nto this screen</string>
-    <string name="pair_instructions">Open Flick on your Android phone and scan the code — or type the code below. Pairing happens on your Wi-Fi only. No account, nothing leaves home.</string>
+    <string name="pair_instructions">Scan this code with your phone camera to open Flick. Then enter this TV’s host, port, and code in Flick.</string>
     <string name="pair_this_tv">This TV — \"%1$s\"</string>
     <string name="pair_show_bigger">Show code bigger</string>
     <string name="pair_hide_bigger">Done</string>
     <string name="pair_rename">Rename TV</string>
     <string name="pair_code_hint">Enter this code on your phone</string>
     <!-- Manual-entry escape hatch when the QR can\'t be scanned / discovery fails. -->
-    <string name="pair_manual_hint">Can\'t scan? Enter %1$s : %2$d on your phone</string>
+    <string name="pair_manual_hint">In Flick, enter host %1$s and port %2$d</string>
+    <string name="pair_locked">Pairing is temporarily locked. Try again shortly.</string>
+    <string name="pair_success">Phone paired</string>
+    <string name="settings_forget_all">Forget all phones</string>
+    <string name="settings_forget_all_summary">Remove every paired phone from this TV</string>
+    <string name="settings_forget_all_confirm">Press again to confirm</string>
     <string name="pair_waiting_network_title">Waiting for Wi-Fi…</string>
     <string name="pair_waiting_network_detail">Connect this TV to your home network to start pairing.</string>
 

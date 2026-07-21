@@ -4,214 +4,322 @@ import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.media3.common.PlaybackException
+import com.flick.receiver.net.CastFailureCode
+import com.flick.receiver.net.ControlCastResult
 import com.flick.receiver.net.ControlCommands
-import com.flick.receiver.net.ControlErrors
 import com.flick.receiver.net.PreflightProbe
 import com.flick.receiver.net.ProbeResult
+import com.flick.receiver.player.PlaybackFailureClassifier
 import com.flick.receiver.player.PlayerController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Which playback stage the TV is in (drives which screen renders). */
 sealed interface MediaStage {
     data object None : MediaStage
-    data object Checking : MediaStage
-    data object Active : MediaStage
-    data class Error(val kind: ErrorKind) : MediaStage
+    data class Checking(val castId: String, val controlLeaseGeneration: Long) : MediaStage
+    data class Preparing(val castId: String, val controlLeaseGeneration: Long) : MediaStage
+    data class Active(val castId: String, val controlLeaseGeneration: Long) : MediaStage
+    data class Error(val castId: String?, val code: CastFailureCode, val controlLeaseGeneration: Long?) : MediaStage {
+        val kind get() = if (code == CastFailureCode.MEDIA_UNREACHABLE) ErrorKind.Unreachable else ErrorKind.NotServing
+    }
 }
 
-/** T9 variants: reachable-but-not-serving (amber) vs unreachable (crimson). */
 enum class ErrorKind { NotServing, Unreachable }
 
 /**
- * Bridges the control channel onto [PlayerController] and owns the TV-side UI
- * state machine (design T2–T9 + the seeking/ghost heuristic for T6). It is a
- * plain (non-Composable) holder so the [com.flick.receiver.net.ControlServer] can
- * keep a stable reference while Compose observes its state fields.
- *
- * Every [ControlCommands] method is invoked on the main thread (the server
- * marshals to it), matching [PlayerController]'s main-thread contract. The
- * existing pre-flight probe still gates every load, so a doomed cast never starts
- * silently — it lands on the specific T9 diagnosis instead.
+ * Main-thread owner of the receiver's cast transaction. Every asynchronous path
+ * closes over a [CastGenerationGate] value so an A callback cannot affect B.
  */
 class SessionController(
     private val controller: PlayerController,
     private val scope: CoroutineScope,
     private val lifecycleStarted: () -> Boolean,
 ) : ControlCommands {
-
     var stage by mutableStateOf<MediaStage>(MediaStage.None)
         private set
     var title by mutableStateOf<String?>(null)
         private set
-
-    /** Optimistic (target) playhead the phone is driving; solid ● on the TV bar. */
     var seekTargetMs by mutableStateOf(0L)
         private set
-
-    /** True while the phone is actively scrubbing — shows the T6 ghost + SYNCING. */
     var seeking by mutableStateOf(false)
         private set
-
-    /** Bumped on any command / key so the chrome reveals (design chromeFade in). */
     var chromePoke by mutableStateOf(0)
         private set
 
-    private var lastUrl: String? = null
-    private var heldPositionMs: Long = 0L
-    private var lastSeekAtMs: Long = 0L
+    private val gate = CastGenerationGate()
+    private val castId get() = gate.castId
+    private val generation get() = gate.generation
+    /** The control connection that synchronously adopted [castId]. */
+    private var controlLeaseGeneration: Long? = null
     private var probeJob: Job? = null
+    private var startupDeadlineJob: Job? = null
+    private var startupRetries = 0
+    private var startupDeadlineElapsedMs = 0L
+    private var startupUrl: String? = null
+    private var startupPositionMs = 0L
+    private var retainedResult: ControlCastResult? = null
+    private var terminal: ((String, CastFailureCode, Boolean, Int?, Boolean) -> Unit)? = null
+    private var ready: ((String, Long, Long) -> Unit)? = null
 
-    /**
-     * Pushes a TV→phone `error` frame (control-channel.md §4) so a preflight /
-     * backgrounded / fatal failure reaches the phone (design S12) instead of
-     * leaving it frozen on NowPlaying. Wired by the control server once it exists.
-     */
-    private var sendError: ((code: String, message: String) -> Unit)? = null
-
-    fun attachErrorChannel(emit: (code: String, message: String) -> Unit) {
-        sendError = emit
+    init {
+        controller.setPlaybackFailureListener(::onPlaybackError)
     }
 
-    fun pokeChrome() {
-        chromePoke++
-    }
+    fun attachTerminal(emit: (String, CastFailureCode, Boolean, Int?, Boolean) -> Unit) { terminal = emit }
+    fun attachReady(emit: (String, Long, Long) -> Unit) { ready = emit }
+    fun pokeChrome() { chromePoke++ }
+    fun onPlay() { castId?.let(::onPlay) }
+    fun onPause() { castId?.let(::onPause) }
+    fun onSkip(deltaMs: Long) { castId?.let { onSkip(it, deltaMs) } }
+    fun onSetVolume(level: Float) { castId?.let { onSetVolume(it, level) } }
 
-    // --- ControlCommands (main thread) --------------------------------------
-
-    override fun onLoadMedia(url: String, title: String?, durationMs: Long, startMs: Long) {
-        lastUrl = url
+    /** Synchronous adoption is the commit boundary for ControlServer.loadAccepted. */
+    override fun onLoadMedia(
+        controlLeaseGeneration: Long,
+        castId: String,
+        url: String,
+        title: String,
+        durationMs: Long,
+        startMs: Long,
+    ): ControlCastResult {
+        replayResult(castId)?.let { return it }
+        invalidate(clearRetained = true)
+        val accepted = ControlCastResult.Accepted(castId)
+        retainedResult = accepted
+        val generation = gate.adopt(castId, controlLeaseGeneration)
+        this.controlLeaseGeneration = controlLeaseGeneration
         this.title = title
-        loadInternal(url, startMs)
-    }
-
-    override fun onPlay() {
-        if (rejectedWhileBackgrounded()) return
-        controller.resume()
-        pokeChrome()
-    }
-
-    override fun onPause() {
-        if (rejectedWhileBackgrounded()) return
-        controller.pause()
-        pokeChrome()
-    }
-
-    override fun onSeek(posMs: Long) {
-        if (rejectedWhileBackgrounded()) return
-        seekTargetMs = posMs
-        lastSeekAtMs = SystemClock.elapsedRealtime()
-        seeking = true
-        controller.seekTo(posMs)
-        pokeChrome()
-    }
-
-    override fun onSkip(deltaMs: Long) {
-        if (rejectedWhileBackgrounded()) return
-        controller.seekBy(deltaMs)
-        lastSeekAtMs = SystemClock.elapsedRealtime()
-        pokeChrome()
-    }
-
-    override fun onSetVolume(level: Float) {
-        if (rejectedWhileBackgrounded()) return
-        controller.setVolume(level)
-        pokeChrome()
-    }
-
-    /**
-     * While the TV app is backgrounded the player + decoder are released (terminal
-     * ON_STOP), so a transport verb can't take effect. Tell the phone with an
-     * `error` frame instead of silently swallowing it, so it doesn't keep driving a
-     * dead remote. `onStop` is exempt — teardown must still apply while asleep.
-     */
-    private fun rejectedWhileBackgrounded(): Boolean {
-        if (lifecycleStarted()) return false
-        sendError?.invoke(ControlErrors.LOAD_REJECTED, ControlErrors.REASON_TV_BACKGROUNDED)
-        return true
-    }
-
-    override fun onStop() {
-        probeJob?.cancel()
-        controller.stop()
-        stage = MediaStage.None
-        title = null
-        seeking = false
-    }
-
-    // --- Retry (T9 recovery actions) ----------------------------------------
-
-    fun retry() {
-        val url = lastUrl ?: return
-        loadInternal(url, heldPositionMs)
-    }
-
-    fun backToStandby() = onStop()
-
-    private fun loadInternal(url: String, startMs: Long) {
-        probeJob?.cancel()
-        stage = MediaStage.Checking
+        seekTargetMs = startMs
+        stage = MediaStage.Checking(castId, controlLeaseGeneration)
+        startupUrl = url
+        startupPositionMs = startMs
+        startupRetries = 0
+        startupDeadlineElapsedMs = SystemClock.elapsedRealtime() + STARTUP_DEADLINE_MS
+        startupDeadlineJob = scope.launch {
+            delay(STARTUP_DEADLINE_MS)
+            if (gate.isCurrent(castId, generation) && stage !is MediaStage.Active) {
+                fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, retryable = true, beforeReady = true)
+            }
+        }
+        val started = SystemClock.elapsedRealtime()
         probeJob = scope.launch {
             when (val result = PreflightProbe.probe(url)) {
                 is ProbeResult.Ok -> {
-                    // Never start a session into a stopped activity (preserves the
-                    // player's decoder/network contract while backgrounded).
-                    if (lifecycleStarted()) {
-                        controller.play(url)
-                        if (startMs > 0L) controller.seekTo(startMs)
-                        controller.recordProbeLatency(result.latencyMs)
-                        seekTargetMs = startMs
-                        stage = MediaStage.Active
+                    if (!gate.isCurrent(castId, generation)) return@launch
+                    if (!lifecycleStarted()) {
+                        fail(castId, generation, CastFailureCode.TV_BACKGROUNDED, retryable = false, beforeReady = true)
                     } else {
-                        // The load is refused into a stopped activity; tell the
-                        // phone so it doesn't sit forever on an optimistic
-                        // NowPlaying with a dead remote.
-                        stage = MediaStage.None
-                        sendError?.invoke(ControlErrors.LOAD_REJECTED, ControlErrors.REASON_TV_BACKGROUNDED)
+                        controller.recordProbeLatency(result.latencyMs)
+                        startPlayer(castId, generation, result.latencyMs, started)
                     }
                 }
-                ProbeResult.Unreachable -> {
-                    stage = MediaStage.Error(ErrorKind.Unreachable)
-                    sendError?.invoke(ControlErrors.LOAD_REJECTED, ControlErrors.REASON_UNREACHABLE)
-                }
-                else -> {
-                    stage = MediaStage.Error(ErrorKind.NotServing)
-                    sendError?.invoke(ControlErrors.LOAD_REJECTED, ControlErrors.REASON_NOT_SERVING)
-                }
+                ProbeResult.Unreachable -> fail(castId, generation, CastFailureCode.MEDIA_UNREACHABLE, true, beforeReady = true)
+                ProbeResult.ConnectionRefused -> fail(castId, generation, CastFailureCode.SENDER_NOT_SERVING, true, beforeReady = true)
+                is ProbeResult.HttpError -> fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, result.status, true)
+                ProbeResult.BadResponse -> fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, beforeReady = true)
             }
         }
+        return accepted
     }
 
-    /**
-     * Called from the ~10 Hz main-thread loop with the confirmed TV position.
-     * Reconciles the seeking flag (T6 ↔ T3) and captures the held position for
-     * T9 recovery; when not seeking, the solid ● snaps to the confirmed ghost so
-     * the bar reads a single playhead (healthy = invisible sync).
-     */
-    fun syncTick(confirmedMs: Long) {
-        heldPositionMs = confirmedMs
-        if (stage != MediaStage.Active) {
-            seeking = false
+    override fun replayResult(castId: String): ControlCastResult? = retainedResult?.takeIf { resultCastId(it) == castId }
+
+    private fun startPlayer(castId: String, generation: Long, probeLatencyMs: Long, startedElapsedMs: Long) {
+        if (!gate.isCurrent(castId, generation) || SystemClock.elapsedRealtime() >= startupDeadlineElapsedMs) {
+            fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, true, beforeReady = true)
             return
         }
-        val sinceSeek = SystemClock.elapsedRealtime() - lastSeekAtMs
-        val diverged = kotlin.math.abs(seekTargetMs - confirmedMs) > SEEK_EPS_MS
-        seeking = sinceSeek < SEEK_ACTIVE_MS || (diverged && sinceSeek < SEEK_SETTLE_MS)
-        if (!seeking) seekTargetMs = confirmedMs
-    }
-
-    /** Surface a mid-stream fatal player error as the reachable-not-serving state. */
-    fun onFatalPlaybackError() {
-        if (stage == MediaStage.Active) {
-            stage = MediaStage.Error(ErrorKind.NotServing)
-            sendError?.invoke(ControlErrors.LOAD_REJECTED, ControlErrors.REASON_NOT_SERVING)
+        val lease = controlLeaseGeneration ?: return
+        stage = MediaStage.Preparing(castId, lease)
+        val url = startupUrl ?: run {
+            fail(castId, generation, CastFailureCode.UNKNOWN, false, beforeReady = true)
+            return
         }
+        controller.playStartup(
+            url = url,
+            startMs = startupPositionMs,
+            mediaId = mediaIdFor(castId, generation),
+            onFirstFrame = firstFrame@{
+                if (!gate.isCurrent(castId, generation)) return@firstFrame
+                startupDeadlineJob?.cancel()
+                startupDeadlineJob = null
+                stage = MediaStage.Active(castId, lease)
+                val outcome = ControlCastResult.Ready(
+                    castId = castId,
+                    probeLatencyMs = probeLatencyMs,
+                    startupMs = SystemClock.elapsedRealtime() - startedElapsedMs,
+                )
+                retainedResult = outcome
+                ready?.invoke(castId, outcome.probeLatencyMs, outcome.startupMs)
+            },
+            onError = { error -> onStartupError(castId, generation, probeLatencyMs, startedElapsedMs, error) },
+        )
     }
 
-    companion object {
-        private const val SEEK_ACTIVE_MS = 400L
-        private const val SEEK_SETTLE_MS = 1_500L
-        private const val SEEK_EPS_MS = 750L
+    private fun onStartupError(
+        castId: String,
+        generation: Long,
+        probeLatencyMs: Long,
+        startedElapsedMs: Long,
+        error: PlaybackException,
+    ) {
+        if (!gate.isCurrent(castId, generation)) return
+        val retryDelay = StartupRetryPolicy.delayForRetry(
+            completedRetries = startupRetries,
+            isTransientIo = PlaybackFailureClassifier.isStartupRetryable(error),
+            nowMs = SystemClock.elapsedRealtime(),
+            deadlineMs = startupDeadlineElapsedMs,
+        )
+        if (retryDelay != null) {
+            startupRetries++
+            scope.launch {
+                delay(retryDelay)
+                if (gate.isCurrent(castId, generation) && stage !is MediaStage.Active) {
+                    startPlayer(castId, generation, probeLatencyMs, startedElapsedMs)
+                }
+            }
+            return
+        }
+        fail(
+            castId,
+            generation,
+            if (PlaybackFailureClassifier.isStartupRetryable(error)) CastFailureCode.STARTUP_TIMEOUT else PlaybackFailureClassifier.classify(error),
+            retryable = PlaybackFailureClassifier.isStartupRetryable(error),
+            beforeReady = true,
+        )
+    }
+
+    /** The exact exception comes from PlayerController, rather than a polling phase. */
+    private fun onPlaybackError(error: PlaybackException) {
+        val id = castId ?: return
+        if (stage !is MediaStage.Active) return
+        fail(id, generation, PlaybackFailureClassifier.classify(error), retryable = true, beforeReady = false)
+    }
+
+    private fun fail(
+        id: String,
+        generation: Long,
+        code: CastFailureCode,
+        retryable: Boolean,
+        status: Int? = null,
+        beforeReady: Boolean,
+    ) {
+        if (!gate.isCurrent(id, generation)) return
+        controller.stop()
+        startupDeadlineJob?.cancel()
+        startupDeadlineJob = null
+        val outcome = ControlCastResult.Failed(id, code, retryable, status, beforeReady)
+        retainedResult = outcome
+        stage = MediaStage.Error(id, code, controlLeaseGeneration)
+        terminal?.invoke(id, code, retryable, status, beforeReady)
+        // Keep only the immutable result for a duplicate replay; no player or
+        // active ownership survives a terminal failure.
+        gate.invalidate()
+        clearStartupState()
+    }
+
+    override fun onPlay(castId: String) { if (current(castId)) controller.resume() }
+    override fun onPause(castId: String) { if (current(castId)) controller.pause() }
+    override fun onSeek(castId: String, posMs: Long) {
+        if (current(castId)) { seekTargetMs = posMs; seeking = true; controller.seekTo(posMs) }
+    }
+    override fun onSkip(castId: String, deltaMs: Long) { if (current(castId)) controller.seekBy(deltaMs) }
+    override fun onSetVolume(castId: String, level: Float) { if (current(castId)) controller.setVolume(level) }
+    override fun onCancelLoad(castId: String): Boolean {
+        if (!current(castId)) return false
+        invalidateToNone()
+        return true
+    }
+    override fun onStop(castId: String): Boolean {
+        if (!current(castId)) return false
+        retainedResult = ControlCastResult.Stopped(castId)
+        invalidateToNone(clearRetained = false)
+        return true
+    }
+
+    /** Called by control ownership before it can allow queued work to survive a close. */
+    override fun onControlLost(generation: Long) {
+        if (!gate.shouldInvalidateForControlLoss(generation) && stageLeaseGeneration() != generation) return
+        invalidateToNone(clearRetained = true)
+    }
+
+    /** Lifecycle/LAN teardown is terminal: never revive this URL on ON_START. */
+    fun onBackground() {
+        val teardown = forceLocalTeardown()
+        teardown.castId?.let { terminal?.invoke(it, CastFailureCode.TV_BACKGROUNDED, false, null, teardown.beforeReady) }
+    }
+
+    /** Unconditional local authority for lifecycle, LAN loss and endpoint rebind. */
+    fun forceLocalTeardown(): LocalTeardown {
+        val result = LocalTeardown(castId, TerminalPhase.beforeReady(stage))
+        invalidateToNone(clearRetained = true)
+        return result
+    }
+
+    private fun current(id: String) = id == castId
+
+    private fun invalidate(clearRetained: Boolean) {
+        gate.forceInvalidate()
+        probeJob?.cancel(); probeJob = null
+        startupDeadlineJob?.cancel(); startupDeadlineJob = null
+        controller.clearStartupListener()
+        clearStartupState()
+        controlLeaseGeneration = null
+        if (clearRetained) retainedResult = null
+    }
+
+    private fun clearStartupState() {
+        startupRetries = 0
+        startupDeadlineElapsedMs = 0L
+        startupUrl = null
+        startupPositionMs = 0L
+    }
+
+    private fun invalidateToNone(clearRetained: Boolean = true) {
+        invalidate(clearRetained)
+        controller.stop()
+        title = null
+        seekTargetMs = 0L
+        seeking = false
+        stage = MediaStage.None
+    }
+
+    fun syncTick(position: Long) {
+        if (stage is MediaStage.Active) { seekTargetMs = position; seeking = false }
+    }
+
+    /** Kept only for compatibility with the polling surface; errors arrive immediately above. */
+    fun onFatalPlaybackError() = Unit
+    fun retry() = Unit
+    /** Local Back has the same terminal outcome as a matching control stop. */
+    fun backToStandby(): ControlCastResult.Stopped? {
+        val id = castId ?: run { invalidateToNone(); return null }
+        return if (onStop(id)) retainedResult as? ControlCastResult.Stopped else null
+    }
+
+    private fun resultCastId(result: ControlCastResult) = when (result) {
+        is ControlCastResult.Accepted -> result.castId
+        is ControlCastResult.Ready -> result.castId
+        is ControlCastResult.Failed -> result.castId
+        is ControlCastResult.Stopped -> result.castId
+    }
+
+    private fun mediaIdFor(castId: String, generation: Long) = "flick:$castId:$generation"
+
+    private fun stageLeaseGeneration(): Long? = when (val value = stage) {
+        is MediaStage.Checking -> value.controlLeaseGeneration
+        is MediaStage.Preparing -> value.controlLeaseGeneration
+        is MediaStage.Active -> value.controlLeaseGeneration
+        is MediaStage.Error -> value.controlLeaseGeneration
+        MediaStage.None -> null
+    }
+
+    private companion object {
+        const val STARTUP_DEADLINE_MS = 18_000L
     }
 }
+
+data class LocalTeardown(val castId: String?, val beforeReady: Boolean)

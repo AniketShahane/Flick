@@ -1,164 +1,262 @@
-# Flick control channel — architecture contract
+# Flick control channel v2 — normative contract
 
-Binding wire contract for the **new** phone↔TV subsystems that the redesign introduces:
-**discovery**, **pairing**, and the **playback control channel** that powers the synchronized
-scrub (design Part 4). `:sender` implements the **client** half, `:receiver` the **server** half.
-Both sides MUST match the frames/fields defined here exactly. Nothing here changes the existing
-hardened **media** path (`GET/HEAD /v/{token}` byte-range direct-play on the phone) — that stays
-byte-for-byte as shipped.
+Status: **implemented and JVM/build validated; real-device acceptance pending**. This document is the binding contract for the v2 sender and receiver. The fixtures in [control-v2-fixtures.md](control-v2-fixtures.md) are byte-for-byte test inputs. Production code must not invent variants.
 
----
+Both modules are `versionCode=2` / `versionName=0.2.0`. All 29 sender and 38 receiver JVM tests pass, and the synchronized build produces both debug APKs as of 2026-07-20. Cold/warm system-camera ingress, actual pair/resume, first-frame delivery, lifecycle/LAN transitions, and sustained media playback have not yet run on a real phone/TV pair.
 
-## 1. Topology & the decision
+Flick direct-plays original phone bytes. The phone serves an authenticated HTTP byte-range resource on `:8080`; the TV pulls and hardware-decodes it. The TV also owns a small WebSocket **control** server. There is no transcoding, screen mirroring, file browser, arbitrary fetch, or one-scan authorization.
 
-Today: **phone = media file server** (Ktor, `:8080`, per-session token), **TV = ExoPlayer client**
-pulling bytes. The player (and thus the authoritative playback position) lives on the TV.
+## 1. Versioning and compatibility
 
-The redesign's UX (design S1/T1) has the **phone discover the TV**, pair, then **drive** it — and
-the hero needs the TV's real position streamed back to the phone. That requires the TV to accept
-inbound control. Decision:
+There are two independent version domains:
 
-> **Add a small, authenticated, LAN-bound control server on the TV** (Ktor CIO + WebSockets) for
-> **playback control only** — discovered via **NSD/mDNS**. **Keep media direct-play on the phone**
-> exactly as hardened. The phone is the control **client**; the TV is the control **server**.
+- `flick://pair?v=2` is an app-launch envelope only.
+- WebSocket control protocol `v=2` is the pairing, resume, and cast protocol. NSD TXT `v` is `2`; TXT `id` is the non-secret stable `tvId`.
 
-Why this and not "everything on the phone": for the phone to drive the TV, the TV must listen. A
-control listener that carries **no media and no file access — only playback verbs** is a small,
-well-bounded surface, and it is the natural home for both discovery and the position feedback the
-hero needs. This is within the roadmap's anticipated "small phone→TV control endpoint / WebSocket."
+This is a synchronized pre-1.0 release: both APKs advance from `versionCode=1`/`versionName=0.1.0` to `versionCode=2`/`versionName=0.2.0` and are installed together. A v2 sender never falls back to v1's optimistic cast or bearer-key resume. If NSD advertises `<2`, show **Update Flick on your TV** and send no cast command. When NSD is absent (including manual first pairing), send the v2-only `negotiate` frame before a code. A missing/non-exact v2 response within the six-second authentication deadline is the sender-local `update_required` result; no code is then transmitted. A v2 receiver may generically deny v1; it must not accept an unversioned command as v2.
 
-### Security posture of the new TV surface (MUST hold)
-- Bind the **TV's LAN IP**, never `0.0.0.0`; reject if bound host ≠ request `Host` (anti-rebinding).
-- **Pairing-gated:** every control connection presents a pairing key (below); constant-time compare;
-  identical `404`/close on any miss. An unpaired LAN device gets nothing.
-- The control server can **only** control local playback. It exposes **no** filesystem, no arbitrary
-  URL fetch beyond the media host the user paired to, no shell. `loadMedia` accepts only an
-  `http://<phoneIp>:<port>/v/<token>` URL whose host matches the paired phone.
-- No secrets logged. LAN-only; not reachable off the subnet.
-- Document this in `SECURITY.md` (there are now **two** servers; the TV's is control-only).
+Rollback installs the previous implementation on **both** apps with a newly higher `versionCode`; do not reuse version code 1. Debug downgrade is only an explicit, signature-matching development operation. Uninstall/reinstall loses pairing data.
 
----
+## 2. Launch-only QR and initial pairing
 
-## 2. Discovery (NSD)
+The sole canonical QR URI is:
 
-- **TV advertises** via `android.net.nsd.NsdManager`:
-  - Service type: `_flick._tcp.`
-  - Service name: the TV's friendly name (e.g. `Living Room TV`), user-visible.
-  - Port: the control server's chosen port (ephemeral; publish the real bound port).
-  - TXT attributes: `model` (e.g. `Google TV Streamer`), `v` (protocol version, `"1"`),
-    `state` (`ready|sleeping`). Keep values short.
-- **Phone browses** for `_flick._tcp.`, resolves entries, and renders the S1 device list
-  ("ON HOMENET — N FOUND") with live status dots. Resolve gives host+port for pairing/control.
-- Manual IP entry survives as an **escape-hatch link only** (S1 "enter address manually").
-- Discovery is best-effort: if NSD yields nothing (some routers block mDNS), fall back to the
-  manual-address path — never dead-end.
+```text
+flick://pair?v=2
+```
 
----
+It contains no host, port, TV identity, code, nonce, key, proof, capability, or other authorization data. The TV renders the QR plus a separately visible, private pairing surface with its numeric host, port, and four-digit code. The phone camera may launch Flick; the user independently types all three values. No in-app scanner is part of v2.
 
-## 3. Pairing (trust establishment)
+The parser accepts only a hierarchical URI with case-insensitive scheme `flick`, exact authority/host `pair`, empty path, no user-info, explicit authority port, or fragment, and exactly one query key `v` with exactly one value `2`. Any other key, duplicate, pairing field, malformed URI, or legacy `v=1` is invalid/unsupported. The parser returns only `Valid`, `Invalid`, or `UnsupportedVersion`: it neither preserves nor echoes the raw URI.
 
-Goal: prove the phone's user can **see the TV screen**, so a silent LAN attacker can't pair.
+`MainActivity` handles cold `onCreate` and warm `onNewIntent` through the same ingress. Before Compose collection or suspension it copies `Intent.data` locally, calls `setIntent()` with a copy whose `data` is null, also sanitizes the incoming intent, parses only the local copy, and publishes an in-memory event with a process-local monotonically increasing ID. Raw URI/event data is never saved, logged, backed up, or replayed after process death. An ordinary launcher intent changes no pairing state.
 
-- On first control connection from an unknown phone, the TV displays a **4-digit code** (design
-  T1) and an equivalent **QR** encoding: `flick://pair?host=<tvIp>&port=<ctrlPort>&code=<4digit>&v=1`.
-  The TV generates the QR bitmap with **ZXing core** (`com.google.zxing:core`) rendered to a Compose
-  `Canvas` (no camera needed to *display*).
-- The phone supplies the code by one of (design S1): NSD-discovered TV + user types the code shown
-  on the TV; **or** manual entry; **or** (stretch, may defer) camera QR scan.
-- Handshake over the control WebSocket:
-  1. Phone → `{"t":"hello","v":1,"code":"7429","device":"Pixel 9"}`
-  2. TV validates `code` (constant-time). On success it mints a **persistent pairing key**
-     (128-bit `SecureRandom`, base64url) bound to that phone, returns
-     `{"t":"paired","key":"<pairingKey>","tv":"Living Room TV"}`. On failure: `{"t":"denied"}`
-     then close. The code is single-use and rotates.
-  3. Both sides persist the pairing (phone: TV name+host+key; TV: key+phone label) so subsequent
-     connects are **one-tap** — phone reconnects with `{"t":"resume","key":"<pairingKey>"}` and skips
-     the code. Store keys in each app's private storage (not logged, not in the public repo).
+A valid event opens empty host, port, and code fields; it opens no socket. Pair is enabled only when the user entered:
 
----
+- a canonical dotted-decimal RFC1918 IPv4 address (four decimal octets `0..255`; no DNS, whitespace, sign, shorthand, integer, octal, hexadecimal, IPv6, loopback, link-local, multicast, or unspecified form);
+- canonical ASCII decimal port `1..65535`, no sign or leading zero; and
+- exactly four ASCII digits, retaining a leading zero.
 
-## 4. Control WebSocket
+The sender connects only to that user-entered endpoint. It must not prefill or target an unpaired NSD/deep-link candidate. It retains typed host/port but clears code after a transport failure; it clears code and gives generic current-code guidance after `denied`; it never automatically retries pairing.
 
-- Endpoint: `ws://<tvIp>:<ctrlPort>/control` (TV = server). Phone connects after pairing/resume.
-- Text frames, **compact JSON** (`org.json` on both sides — no serialization plugin/dep).
-- Field `t` = frame type. Unknown types are ignored (forward-compatible). `v=1`.
-- One control connection at a time per TV; a new one supersedes (the TV closes the old).
+## 3. Transport and universal frame rules
 
-### Phone → TV (commands)
-| `t` | fields | meaning |
-|---|---|---|
-| `hello` / `resume` | see §3 | open/authenticate |
-| `loadMedia` | `url` (`http://<phoneIp>:<port>/v/<token>`), `title`, `durationMs`, `startMs` | begin/replace playback. TV validates host == paired phone. |
-| `play` | — | resume |
-| `pause` | — | pause |
-| `seek` | `posMs` | **target** (optimistic) seek; may arrive at ~drag rate (throttle ≤ ~20/s) |
-| `skip` | `deltaMs` (±10000) | relative |
-| `setVolume` | `level` (0..1) | — |
-| `stop` | — | end session (TV releases player per existing terminal-stop semantics) |
-| `ping` | `id` | liveness; TV replies `pong` |
+- Endpoint: `ws://<TV-host>:<control-port>/control`; TV is server. Each WebSocket starts unauthenticated.
+- Every application frame is one unfragmented WebSocket **text** message containing exactly one strict UTF-8 JSON object. Maximum decoded message size is 16 KiB before and after authentication.
+- Reject binary, fragmented, invalid UTF-8, oversized, duplicate-key, non-object, unknown-field, missing-field, wrong-type, non-finite-number, and out-of-range input. Never use partial/defaulting JSON accessors.
+- Unknown frame types are rejected, not ignored. Oversized and fragmented/binary messages close with 1009 and 1003 respectively. A malformed pre-auth message counts toward the three-frame unauthenticated limit; policy closure uses 1008 and a generic reason. A malformed authenticated frame sends at most one `commandRejected(malformed)` only when safe `t` and `castId` were extracted, then closes 1008. Close reasons contain no supplied data.
+- The receiver permits at most four concurrent unauthenticated sockets. Authentication/challenge work has one six-second deadline.
+- Every schema below forbids fields beyond those shown. `v` is exactly JSON integer `2` in every v2 frame.
 
-### TV → phone (state, the ghost feed)
-| `t` | fields | meaning |
-|---|---|---|
-| `paired` / `denied` | see §3 | handshake result |
-| `state` | `posMs` (**confirmed** playhead), `durationMs`, `playing` (bool), `bufferedMs`, `phase` (`idle|buffering|playing|paused|ended|error`), `volume`, `seq` | pushed at **~10 Hz** while active, and immediately on any TV-side change |
-| `error` | `code`, `message` | preflight/decoder/network failure (map to design S12/T9) |
-| `pong` | `id` | liveness reply |
+String/number limits are exact:
 
-### Optimistic / ghost reconciliation (the hero, Part 4)
-- Phone keeps **two** values: `targetMs` (optimistic — moves instantly with the thumb / on a
-  local command) and `confirmedMs` (= last `state.posMs` from the TV).
-- **Solid** playhead renders `targetMs`; **ghost ○** renders `confirmedMs`. When the difference is
-  small they superimpose (healthy). While dragging, the phone sends throttled `seek{posMs=targetMs}`;
-  the TV applies and streams back `state.posMs`, which chases the target.
-- On a hiccup (no fresh `state` within ~250ms of a `seek`), show the cyan **"SYNCING…"** shimmer;
-  the ghost eases toward target (never jumps).
-- On **release**, phone sends a final `seek`, then reconciles ghost→target with `syncSpring`
-  (design Motion) and fires the shared Spark pulse when `|confirmedMs − targetMs|` collapses.
-- **Cross-surface:** a TV-side D-pad seek/pause simply arrives as a `state` frame with a new
-  `posMs`/`playing`; the phone animates its transport to match (Beat 6). Commands are **idempotent
-  by absolute value** where possible (`seek posMs`, `setVolume level`) to survive reordering; `seq`
-  lets the phone drop stale `state` frames.
+| Field | Constraint |
+|---|---|
+| `t`, `phase`, `code`, `reason`, `command` | ASCII, max 32 characters |
+| `tvId`, `keyId`, `clientNonce`, `serverNonce`, `castId`, media token, ping `id` | exactly 22 URL-safe unpadded Base64 characters (128 bits) |
+| pairing key and HMAC `proof` | exactly 43 URL-safe unpadded Base64 characters (256 bits) |
+| `device`, `tv` | non-empty after display normalization, max 80 Unicode code points |
+| `title` | non-empty after display normalization, max 200 Unicode code points |
+| `url` | ASCII, max 256 characters; canonical grammar in §8 |
+| `cap` | at most 16 unique ASCII entries, each max 32 characters |
+| `code` in `pair` | exactly four ASCII digits; all other wire codes use the ASCII 32-character limit above |
+| `serverPort` | JSON integer `1..65535` |
+| duration/position values | integer `0..604800000` ms (seven days) |
+| `seq` | integer `0..Long.MAX_VALUE`, strictly increasing per authenticated session |
+| `volume` / `level` | finite JSON number `0.0..1.0` |
+| startup/probe timings | integer `0..60000` ms |
+| HTTP status | integer `100..599`, only when HTTP was observed |
 
----
+Display labels are canonical wire values: the sender normalizes them to one line, removes Unicode control/format characters, collapses whitespace, and caps by Unicode code point before sending. The receiver requires the received value to already equal that canonical form; it rejects rather than silently normalizing a different wire value. Authorization values are rejected, never truncated.
 
-## 5. Dependencies this introduces (each module edits its OWN build.gradle.kts only)
+`minV`/`maxV` in `negotiate` are JSON integers exactly equal to 2. `retryable` and `state.playing` are JSON booleans, never strings/numbers. `state.bufferedMs`, `durationMs`, `startMs`, `posMs`, `probeLatencyMs`, `startupMs`, and `seq` use the integer limits above; fractional values and numeric strings are rejected.
 
-- **`:sender`** (control client + gallery): `io.ktor:ktor-client-core:3.1.3`,
-  `io.ktor:ktor-client-cio:3.1.3`, `io.ktor:ktor-client-websockets:3.1.3`; image loading
-  `io.coil-kt:coil-compose:2.7.0` + `io.coil-kt:coil-video:2.7.0`; downloadable fonts
-  `androidx.compose.ui:ui-text-google-fonts`. NSD + frame preview
-  (`android.media.MediaMetadataRetriever`) need no dep. Camera-QR scan (CameraX + ML Kit) is
-  **stretch — may be deferred**; discovery + code entry + manual IP are the required pairing paths.
-- **`:receiver`** (control server + QR gen): `io.ktor:ktor-server-core:3.1.3`,
-  `io.ktor:ktor-server-cio:3.1.3`, `io.ktor:ktor-server-websockets:3.1.3`,
-  `org.slf4j:slf4j-simple:2.0.16` (Ktor logging), `com.google.zxing:core:3.5.3` (QR bitmap),
-  `androidx.compose.ui:ui-text-google-fonts`. NSD needs no dep.
-- Add coordinates directly in each module's `build.gradle.kts` (as the existing files already do).
-  **Do not** touch `settings.gradle.kts` or `gradle/libs.versions.toml` (shared — avoid clashes).
-  Keep `compileSdk/minSdk/targetSdk` = 36/26/36, Kotlin 2.1.20, Compose BOM 2025.05.01, Media3 1.10.1.
+The required capability list is exactly, and in this canonical order:
 
----
+```text
+cast-ack,first-frame-ready,structured-errors,resume-hmac
+```
 
-## 6. Manifest / permissions
+## 4. Pre-auth negotiation and pairing
 
-- `:sender` already holds `INTERNET`; add nothing for outbound WS. NSD browse needs no runtime
-  permission but declare nothing extra beyond what NSD requires. Coil reads via MediaStore/SAF Uris
-  the user already granted (Photo Picker) — no broad storage permission.
-- `:receiver` control server needs `INTERNET`; NSD registration needs no runtime permission.
-  Keep the receiver's cleartext allowance (media is plain HTTP until TLS). The TV control WS is `ws://`
-  on the LAN — same posture, pairing-gated.
-- Android 16/17 **Local Network Permission** (`targetSdk 37`) is a known Phase-1 follow-up; at
-  `targetSdk 36` no new local-network gate applies.
+Initial pairing is only allowed on the user-entered TV endpoint. The sender makes one fresh 128-bit `clientNonce` and sends:
 
----
+```json
+{"t":"negotiate","v":2,"minV":2,"maxV":2,"clientNonce":"<22-char-base64url>"}
+```
 
-## 7. What must NOT regress (guardrails for implementers)
+The receiver's exact successful response is:
 
-- Existing media server: `GET/HEAD /v/{token}` byte-range 206/416/200, LAN-IP bind, `Host` pin,
-  `Semaphore(4)` cap, idle-timeout, constant-time token, identical 404. **Do not alter its contract.**
-- Receiver terminal-stop semantics (`PlayerController.stop()` clears state so a
-  Stop→background→foreground can't silently re-prepare) — preserve; the WS `stop` maps onto it.
-- No decoder/software-fallback change; hardware decoders only; no cross-protocol redirects.
-- Memory: releasing the session must release the player, buffer pool, FDs, threads, **and** close
-  the control WS + NSD registrations. No leaked coroutines/sockets across start/stop cycles.
+```json
+{"t":"negotiated","v":2,"clientNonce":"<echo>","serverNonce":"<22-char-base64url>","tvId":"<22-char-base64url>","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+```
+
+Only after validating exact version, echoed nonce, fresh server nonce, valid `tvId`, and required canonical capabilities does the sender send its typed code, on the same connection:
+
+```json
+{"t":"pair","v":2,"clientNonce":"<same>","serverNonce":"<same>","code":"0007","device":"Demo Phone"}
+```
+
+`pair` is valid only for one live outstanding negotiation whose two nonces exactly match; it consumes that negotiation. Missing/mismatched/replayed nonce, second pair, or pair-before-negotiate is generically denied without charging the visible code's bad-attempt counter. A syntactically valid, correctly negotiated wrong four-digit code does charge it.
+
+Under one receiver synchronization boundary, success verifies the visible current code/generation and lockout, compares it in constant time, consumes it, creates a random 256-bit key plus independent random 128-bit `keyId`, durably persists the key/ID/label, publishes pairing success, and returns:
+
+```json
+{"t":"paired","v":2,"key":"<43-char-base64url>","keyId":"<22-char-base64url>","tv":"Demo TV","tvId":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+```
+
+`peerIp` is the normalized IPv4 observed for the authenticated socket. `serverHost`/`serverPort` are the receiver's actual bound endpoint. Before storing a pair the sender requires that endpoint to equal the connected endpoint and `peerIp` to be currently owned by an up, non-loopback phone interface. These fields are protocol-only: do not log or display them.
+
+Every authorization denial that is safe to answer has exactly this wire response, then closes:
+
+```json
+{"t":"denied","v":2}
+```
+
+It never reveals wrong versus expired/locked/closed code, unknown key, transcript failure, or version detail. `update_required` is not a wire oracle.
+
+Receiver pairing visibility is not authorization. `PairingManager`, rather than `forcePairing`, Compose-owned gates, or polling, owns `Standby`, `Open(code,generation,expiry)`, `Locked(generation,retryAt)`, and 1.5-second `Success(label,generation)` states. A code is valid only while `Open` is visibly rendered; Back, background/stop, cast adoption, or any other surface close invalidates it, and a late submission is generically denied. Four global wrong-code attempts retain it; the fifth consumes/rotates it and begins a 30-second cooldown. Later global rounds double to a maximum of eight minutes. A five-minute expiry rotates without a failed-attempt increment. The global round/wall-clock deadline is persisted and clamped on load; monotonic time is used only in process. A bounded per-host table throttles one host for 10 seconds after three wrong codes without blocking another host. Reopening cannot bypass active lockout. Confirmed **Forget all phones** stops/revokes the live controller, durably clears every TV-side key before changing UI state, and reopens first-run pairing.
+
+## 5. Authenticated resume and endpoint commit
+
+Pairing records are keyed by a persistent random non-secret `tvId`; they hold `keyId`, key, label, and last mutually verified endpoint. NSD is only a candidate hint. A pairing key is returned once in `paired` and is never transmitted again.
+
+1. Sender sends `resumeInit` with a fresh client nonce:
+
+   ```json
+   {"t":"resumeInit","v":2,"tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<22-char-base64url>"}
+   ```
+
+2. Receiver looks up exactly `(tvId,keyId)`, creates a fresh server nonce, and responds:
+
+   ```json
+   {"t":"resumeChallenge","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<echo>","serverNonce":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+   ```
+
+3. Sender verifies every echoed/expected value, connected endpoint, current owned `peerIp`, and canonical capabilities before computing `clientProof`:
+
+   ```json
+   {"t":"resumeProof","v":2,"tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","proof":"<43-char-base64url>"}
+   ```
+
+4. Receiver constant-time verifies and consumes the one-connection challenge, then returns:
+
+   ```json
+   {"t":"resumed","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"],"proof":"<43-char-base64url>"}
+   ```
+
+5. Sender constant-time verifies the server proof before authenticating, refreshing host/port, or deduplicating an NSD candidate. A failed proof/nonce/replay/malformed field/extra frame expires or consumes the challenge, returns generic `denied`, and closes. Challenge deadline is six seconds and it accepts exactly one proof.
+
+HMAC is `HmacSHA256` over UTF-8. The transcript is unambiguous: concatenate each field's four-byte unsigned big-endian byte length, then its UTF-8 bytes. Client fields, in order, are:
+
+```text
+Flick-Control-Resume-V2
+client
+2
+tvId
+keyId
+clientNonce
+serverNonce
+peerIp
+serverHost
+serverPort
+tv
+cast-ack,first-frame-ready,structured-errors,resume-hmac
+```
+
+The server proof changes only `client` to `server`. Numbers are canonical unsigned ASCII decimal; `tv` is the exact validated challenge value. Base64url is unpadded. The fixed independently computed vector is in the fixtures.
+
+An unauthenticated denial never deletes a key or changes its endpoint. After all bounded candidates fail, mark only that record `needsRepair` and route to visible-code pairing; transport failure retains it for retry. A sender tries last verified endpoint then at most three deterministic NSD candidates for the stored `tvId`; raw key bytes are never sent. Commit an endpoint/name only after server proof. Explicit Forget or a successful visible replacement tombstones the superseded `(tvId,keyId)` and its legacy fallback atomically; tombstones are never retried.
+
+Legacy host-key records are conservative re-pair hints only. The sender may read a canonical stored host and locally derive `legacyKeyId = Base64url(first 16 bytes of SHA-256(lengthPrefix("Flick-KeyId-V2"), lengthPrefix(keyBytes))))`, but it sends neither the legacy key nor a legacy proof. The v2 receiver has no safe legacy TV-ID lookup, so there is no automatic challenge migration. The user must perform visible-code v2 pairing. If that succeeds at the exact stored host, the sender atomically writes the v2 record/migration marker and retires that legacy record; a changed host also requires visible pairing and never receives legacy proof material.
+
+## 6. Cast identity, lifecycle, and timing
+
+Every cast transaction gets a random 128-bit Base64url `castId`; it is correlation metadata, not the media bearer token. Every cast start/result/state/error/cancel/stop frame carries it (except `busy` which is session-level). Non-current cast results are ignored.
+
+Sender startup is one process-scoped, generation-guarded transaction:
+
+1. Authenticate v2 control and verify current `peerIp` ownership.
+2. Validate readable `content:` media with safe metadata and positive known length.
+3. Start the source service for this exact `castId`, binding explicitly to `peerIp`; wait for matching RUNNING.
+4. Send `loadMedia`; wait for matching `loadAccepted`, then matching `loadReady`.
+5. Enter Now Playing only on `loadReady`, meaning the current TV has rendered its first video frame.
+
+Timeouts: authentication 6 s; source start 9 s; `loadAccepted` 2 s; receiver adoption-to-first-frame 18 s; sender total from send to first frame 20 s; remote stop grace ≤1 s. Retry creates a new `castId` and token; it is never automatic. Pre-ready paths invalidate generation first, best-effort `cancelLoad`, cancel waiters, stop only the matching service, clear URI/token/server state and locks, and leave a truthful phone surface. After `loadAccepted`, the TV may show receiver failure; no device claims a message was shown where control was unavailable.
+
+Duplicate `loadMedia` for current ID returns its retained accepted/ready/failed status without restart. New B invalidates/cancels A, and delayed A callbacks cannot mutate B. `cancelLoad` is the best-effort pre-ready cancellation command. `stop` is the canonical terminal command for the current Checking/Preparing or Active cast: it clears ownership/player state and emits cast-correlated `stopped`; duplicate stop replays the retained `stopped`. Stale commands return `commandRejected(stale_cast)`. A socket-close callback invalidates only the cast whose control-lease generation it still owns, while TV lifecycle/LAN/rebind uses unconditional local teardown before closing control. No background auto-resume exists in v2.
+
+Only one controller owns a preparing/active cast. A second phone first finishes visible-code pairing or mutual-proof resume, then under the same ownership mutex either becomes an idle controller or receives `busy(active_cast)` and closes; it never displaces the active controller. Resume sends proof-bearing `resumed` before `busy`. Initial pairing sends `paired` first, and the sender preserves that issued key/endpoint internally as `PairedBusy` before showing the busy failure. Explicit active takeover is outside v2.
+
+Accepted residual P2: v2 defines `busy` but no positive `available` frame. The sender waits 250 ms after validated `paired`/`resumed` for an immediate disposition and treats silence as available. A delayed `busy` can therefore cause transient sender UI/foreground-service churn before normal cleanup, but receiver ownership is decided under the mutex and the second phone cannot take control. A future protocol revision may add an explicit `available|busy` frame; changing this requires a new contract version.
+
+## 7. Exact v2 schemas
+
+The canonical serialized fixtures enumerate every frame. This section defines semantic rules in addition to §3's strict common rules.
+
+### Phone → TV, authenticated
+
+```json
+{"t":"loadMedia","v":2,"castId":"<id>","url":"http://<phone-rfc1918-ipv4>:8080/v/<token>","title":"Demo clip","durationMs":123000,"startMs":0}
+{"t":"play","v":2,"castId":"<id>"}
+{"t":"pause","v":2,"castId":"<id>"}
+{"t":"seek","v":2,"castId":"<id>","posMs":45000}
+{"t":"skip","v":2,"castId":"<id>","deltaMs":10000}
+{"t":"setVolume","v":2,"castId":"<id>","level":0.75}
+{"t":"cancelLoad","v":2,"castId":"<id>"}
+{"t":"stop","v":2,"castId":"<id>"}
+{"t":"ping","v":2,"id":"<22-char-base64url>"}
+```
+
+`durationMs` may be zero only when unknown; otherwise `startMs` and seek position cannot exceed it. With unknown duration, positions remain within the seven-day cap. `skip.deltaMs` is exactly `-10000` or `10000`. All commands except `loadMedia` and `ping` require current `castId`.
+
+### TV → phone, authenticated
+
+```json
+{"t":"loadAccepted","v":2,"castId":"<id>"}
+{"t":"loadReady","v":2,"castId":"<id>","probeLatencyMs":42,"startupMs":1380}
+{"t":"loadFailed","v":2,"castId":"<id>","code":"http_rejected","retryable":true,"httpStatus":503}
+{"t":"state","v":2,"castId":"<id>","posMs":0,"durationMs":123000,"playing":true,"bufferedMs":9000,"phase":"playing","volume":1.0,"seq":8}
+{"t":"error","v":2,"castId":"<id>","code":"decoder_init","retryable":false}
+{"t":"stopped","v":2,"castId":"<id>"}
+{"t":"commandRejected","v":2,"castId":"<id>","command":"seek","code":"stale_cast"}
+{"t":"pong","v":2,"id":"<echo>"}
+{"t":"busy","v":2,"reason":"active_cast"}
+```
+
+`httpStatus` is optional and allowed only for HTTP-observed `loadFailed`/`error`; omit it otherwise. `phase` is exactly `buffering`, `playing`, `paused`, or `ended`. `loadAccepted` means command parsed, canonical URL passed, generation adopted, and probe started. The same attached player surface remains behind an opaque Preparing overlay until `loadReady`; `loadReady` is the sole success boundary because preflight succeeded and the current first rendered frame callback fired. `loadFailed` occurs exactly once before readiness; `error` is terminal after readiness; `state` is sent on transition and about 10 Hz while active; `stopped` is the cast-correlated response to canonical stop for a current pre-ready or active cast, is replayable for duplicate stop, and never blocks local cleanup.
+
+## 8. Media URL, preflight, and failure codes
+
+`loadMedia.url` must be exactly `http://<authenticated-peerIp>:8080/v/<22-char-base64url-token>`: `http` only, explicit port 8080, numeric RFC1918 IPv4 equal to the authenticated control peer, no user-info/query/fragment, raw path exactly `/v/<token>`, and no encoding, dot segment, repeated slash, decoded equivalent, or trailing slash. Do not substitute same subnet, DNS, arbitrary LAN host, or a different port. The receiver follows **no redirects** during preflight or playback.
+
+After validation, emit `loadAccepted` and preflight under one absolute monotonic six-second deadline: raw TCP connect ≤2 s; a `Range: bytes=0-1023` GET uses blocking-operation timeouts capped at 3 s while a scheduled disconnect enforces the absolute end. HTTP must be 206; `Content-Range` must be canonical `bytes 0-<end>/<total>` with positive total and `end=min(1023,total-1)`; `Content-Length=end+1`; read exactly that body then one EOF read. HTTP 200, any 3xx, malformed/incoherent range, zero/early/extra/drip-fed/stalled body are rejected. Playback creates one non-redirecting HTTP connection per Media3 request and rejects every 3xx before following `Location`. Before first frame, at most two short transient IO retries (250 ms, then 500 ms) fit the 18-second receiver deadline; decoder/format/parser errors fail immediately. After first frame, preserve the steady-state buffer/recovery policy.
+
+Wire `code` values are stable lowercase snake case. They are not raw errors:
+
+| Code | Use |
+|---|---|
+| `update_required` | sender-local old/no v2 negotiation |
+| `control_unreachable` | cannot connect/authenticate control |
+| `source_unavailable` | phone content grant/file unavailable |
+| `no_compatible_lan`, `media_bind_failed`, `host_mismatch` | local address/bind/control-peer mismatch |
+| `media_unreachable`, `sender_not_serving`, `http_rejected` | preflight network/refused-or-stalled/HTTP-or-range failure |
+| `tv_backgrounded` | adopted cast lost to TV lifecycle |
+| `malformed_media`, `unsupported_container`, `unsupported_video_format`, `unsupported_video_codec`, `unsupported_hdr_profile`, `decoder_init` | evidence-conservative media/decode classification |
+| `startup_timeout`, `control_disconnected`, `active_cast_busy`, `protocol_error`, `unknown` | terminal timing/session/protocol/fallback categories |
+
+Only emit precise codec/HDR categories with explicit track plus decoder-support evidence. Filenames, MIME alone, test clip, or generic Media3 error are insufficient; use `unsupported_video_format` or `decoder_init` conservatively. `retryable` is always present on terminal `loadFailed`/`error`, but retry is user initiated. No raw exception text or free-form wire message exists.
+
+## 9. Privacy and security boundaries
+
+TV QR/code/manual endpoint and phone pending endpoint exist only on intentional visible pairing UI. Media title exists only in phone library/active remote and TV active playback UI. Pairing keys/codes, HMAC proofs/nonces, full URL/token, raw private IP, title in diagnostics, SSID/BSSID, device serial, and stable phone identity must never enter logs, exceptions, notifications, analytics, backups, exported diagnostics, or committed evidence. Both legacy full-backup and Android 12+ cloud/device-transfer rules exclude sender `flick_pairings.xml` and receiver `flick_pairing.xml`; migration therefore requires re-pairing.
+
+The source server binds the exact `peerIp`, never `0.0.0.0`; its existing Host/token/range/concurrency hardening remains unchanged. Sender notification is private and says only localized direct-play status (and safe paired TV name when authenticated); its stop action is unique and `castId`-correlated, with no URL/token/title extras. Diagnostics may retain redacted timing/status/decoder/link measurements but not forbidden values.
+
+Custom schemes do not prove app identity. A different installed app can claim `flick` or invoke it with a forged URI; v2 avoids endpoint/capability injection because it accepts only the launch envelope, but a user can still be phished into manually entering TV values into another app. Product copy must not call this encrypted, secure, or one-scan authorization. TLS and verified HTTPS App Links/another reviewed relay-resistant design are future work.
+
+## 10. Validation and release gate
+
+All 29 sender and 38 receiver JVM tests pass and the synchronized build produces both debug APKs. The tests cover focused pure/helper seams such as proof/schema parsing, attempt/candidate/result policy, ownership generations, surface/terminal state, exact range/body behavior, redirect policy, startup retry policy, and decoder filtering. They do not execute the production persistence stores, Ktor sockets, Activity lifecycle/intent path, or Media3 hardware decoder. Android instrumentation and the two-device matrix remain pending; no hardware success is implied by build/JVM validation.
+
+No implementation may change a frame name, field, timeout, compatibility fallback, or success boundary without a new approved contract revision.

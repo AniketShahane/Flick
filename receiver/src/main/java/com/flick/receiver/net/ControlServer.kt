@@ -2,13 +2,14 @@ package com.flick.receiver.net
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.flick.receiver.player.PlaybackFrame
+import io.ktor.http.HttpHeaders
+import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.application.install
 import io.ktor.server.plugins.origin
-import io.ktor.server.request.host
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.WebSockets
@@ -17,378 +18,512 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import java.net.URI
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
-/**
- * The TV's control server (control-channel.md §1/§4): Ktor CIO + WebSockets on
- * `ws://<tvIp>:<port>/control`. Control-ONLY — it carries no media and no file
- * access, exposes only playback verbs, binds the TV's LAN IP (never 0.0.0.0),
- * pins the request Host (anti-rebinding), and is pairing-gated. An unpaired LAN
- * device gets nothing.
- *
- * Threading: WS frames arrive on Ktor IO threads. Every command is marshalled to
- * the main thread via [main] before touching [ControlCommands] (which touch
- * ExoPlayer). The ~10 Hz `state` feed reads [stateProvider], which the app keeps
- * fresh from a main-thread loop, so the server itself never touches the player.
- *
- * Hardening (mirrors the media server's Semaphore(4) + idle-timeout posture):
- *  - WebSocket ping/timeout reaps vanished peers so no zombie session lingers.
- *  - Unauthenticated connections are capped ([Semaphore]) and must authenticate
- *    within a deadline; garbage pre-auth frames close the socket.
- *  - `hello` is only accepted while the pairing screen is displayed, and brute
- *    force is throttled in [PairingManager] (rotate-on-miss + escalating lockout).
- *  - Session adoption is serialized behind a mutex with a generation counter, and
- *    every main-thread command re-checks the generation so a superseded session
- *    can never mutate the new session's playback.
- */
+/** V2-only receiver endpoint. Authentication and controller ownership are independent leases. */
 class ControlServer(
     private val pairing: PairingManager,
     private val commands: ControlCommands,
     private val stateProvider: () -> PlaybackFrame,
 ) {
+    private data class Auth(
+        val record: PairingRecord,
+        val peerIp: String,
+        val clientNonce: String,
+        val serverNonce: String,
+        val tv: String,
+        val resumed: Boolean,
+    )
+    private data class Connection(
+        val session: DefaultWebSocketServerSession,
+        val token: Any,
+        val generation: Long,
+        val emit: suspend (String) -> Unit,
+    )
+
     private val main = Handler(Looper.getMainLooper())
-    private val seq = AtomicLong(0L)
-
+    private val serverLock = Any()
+    private val counter = AtomicLong()
+    private val sequence = AtomicLong()
+    private val ownership = ControlOwnership()
+    private val preAuthConnections = ConnectionPermitGate(MAX_PREAUTH_CONNECTIONS)
+    @Volatile private var generation = 0L
+    @Volatile private var active: Connection? = null
     private var server: EmbeddedServer<*, *>? = null
+    var boundHost: String? = null; private set
+    var boundPort: Int = -1; private set
 
-    // Single-active-session invariant, serialized behind [adoptMutex]. A plain
-    // volatile check-then-assign let two sessions both win; the generation makes
-    // stale main-thread command runnables detectable and droppable.
-    private val adoptMutex = Mutex()
-    private val genCounter = AtomicLong(0L)
-
-    @Volatile
-    private var activeSession: DefaultWebSocketServerSession? = null
-
-    @Volatile
-    private var activeEmit: (suspend (String) -> Unit)? = null
-
-    @Volatile
-    private var activeGeneration: Long = -1L
-
-    /** Cap on concurrent connections that have not yet authenticated (anti-DoS). */
-    private val unauthPermits = Semaphore(MAX_UNAUTH_SESSIONS)
-
-    /**
-     * Whether the pairing UI is on screen right now. `hello` (code pairing) is
-     * refused unless this is true, so the 4-digit code is never attackable while
-     * shown to no one (TV idle/playing). `resume` (128-bit key) is unaffected.
-     */
-    @Volatile
-    var acceptingPairings: Boolean = false
-
-    var boundHost: String? = null
-        private set
-    var boundPort: Int = -1
-        private set
-
-    /** Binds [host] on an ephemeral port and returns the real bound port. */
     suspend fun start(host: String): Int {
         stop()
-        val srv = embeddedServer(CIO, port = 0, host = host) {
-            install(WebSockets) {
-                pingPeriodMillis = PING_PERIOD_MS
-                timeoutMillis = PONG_TIMEOUT_MS
-            }
-            routing {
-                webSocket("/control") { handleSession(host) }
-            }
+        val value = embeddedServer(CIO, host = host, port = 0) {
+            install(WebSockets) { maxFrameSize = MAX_FRAME.toLong() }
+            routing { webSocket("/control") { session() } }
         }
-        srv.start(wait = false)
-        val port = srv.engine.resolvedConnectors().firstOrNull()?.port ?: -1
-        server = srv
+        value.start(false)
+        server = value
         boundHost = host
-        boundPort = port
-        return port
+        boundPort = value.engine.resolvedConnectors().first().port
+        return boundPort
     }
 
     fun stop() {
-        val srv = server ?: return
-        server = null
-        activeSession = null
-        activeEmit = null
-        boundPort = -1
-        runCatching { srv.stop(GRACE_MS, TIMEOUT_MS) }
-    }
-
-    /**
-     * Push a TV→phone `error` frame to the current control session (used by the
-     * session controller for preflight/backgrounded/fatal failures). No-ops when
-     * nothing is connected. Called from the main thread.
-     */
-    fun sendError(code: String, message: String) {
-        val session = activeSession ?: return
-        val emit = activeEmit ?: return
-        session.launch { runCatching { emit(errorJson(code, message)) } }
-    }
-
-    private suspend fun DefaultWebSocketServerSession.handleSession(boundHostExpected: String) {
-        // Anti-rebinding: the request Host must equal the bound LAN IP.
-        val requestHost = runCatching { call.request.host() }.getOrNull()
-        if (requestHost == null || !requestHost.equals(boundHostExpected, ignoreCase = true)) {
-            runCatching { close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "host")) }
-            return
+        val lost = synchronized(serverLock) {
+            val prior = active
+            active = null
+            generation = counter.incrementAndGet()
+            ownership.invalidate()?.also { notifyControlLost(it) }
+            prior
         }
-
-        // Cap concurrent unauthenticated sessions so a flood of silent connections
-        // can't accumulate coroutines/sockets on the TV.
-        if (!unauthPermits.tryAcquire()) {
-            runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "busy")) }
-            return
-        }
-        var permitHeld = true
-        var myGeneration = -1L
-
-        val phoneIp = runCatching { call.request.origin.remoteHost }.getOrNull()
-        val sendLock = Mutex()
-        val emit: suspend (String) -> Unit = { json -> sendLock.withLock { send(Frame.Text(json)) } }
-
-        try {
-            // Authenticate within a deadline; a peer that never presents a valid
-            // hello/resume is dropped instead of held open forever.
-            val key = withTimeoutOrNull(AUTH_DEADLINE_MS) { authenticate(emit, phoneIp) }
-            if (key == null) {
-                runCatching { close(CloseReason(CloseReason.Codes.NORMAL, "denied")) }
-                return
+        lost?.let { connection ->
+            connection.session.launch {
+                runCatching { connection.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "closed")) }
             }
+        }
+        server?.stop(300, 800)
+        server = null
+        boundHost = null
+        boundPort = -1
+    }
 
-            // Authenticated: free the pre-auth permit and become the sole session.
-            unauthPermits.release()
-            permitHeld = false
-            myGeneration = adopt(this, emit)
-            startStateFeed(myGeneration, emit)
+    fun sendTerminal(castId: String, code: CastFailureCode, retryable: Boolean, status: Int? = null, beforeReady: Boolean = false) {
+        sendResult(ControlCastResult.Failed(castId, code, retryable, status, beforeReady))
+    }
 
-            // Authenticated command surface.
+    fun sendReady(castId: String, probeLatencyMs: Long, startupMs: Long) {
+        sendResult(ControlCastResult.Ready(castId, probeLatencyMs, startupMs))
+    }
+
+    /** Main-thread local TV exit uses the same cast-correlated terminal path as WS stop. */
+    fun stopLocalCast(): Boolean {
+        val connection = active ?: return false
+        val castId = ownership.currentCast(connection.token, connection.generation) ?: return false
+        return stopCast(connection, castId)
+    }
+
+    /** Forget revokes the live controller before a durable key clear can reopen pairing. */
+    fun forgetAllPairings(): Boolean {
+        val connection = active
+        val castId = connection?.let { ownership.currentCast(it.token, it.generation) }
+        if (connection != null && castId != null) stopCast(connection, castId)
+        val displaced = synchronized(serverLock) {
+            val prior = active
+            active = null
+            generation = counter.incrementAndGet()
+            ownership.invalidate()?.also { notifyControlLost(it) }
+            prior
+        }
+        displaced?.let { connection ->
+            connection.session.launch {
+                runCatching { connection.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "revoked")) }
+            }
+        }
+        return pairing.forgetAllPairings()
+    }
+
+    private fun sendResult(result: ControlCastResult) {
+        val castId = when (result) {
+            is ControlCastResult.Accepted -> result.castId
+            is ControlCastResult.Ready -> result.castId
+            is ControlCastResult.Failed -> result.castId
+            is ControlCastResult.Stopped -> result.castId
+        }
+        val connection = active ?: return
+        if (!ownership.isCurrent(connection.token, connection.generation, castId)) return
+        val frame = resultFrame(result)
+        // A terminal result authorizes an idle replacement immediately. Capture
+        // this lease's sender before releasing ownership so that replacement does
+        // not suppress the final result for the socket that owned the cast.
+        if (result is ControlCastResult.Failed || result is ControlCastResult.Stopped) connection.session.launch { connection.emit(frame) } else emit(connection, frame)
+        if (result is ControlCastResult.Failed || result is ControlCastResult.Stopped) {
+            synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, castId) }
+        }
+    }
+
+    private suspend fun DefaultWebSocketServerSession.session() {
+        val host = boundHost ?: return closePolicy()
+        val port = boundPort
+        val hosts = call.request.headers.getAll(HttpHeaders.Host)
+        val peer = call.request.origin.remoteHost.removePrefix("::ffff:")
+        if (port !in 1..65535 || hosts != listOf("$host:$port") || !MediaUrlValidator.isPrivateIpv4(peer)) return closePolicy()
+        if (!preAuthConnections.tryAcquire()) return closePolicy()
+
+        val emitLock = kotlinx.coroutines.sync.Mutex()
+        val emit: suspend (String) -> Unit = { payload -> emitLock.withLock { send(Frame.Text(payload)) } }
+        val auth = try { withTimeoutOrNull(AUTH_TIMEOUT_MS) { authenticate(emit, peer, host, port) } } finally { preAuthConnections.release() }
+            ?: return closePolicy()
+
+        // The session itself is the lease token, so an atomic idle replacement can
+        // close exactly the displaced socket after installing the new lease.
+        val token: Any = this
+        lateinit var connection: Connection
+        var displaced: Any? = null
+        val busy = synchronized(serverLock) {
+            if (ownership.isBusy()) {
+                true
+            } else {
+                val next = counter.incrementAndGet()
+                connection = Connection(this, token, next, emit)
+                displaced = ownership.adoptIdleConnection(token, next)?.displaced
+                generation = next
+                active = connection
+                false
+            }
+        }
+        if (busy) {
+            if (auth.resumed) emit(resumed(auth, host, port))
+            emit(json(linkedMapOf("t" to "busy", "v" to 2, "reason" to "active_cast")))
+            close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "busy"))
+            return
+        }
+        if (auth.resumed) emit(resumed(auth, host, port))
+        // The new lease is visible before the old idle socket is closed. Its finally
+        // cannot release or poison this lease because every release checks token+gen.
+        (displaced as? DefaultWebSocketServerSession)?.launch {
+            runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "superseded")) }
+        }
+
+        stateFeed(connection)
+        val pings = PingGate(SystemClock::elapsedRealtime)
+        try {
             for (frame in incoming) {
-                if (frame !is Frame.Text) continue
-                val json = runCatching { JSONObject(frame.readText()) }.getOrNull() ?: continue
-                when (json.optString("t")) {
-                    "loadMedia" -> {
-                        val url = json.optString("url")
-                        if (!isValidMediaUrl(url, phoneIp)) {
-                            emit(errorJson(ControlErrors.HOST_MISMATCH, "loadMedia URL must be http://<pairedPhone>:<port>/v/<token>"))
-                        } else {
-                            val title = json.optString("title").ifBlank { null }
-                            val durationMs = json.optLong("durationMs", 0L)
-                            val startMs = json.optLong("startMs", 0L)
-                            postIfCurrent(myGeneration) { commands.onLoadMedia(url, title, durationMs, startMs) }
-                        }
-                    }
-                    "play" -> postIfCurrent(myGeneration) { commands.onPlay() }
-                    "pause" -> postIfCurrent(myGeneration) { commands.onPause() }
-                    "seek" -> {
-                        val posMs = json.optLong("posMs", 0L)
-                        postIfCurrent(myGeneration) { commands.onSeek(posMs) }
-                    }
-                    "skip" -> {
-                        val deltaMs = json.optLong("deltaMs", 0L)
-                        postIfCurrent(myGeneration) { commands.onSkip(deltaMs) }
-                    }
-                    "setVolume" -> {
-                        val level = json.optDouble("level", 1.0).toFloat()
-                        postIfCurrent(myGeneration) { commands.onSetVolume(level) }
-                    }
-                    "stop" -> postIfCurrent(myGeneration) { commands.onStop() }
-                    "ping" -> emit(pongJson(json.optString("id")))
-                    // Unknown types are ignored (forward-compatible).
-                    else -> Unit
-                }
+                if (frame !is Frame.Text || !frame.fin) { closeUnsupported(); return }
+                val text = frame.readText()
+                if (text.toByteArray(Charsets.UTF_8).size > MAX_FRAME) { closeTooBig(); return }
+                val objectValue = StrictJson.objectOnly(text)
+                if (objectValue == null) { rejectMalformed(connection, null, null); return }
+                if (!authenticatedCommand(objectValue, connection, peer, pings)) { rejectMalformed(connection, objectValue.string("t")?.value, objectValue.string("castId")?.value); return }
             }
         } finally {
-            if (permitHeld) unauthPermits.release()
-            if (myGeneration != -1L) {
-                // Only relinquish ownership if we are STILL the active session
-                // (never null out a successor that already superseded us).
-                withContext(NonCancellable) {
-                    adoptMutex.withLock {
-                        if (activeGeneration == myGeneration) {
-                            activeSession = null
-                            activeEmit = null
-                        }
-                    }
+            val released = synchronized(serverLock) {
+                if (!ownership.release(token, connection.generation)) false else {
+                    if (active?.token === token && active?.generation == connection.generation) active = null
+                    generation = counter.incrementAndGet()
+                    true
                 }
             }
+            if (released) notifyControlLost(connection.generation)
         }
     }
 
-    /**
-     * Pre-auth loop: read frames until a valid `hello`/`resume` (returns the key),
-     * a denial, or a burst of garbage frames (returns null → caller closes). Bad
-     * frames are counted so a peer can't stream junk indefinitely.
-     */
     private suspend fun DefaultWebSocketServerSession.authenticate(
         emit: suspend (String) -> Unit,
-        remoteHost: String?,
-    ): String? {
-        var invalidFrames = 0
+        peer: String,
+        host: String,
+        port: Int,
+    ): Auth? {
+        var malformed = 0
+        var negotiation: Pair<String, String>? = null
+        var challenge: Auth? = null
+        val proofGate = ResumeProofGate()
         for (frame in incoming) {
-            if (frame !is Frame.Text) {
-                if (++invalidFrames >= MAX_PREAUTH_INVALID) return null
+            if (frame !is Frame.Text || !frame.fin) { closeUnsupported(); return null }
+            val text = frame.readText()
+            if (text.toByteArray(Charsets.UTF_8).size > MAX_FRAME) { closeTooBig(); return null }
+            val obj = StrictJson.objectOnly(text)
+            if (obj == null) {
+                if (challenge != null) { emit(deniedFrame()); return null }
+                if (++malformed >= MAX_PREAUTH_FRAMES) return null
                 continue
             }
-            val json = runCatching { JSONObject(frame.readText()) }.getOrNull()
-            if (json == null) {
-                if (++invalidFrames >= MAX_PREAUTH_INVALID) return null
-                continue
-            }
-            when (json.optString("t")) {
-                "hello" -> {
-                    // Only pairable while the code is actually on screen.
-                    if (!acceptingPairings) {
-                        emit(deniedJson())
+            val type = obj.string("t")?.value
+            if (challenge != null && type != "resumeProof") { emit(deniedFrame()); return null }
+            when (type) {
+                "negotiate" -> {
+                    if (negotiation != null || challenge != null || !obj.exactly(NEGOTIATE_FIELDS) || obj.integer("v") != 2L || obj.integer("minV") != 2L || obj.integer("maxV") != 2L || !id(obj.string("clientNonce")?.value)) {
+                        if (++malformed >= MAX_PREAUTH_FRAMES) return null
+                        continue
+                    }
+                    val clientNonce = obj.string("clientNonce")!!.value
+                    negotiation = clientNonce to randomId()
+                    emit(json(linkedMapOf("t" to "negotiated", "v" to 2, "clientNonce" to clientNonce, "serverNonce" to negotiation.second, "tvId" to pairing.tvId, "cap" to CAP)))
+                }
+                "pair" -> {
+                    val negotiated = negotiation
+                    if (!obj.exactly(PAIR_FIELDS) || obj.integer("v") != 2L || negotiated == null || obj.string("clientNonce")?.value != negotiated.first || obj.string("serverNonce")?.value != negotiated.second || !code(obj.string("code")?.value) || !label(obj.string("device")?.value, 80)) {
+                        if (++malformed >= MAX_PREAUTH_FRAMES) return null
+                        continue
+                    }
+                    negotiation = null // exactly one pair can consume a negotiation.
+                    val pairResult = synchronized(serverLock) {
+                        if (ownership.isBusy()) null else pairing.attemptPair(obj.string("code")!!.value, obj.string("device")!!.value, peer)
+                    }
+                    return when (pairResult) {
+                        is PairAttemptResult.Success -> {
+                            val auth = Auth(PairingRecord(pairResult.keyId, pairResult.key, pairResult.deviceLabel), peer, negotiated.first, negotiated.second, pairing.tvName, false)
+                            emit(paired(auth, host, port))
+                            auth
+                        }
+                        else -> { emit(deniedFrame()); null }
+                    }
+                }
+                "resumeInit" -> {
+                    if (challenge != null || negotiation != null || !obj.exactly(RESUME_INIT_FIELDS) || obj.integer("v") != 2L || !id(obj.string("tvId")?.value) || !id(obj.string("keyId")?.value) || !id(obj.string("clientNonce")?.value)) {
+                        if (++malformed >= MAX_PREAUTH_FRAMES) return null
+                        continue
+                    }
+                    val record = pairing.findKey(obj.string("tvId")!!.value, obj.string("keyId")!!.value)
+                    if (record == null) { emit(deniedFrame()); return null }
+                    challenge = Auth(record, peer, obj.string("clientNonce")!!.value, randomId(), pairing.tvName, true)
+                    proofGate.issue()
+                    emit(challenge(challenge, host, port))
+                }
+                "resumeProof" -> {
+                    val value = challenge
+                    // Consume before validation: no alternate proof can be tried
+                    // against this nonce pair, regardless of why it was rejected.
+                    if (!proofGate.consume() || value == null || !obj.exactly(RESUME_PROOF_FIELDS) || obj.integer("v") != 2L || obj.string("tvId")?.value != pairing.tvId || obj.string("keyId")?.value != value.record.keyId || obj.string("clientNonce")?.value != value.clientNonce || obj.string("serverNonce")?.value != value.serverNonce || !proof(obj.string("proof")?.value) || !constant(obj.string("proof")!!.value, hmac(value, "client", host, port))) {
+                        challenge = null
+                        emit(deniedFrame())
                         return null
                     }
-                    val device = json.optString("device").ifBlank { "phone" }
-                    return when (val result = pairing.attemptPair(json.optString("code"), device, remoteHost)) {
-                        is PairingManager.PairResult.Success -> {
-                            emit(pairedJson(result.key))
-                            result.key
-                        }
-                        // Denied or LockedOut: identical denial (leak nothing).
-                        else -> {
-                            emit(deniedJson())
-                            null
-                        }
-                    }
+                    challenge = null
+                    return value
                 }
-                "resume" -> {
-                    val candidate = json.optString("key")
-                    return if (pairing.isKnownKey(candidate)) {
-                        emit(pairedJson(candidate))
-                        candidate
-                    } else {
-                        emit(deniedJson())
-                        null
-                    }
-                }
-                // Ignore anything else until authenticated (unpaired = nothing), but
-                // don't let it stream forever.
-                else -> if (++invalidFrames >= MAX_PREAUTH_INVALID) return null
+                else -> if (++malformed >= MAX_PREAUTH_FRAMES) return null
             }
         }
         return null
     }
 
-    /**
-     * Make [session] the sole live control session and return its generation.
-     * Serialized so two sessions can't both win the check-then-assign; supersedes
-     * (closes) the previous session.
-     */
-    private suspend fun adopt(session: DefaultWebSocketServerSession, emit: suspend (String) -> Unit): Long {
-        val gen = genCounter.incrementAndGet()
-        var previous: DefaultWebSocketServerSession? = null
-        adoptMutex.withLock {
-            previous = activeSession
-            activeSession = session
-            activeEmit = emit
-            activeGeneration = gen
-        }
-        previous?.let {
-            if (it !== session) runCatching { it.close(CloseReason(CloseReason.Codes.NORMAL, "superseded")) }
-        }
-        return gen
-    }
-
-    /** Post a player command to the main thread, dropping it if we've been superseded. */
-    private fun postIfCurrent(generation: Long, action: () -> Unit) {
-        main.post { if (activeGeneration == generation) action() }
-    }
-
-    /** Launch the ~10 Hz confirmed-position feed inside the session scope. */
-    private fun CoroutineScope.startStateFeed(generation: Long, emit: suspend (String) -> Unit) {
-        launch {
-            while (isActive && activeGeneration == generation) {
-                try {
-                    emit(stateJson(stateProvider(), seq.incrementAndGet()))
-                } catch (_: Exception) {
-                    break
-                }
-                delay(STATE_INTERVAL_MS)
+    private fun authenticatedCommand(o: StrictJsonValue.Obj, connection: Connection, peer: String, pings: PingGate): Boolean {
+        val type = o.string("t")?.value ?: return false
+        if (!ascii(type, 32) || o.integer("v") != 2L) return false
+        fun castId() = o.string("castId")?.value?.takeIf(::id)
+        fun stale(cast: String) = emit(connection, commandRejected(cast, type, "stale_cast"))
+        when (type) {
+            "ping" -> {
+                val id = o.string("id")?.value
+                if (!o.exactly(PING_FIELDS) || !id(id) || !pings.tryAcquire()) return false
+                emit(connection, json(linkedMapOf("t" to "pong", "v" to 2, "id" to id)))
             }
+            "loadMedia" -> {
+                val cast = castId() ?: return false
+                val duration = o.integer("durationMs") ?: return false
+                val start = o.integer("startMs") ?: return false
+                val url = o.string("url")?.value
+                val title = o.string("title")?.value
+                if (!o.exactly(LOAD_FIELDS) || !url(url, peer) || !label(title, 200) || !ms(duration) || !ms(start) || (duration > 0 && start > duration)) return false
+                val outcome = synchronized(serverLock) {
+                    if (active?.token !== connection.token || active?.generation != connection.generation) return false
+                    when (ownership.adoptCast(connection.token, connection.generation, cast)) {
+                        ControlOwnership.CastAdoption.DUPLICATE -> onMainResult { commands.replayResult(cast) } ?: ControlCastResult.Accepted(cast)
+                        ControlOwnership.CastAdoption.NEW -> {
+                            pairing.closeSurface()
+                            onMainResult { commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start) }
+                                ?: run { ownership.clearCast(connection.token, connection.generation, cast); return false }
+                        }
+                        ControlOwnership.CastAdoption.STALE_LEASE -> return false
+                    }
+                }
+                sendResult(outcome)
+            }
+            "play", "pause", "cancelLoad", "stop" -> {
+                val cast = castId() ?: return false
+                if (!o.exactly(CAST_FIELDS)) return false
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) {
+                    val replay = if (type == "stop") onMainResult { commands.replayResult(cast) } else null
+                    if (replay is ControlCastResult.Stopped) {
+                        connection.session.launch { connection.emit(resultFrame(replay)) }
+                        return true
+                    }
+                    stale(cast)
+                } else if (type == "stop") {
+                    return stopCast(connection, cast)
+                } else post(connection, cast) {
+                    when (type) {
+                        "play" -> commands.onPlay(cast)
+                        "pause" -> commands.onPause(cast)
+                        "cancelLoad" -> if (commands.onCancelLoad(cast)) ownership.clearCast(connection.token, connection.generation, cast)
+                        else -> Unit
+                    }
+                }
+            }
+            "seek" -> commandWithLong(o, connection, type, "posMs") { cast, value -> commands.onSeek(cast, value) }
+            "skip" -> {
+                val cast = castId() ?: return false
+                val value = o.integer("deltaMs") ?: return false
+                if (!o.exactly(SKIP_FIELDS) || value !in setOf(-10_000L, 10_000L)) return false
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSkip(cast, value) }
+            }
+            "setVolume" -> {
+                val cast = castId() ?: return false
+                val value = o.number("level") ?: return false
+                if (!o.exactly(VOLUME_FIELDS) || value !in 0.0..1.0) return false
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetVolume(cast, value.toFloat()) }
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    private fun commandWithLong(o: StrictJsonValue.Obj, connection: Connection, type: String, field: String, action: (String, Long) -> Unit): Boolean {
+        val cast = o.string("castId")?.value?.takeIf(::id) ?: return false
+        val value = o.integer(field) ?: return false
+        if (!o.exactly(setOf("t", "v", "castId", field)) || !ms(value)) return false
+        if (!ownership.isCurrent(connection.token, connection.generation, cast)) emit(connection, commandRejected(cast, type, "stale_cast")) else post(connection, cast) { action(cast, value) }
+        return true
+    }
+
+    private fun post(connection: Connection, castId: String, action: () -> Unit) = main.post {
+        if (generation == connection.generation && ownership.isCurrent(connection.token, connection.generation, castId)) action()
+    }
+
+    private fun stopCast(connection: Connection, castId: String): Boolean {
+        if (!ownership.isCurrent(connection.token, connection.generation, castId)) return false
+        if (!onMainBoolean { commands.onStop(castId) }) return false
+        // Capture the owning lease before clearing so `stopped` remains correlated
+        // even if an idle replacement authenticates immediately afterward.
+        connection.session.launch { connection.emit(resultFrame(ControlCastResult.Stopped(castId))) }
+        synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, castId) }
+        return true
+    }
+
+    /** Ktor calls on a worker; compose/player ownership stays on the main thread. */
+    private fun onMainResult(block: () -> ControlCastResult?): ControlCastResult? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val result = AtomicReference<ControlCastResult?>()
+        val done = CountDownLatch(1)
+        main.post { runCatching { result.set(block()) }.also { done.countDown() } }
+        return if (done.await(MAIN_ADOPTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) result.get() else null
+    }
+    private fun onMainBoolean(block: () -> Boolean): Boolean {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val result = AtomicReference(false)
+        val done = CountDownLatch(1)
+        main.post { runCatching { result.set(block()) }.also { done.countDown() } }
+        return done.await(MAIN_ADOPTION_TIMEOUT_MS, TimeUnit.MILLISECONDS) && result.get()
+    }
+
+    private fun DefaultWebSocketServerSession.stateFeed(connection: Connection) = launch {
+        while (isActive && generation == connection.generation) {
+            val cast = ownership.currentCast(connection.token, connection.generation)
+            if (cast != null) {
+                val frame = stateProvider()
+                val phase = frame.phase.wire.takeIf { it in PHASES } ?: "buffering"
+                emit(connection, json(linkedMapOf("t" to "state", "v" to 2, "castId" to cast, "posMs" to frame.posMs.coerceIn(0, MAX_MS), "durationMs" to frame.durationMs.coerceIn(0, MAX_MS), "playing" to frame.playing, "bufferedMs" to frame.bufferedMs.coerceIn(0, MAX_MS), "phase" to phase, "volume" to frame.volume.toDouble().coerceIn(0.0, 1.0), "seq" to sequence.incrementAndGet())))
+            }
+            delay(100)
         }
     }
 
-    /**
-     * Strict `loadMedia` URL check: the control server is only allowed to point
-     * the player at the paired phone's byte-range endpoint. We validate scheme,
-     * host, port, and path shape (and forbid user-info/query/fragment) so it can
-     * never be turned into an arbitrary LAN fetch/SSRF primitive. Redirects are
-     * disabled in the preflight probe; playback keeps cross-protocol redirects off.
-     */
-    private fun isValidMediaUrl(url: String, phoneIp: String?): Boolean {
-        if (phoneIp.isNullOrBlank()) return false
-        val expectedHost = phoneIp.removePrefix("::ffff:")
-        val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        if (!"http".equals(uri.scheme, ignoreCase = true)) return false
-        if (uri.userInfo != null) return false
-        val host = uri.host ?: return false
-        if (!host.equals(expectedHost, ignoreCase = true)) return false
-        if (uri.port !in 1..65535) return false
-        if (uri.rawQuery != null || uri.rawFragment != null) return false
-        val path = uri.path ?: return false
-        return MEDIA_PATH_REGEX.matches(path)
+    private fun rejectMalformed(connection: Connection, type: String?, castId: String?) {
+        if (ascii(type, 32) && id(castId)) emit(connection, commandRejected(castId!!, type!!, "malformed"))
+        connection.session.launch { connection.session.closePolicy() }
     }
+    private fun emit(connection: Connection, payload: String) {
+        if (active?.token !== connection.token || active?.generation != connection.generation || generation != connection.generation) return
+        connection.session.launch { if (active?.token === connection.token && generation == connection.generation) connection.emit(payload) }
+    }
+    private fun notifyControlLost(lostGeneration: Long) { main.post { commands.onControlLost(lostGeneration) } }
+    private suspend fun DefaultWebSocketServerSession.closePolicy() { runCatching { close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "policy")) } }
+    private suspend fun DefaultWebSocketServerSession.closeUnsupported() { runCatching { close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "unsupported")) } }
+    private suspend fun DefaultWebSocketServerSession.closeTooBig() { runCatching { close(CloseReason(CloseReason.Codes.TOO_BIG, "size")) } }
 
-    // --- Frame builders (org.json; compact) ---------------------------------
+    private fun paired(a: Auth, host: String, port: Int) = json(
+        pairedFrameFields(
+            key = a.record.key,
+            keyId = a.record.keyId,
+            tv = a.tv,
+            tvId = pairing.tvId,
+            peerIp = a.peerIp,
+            serverHost = host,
+            serverPort = port,
+            capabilities = CAP,
+        ),
+    )
+    private fun challenge(a: Auth, host: String, port: Int) = json(baseMap("resumeChallenge", a, host, port))
+    private fun resumed(a: Auth, host: String, port: Int) = json(baseMap("resumed", a, host, port) + ("proof" to hmac(a, "server", host, port)))
+    private fun baseMap(t: String, a: Auth, host: String, port: Int): LinkedHashMap<String, Any?> = linkedMapOf("t" to t, "v" to 2, "tv" to a.tv, "tvId" to pairing.tvId, "keyId" to a.record.keyId, "clientNonce" to a.clientNonce, "serverNonce" to a.serverNonce, "peerIp" to a.peerIp, "serverHost" to host, "serverPort" to port, "cap" to CAP)
+    private fun hmac(a: Auth, role: String, host: String, port: Int): String {
+        val key = android.util.Base64.decode(a.record.key, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING)
+        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }
+        val values = listOf("Flick-Control-Resume-V2", role, "2", pairing.tvId, a.record.keyId, a.clientNonce, a.serverNonce, a.peerIp, host, port.toString(), a.tv, CAP.joinToString(","))
+        val bytes = values.fold(ByteArray(0)) { prior, value -> prior + ByteBuffer.allocate(4).putInt(value.toByteArray(Charsets.UTF_8).size).array() + value.toByteArray(Charsets.UTF_8) }
+        return android.util.Base64.encodeToString(mac.doFinal(bytes), android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
+    }
+    private fun resultFrame(result: ControlCastResult): String = when (result) {
+        is ControlCastResult.Accepted -> json(linkedMapOf("t" to "loadAccepted", "v" to 2, "castId" to result.castId))
+        is ControlCastResult.Ready -> json(linkedMapOf("t" to "loadReady", "v" to 2, "castId" to result.castId, "probeLatencyMs" to result.probeLatencyMs.coerceIn(0, 60_000), "startupMs" to result.startupMs.coerceIn(0, 60_000)))
+        is ControlCastResult.Failed -> json(linkedMapOf<String, Any?>("t" to if (result.beforeReady) "loadFailed" else "error", "v" to 2, "castId" to result.castId, "code" to result.code.wire, "retryable" to result.retryable).apply { result.httpStatus?.takeIf { it in 100..599 }?.let { put("httpStatus", it) } })
+        is ControlCastResult.Stopped -> json(stoppedFrameFields(result.castId))
+    }
+    private fun commandRejected(cast: String, command: String, code: String) = json(linkedMapOf("t" to "commandRejected", "v" to 2, "castId" to cast, "command" to command, "code" to code))
+    private fun deniedFrame() = json(linkedMapOf("t" to "denied", "v" to 2))
+    private fun json(values: Map<String, Any?>): String = JSONObject().also { target -> values.forEach { (key, value) -> target.put(key, value) } }.toString()
 
-    private fun pairedJson(key: String): String = JSONObject()
-        .put("t", "paired")
-        .put("key", key)
-        .put("tv", pairing.tvName)
-        .toString()
-
-    private fun deniedJson(): String = JSONObject().put("t", "denied").toString()
-
-    private fun pongJson(id: String): String = JSONObject()
-        .put("t", "pong")
-        .put("id", id)
-        .toString()
-
-    private fun errorJson(code: String, message: String): String = JSONObject()
-        .put("t", "error")
-        .put("code", code)
-        .put("message", message)
-        .toString()
-
-    private fun stateJson(frame: PlaybackFrame, seq: Long): String = JSONObject()
-        .put("t", "state")
-        .put("posMs", frame.posMs)
-        .put("durationMs", frame.durationMs)
-        .put("playing", frame.playing)
-        .put("bufferedMs", frame.bufferedMs)
-        .put("phase", frame.phase.wire)
-        .put("volume", frame.volume.toDouble())
-        .put("seq", seq)
-        .toString()
+    private fun ascii(value: String?, max: Int) = value != null && value.length <= max && value.all { it.code in 0x20..0x7e }
+    private fun id(value: String?) = value?.matches(ID) == true
+    private fun proof(value: String?) = value?.matches(PROOF) == true
+    private fun code(value: String?) = value?.matches(CODE) == true
+    private fun label(value: String?, max: Int) = value != null && value.codePointCount(0, value.length) <= max && normalizeLabel(value, max) == value && value.isNotBlank()
+    private fun ms(value: Long) = value in 0..MAX_MS
+    private fun url(value: String?, peer: String) = value != null && value.all { it.code <= 0x7f } && MediaUrlValidator.isValid(value, peer)
+    private fun constant(a: String, b: String) = MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
+    private fun randomId() = android.util.Base64.encodeToString(ByteArray(16).also(SecureRandom()::nextBytes), android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
 
     companion object {
-        private const val STATE_INTERVAL_MS = 100L // ~10 Hz
-        private const val GRACE_MS = 300L
-        private const val TIMEOUT_MS = 800L
-
-        // Reap a vanished phone: ping every 15s, drop it if no pong within 15s.
-        private const val PING_PERIOD_MS = 15_000L
-        private const val PONG_TIMEOUT_MS = 15_000L
-
-        // Pre-auth bounds (anti-DoS): at most this many un-authenticated sockets,
-        // each with this long to authenticate and this many junk frames tolerated.
-        private const val MAX_UNAUTH_SESSIONS = 4
-        private const val AUTH_DEADLINE_MS = 10_000L
-        private const val MAX_PREAUTH_INVALID = 8
-
-        // The only path the media server serves is /v/<url-safe-base64 token>.
-        private val MEDIA_PATH_REGEX = Regex("^/v/[A-Za-z0-9_-]+$")
+        private const val MAX_FRAME = 16 * 1024
+        private const val MAX_MS = 604_800_000L
+        private const val MAX_PREAUTH_CONNECTIONS = 4
+        private const val MAX_PREAUTH_FRAMES = 3
+        private const val AUTH_TIMEOUT_MS = 6_000L
+        private const val MAIN_ADOPTION_TIMEOUT_MS = 1_000L
+        private val ID = Regex("^[A-Za-z0-9_-]{22}$")
+        private val PROOF = Regex("^[A-Za-z0-9_-]{43}$")
+        private val CODE = Regex("^[0-9]{4}$")
+        private val CAP = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac")
+        private val PHASES = setOf("buffering", "playing", "paused", "ended")
+        private val NEGOTIATE_FIELDS = setOf("t", "v", "minV", "maxV", "clientNonce")
+        private val PAIR_FIELDS = setOf("t", "v", "clientNonce", "serverNonce", "code", "device")
+        private val RESUME_INIT_FIELDS = setOf("t", "v", "tvId", "keyId", "clientNonce")
+        private val RESUME_PROOF_FIELDS = setOf("t", "v", "tvId", "keyId", "clientNonce", "serverNonce", "proof")
+        private val PING_FIELDS = setOf("t", "v", "id")
+        private val LOAD_FIELDS = setOf("t", "v", "castId", "url", "title", "durationMs", "startMs")
+        private val CAST_FIELDS = setOf("t", "v", "castId")
+        private val SKIP_FIELDS = setOf("t", "v", "castId", "deltaMs")
+        private val VOLUME_FIELDS = setOf("t", "v", "castId", "level")
     }
 }
+
+/** `paired` deliberately has no negotiation nonces or proof (control v2 §4). */
+internal fun pairedFrameFields(
+    key: String,
+    keyId: String,
+    tv: String,
+    tvId: String,
+    peerIp: String,
+    serverHost: String,
+    serverPort: Int,
+    capabilities: List<String>,
+): LinkedHashMap<String, Any?> = linkedMapOf(
+    "t" to "paired",
+    "v" to 2,
+    "key" to key,
+    "keyId" to keyId,
+    "tv" to tv,
+    "tvId" to tvId,
+    "peerIp" to peerIp,
+    "serverHost" to serverHost,
+    "serverPort" to serverPort,
+    "cap" to capabilities,
+)
+
+internal fun stoppedFrameFields(castId: String): LinkedHashMap<String, Any?> = linkedMapOf(
+    "t" to "stopped",
+    "v" to 2,
+    "castId" to castId,
+)

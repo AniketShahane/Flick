@@ -2,62 +2,105 @@ package com.flick.sender.net
 
 import android.content.Context
 
-/**
- * Persists pairings in the app's private storage (control-channel.md §3): a
- * per-TV pairing key so subsequent connects are one-tap `resume`. Keys are never
- * logged and never leave the device. This is a PUBLIC repo — nothing here is a
- * committed secret; keys are minted at runtime by the paired TV.
- */
+/** Private v2 pairing persistence. All writes use commit so a successful proof is durable before UI advances. */
 class PairingStore(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences("flick_pairings", Context.MODE_PRIVATE)
 
-    private val prefs = context.applicationContext
-        .getSharedPreferences("flick_pairings", Context.MODE_PRIVATE)
+    data class Pairing(
+        val tvId: String,
+        val keyId: String,
+        val name: String,
+        val host: String,
+        val port: Int,
+        val key: String,
+        val needsRepair: Boolean = false,
+    )
 
-    data class Pairing(val name: String, val host: String, val port: Int, val key: String)
+    fun last(): Pairing? = prefs.getString(LAST_TV, null)?.let(::get)
 
-    fun save(pairing: Pairing) {
-        prefs.edit()
-            .putString(keyOf(pairing.host), pairing.key)
-            .putString(nameOf(pairing.host), pairing.name)
-            .putInt(portOf(pairing.host), pairing.port)
-            .putString(LAST_HOST, pairing.host)
-            .apply()
-    }
-
-    fun keyFor(host: String): String? = prefs.getString(keyOf(host), null)
-
-    fun last(): Pairing? {
-        val host = prefs.getString(LAST_HOST, null) ?: return null
-        val key = prefs.getString(keyOf(host), null) ?: return null
-        val name = prefs.getString(nameOf(host), null) ?: host
-        val port = prefs.getInt(portOf(host), 0)
-        if (port == 0) return null
-        return Pairing(name, host, port, key)
+    fun get(tvId: String): Pairing? {
+        if (prefs.getBoolean(tombstone(tvId), false)) return null
+        val key = prefs.getString(key(tvId), null) ?: return null
+        val keyId = prefs.getString(keyId(tvId), null) ?: return null
+        val host = prefs.getString(host(tvId), null) ?: return null
+        val port = prefs.getInt(port(tvId), 0)
+        val pairing = Pairing(tvId, keyId, prefs.getString(name(tvId), null) ?: "TV", host, port, key, prefs.getBoolean(repair(tvId), false))
+        return pairing.takeIf { PairingRecordRules.valid(it.toRule()) }
     }
 
     /**
-     * Refresh only the stored control port for an already-paired [host] (the TV's
-     * control port is ephemeral and changes on every receiver restart). No-op if the
-     * host was never paired, so this never mints a phantom entry or clobbers the name.
+     * A legacy record can be retired only after a visible v2 pair at that exact old
+     * host succeeds. The current v2 receiver has no safe legacy-tvId lookup, so no
+     * legacy proof is ever sent to a discovered or changed address.
      */
-    fun updatePort(host: String, port: Int) {
-        if (port <= 0 || prefs.getString(keyOf(host), null) == null) return
-        prefs.edit().putInt(portOf(host), port).apply()
+    fun save(pairing: Pairing, replacing: Pairing? = get(pairing.tvId), legacyHost: String? = null): Boolean {
+        if (!PairingRecordRules.valid(pairing.toRule())) return false
+        val editor = prefs.edit()
+        val replacement = PairingRecordRules.replacement(replacing?.toRule(), pairing.toRule())
+        if (replacement.tombstoneKeyId != null) {
+            editor.putBoolean(tombstone(pairing.tvId + ":" + replacement.tombstoneKeyId), true)
+            replacement.removeLegacyHost?.let { removeLegacy(editor, it) }
+        }
+        val verifiedLegacyHost = legacyHost?.takeIf {
+            it == pairing.host && PairingRecordRules.legacyMigrationAllowed(it, pairing.host) && legacyForHost(it) != null
+        }
+        if (verifiedLegacyHost != null) {
+            editor.putString("legacy_migration_$verifiedLegacyHost", "${pairing.tvId}:${pairing.keyId}")
+            editor.remove("key_$verifiedLegacyHost").remove("name_$verifiedLegacyHost").remove("port_$verifiedLegacyHost")
+        }
+        return editor.putString(key(pairing.tvId), pairing.key)
+            .putString(keyId(pairing.tvId), pairing.keyId)
+            .putString(name(pairing.tvId), pairing.name)
+            .putString(host(pairing.tvId), pairing.host)
+            .putInt(port(pairing.tvId), pairing.port)
+            .putBoolean(repair(pairing.tvId), pairing.needsRepair)
+            .putBoolean(tombstone(pairing.tvId), false)
+            .putString(LAST_TV, pairing.tvId)
+            .commit()
     }
 
-    fun forget(host: String) {
-        prefs.edit()
-            .remove(keyOf(host))
-            .remove(nameOf(host))
-            .remove(portOf(host))
-            .apply()
+    /** Endpoint/name are committed only after a valid server proof. */
+    fun commitVerifiedEndpoint(tvId: String, name: String, host: String, port: Int): Boolean {
+        if (get(tvId) == null) return false
+        return prefs.edit().putString(this.name(tvId), name).putString(this.host(tvId), host).putInt(this.port(tvId), port)
+            .putBoolean(repair(tvId), false).commit()
     }
 
-    private fun keyOf(host: String) = "key_$host"
-    private fun nameOf(host: String) = "name_$host"
-    private fun portOf(host: String) = "port_$host"
+    fun markNeedsRepair(tvId: String) { if (get(tvId) != null) prefs.edit().putBoolean(repair(tvId), true).commit() }
 
-    private companion object {
-        const val LAST_HOST = "last_host"
+    fun forget(tvId: String) {
+        val pairing = get(tvId) ?: return
+        prefs.edit().putBoolean(tombstone(tvId), true).putBoolean(tombstone(tvId + ":" + pairing.keyId), true)
+            .remove(key(tvId)).remove(keyId(tvId)).remove(name(tvId)).remove(host(tvId)).remove(port(tvId)).remove(repair(tvId))
+            .also { removeLegacy(it, pairing.host); if (prefs.getString(LAST_TV, null) == tvId) it.remove(LAST_TV) }.commit()
     }
+
+    /** Reads the v1 host record only for an exact-host proof migration. */
+    fun legacyForHost(host: String): Pairing? {
+        if (!PairLaunch.isCanonicalIpv4(host)) return null
+        val key = prefs.getString("key_$host", null) ?: return null
+        val port = prefs.getInt("port_$host", 0)
+        if (!ControlProtocolV2.key(key) || port !in 1..65535) return null
+        return Pairing("", ControlProtocolV2.legacyKeyId(key), prefs.getString("name_$host", null) ?: "TV", host, port, key)
+    }
+
+    fun legacyLast(): Pairing? = prefs.getString("last_host", null)
+        ?.takeIf(PairLaunch::isCanonicalIpv4)
+        ?.let(::legacyForHost)
+
+    fun writeLegacyMigration(host: String, tvId: String, keyId: String): Boolean =
+        prefs.edit().putString("legacy_migration_$host", "$tvId:$keyId").commit()
+
+    private fun removeLegacy(editor: android.content.SharedPreferences.Editor, host: String) {
+        if (PairLaunch.isCanonicalIpv4(host)) editor.remove("key_$host").remove("name_$host").remove("port_$host").remove("legacy_migration_$host")
+    }
+    private fun key(tvId: String) = "v2_key_$tvId"
+    private fun keyId(tvId: String) = "v2_key_id_$tvId"
+    private fun name(tvId: String) = "v2_name_$tvId"
+    private fun host(tvId: String) = "v2_host_$tvId"
+    private fun port(tvId: String) = "v2_port_$tvId"
+    private fun repair(tvId: String) = "v2_repair_$tvId"
+    private fun tombstone(id: String) = "v2_tombstone_$id"
+    private fun Pairing.toRule() = PairingRecordRules.Record(tvId, keyId, name, host, port, key, needsRepair)
+    private companion object { const val LAST_TV = "v2_last_tv" }
 }

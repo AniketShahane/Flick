@@ -3,197 +3,256 @@ package com.flick.receiver.net
 import android.content.Context
 import android.os.SystemClock
 import android.util.Base64
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
 import java.security.SecureRandom
 
-/**
- * Trust establishment for the control channel (control-channel.md §3).
- *
- * A rotating 4-digit code proves the phone's user can SEE the TV screen (a silent
- * LAN attacker can't). On success the TV mints a persistent 128-bit pairing key
- * bound to that phone; subsequent connects `resume` with the key and skip the
- * code. Keys live in app-private storage and are NEVER logged.
- *
- * All secret comparisons are constant-time.
- *
- * Brute-force resistance: the 10 000-value code space is tiny, so [attemptPair]
- * bundles validate + mint + rotate into ONE synchronized step and, after
- * [MAX_FAILED_ATTEMPTS] misses, ROTATES the code and imposes an escalating
- * lockout during which every attempt fails. Misses are counted both globally and
- * per remote host, so a single abusive peer is locked out on its own budget
- * (independent of the global rotate) while honest peers keep their fresh code.
- * Enumeration therefore never lands.
- */
-class PairingManager(context: Context) {
+data class PairingSnapshot(
+    val surface: PairingSurface,
+    val pairedCount: Int,
+    val mostRecentDeviceLabel: String?,
+)
 
-    /** Outcome of a single [attemptPair] handshake. */
-    sealed interface PairResult {
-        data class Success(val key: String) : PairResult
-        data object Denied : PairResult
-        data object LockedOut : PairResult
-    }
+sealed interface PairingSurface {
+    data object Standby : PairingSurface
+    data class Open(val code: String, val generation: Long, val expiresAtElapsedMs: Long) : PairingSurface
+    data class Locked(val generation: Long, val retryAtElapsedMs: Long) : PairingSurface
+    data class Success(val deviceLabel: String, val generation: Long) : PairingSurface
+}
 
-    private val prefs = context.applicationContext
-        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val random = SecureRandom()
+sealed interface PairAttemptResult {
+    data class Success(val key: String, val keyId: String, val deviceLabel: String) : PairAttemptResult
+    data object SurfaceClosed : PairAttemptResult
+    data object Expired : PairAttemptResult
+    data object InvalidCode : PairAttemptResult
+    data class LockedOut(val retryAtElapsedMs: Long) : PairAttemptResult
+    /** Durable storage rejected the new key, so the visible code was not consumed. */
+    data object PersistenceFailed : PairAttemptResult
+}
 
-    @Volatile
-    private var code: String = randomCode()
+/** The only pairing authorization gate. All code checks and key writes share this monitor. */
+class PairingManager(
+    context: Context,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
+    private val wall: () -> Long = System::currentTimeMillis,
+    private val random: SecureRandom = SecureRandom(),
+) {
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private var generation = 0L
+    private var visible = false
+    private var open: PairingSurface.Open? = null
+    private var lockoutRound = prefs.getInt(KEY_LOCKOUT_ROUND, 0).coerceIn(0, MAX_LOCKOUT_ROUNDS)
+    private var lockoutUntilWall = prefs.getLong(KEY_LOCKOUT_UNTIL, 0L)
+    private var lockoutUntilElapsed = restoreLockout()
+    private var failures = 0
+    private data class HostThrottle(var failures: Int, var retryAtElapsedMs: Long)
+    private val hostThrottles = LinkedHashMap<String, HostThrottle>(MAX_HOST_THROTTLES, 0.75f, true)
+    private val _snapshot = MutableStateFlow(snapshot(PairingSurface.Standby))
+    val snapshot: StateFlow<PairingSnapshot> = _snapshot
 
-    // Brute-force throttle state (guarded by the monitor via @Synchronized).
-    private var failedAttempts: Int = 0
-    private var lockoutRound: Int = 0
-    private var lockedUntilMs: Long = 0L
-
-    /** Per-remote-host miss budget + escalating lockout, so one peer can't dilute
-     *  the global counter and can be blocked independently. */
-    private class HostThrottle {
-        var failedAttempts: Int = 0
-        var lockoutRound: Int = 0
-        var lockedUntilMs: Long = 0L
-    }
-
-    // Bounded (a burst of distinct source hosts can't grow it without limit; real
-    // LAN peers are few and completing a TCP handshake makes source spoofing hard).
-    private val hostThrottles = HashMap<String, HostThrottle>()
-
-    /** The current 4-digit code (single-use; rotates on success or a burst of misses). */
-    fun currentCode(): String = code
-
-    /** The user-visible TV name (editable in settings; advertised over NSD). */
     var tvName: String
-        get() = prefs.getString(KEY_NAME, DEFAULT_TV_NAME) ?: DEFAULT_TV_NAME
-        set(value) {
-            prefs.edit().putString(KEY_NAME, value.trim().ifBlank { DEFAULT_TV_NAME }).apply()
+        get() = prefs.getString(KEY_NAME, DEFAULT_TV_NAME)?.trim().orEmpty().ifBlank { DEFAULT_TV_NAME }
+        set(value) { prefs.edit().putString(KEY_NAME, normalizeLabel(value, 80).ifBlank { DEFAULT_TV_NAME }).commit() }
+
+    val tvId: String = prefs.getString(KEY_TV_ID, null) ?: randomId().also {
+        prefs.edit().putString(KEY_TV_ID, it).commit()
+    }
+
+    @Synchronized fun requestOpen() {
+        visible = true
+        publishEligible()
+    }
+
+    @Synchronized fun closeSurface() {
+        visible = false
+        open = null // a code is never valid when it is not visibly rendered.
+        publish(PairingSurface.Standby)
+    }
+
+    @Synchronized fun onForeground() { if (storedRecords().isEmpty()) requestOpen() }
+    @Synchronized fun onBackground() = closeSurface()
+
+    @Synchronized fun tick() {
+        val current = open
+        // An Open code and a Locked retry deadline are distinct states. In
+        // particular, a normal Open code must stay stable until its own expiry.
+        if (current != null) {
+            if (elapsed() >= current.expiresAtElapsedMs) openNewCode()
+            return
         }
+        if (_snapshot.value.surface is PairingSurface.Locked && elapsed() >= lockoutUntilElapsed) publishEligible()
+    }
 
-    /** The QR payload shown on the pairing screen (T1). */
-    fun qrPayload(host: String, port: Int): String =
-        "flick://pair?host=$host&port=$port&code=$code&v=1"
-
-    /** True once at least one phone has paired (drives T1 vs T2). */
-    fun isPaired(): Boolean = storedKeys().isNotEmpty()
-
-    /** Label of the most-recently paired phone, or null. */
-    fun pairedLabel(): String? = prefs.getString(KEY_LAST_DEVICE, null)
-
-    /** How many phones are paired (for the settings summary). */
-    fun pairedCount(): Int = storedKeys().size
-
-    /**
-     * Atomically validate an inbound `hello` code and, on success, mint + persist
-     * the pairing key and rotate the code — all under one lock so a single-use
-     * code can never be consumed twice by racing guesses. Failed guesses are
-     * counted both globally and (when [remoteHost] is known) per host; a burst on
-     * either budget rotates/locks with an escalating cooldown.
-     */
-    @Synchronized
-    fun attemptPair(candidate: String, deviceLabel: String, remoteHost: String?): PairResult {
-        val now = SystemClock.elapsedRealtime()
-        // Global lockout: a recent burst from anywhere rotated the code.
-        if (now < lockedUntilMs) return PairResult.LockedOut
-        // Per-host lockout: this specific peer burned through its own budget.
-        val throttle = remoteHost?.let { hostThrottleFor(it, now) }
-        if (throttle != null && now < throttle.lockedUntilMs) return PairResult.LockedOut
-
-        if (!constantTimeEquals(candidate, code)) {
-            // Per-host budget: lock this peer independently on an escalating cooldown.
-            if (throttle != null) {
-                throttle.failedAttempts++
-                if (throttle.failedAttempts >= MAX_FAILED_ATTEMPTS) {
-                    throttle.failedAttempts = 0
-                    throttle.lockoutRound = (throttle.lockoutRound + 1).coerceAtMost(MAX_LOCKOUT_ROUNDS)
-                    throttle.lockedUntilMs = now + (LOCKOUT_BASE_MS shl (throttle.lockoutRound - 1))
-                }
+    @Synchronized fun attemptPair(candidate: String, device: String, peerHost: String = ""): PairAttemptResult {
+        // Do not call tick here: an expired candidate must be compared against
+        // the generation it arrived for, never against a freshly rotated code.
+        if (!visible || open == null) return PairAttemptResult.SurfaceClosed
+        if (elapsed() < lockoutUntilElapsed) return PairAttemptResult.LockedOut(lockoutUntilElapsed)
+        val current = open ?: return PairAttemptResult.SurfaceClosed
+        if (elapsed() >= current.expiresAtElapsedMs) { openNewCode(); return PairAttemptResult.Expired }
+        val host = if (MediaUrlValidator.isPrivateIpv4(peerHost)) peerHost else "unknown"
+        hostThrottles[host]?.takeIf { elapsed() < it.retryAtElapsedMs }?.let { return PairAttemptResult.LockedOut(it.retryAtElapsedMs) }
+        if (!constantTimeEquals(candidate, current.code)) {
+            chargeHost(host)
+            failures++
+            if (failures >= MAX_FAILURES) {
+                failures = 0
+                beginLockout()
             }
-            // Global budget: rotate the guessed-at code and lock the pairing surface
-            // with an escalating cooldown so the 10 000-code space can't be walked.
-            failedAttempts++
-            if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
-                code = randomCode()
-                failedAttempts = 0
-                lockoutRound = (lockoutRound + 1).coerceAtMost(MAX_LOCKOUT_ROUNDS)
-                lockedUntilMs = now + (LOCKOUT_BASE_MS shl (lockoutRound - 1))
-            }
-            return PairResult.Denied
+            return PairAttemptResult.InvalidCode
         }
-
-        val key = mintKeyInternal(deviceLabel)
-        code = randomCode()
-        failedAttempts = 0
-        lockoutRound = 0
-        lockedUntilMs = 0L
-        hostThrottles.clear()
-        return PairResult.Success(key)
+        val label = normalizeLabel(device, 80).ifBlank { return PairAttemptResult.InvalidCode }
+        val key = randomKey(); val keyId = randomId()
+        val records = storedRecords().toMutableList().apply { add("$keyId|$key|$label") }
+        // Key, keyId and label are one durable transaction before success is published.
+        val committed = commitPairing(
+            commit = {
+                prefs.edit().putStringSet(KEY_RECORDS, records.toSet()).putString(KEY_LAST_DEVICE, label)
+                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
+            },
+            afterCommit = {
+                failures = 0; lockoutRound = 0; lockoutUntilElapsed = 0L; lockoutUntilWall = 0L
+                hostThrottles.remove(host)
+                open = null
+            },
+        )
+        if (!committed) return PairAttemptResult.PersistenceFailed
+        val success = PairAttemptResult.Success(key, keyId, label)
+        publish(PairingSurface.Success(label, current.generation))
+        return success
     }
 
-    /**
-     * The per-host throttle for [host], created on demand. Bounds the map: evicts
-     * entries that are neither locked out nor mid-attack, and if all live, drops
-     * the earliest-expiring so memory can't grow without limit. Callers hold the monitor.
-     */
-    private fun hostThrottleFor(host: String, now: Long): HostThrottle {
-        if (hostThrottles.size >= MAX_TRACKED_HOSTS && !hostThrottles.containsKey(host)) {
-            hostThrottles.entries.removeAll { (_, t) -> t.lockedUntilMs < now && t.failedAttempts == 0 }
-            if (hostThrottles.size >= MAX_TRACKED_HOSTS) {
-                hostThrottles.entries.minByOrNull { it.value.lockedUntilMs }
-                    ?.let { hostThrottles.remove(it.key) }
-            }
+    @Synchronized fun finishSuccess() { if (_snapshot.value.surface is PairingSurface.Success) { visible = false; publish(PairingSurface.Standby) } }
+
+    @Synchronized fun findKey(tvId: String, keyId: String): PairingRecord? =
+        if (tvId != this.tvId) null else storedRecords().mapNotNull(PairingRecord::decode)
+            .firstOrNull { it.keyId == keyId }
+
+    /** Removes every credential only after the durable transaction succeeds. */
+    @Synchronized fun forgetAllPairings(): Boolean {
+        return commitForgetPairings(
+            commit = {
+                prefs.edit().remove(KEY_RECORDS).remove(KEY_LAST_DEVICE)
+                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
+            },
+            afterCommit = {
+                failures = 0
+                lockoutRound = 0
+                lockoutUntilElapsed = 0L
+                lockoutUntilWall = 0L
+                hostThrottles.clear()
+                visible = true
+                open = null
+                publishEligible()
+            },
+        )
+    }
+
+    @Synchronized fun clearPairings() = forgetAllPairings()
+
+    @Synchronized fun pairedCount(): Int = storedRecords().size
+    @Synchronized fun pairedLabel(): String? = prefs.getString(KEY_LAST_DEVICE, null)
+    fun qrPayload(): String = "flick://pair?v=2"
+
+    private fun publishEligible() {
+        if (!visible) return publish(PairingSurface.Standby)
+        if (elapsed() < lockoutUntilElapsed) publish(PairingSurface.Locked(++generation, lockoutUntilElapsed)) else openNewCode()
+    }
+    private fun openNewCode() {
+        val item = PairingSurface.Open(randomCode(), ++generation, elapsed() + CODE_TTL_MS)
+        open = item; publish(item)
+    }
+    private fun beginLockout() {
+        open = null
+        lockoutRound = (lockoutRound + 1).coerceAtMost(MAX_LOCKOUT_ROUNDS)
+        val duration = (LOCKOUT_BASE_MS shl (lockoutRound - 1)).coerceAtMost(MAX_LOCKOUT_MS)
+        lockoutUntilElapsed = elapsed() + duration; lockoutUntilWall = wall() + duration
+        prefs.edit().putInt(KEY_LOCKOUT_ROUND, lockoutRound).putLong(KEY_LOCKOUT_UNTIL, lockoutUntilWall).commit()
+        publish(PairingSurface.Locked(++generation, lockoutUntilElapsed))
+    }
+    private fun chargeHost(host: String) {
+        val throttle = hostThrottles[host] ?: HostThrottle(0, 0L).also {
+            if (hostThrottles.size >= MAX_HOST_THROTTLES) hostThrottles.entries.iterator().let { iterator -> if (iterator.hasNext()) { iterator.next(); iterator.remove() } }
+            hostThrottles[host] = it
         }
-        return hostThrottles.getOrPut(host) { HostThrottle() }
-    }
-
-    /** Constant-time membership check for an inbound `resume` key. */
-    fun isKnownKey(candidate: String): Boolean {
-        if (candidate.isBlank()) return false
-        // Compare against every stored key in constant time; short-circuit only
-        // on a match (the set of keys is not itself a secret).
-        var matched = false
-        for (k in storedKeys()) {
-            if (constantTimeEquals(candidate, k)) matched = true
+        throttle.failures++
+        if (throttle.failures >= HOST_FAILURES) {
+            throttle.failures = 0
+            throttle.retryAtElapsedMs = elapsed() + HOST_THROTTLE_MS
         }
-        return matched
     }
-
-    /** Mint + persist a new pairing key bound to [deviceLabel]. Callers hold the monitor. */
-    private fun mintKeyInternal(deviceLabel: String): String {
-        val bytes = ByteArray(16).also { random.nextBytes(it) }
-        val key = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-        val keys = storedKeys().toMutableSet().apply { add(key) }
-        prefs.edit()
-            .putStringSet(KEY_KEYS, keys)
-            .putString(KEY_LAST_DEVICE, deviceLabel)
-            .apply()
-        return key
+    private fun restoreLockout(): Long {
+        val remaining = (lockoutUntilWall - wall()).coerceIn(0L, MAX_LOCKOUT_MS)
+        return elapsed() + remaining
     }
-
-    /** Forget all paired phones (settings action). */
-    fun clearPairings() {
-        prefs.edit().remove(KEY_KEYS).remove(KEY_LAST_DEVICE).apply()
-    }
-
-    private fun storedKeys(): Set<String> = prefs.getStringSet(KEY_KEYS, emptySet()) ?: emptySet()
-
-    private fun randomCode(): String = (random.nextInt(10_000)).toString().padStart(4, '0')
-
-    private fun constantTimeEquals(a: String, b: String): Boolean =
-        MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
+    private fun publish(surface: PairingSurface) { _snapshot.value = snapshot(surface) }
+    private fun snapshot(surface: PairingSurface) = PairingSnapshot(surface, storedRecords().size, pairedLabel())
+    private fun storedRecords(): Set<String> = prefs.getStringSet(KEY_RECORDS, emptySet()) ?: emptySet()
+    private fun randomCode() = random.nextInt(10_000).toString().padStart(4, '0')
+    private fun randomId() = bytes(16)
+    private fun randomKey() = bytes(32)
+    private fun bytes(size: Int) = Base64.encodeToString(ByteArray(size).also(random::nextBytes), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    private fun constantTimeEquals(a: String, b: String) = MessageDigest.isEqual(a.toByteArray(), b.toByteArray())
 
     companion object {
         private const val PREFS = "flick_pairing"
         private const val KEY_NAME = "tv_name"
-        private const val KEY_KEYS = "pairing_keys"
+        private const val KEY_TV_ID = "tv_id"
+        private const val KEY_RECORDS = "pairing_records_v2"
         private const val KEY_LAST_DEVICE = "last_device"
+        private const val KEY_LOCKOUT_ROUND = "lockout_round"
+        private const val KEY_LOCKOUT_UNTIL = "lockout_until_epoch_ms"
         const val DEFAULT_TV_NAME = "Flick TV"
-
-        /** Wrong guesses tolerated before the code rotates and the lockout starts. */
-        private const val MAX_FAILED_ATTEMPTS = 5
-
-        /** First lockout (30s), doubling each round up to [MAX_LOCKOUT_ROUNDS] (~8 min). */
+        private const val CODE_TTL_MS = 5 * 60_000L
         private const val LOCKOUT_BASE_MS = 30_000L
+        private const val MAX_LOCKOUT_MS = 8 * 60_000L
         private const val MAX_LOCKOUT_ROUNDS = 5
-
-        /** Upper bound on tracked per-host throttles (LAN peers are few). */
-        private const val MAX_TRACKED_HOSTS = 64
+        private const val MAX_FAILURES = 5
+        private const val HOST_FAILURES = 3
+        private const val HOST_THROTTLE_MS = 10_000L
+        private const val MAX_HOST_THROTTLES = 32
     }
+}
+
+data class PairingRecord(val keyId: String, val key: String, val label: String) {
+    companion object {
+        fun decode(value: String): PairingRecord? {
+            val parts = value.split('|', limit = 3)
+            return parts.takeIf { it.size == 3 }?.let { PairingRecord(it[0], it[1], it[2]) }
+        }
+    }
+}
+
+fun normalizeLabel(value: String, max: Int): String {
+    val normalized = StringBuilder()
+    var whitespace = false
+    value.codePoints().forEach { codePoint ->
+        if (Character.getType(codePoint) == Character.FORMAT.toInt()) return@forEach
+        if (Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)) {
+            if (normalized.isNotEmpty()) whitespace = true
+        } else if (Character.isISOControl(codePoint)) {
+            return@forEach
+        } else {
+            if (whitespace) normalized.append(' ')
+            whitespace = false
+            normalized.appendCodePoint(codePoint)
+        }
+    }
+    val result = normalized.toString()
+    if (result.codePointCount(0, result.length) <= max) return result
+    return result.substring(0, result.offsetByCodePoints(0, max))
+}
+
+/** Keeps authorization state unchanged when SharedPreferences rejects a write. */
+internal fun commitPairing(commit: () -> Boolean, afterCommit: () -> Unit): Boolean {
+    if (!commit()) return false
+    afterCommit()
+    return true
+}
+
+internal fun commitForgetPairings(commit: () -> Boolean, afterCommit: () -> Unit): Boolean {
+    if (!commit()) return false
+    afterCommit()
+    return true
 }

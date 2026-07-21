@@ -1,6 +1,7 @@
 package com.flick.receiver.player
 
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -10,11 +11,12 @@ import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.StuckPlayerException
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -22,6 +24,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -81,6 +84,16 @@ class PlayerController(context: Context) {
 
     /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
     private var lastVolume: Float = 1f
+    private data class StartupCallbacks(
+        val mediaId: String,
+        val onFirstFrame: () -> Unit,
+        val onError: (PlaybackException) -> Unit,
+    )
+
+    /** Non-null only from player adoption until the exact first video frame. */
+    private var startupCallbacks: StartupCallbacks? = null
+    private val firstFrameGate = FirstFrameGate()
+    private var playbackFailureListener: ((PlaybackException) -> Unit)? = null
 
     // --- Listeners -----------------------------------------------------------
 
@@ -138,6 +151,14 @@ class PlayerController(context: Context) {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // Startup is a separate, short transaction. It must not inherit the
+            // long steady-state recovery policy or hide format/decoder failures.
+            startupCallbacks?.let { callbacks ->
+                startupCallbacks = null
+                recordPlaybackError(error)
+                callbacks.onError(error)
+                return
+            }
             if (isTransientError(error) && recoveryGateCount < MAX_RECOVERY_ATTEMPTS) {
                 // Bounded, SILENT auto-recovery: don't surface the error UI — after a
                 // backoff, seek to the last good position and re-prepare the SAME
@@ -149,13 +170,41 @@ class PlayerController(context: Context) {
             }
             // Non-transient (4xx, decoder init) or the recovery budget is spent →
             // hand off to the diagnosis UI.
-            instrumentation.errorMessage = error.message ?: "Playback error"
-            instrumentation.errorCode = error.errorCode
-            instrumentation.errorCodeName = error.errorCodeName
+            recordPlaybackError(error)
+            playbackFailureListener?.invoke(error)
         }
     }
 
+    private fun recordPlaybackError(error: PlaybackException) {
+        instrumentation.errorMessage = error.message ?: "Playback error"
+        instrumentation.errorCode = error.errorCode
+        instrumentation.errorCodeName = error.errorCodeName
+    }
+
     private val analyticsListener = object : AnalyticsListener {
+        override fun onRenderedFirstFrame(
+            eventTime: AnalyticsListener.EventTime,
+            output: Any,
+            renderTimeMs: Long,
+        ) {
+            val callbacks = startupCallbacks ?: return
+            val mediaPeriodId = eventTime.currentMediaPeriodId
+            val mediaId = if (mediaPeriodId == null) null else runCatching {
+                val period = Timeline.Period()
+                eventTime.currentTimeline.getPeriodByUid(mediaPeriodId.periodUid, period)
+                val window = Timeline.Window()
+                eventTime.currentTimeline.getWindow(period.windowIndex, window)
+                window.mediaItem.mediaId
+            }.getOrNull()
+            // Fail closed if Media3 cannot identify the period. The startup
+            // deadline will issue a terminal result rather than readying B from
+            // a late A renderer event.
+            if (!firstFrameGate.consumeIfMatches(mediaId)) return
+            if (callbacks.mediaId != mediaId) return
+            startupCallbacks = null
+            callbacks.onFirstFrame()
+        }
+
         override fun onDroppedVideoFrames(
             eventTime: AnalyticsListener.EventTime,
             droppedFrames: Int,
@@ -218,6 +267,8 @@ class PlayerController(context: Context) {
      * pipeline). Everything else (4xx, decoder init) is fatal → diagnosis UI.
      */
     private fun isTransientError(error: PlaybackException): Boolean {
+        // Redirect/status responses must never enter the 2/4/8/15s recovery path.
+        if (!PlaybackFailureClassifier.isSteadyStateRecoveryAllowed(error)) return false
         // StuckPlayerException arrives wrapped, so walk the whole cause chain.
         var cause: Throwable? = error.cause
         while (cause != null) {
@@ -276,11 +327,11 @@ class PlayerController(context: Context) {
         // Byte-range aware HTTP source. Cross-protocol redirects OFF (we only
         // ever talk plain http to the LAN sender). Sane connect/read timeouts so
         // a dead sender surfaces as an error instead of hanging forever.
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(false)
-            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-            .setReadTimeoutMs(READ_TIMEOUT_MS)
-            .setUserAgent(USER_AGENT)
+        val httpDataSourceFactory = NoRedirectHttpDataSourceFactory(
+            connectTimeoutMs = CONNECT_TIMEOUT_MS,
+            readTimeoutMs = READ_TIMEOUT_MS,
+            userAgent = USER_AGENT,
+        )
 
         // Generous LAN direct-play retry policy replacing Media3's default (3
         // tries). With the 15-180s buffer, ~100s of quiet capped-backoff retrying
@@ -300,6 +351,12 @@ class PlayerController(context: Context) {
                 // in the default, so the 4xx check below still governs HTTP codes.
                 if (super.getRetryDelayMsFor(loadErrorInfo) == C.TIME_UNSET) return C.TIME_UNSET
                 val exception = loadErrorInfo.exception
+                // The strict source has already observed an unsafe HTTP response.
+                // Never turn a redirect/4xx/5xx startup failure into the long
+                // in-playback retry policy.
+                if (exception is RedirectRejectedException || exception is PlaybackHttpStatusException) {
+                    return C.TIME_UNSET
+                }
                 if (exception is HttpDataSource.InvalidResponseCodeException) {
                     val code = exception.responseCode
                     if (code in 400..499 && code != 416) return C.TIME_UNSET
@@ -319,6 +376,20 @@ class PlayerController(context: Context) {
         // drop to a software decoder that would mask the very failure this spike
         // exists to expose.
         val renderersFactory = DefaultRenderersFactory(appContext)
+            .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                    mimeType,
+                    requiresSecureDecoder,
+                    requiresTunnelingDecoder,
+                )
+                if (!MimeTypes.isVideo(mimeType)) candidates else candidates.filter { info ->
+                    HardwareDecoderPolicy.isHardwareVideoCodec(
+                        name = info.name,
+                        apiLevel = Build.VERSION.SDK_INT,
+                        hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) info.hardwareAccelerated else null,
+                    )
+                }
+            }
             .setEnableDecoderFallback(false)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
 
@@ -386,6 +457,8 @@ class PlayerController(context: Context) {
 
     /** Start a fresh direct-play session against [url], resetting all metrics. */
     fun play(url: String) {
+        startupCallbacks = null
+        firstFrameGate.clear()
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
@@ -401,7 +474,47 @@ class PlayerController(context: Context) {
         exo.playWhenReady = true
     }
 
+    /** Installs both startup callbacks before setting media or calling prepare. */
+    fun playStartup(
+        url: String,
+        startMs: Long,
+        mediaId: String,
+        onFirstFrame: () -> Unit,
+        onError: (PlaybackException) -> Unit,
+    ) {
+        firstFrameGate.arm(mediaId)
+        startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError)
+        currentUrl = url
+        savedPositionMs = 0L
+        pendingPlayWhenReady = true
+        cancelPendingRecovery()
+        recoveryGateCount = 0
+        instrumentation.reset()
+        // A startup adoption always gets a fresh listener/renderer instance.
+        // Releasing A before B is armed is a second fail-closed barrier against
+        // a late A renderer callback being observed as B.
+        player?.let { previous ->
+            previous.removeListener(playerListener)
+            previous.removeAnalyticsListener(analyticsListener)
+            previous.release()
+            player = null
+        }
+        val exo = createPlayer().also { player = it }
+        exo.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(mediaId).build())
+        if (startMs > 0) exo.seekTo(startMs)
+        exo.prepare()
+        exo.playWhenReady = true
+    }
+
+    fun clearStartupListener() { startupCallbacks = null; firstFrameGate.clear() }
+
+    /** Delivers the exact Media3 failure to the session while it is still actionable. */
+    fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
+        playbackFailureListener = listener
+    }
+
     fun stop() {
+        clearStartupListener()
         pendingPlayWhenReady = false
         cancelPendingRecovery()
         stableReadySinceMs = 0L

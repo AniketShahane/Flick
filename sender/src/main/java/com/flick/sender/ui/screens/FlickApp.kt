@@ -53,7 +53,7 @@ fun FlickApp(
                 is Route.Detail -> DetailScreen(controller, r.item)
                 Route.Connecting -> ConnectingScreen(controller)
                 Route.NowPlaying -> NowPlayingScreen(controller)
-                is Route.Failure -> ErrorScreen(controller, r.kind, onOpenWifiSettings)
+                is Route.Failure -> ErrorScreen(controller, r.kind, r.failure, onOpenWifiSettings)
             }
         }
 

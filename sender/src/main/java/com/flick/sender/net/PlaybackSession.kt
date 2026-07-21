@@ -22,7 +22,8 @@ import kotlin.math.abs
  * Commands go out through [ControlClient]; absolute-valued verbs (`seek posMs`,
  * `setVolume level`) are idempotent so reordering can't corrupt the position.
  */
-class PlaybackSession(private val control: ControlClient) {
+class PlaybackSession(private val control: ControlClient, private val fallbackTitle: String = GENERIC_TITLE) {
+    private var castId: String? = null
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
@@ -60,12 +61,14 @@ class PlaybackSession(private val control: ControlClient) {
         lastSeq = -1L
     }
 
-    fun loadMedia(url: String, title: String, durationMs: Long, startMs: Long) {
+    fun loadMedia(castId: String, url: String, title: String, durationMs: Long, startMs: Long) {
+        val safeTitle = ControlProtocolV2.normalizedLabel(title, 200) ?: fallbackTitle
+        this.castId = castId
         lastSeq = -1L
         seekPending = false
         playPending = false
         _state.value = PlaybackUiState(
-            title = title,
+            title = safeTitle,
             durationMs = durationMs,
             targetMs = startMs,
             confirmedMs = startMs,
@@ -73,9 +76,9 @@ class PlaybackSession(private val control: ControlClient) {
             phase = PlaybackPhase.BUFFERING,
         )
         control.send(
-            cmd("loadMedia")
+            cmd("loadMedia", castId)
                 .put("url", url)
-                .put("title", title)
+                .put("title", safeTitle)
                 .put("durationMs", durationMs)
                 .put("startMs", startMs),
         )
@@ -153,6 +156,7 @@ class PlaybackSession(private val control: ControlClient) {
     }
 
     fun clear() {
+        castId = null
         seekPending = false
         playPending = false
         lastSeq = -1L
@@ -163,6 +167,8 @@ class PlaybackSession(private val control: ControlClient) {
 
     /** Feed one decoded TV frame. Drops stale `state` by [seq]. */
     fun onFrame(obj: JSONObject) {
+        val frameCastId = obj.optString("castId", "")
+        if (frameCastId.isNotEmpty() && frameCastId != castId) return
         when (obj.optString("t")) {
             "state" -> onStateFrame(obj)
             "error" -> _state.update { it.copy(phase = PlaybackPhase.ERROR) }
@@ -266,7 +272,11 @@ class PlaybackSession(private val control: ControlClient) {
         control.send(cmd("seek").put("posMs", target))
     }
 
-    private fun cmd(t: String) = JSONObject().put("t", t).put("v", 1)
+    private fun cmd(t: String, overrideCastId: String? = castId): JSONObject {
+        val result = JSONObject().put("t", t).put("v", 2)
+        if (overrideCastId != null && t != "ping") result.put("castId", overrideCastId)
+        return result
+    }
 
     private fun phaseOf(s: String?): PlaybackPhase = when (s) {
         "buffering" -> PlaybackPhase.BUFFERING
@@ -284,5 +294,6 @@ class PlaybackSession(private val control: ControlClient) {
         const val RECONCILE_MS = 400L         // "collapsed" window
         const val SEEK_TIMEOUT_MS = 3_000L    // don't get stuck if TV never catches up
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
+        const val GENERIC_TITLE = "Video"
     }
 }
