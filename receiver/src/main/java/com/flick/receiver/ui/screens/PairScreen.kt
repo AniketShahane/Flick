@@ -1,5 +1,6 @@
 package com.flick.receiver.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,7 +34,7 @@ import com.flick.receiver.ui.components.QrCode
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.OverscanSafe
+import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 
 /**
  * T1 · First-run pair. QR (ZXing → Canvas) + short code, zero keyboard hunting.
@@ -55,6 +56,7 @@ fun PairScreen(
     lastTeardown: String? = null,
     modifier: Modifier = Modifier,
 ) {
+    val safeArea = rememberTvSafeAreaPadding()
     var bigCode by remember { mutableStateOf(false) }
     val showBiggerFocus = remember { FocusRequester() }
     val doneFocus = remember { FocusRequester() }
@@ -63,6 +65,7 @@ fun PairScreen(
     LaunchedEffect(bigCode) {
         runCatching { (if (bigCode) doneFocus else showBiggerFocus).requestFocus() }
     }
+    BackHandler(enabled = bigCode) { bigCode = false }
 
     Box(
         modifier = modifier
@@ -76,7 +79,7 @@ fun PairScreen(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(OverscanSafe),
+                .padding(safeArea),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(48.dp),
         ) {
@@ -133,7 +136,13 @@ fun PairScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (networkReady) {
-                    if (qrPayload != null) QrCode(payload = qrPayload, size = 220.dp)
+                    if (qrPayload != null) {
+                        QrCode(
+                            payload = qrPayload,
+                            size = 220.dp,
+                            contentDescription = stringResource(R.string.pair_qr_content_description),
+                        )
+                    }
                     Text(
                         text = spacedCode,
                         style = FlickType.monoTabular(sizeSp = 44, weight = FontWeight.Bold),
@@ -157,7 +166,7 @@ fun PairScreen(
                         Text(
                             text = stringResource(R.string.pair_bind_health, bindUptimeSec, rebindCount) +
                                 (lastTeardown?.let { " · " + stringResource(R.string.pair_bind_last_teardown, it) } ?: ""),
-                            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Normal),
+                            style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Normal),
                             color = FlickColor.OnSurfaceFaint,
                         )
                     }

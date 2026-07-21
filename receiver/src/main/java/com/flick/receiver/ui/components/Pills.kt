@@ -23,9 +23,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.tv.material3.Text
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.rememberReducedMotion
 
 /** Semantic tone for a live status pill (§7). */
 enum class PillTone(val accent: Color) {
@@ -47,7 +51,8 @@ fun StatusPill(
     modifier: Modifier = Modifier,
     pulsing: Boolean = false,
 ) {
-    val dotAlpha = if (pulsing) {
+    val reducedMotion = rememberReducedMotion()
+    val dotAlpha = if (pulsing && !reducedMotion) {
         val t = rememberInfiniteTransition(label = "pillPulse")
         val a by t.animateFloat(
             initialValue = 0.45f, targetValue = 1f,
@@ -59,6 +64,7 @@ fun StatusPill(
 
     Row(
         modifier = modifier
+            .semantics { liveRegion = LiveRegionMode.Polite }
             .clip(FlickShape.Pill)
             .background(tone.accent.copy(alpha = 0.10f))
             .border(1.dp, tone.accent.copy(alpha = 0.45f), FlickShape.Pill)
@@ -92,7 +98,7 @@ fun QualityBadge(
     modifier: Modifier = Modifier,
     filled: Boolean = true,
 ) {
-    val shape = RoundedCornerShape(6.dp)
+    val shape = FlickShape.Sm
     val base = if (filled) {
         Modifier.background(FlickColor.SheenGradient, shape)
     } else {

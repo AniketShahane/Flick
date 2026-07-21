@@ -11,6 +11,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.flick.receiver.ui.theme.FlickColor
@@ -34,6 +36,7 @@ fun QrCode(
     modifier: Modifier = Modifier,
     size: Dp = 160.dp,
     quietZonePadding: Dp = 12.dp,
+    contentDescription: String? = null,
 ) {
     val matrix: BitMatrix? = remember(payload) {
         runCatching {
@@ -53,6 +56,9 @@ fun QrCode(
     Canvas(
         modifier = modifier
             .size(size)
+            .semantics {
+                if (contentDescription != null) this.contentDescription = contentDescription
+            }
             .clip(FlickShape.Md)
             .background(Color.White)
             .padding(quietZonePadding),

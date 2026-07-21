@@ -29,6 +29,8 @@
     <!-- API 33+: the persistent foreground-service notification requires the
          POST_NOTIFICATIONS runtime permission to be visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required for transport and scrub haptics; normal permission, no prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:name=".FlickApplication"

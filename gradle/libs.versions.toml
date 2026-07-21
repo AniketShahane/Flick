@@ -1,16 +1,13 @@
 [versions]
 # --- Build tooling (mutually compatible set) ---
-# AGP 8.9.x + Gradle 8.11.1 + Kotlin 2.1.20. AGP 8.9 is the first line to
-# officially support compileSdk 36 (Android 16). Requires Gradle >= 8.11.1
-# (see gradle/wrapper/gradle-wrapper.properties).
-agp = "8.9.1"
-# Kotlin 2.1.20. Since Kotlin 2.0, the Compose compiler ships with Kotlin and
-# is applied via the org.jetbrains.kotlin.plugin.compose plugin, whose version
-# MUST track the Kotlin version exactly (see kotlin-compose below).
-kotlin = "2.1.20"
+# AGP 9.3.0 supports compileSdk 37 and requires Gradle 9.5.0 (see the wrapper).
+agp = "9.3.0"
+# Compose compiler 2.3.21. AGP 9 supplies Kotlin support itself; this version
+# pins only the matching org.jetbrains.kotlin.plugin.compose plugin.
+kotlin = "2.3.21"
 
 # --- Android SDK levels (shared by both modules) ---
-compileSdk = "36"
+compileSdk = "37"
 minSdk = "26"
 targetSdk = "36"
 
@@ -18,7 +15,12 @@ targetSdk = "36"
 coreKtx = "1.16.0"
 lifecycleRuntimeKtx = "2.9.0"
 activityCompose = "1.10.1"
-composeBom = "2025.05.01"
+# The latest BOM aligns the receiver's stable Compose stack. Material3 Expressive
+# is pinned separately because 1.5.0-alpha24 requires Compose 1.12.0-beta01,
+# which is newer than the BOM's stable mapping.
+composeBom = "2026.06.01"
+material3Expressive = "1.5.0-alpha24"
+tvMaterial = "1.1.0"
 # Media3 is pinned by contract; declared here for module convenience only.
 media3 = "1.10.1"
 
@@ -33,11 +35,14 @@ androidx-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+# Receiver uses the stable Material3 version selected by the BOM for its one text
+# field; sender explicitly opts into the Expressive alpha below.
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-material3-expressive = { group = "androidx.compose.material3", name = "material3", version.ref = "material3Expressive" }
+androidx-tv-material = { group = "androidx.tv", name = "tv-material", version.ref = "tvMaterial" }
 
 [plugins]
-# These three aliases are referenced by the root build.gradle.kts (apply false)
-# and by each module's build.gradle.kts via alias(libs.plugins.*).
+# These aliases are referenced by the root build.gradle.kts (apply false) and
+# by each module's build.gradle.kts via alias(libs.plugins.*).
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

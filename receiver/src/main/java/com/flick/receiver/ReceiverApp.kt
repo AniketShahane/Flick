@@ -1,6 +1,5 @@
 package com.flick.receiver
 
-import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -28,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -73,7 +73,7 @@ import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.OverscanSafe
+import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
 import kotlinx.coroutines.delay
@@ -403,6 +403,9 @@ fun ReceiverApp(window: Window) {
     }
 
     FlickTvTheme {
+        // Keep diagnostics inside the same viewport-relative overscan contract as
+        // the redesigned screen chrome at both 1080p and 4K.
+        val safeArea = rememberTvSafeAreaPadding()
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -438,7 +441,7 @@ fun ReceiverApp(window: Window) {
                             snapshot = snapshot,
                             modifier = Modifier
                                 .align(Alignment.TopStart)
-                                .padding(OverscanSafe),
+                                .padding(safeArea),
                         )
                     }
                 }
@@ -573,7 +576,7 @@ private fun PlayerSurface(
                 setKeepContentOnPlayerReset(true)
                 setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setBackgroundColor(AndroidColor.parseColor("#FF08070C"))
+                setBackgroundColor(FlickColor.Canvas.toArgb())
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,

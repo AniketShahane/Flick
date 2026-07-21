@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,6 +8,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -32,6 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -58,6 +63,8 @@ fun ConnectScreen(controller: FlickController) {
     val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
     val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
+    val manualLabel = stringResource(R.string.connect_manual)
+    val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
     var manualOpen by remember { mutableStateOf(false) }
     var qrHint by remember { mutableStateOf(false) }
 
@@ -92,7 +99,9 @@ fun ConnectScreen(controller: FlickController) {
     Column(
         Modifier
             .fillMaxSize()
+            .background(colors.surface)
             .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(horizontal = 18.dp),
     ) {
         Column(
@@ -190,6 +199,8 @@ fun ConnectScreen(controller: FlickController) {
                     textDecoration = TextDecoration.Underline,
                 ),
                 modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = manualLabel }
                     .clickable { manualOpen = true }
                     .padding(6.dp),
             )
@@ -202,6 +213,8 @@ fun ConnectScreen(controller: FlickController) {
                     textDecoration = TextDecoration.Underline,
                 ),
                 modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = diagnosticsLabel }
                     .clickable { controller.toggleDiagnostics(true) }
                     .padding(6.dp),
             )

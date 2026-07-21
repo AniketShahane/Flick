@@ -26,7 +26,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -43,9 +45,10 @@ import com.flick.receiver.ui.components.VolumeCells
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.OverscanSafe
 import com.flick.receiver.ui.theme.bottomScrimBrush
 import com.flick.receiver.ui.theme.glass
+import com.flick.receiver.ui.theme.rememberReducedMotion
+import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import java.util.Locale
 
 /** Transient quality read (T8) — decoder / throughput / band, shown on start. */
@@ -90,6 +93,7 @@ fun PlaybackScreen(
     modifier: Modifier = Modifier,
     videoContent: @Composable () -> Unit,
 ) {
+    val safeArea = rememberTvSafeAreaPadding()
     Box(modifier = modifier.fillMaxSize().background(FlickColor.Canvas)) {
         videoContent()
 
@@ -111,14 +115,14 @@ fun PlaybackScreen(
 
         // T5 paused affordance
         if (phase == PlaybackPhase.Paused) {
-            Box(Modifier.fillMaxSize().padding(OverscanSafe)) {
-                PausedPill(Modifier.align(Alignment.TopStart))
+            Box(Modifier.fillMaxSize()) {
+                PausedPill(Modifier.align(Alignment.TopStart).padding(safeArea))
             }
         }
 
         // T8 quality flourish (glides in on start, holds, fades)
         if (quality != null) {
-            QualityCard(quality, Modifier.align(Alignment.TopEnd).padding(OverscanSafe))
+            QualityCard(quality, Modifier.align(Alignment.TopEnd).padding(safeArea))
         }
 
         // T3/T5/T6 chrome
@@ -145,6 +149,8 @@ fun PlaybackScreen(
                 onForward10 = onForward10,
                 onSetVolume = onSetVolume,
                 playFocusRequester = playFocusRequester,
+                safeArea = safeArea,
+                interactive = chromeVisible,
             )
         }
     }
@@ -168,19 +174,28 @@ private fun ChromeControls(
     onForward10: () -> Unit,
     onSetVolume: (Float) -> Unit,
     playFocusRequester: FocusRequester,
+    safeArea: androidx.compose.foundation.layout.PaddingValues,
+    interactive: Boolean,
 ) {
     // On each reveal, land focus on play so there is always exactly one focused
     // element while chrome is up (design §1.7).
-    LaunchedEffect(Unit) { runCatching { playFocusRequester.requestFocus() } }
+    LaunchedEffect(interactive) {
+        if (interactive) runCatching { playFocusRequester.requestFocus() }
+    }
     Box(
         modifier = Modifier
+            // AnimatedVisibility retains this subtree for its 500ms fade-out.
+            // The visual exit remains, but its descendants immediately leave both
+            // the focus graph and accessibility tree when chrome hides.
+            .focusProperties { canFocus = interactive }
+            .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
             .fillMaxWidth()
             .background(bottomScrimBrush()),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(OverscanSafe),
+                .padding(safeArea),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // Title / badges / timecode
@@ -272,9 +287,24 @@ private fun ChromeControls(
                     onPlayPause = onPlayPause,
                     onForward10 = onForward10,
                     playFocusRequester = playFocusRequester,
+                    enabled = interactive,
+                    back10ContentDescription = stringResource(R.string.transport_back_10),
+                    playPauseContentDescription = stringResource(
+                        if (playing) R.string.transport_pause else R.string.transport_play,
+                    ),
+                    forward10ContentDescription = stringResource(R.string.transport_forward_10),
                 )
                 Box(Modifier.weight(1f))
-                VolumeCells(level = volume, onChange = onSetVolume)
+                VolumeCells(
+                    level = volume,
+                    onChange = onSetVolume,
+                    enabled = interactive,
+                    contentDescription = stringResource(R.string.volume),
+                    stateDescription = stringResource(
+                        R.string.volume_state,
+                        (volume.coerceIn(0f, 1f) * 100).toInt(),
+                    ),
+                )
             }
         }
     }
@@ -282,12 +312,19 @@ private fun ChromeControls(
 
 @Composable
 private fun SyncingPill() {
-    val t = rememberInfiniteTransition(label = "sync")
-    val a by t.animateFloat(
-        initialValue = 0.5f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
-        label = "syncAlpha",
-    )
+    val reducedMotion = rememberReducedMotion()
+    val a = if (reducedMotion) {
+        1f
+    } else {
+        val t = rememberInfiniteTransition(label = "sync")
+        val alpha by t.animateFloat(
+            initialValue = 0.5f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+            label = "syncAlpha",
+        )
+        alpha
+    }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
@@ -322,12 +359,19 @@ private fun PausedPill(modifier: Modifier = Modifier) {
 
 @Composable
 private fun BufferingOverlay(modifier: Modifier = Modifier) {
-    val t = rememberInfiniteTransition(label = "buffer")
-    val sweep by t.animateFloat(
-        initialValue = 0f, targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(1100)),
-        label = "bufferSweep",
-    )
+    val reducedMotion = rememberReducedMotion()
+    val sweep = if (reducedMotion) {
+        315f
+    } else {
+        val t = rememberInfiniteTransition(label = "buffer")
+        val angle by t.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(1100)),
+            label = "bufferSweep",
+        )
+        angle
+    }
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -1,6 +1,7 @@
 package com.flick.receiver.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,10 +25,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.rememberReducedMotion
 
 /**
  * The one TV focus primitive (design-tokens.md §1.7). There is no hover on TV, so
@@ -46,6 +53,7 @@ fun FlickTvButton(
     modifier: Modifier = Modifier,
     selected: Boolean = false,
     enabled: Boolean = true,
+    contentDescription: String? = null,
     focusRequester: FocusRequester? = null,
     shape: Shape = FlickShape.Pill,
     contentPadding: PaddingValues = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
@@ -53,15 +61,17 @@ fun FlickTvButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val reducedMotion = rememberReducedMotion()
     val scale by animateFloatAsState(
         targetValue = if (focused && enabled) 1.08f else 1f,
-        animationSpec = FlickMotion.focusPop(),
+        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
         label = "focusScale",
     )
 
     val background: Color = when {
+        focused && selected -> FlickColor.Spark.copy(alpha = 0.20f)
+        focused -> Color(0xFF2B2336) // violet tonal lift
         selected -> FlickColor.Spark.copy(alpha = 0.16f)
-        focused -> Color(0xFF221D30) // tonal lift
         else -> FlickColor.SurfaceRaised
     }
     val borderColor: Color = when {
@@ -74,6 +84,12 @@ fun FlickTvButton(
     Row(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .semantics(mergeDescendants = true) {
+                this.role = Role.Button
+                this.selected = selected
+                if (!enabled) disabled()
+                if (contentDescription != null) this.contentDescription = contentDescription
+            }
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -108,12 +124,18 @@ fun FlickTvRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    selected: Boolean = false,
+    enabled: Boolean = true,
+    contentDescription: String? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
     FlickTvButton(
         onClick = onClick,
         modifier = modifier,
         focusRequester = focusRequester,
+        selected = selected,
+        enabled = enabled,
+        contentDescription = contentDescription,
         shape = RoundedCornerShape(11.dp),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
         content = content,

@@ -18,6 +18,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickIcons
 
@@ -28,6 +34,9 @@ fun VolumeSlider(
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = Color.White,
+    accessibilityLabel: String? = null,
+    valueDescription: String? = null,
+    adjustableActionLabel: String? = null,
 ) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(
@@ -40,7 +49,16 @@ fun VolumeSlider(
             Modifier
                 .padding(start = 9.dp)
                 .weight(1f)
-                .height(24.dp)
+                .height(48.dp)
+                .semantics {
+                    progressBarRangeInfo = ProgressBarRangeInfo(value.coerceIn(0f, 1f), 0f..1f)
+                    accessibilityLabel?.let { contentDescription = it }
+                    valueDescription?.let { stateDescription = it }
+                    setProgress(adjustableActionLabel) { target ->
+                        onValueChange(target.coerceIn(0f, 1f))
+                        true
+                    }
+                }
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)

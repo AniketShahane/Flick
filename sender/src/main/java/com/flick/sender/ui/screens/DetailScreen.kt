@@ -33,6 +33,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +63,11 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val imageLoader = rememberVideoImageLoader()
+    val castDescription = stringResource(
+        R.string.a11y_cast_video,
+        item.name,
+        connectedTv?.name ?: stringResource(R.string.np_tv_generic),
+    )
     val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
@@ -73,7 +80,8 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             .build()
     }
 
-    Column(Modifier.fillMaxSize()) {
+    val backLabel = stringResource(R.string.a11y_back_to_library)
+    Column(Modifier.fillMaxSize().background(colors.surface)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -101,13 +109,14 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                 Modifier
                     .statusBarsPadding()
                     .padding(14.dp)
-                    .size(30.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(Color(0x8008070C))
+                    .semantics { contentDescription = backLabel }
                     .clickable { controller.back() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(FlickIcons.Back, contentDescription = stringResource(R.string.detail_back), tint = Color.White, modifier = Modifier.size(18.dp))
+                Icon(FlickIcons.Back, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
             }
             Column(
                 Modifier
@@ -131,8 +140,8 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                     TechBadge(item.resolutionLabel)
                 }
                 when (hdr) {
-                    HdrType.DOLBY_VISION -> TechBadge("DOLBY VISION", premium = true)
-                    HdrType.HDR10 -> TechBadge("HDR10")
+                    HdrType.DOLBY_VISION -> TechBadge(stringResource(R.string.media_dolby_vision_badge), premium = true)
+                    HdrType.HDR10 -> TechBadge(stringResource(R.string.media_hdr10_badge))
                     HdrType.NONE -> {}
                 }
                 TechBadge(Format.bytes(item.sizeBytes), dim = true)
@@ -173,6 +182,7 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                 text = connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
                     ?: stringResource(R.string.detail_cta_noconnect),
                 onClick = { controller.flickToTv(item) },
+                accessibilityLabel = castDescription,
             )
             Spacer(Modifier.height(6.dp))
             FlickSubtleButton(

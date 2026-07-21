@@ -7,8 +7,10 @@ the user-selected Expressive direction as the visual source of truth.
 
 ## Worktree and baseline contract
 
-- **Main checkout:** `/Users/khooni-dracula/Workspace/android-casting`
-- **Implementation worktree:** `/Users/khooni-dracula/Workspace/android-casting-material-expressive`
+- **Main checkout:** the repository checkout holding local `main`, outside the implementation
+  worktree (its host-specific path is intentionally not recorded in this public document)
+- **Implementation worktree:** a dedicated checkout for the implementation branch; run every
+  command below from its repository root
 - **Implementation branch:** `codex/material-expressive-redesign`
 - **Base branch:** local `main`
 - **Verified base commit:** `d93982d` (`Complete control-channel hardening and diagnostics`)
@@ -27,8 +29,8 @@ No Material Expressive agent may edit, stage, commit, switch branches, or run fo
 from the main checkout. Before handoff, the coordinator verifies:
 
 ```sh
-git -C /Users/khooni-dracula/Workspace/android-casting-material-expressive status --short --branch
-git -C /Users/khooni-dracula/Workspace/android-casting-material-expressive merge-base --is-ancestor d93982d HEAD
+git status --short --branch
+git merge-base --is-ancestor d93982d HEAD
 ```
 
 The worktree must be clean and the ancestry check must succeed. If `main` advances after
@@ -52,12 +54,22 @@ does not invalidate the worktree: it was intentionally based on the verified loc
   containment. It is not a license to decorate every component or animate utility/error
   states aggressively.
 
-## Phase 0 — select the visual source of truth
+## Phase 0 — selected visual source of truth
 
-No UI implementation begins until exactly three image-based directions have been shown
-and the user selects one. Each direction must cover phone Connect, Library, Detail, Now
-Playing, seeking, quality, and error; plus TV Pair, Idle, playback chrome, seeking,
-Settings, and error. At least one paired phone/TV synchronized-scrub frame is required.
+**Selected 2026-07-21:** the user chose the second generated direction. Its checked-in,
+implementation-owned reference is
+[`material-expressive-option-2.png`](references/material-expressive-option-2.png)
+(`SHA-256 12ec2bf743202bfee3c87f77ce6ea96009fc9825cd23454a4c9813654a8d692a`).
+It is the visual source of truth for this redesign; do not substitute the historical HTML
+artifact or a generic Material sample.
+
+The reference establishes **warm editorial direct-play**: an ivory, asymmetric phone
+remote with a large tactile lower-third scrubber; a fixed violet-black TV cinema canvas;
+coral for action and optimistic target; cyan only for LAN/sync and D-pad focus; and a
+thin cyan cross-device thread. It is a synchronized-scrub hero, not a mandate to place
+decorative media art or always-visible chrome on every screen. Phone Connect, Library,
+Detail, Now Playing, seeking, quality, and error; plus TV Pair, Idle, playback chrome,
+seeking, Settings, and error must all inherit that system.
 
 The following product truths are fixed:
 
@@ -67,12 +79,10 @@ The following product truths are fixed:
 - honest pairing, connection, loading, buffering, and error states;
 - local video frames are the content imagery.
 
-The existing Spark/Link hex values, fonts, glass styling, gradients, shapes, and mark are
-not automatically preserved. They must earn their place in the selected direction.
-
-After selection, update `design-tokens.md` so it maps the approved visual system to
-phone Material roles and TV Material roles. The selected reference frames and token file
-replace the old HTML-wins rule.
+`design-tokens.md` maps this approved system to phone Material roles and TV Material
+roles. The reference image and token file replace the old HTML-wins rule. Preserve the
+image's hierarchy and color jobs; use product state rather than fabricated copy or
+placeholder diagnostics.
 
 ## Phase 1 — toolchain and dependency gate
 
@@ -232,6 +242,29 @@ is available; Terra-high module agents implement confirmed fixes.
 - no secret, pairing material, media token, full private URL, SSID/BSSID, serial, or title
   in committed evidence or diagnostics.
 
+### Automated and device gates
+
+The sole build runner compiles unit tests, both debug apps, and both instrumentation-test
+APKs with:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew test :sender:assembleDebug :receiver:assembleDebug :sender:assembleDebugAndroidTest :receiver:assembleDebugAndroidTest
+```
+
+Compiling the instrumentation-test APKs proves only that the test source and manifests
+assemble. It does **not** prove UI behavior, D-pad traversal, accessibility, rendering, or
+phone-to-TV interoperability. Whenever compatible ADB devices or emulators are available,
+also run:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:connectedDebugAndroidTest :receiver:connectedDebugAndroidTest
+```
+
+The physical-phone/TV portions of the Phone, TV, and End-to-end matrices remain required.
+They are currently an external evidence gate: attach device/emulator test output plus the
+requested screenshot/video and real-hardware direct-play evidence before calling those
+checks complete. Do not infer a device pass from successful APK or test-APK compilation.
+
 ## Definition of done
 
 - The selected visual direction—not the previous HTML—is implemented on both surfaces.
@@ -243,9 +276,12 @@ is available; Terra-high module agents implement confirmed fixes.
 - All existing and new tests pass, and the sole build runner successfully executes:
 
   ```sh
-  JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew test :sender:assembleDebug :receiver:assembleDebug
+  JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew test :sender:assembleDebug :receiver:assembleDebug :sender:assembleDebugAndroidTest :receiver:assembleDebugAndroidTest
   ```
 
+- `:sender:connectedDebugAndroidTest` and `:receiver:connectedDebugAndroidTest` pass whenever
+  compatible ADB devices/emulators are available; physical phone/TV UI and direct-play evidence
+  is attached. Until then, this remains an explicitly open external evidence gate.
 - Real-hardware direct-play remains zero-stall for the verified 4K HDR/DV path.
 - Final documentation records the visual source, exact versions, alpha risk, rollback,
   screenshots/video evidence, and any explicitly deferred checks.

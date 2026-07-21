@@ -11,7 +11,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.flick.receiver.R
 import com.flick.receiver.ui.theme.FlickColor
 
 /**
@@ -38,11 +43,20 @@ fun TvScrubBar(
     val confirmedFrac = frac(confirmedMs, durationMs)
     val targetFrac = frac(targetMs, durationMs)
     val bufFrac = frac(bufferedMs, durationMs)
+    val lagging = seeking && confirmedMs != targetMs
+    val targetLabel = stringResource(R.string.scrub_target, clock(targetMs))
+    val confirmedLabel = stringResource(R.string.scrub_confirmed, clock(confirmedMs))
+    val syncingLabel = stringResource(R.string.syncing)
+    val accessibilityLabel = if (lagging) "$targetLabel, $confirmedLabel" else confirmedLabel
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .height(28.dp),
+            .height(28.dp)
+            .semantics {
+                contentDescription = accessibilityLabel
+                if (lagging) stateDescription = syncingLabel
+            },
     ) {
         val cy = size.height / 2f
         val barH = 5.dp.toPx()
@@ -79,24 +93,46 @@ fun TvScrubBar(
                 cornerRadius = CornerRadius(r, r),
             )
         }
-        // Ghost ○ (confirmed) — trailing ring, only while seeking
-        if (seeking) {
+        // Cyan only describes the live sync gap; it is never a second playhead.
+        if (lagging) {
+            drawLine(
+                color = FlickColor.Link.copy(alpha = 0.8f),
+                start = Offset(px(confirmedFrac), cy),
+                end = Offset(px(targetFrac), cy),
+                strokeWidth = 1.dp.toPx(),
+            )
+            // Ghost ○ (confirmed) — pale, hollow, and distinct from the coral target.
             drawCircle(
-                color = Color.White.copy(alpha = 0.55f),
+                color = FlickColor.OnSurface.copy(alpha = 0.82f),
                 radius = 6.dp.toPx(),
                 center = Offset(px(confirmedFrac), cy),
                 style = Stroke(width = 2.dp.toPx()),
             )
         }
-        // Target ● (solid) — with Link glow while seeking
+        // Target ● is always solid coral. It only receives a cyan halo while the
+        // network-confirmed position trails, preserving the target/confirmed split.
         val sx = px(targetFrac)
-        if (seeking) {
+        if (lagging) {
             drawCircle(FlickColor.FocusGlow, radius = 12.dp.toPx(), center = Offset(sx, cy))
-            drawCircle(FlickColor.Link.copy(alpha = 0.30f), radius = 9.dp.toPx(), center = Offset(sx, cy))
         }
-        drawCircle(Color.White, radius = 7.dp.toPx(), center = Offset(sx, cy))
+        drawCircle(FlickColor.Spark, radius = 7.dp.toPx(), center = Offset(sx, cy))
+        drawCircle(
+            color = Color.White.copy(alpha = 0.88f),
+            radius = 7.dp.toPx(),
+            center = Offset(sx, cy),
+            style = Stroke(width = 1.dp.toPx()),
+        )
     }
 }
 
 private fun frac(ms: Long, durationMs: Long): Float =
     if (durationMs <= 0L) 0f else (ms.coerceAtLeast(0L).toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+
+private fun clock(ms: Long): String {
+    val seconds = ms.coerceAtLeast(0L) / 1_000L
+    val hours = seconds / 3_600L
+    val minutes = (seconds % 3_600L) / 60L
+    val remainder = seconds % 60L
+    return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, remainder)
+    else "%d:%02d".format(minutes, remainder)
+}

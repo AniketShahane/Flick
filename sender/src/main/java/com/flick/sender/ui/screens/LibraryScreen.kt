@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -33,6 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,6 +68,7 @@ fun LibraryScreen(
     val hasPermission by controller.hasPermission.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val imageLoader = rememberVideoImageLoader()
+    val connectLabel = stringResource(R.string.a11y_open_connect)
     var filter by remember { mutableStateOf(LibFilter.RECENTS) }
 
     if (!hasPermission || (items.isEmpty() && !loading)) {
@@ -84,7 +89,9 @@ fun LibraryScreen(
     Column(
         Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .background(colors.surface)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
     ) {
         Row(
             Modifier
@@ -97,20 +104,24 @@ fun LibraryScreen(
                 style = FlickText.heading.copy(color = colors.onSurface),
                 modifier = Modifier.weight(1f),
             )
-            Box(contentAlignment = Alignment.TopEnd) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .semantics { contentDescription = connectLabel }
+                    .clickable { controller.openConnect() },
+                contentAlignment = Alignment.Center,
+            ) {
                 Icon(
                     FlickIcons.Cast,
                     contentDescription = null,
                     tint = if (connectedTv != null) colors.link else colors.onSurfaceDim,
-                    modifier = Modifier
-                        .size(22.dp)
-                        .clickable { controller.openConnect() },
+                    modifier = Modifier.size(22.dp),
                 )
                 if (connectedTv != null) {
                     LiveDot(
                         color = colors.live,
                         size = 7.dp,
-                        modifier = Modifier.padding(1.dp),
+                        modifier = Modifier.align(Alignment.TopEnd).padding(3.dp),
                     )
                 }
             }
@@ -128,7 +139,7 @@ fun LibraryScreen(
         }
 
         LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
+            columns = GridCells.Adaptive(minSize = 156.dp),
             modifier = Modifier.weight(1f).padding(horizontal = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(9.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp),
@@ -162,7 +173,11 @@ fun LibraryScreen(
                 Text(
                     stringResource(R.string.library_not_connected_hint),
                     style = FlickText.caption.copy(color = colors.onSurfaceFaint),
-                    modifier = Modifier.clickable { controller.openConnect() }.padding(6.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics { contentDescription = connectLabel }
+                        .clickable { controller.openConnect() }
+                        .padding(6.dp),
                 )
             }
         }
@@ -199,6 +214,7 @@ private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
                 else Modifier.border(1.dp, colors.outline, PillShape),
             )
             .clickable(onClick = onClick)
+            .heightIn(min = 48.dp)
             .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }
@@ -213,6 +229,7 @@ private fun EmptyState(
     Column(
         Modifier
             .fillMaxSize()
+            .background(colors.surface)
             .statusBarsPadding()
             .padding(26.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

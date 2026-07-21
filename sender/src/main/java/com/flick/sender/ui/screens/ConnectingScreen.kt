@@ -27,6 +27,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
@@ -50,13 +52,15 @@ fun ConnectingScreen(controller: FlickController) {
     val colors = LocalFlickColors.current
     val castStart by controller.castStart.collectAsState()
     val tv by controller.connectedTv.collectAsState()
+    val cancelDescription = stringResource(R.string.a11y_cancel_connecting)
+    val connectingDescription = stringResource(R.string.a11y_pairing_status, stringResource(R.string.connecting_status))
 
     val control = if (castStart is CastStartState.ConnectingControl) StepState.ACTIVE else StepState.DONE
     val prepare = when (castStart) { is CastStartState.StartingSource -> StepState.ACTIVE; is CastStartState.AwaitingAcceptance, is CastStartState.AwaitingFirstFrame, is CastStartState.Active -> StepState.DONE; else -> StepState.PENDING }
     val checking = when (castStart) { is CastStartState.AwaitingAcceptance, is CastStartState.AwaitingFirstFrame -> StepState.ACTIVE; is CastStartState.Active -> StepState.DONE; else -> StepState.PENDING }
     val firstFrame = if (castStart is CastStartState.AwaitingFirstFrame) StepState.ACTIVE else if (castStart is CastStartState.Active) StepState.DONE else StepState.PENDING
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().background(colors.surface), contentAlignment = Alignment.Center) {
         Column(
             Modifier.padding(horizontal = 30.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -80,10 +84,19 @@ fun ConnectingScreen(controller: FlickController) {
                 StepRow(stringResource(R.string.connecting_step_starting), firstFrame)
             }
             Spacer(Modifier.height(18.dp))
-            FlickSubtleButton(text = stringResource(R.string.connecting_cancel), onClick = controller::cancelCast)
+            FlickSubtleButton(
+                text = stringResource(R.string.connecting_cancel),
+                onClick = controller::cancelCast,
+                modifier = Modifier.semantics { contentDescription = cancelDescription },
+            )
         }
 
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) {
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 24.dp)
+                .semantics { contentDescription = connectingDescription },
+        ) {
             StatusPill(stringResource(R.string.connecting_status), StatusKind.CONNECTING)
         }
     }

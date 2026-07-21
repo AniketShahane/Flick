@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,9 +20,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 
@@ -45,7 +50,7 @@ fun AdvisoryCard(
 ) {
     val colors = LocalFlickColors.current
     val accent = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.spark
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(FlickCorners.md)
     Row(
         modifier = modifier
             .clip(shape)
@@ -81,6 +86,8 @@ fun AdvisoryCard(
                         .clip(PillShape)
                         .background(accent)
                         .clickable(onClick = onPrimary)
+                        .semantics { role = Role.Button }
+                        .heightIn(min = 48.dp)
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
                 if (secondaryLabel != null && onSecondary != null) {
@@ -90,6 +97,8 @@ fun AdvisoryCard(
                         style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = accent),
                         modifier = Modifier
                             .clickable(onClick = onSecondary)
+                            .semantics { role = Role.Button }
+                            .heightIn(min = 48.dp)
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
                 }

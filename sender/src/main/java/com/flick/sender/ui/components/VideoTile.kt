@@ -21,6 +21,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,6 +34,7 @@ import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import com.flick.sender.R
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.ui.Format
@@ -80,7 +85,12 @@ fun VideoTile(
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
-    val shape = RoundedCornerShape(13.dp)
+    val shape = RoundedCornerShape(
+        topStart = FlickCorners.lg,
+        topEnd = FlickCorners.lg,
+        bottomStart = FlickCorners.md,
+        bottomEnd = FlickCorners.md,
+    )
 
     val request = remember(item.uri, item.durationMs) {
         ImageRequest.Builder(context)
@@ -95,7 +105,8 @@ fun VideoTile(
             .clip(shape)
             .background(colors.surfaceRaised)
             .border(1.dp, colors.outlineHairline, shape)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .semantics { role = Role.Button },
     ) {
         Box(
             Modifier
@@ -115,7 +126,7 @@ fun VideoTile(
                     .background(
                         Brush.verticalGradient(
                             0.4f to Color.Transparent,
-                            1f to Color(0xBF08070C),
+                            1f to colors.canvas.copy(alpha = 0.75f),
                         ),
                     ),
             )
@@ -131,7 +142,7 @@ fun VideoTile(
                     .align(Alignment.BottomEnd)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xBF08070C))
+                    .background(colors.canvas.copy(alpha = 0.75f))
                     .padding(horizontal = 5.dp, vertical = 2.dp),
             )
         }
@@ -164,7 +175,7 @@ fun QualityBadge(
     val colors = LocalFlickColors.current
     when (hdr) {
         HdrType.DOLBY_VISION -> Text(
-            text = "DV",
+            text = stringResource(R.string.media_dv_badge),
             style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = PremiumInk),
             modifier = modifier
                 .clip(RoundedCornerShape(4.dp))
@@ -172,7 +183,7 @@ fun QualityBadge(
                 .padding(horizontal = 5.dp, vertical = 2.dp),
         )
         HdrType.HDR10 -> Text(
-            text = "HDR10",
+            text = stringResource(R.string.media_hdr10_badge),
             style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = PremiumGoldB),
             modifier = modifier
                 .clip(RoundedCornerShape(4.dp))
@@ -184,8 +195,8 @@ fun QualityBadge(
             style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White),
             modifier = modifier
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0x8008070C))
-                .border(1.dp, Color(0x4DFFFFFF), RoundedCornerShape(4.dp))
+                .background(colors.canvas.copy(alpha = 0.50f))
+                .border(1.dp, colors.glassBorder, RoundedCornerShape(FlickCorners.sm))
                 .padding(horizontal = 5.dp, vertical = 2.dp),
         )
     }

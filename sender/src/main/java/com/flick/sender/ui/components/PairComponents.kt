@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,9 +22,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.LocalFlickColors
 
 /** A discovered-TV row (design S1). Selected → cyan border + faint glow. */
@@ -43,7 +47,7 @@ fun DeviceRow(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(FlickCorners.md)
     val ready = tv.state == TvAvailability.READY
     Row(
         modifier = modifier
@@ -55,15 +59,17 @@ fun DeviceRow(
                 shape = shape,
             )
             .clickable(onClick = onClick)
+            .semantics { role = Role.Button }
+            .heightIn(min = 48.dp)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier
                 .size(width = 44.dp, height = 28.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Brush.linearGradient(listOf(Color(0xFF241019), Color(0xFFC56A34))))
-                .border(1.dp, colors.outlineHairline, RoundedCornerShape(5.dp)),
+                .clip(RoundedCornerShape(FlickCorners.sm))
+                .background(colors.surfaceRaisedAlt)
+                .border(1.dp, colors.outlineHairline, RoundedCornerShape(FlickCorners.sm)),
         )
         Column(Modifier.weight(1f).padding(horizontal = 11.dp)) {
             Text(
@@ -103,13 +109,15 @@ fun PairOptionCard(
     codeHint: String? = null,
 ) {
     val colors = LocalFlickColors.current
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(FlickCorners.md)
     Column(
         modifier = modifier
             .clip(shape)
             .background(colors.surfaceTonal)
             .border(1.dp, colors.outlineHairline, shape)
             .clickable(onClick = onClick)
+            .semantics { role = Role.Button }
+            .heightIn(min = 48.dp)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
@@ -155,12 +163,12 @@ fun PairCodeField(
                         Box(
                             Modifier
                                 .size(width = 46.dp, height = 56.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(FlickCorners.sm))
                                 .background(colors.surfaceRaised)
                                 .border(
                                     width = if (focused) 1.5.dp else 1.dp,
                                     color = if (focused) colors.link else colors.outline,
-                                    shape = RoundedCornerShape(12.dp),
+                                    shape = RoundedCornerShape(FlickCorners.sm),
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {

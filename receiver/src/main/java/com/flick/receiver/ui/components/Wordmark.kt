@@ -22,7 +22,7 @@ import com.flick.receiver.ui.theme.FlickType
 fun FlickWordmark(
     modifier: Modifier = Modifier,
     markSize: Dp = 30.dp,
-    textSizeSp: Int = 28,
+    textSizeSp: Int = 32,
 ) {
     Row(
         modifier = modifier,

@@ -8,6 +8,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import com.flick.sender.R
 import com.flick.sender.NetworkUtils
 import com.flick.sender.TransferTelemetry
 import com.flick.sender.WifiBand
@@ -27,16 +29,22 @@ data class SignalInfo(
     val healthy: Boolean get() = band != WifiBand.GHZ_24
     val on24GHz: Boolean get() = band == WifiBand.GHZ_24
 
+    @Composable
     fun bandLabel(): String = when (band) {
-        WifiBand.GHZ_6 -> "6 GHz"
-        WifiBand.GHZ_5 -> "5 GHz"
-        WifiBand.GHZ_24 -> "2.4 GHz"
-        null -> "Wi-Fi"
+        WifiBand.GHZ_6 -> stringResource(R.string.wifi_band_6ghz)
+        WifiBand.GHZ_5 -> stringResource(R.string.wifi_band_5ghz)
+        WifiBand.GHZ_24 -> stringResource(R.string.wifi_band_24ghz)
+        null -> stringResource(R.string.wifi_band_generic)
     }
 
+    @Composable
     fun chipText(): String = when {
-        throughputBitsPerSec > 0L -> "${Format.megabits(throughputBitsPerSec)} · ${bandLabel()}"
-        linkSpeedMbps > 0 -> "$linkSpeedMbps Mb/s · ${bandLabel()}"
+        throughputBitsPerSec > 0L -> stringResource(
+            R.string.network_chip_throughput,
+            Format.megabits(throughputBitsPerSec),
+            bandLabel(),
+        )
+        linkSpeedMbps > 0 -> stringResource(R.string.network_chip_link_speed, linkSpeedMbps, bandLabel())
         else -> bandLabel()
     }
 }

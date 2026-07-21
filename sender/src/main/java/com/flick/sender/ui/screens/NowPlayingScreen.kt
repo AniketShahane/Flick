@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -32,11 +33,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,8 +58,12 @@ import com.flick.sender.ui.components.StatusKind
 import com.flick.sender.ui.components.StatusPill
 import com.flick.sender.ui.components.TransportCluster
 import com.flick.sender.ui.components.VolumeSlider
+import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 
 /** S6/S7/S8/S9 — the remote. Everything that matters is under the thumb. */
 @Composable
@@ -79,9 +84,9 @@ fun NowPlayingScreen(controller: FlickController) {
         value = if (uri != null) MediaProbe.detectHdr(context, uri) else HdrType.NONE
     }
     val hdrLabel = when (hdr) {
-        HdrType.DOLBY_VISION -> "Dolby Vision"
-        HdrType.HDR10 -> "HDR10"
-        HdrType.NONE -> "SDR"
+        HdrType.DOLBY_VISION -> stringResource(R.string.media_hdr_dolby_vision)
+        HdrType.HDR10 -> stringResource(R.string.media_hdr10)
+        HdrType.NONE -> stringResource(R.string.media_sdr)
     }
 
     // Spark pulse ring on ghost↔target reconcile. Read only inside the ring's drawBehind
@@ -97,27 +102,16 @@ fun NowPlayingScreen(controller: FlickController) {
     val phase by remember { derivedStateOf { playbackState.value.phase } }
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
 
-    val bg = if (colors.isLight) {
-        Brush.verticalGradient(listOf(Color(0xFFF6E9DC), Color(0xFFF3E4D4)))
-    } else {
-        Brush.verticalGradient(listOf(Color(0xFF2A150F), Color(0xFF100C12)))
-    }
-
     Box(
         Modifier
             .fillMaxSize()
-            .background(bg),
+            .background(colors.surface),
     ) {
-        // Ambient scrim so text stays legible over the warm bed.
         Box(
             Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color(0x33000000),
-                        0.62f to Color(0xB8000000),
-                    ),
-                ),
+                .fillMaxWidth()
+                .height(252.dp)
+                .background(colors.surfaceTonal),
         )
 
         Column(
@@ -171,6 +165,8 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
     pulse: () -> Float,
 ) {
     val colors = LocalFlickColors.current
+    val context = LocalContext.current
+    val imageLoader = rememberVideoImageLoader()
 
     // Structural signals — derived so a pointer-rate playhead update (targetMs) never
     // recomposes this scope; those reads happen via lambdas in the draw/layout phase.
@@ -184,20 +180,50 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
     }
     val dimmed = !playing
     val subtitle = stringResource(R.string.np_sub, subtitleResolution, hdrLabel)
+    val stopCastingDescription = stringResource(R.string.a11y_stop_casting)
+    val seekTargetDescription = stringResource(R.string.a11y_seek_target)
+    val confirmedDescription = stringResource(R.string.a11y_tv_confirmed)
+    val adjustSeekDescription = stringResource(R.string.a11y_adjust_seek)
+    val backDescription = stringResource(R.string.a11y_skip_back)
+    val playDescription = stringResource(if (playing) R.string.a11y_pause else R.string.a11y_play)
+    val playbackStateDescription = stringResource(if (playing) R.string.a11y_playing_state else R.string.a11y_paused_state)
+    val forwardDescription = stringResource(R.string.a11y_skip_forward)
+    val volumeDescription = stringResource(R.string.a11y_volume)
+    val volumeValueDescription = stringResource(R.string.a11y_volume_value, (volume * 100).toInt())
+    val adjustVolumeDescription = stringResource(R.string.a11y_adjust_volume)
 
-    // Poster still.
+    val posterRequest = remember(item?.uri, durationMs) {
+        item?.uri?.let { uri ->
+            ImageRequest.Builder(context)
+                .data(uri)
+                .videoFrameMillis((durationMs / 3L).coerceAtLeast(1_000L))
+                .crossfade(true)
+                .build()
+        }
+    }
+
+    // A genuine local frame makes this a personal film remote rather than cloud media chrome.
     Spacer(Modifier.height(16.dp))
     Box(
         Modifier
             .align(Alignment.CenterHorizontally)
-            .size(width = 150.dp, height = 88.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF4A2418), Color(0xFFC56A34))))
-            .border(1.dp, Color(0x29FFFFFF), RoundedCornerShape(14.dp)),
+            .size(width = 176.dp, height = 104.dp)
+            .clip(RoundedCornerShape(24.dp, 24.dp, 18.dp, 18.dp))
+            .background(colors.surfaceRaised)
+            .border(1.dp, colors.outlineHairline, RoundedCornerShape(24.dp, 24.dp, 18.dp, 18.dp)),
     ) {
+        if (posterRequest != null) {
+            AsyncImage(
+                model = posterRequest,
+                contentDescription = item?.name,
+                imageLoader = imageLoader,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         if (hdrIsDv) {
             Text(
-                "DV",
+                stringResource(R.string.media_dv_badge),
                 style = FlickText.mono.copy(fontSize = 7.5.sp, fontWeight = FontWeight.Bold, color = com.flick.sender.ui.theme.PremiumInk),
                 modifier = Modifier
                     .padding(7.dp)
@@ -210,12 +236,12 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
     Spacer(Modifier.height(12.dp))
     Text(
         title,
-        style = FlickText.heading.copy(fontSize = 17.sp, color = Color.White),
+        style = FlickText.heading.copy(fontSize = 20.sp, color = colors.onSurface),
         modifier = Modifier.align(Alignment.CenterHorizontally),
     )
     Text(
         subtitle,
-        style = FlickText.caption.copy(color = Color.White.copy(alpha = 0.6f)),
+        style = FlickText.caption.copy(color = colors.onSurfaceDim),
         modifier = Modifier
             .align(Alignment.CenterHorizontally)
             .padding(top = 3.dp),
@@ -247,6 +273,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
         onScrubStart = { controller.scrubStart() },
         onScrub = { controller.scrubTo(it) },
         onScrubEnd = { controller.scrubEnd() },
+        targetLabel = seekTargetDescription,
+        confirmedLabel = confirmedDescription,
+        stateLabel = if (syncing) stringResource(R.string.syncing) else null,
+        adjustableActionLabel = adjustSeekDescription,
     )
     Row(
         Modifier
@@ -256,9 +286,12 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
     ) {
         // Isolated so the running playhead recomposes only this Text, not the tree.
         TargetTimecode(scrubbing = scrubbing) { playbackState.value.targetMs }
+        if (syncing) {
+            ConfirmedTimecode { playbackState.value.confirmedMs }
+        }
         Text(
             Format.timecode(durationMs),
-            style = FlickText.mono.copy(color = Color.White.copy(alpha = 0.6f)),
+            style = FlickText.mono.copy(color = colors.onSurfaceDim),
         )
     }
 
@@ -283,7 +316,11 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
             onBack10 = { controller.skip(-10_000L) },
             onPlayPause = { controller.playPause() },
             onFwd10 = { controller.skip(10_000L) },
-            tint = Color.White,
+            tint = colors.onSurface,
+            back10Label = backDescription,
+            playPauseLabel = playDescription,
+            playPauseState = playbackStateDescription,
+            forward10Label = forwardDescription,
         )
     }
 
@@ -292,7 +329,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
         value = volume,
         onValueChange = { controller.setVolume(it) },
         modifier = Modifier.fillMaxWidth(),
-        tint = Color.White,
+        tint = colors.spark,
+        accessibilityLabel = volumeDescription,
+        valueDescription = volumeValueDescription,
+        adjustableActionLabel = adjustVolumeDescription,
     )
 
     Spacer(Modifier.height(12.dp))
@@ -305,20 +345,28 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
         LiveDot(colors.live, size = 5.dp, modifier = Modifier.padding(end = 6.dp))
         Text(
             stringResource(R.string.np_footer),
-            style = FlickText.caption.copy(fontSize = 9.sp, color = Color.White.copy(alpha = 0.45f)),
+            style = FlickText.caption.copy(fontSize = 11.sp, color = colors.onSurfaceFaint),
         )
     }
-    Text(
-        stringResource(R.string.np_stop),
-        style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.trouble),
+    Box(
         modifier = Modifier
             .align(Alignment.CenterHorizontally)
             .navigationBarsPadding()
             .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .heightIn(min = 48.dp)
+            .semantics { contentDescription = stopCastingDescription }
             .clickable { controller.stopCast() }
-            .padding(vertical = 6.dp, horizontal = 12.dp),
-    )
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            stringResource(R.string.np_stop),
+            style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.trouble),
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .padding(vertical = 6.dp, horizontal = 12.dp),
+        )
+    }
 }
 
 /** The live scrub timecode — reads the playhead via a lambda so only this Text
@@ -326,11 +374,27 @@ private fun androidx.compose.foundation.layout.ColumnScope.RemoteContent(
 @Composable
 private fun TargetTimecode(scrubbing: Boolean, position: () -> Long) {
     val colors = LocalFlickColors.current
+    val targetText = Format.timecode(position())
+    val targetDescription = stringResource(R.string.a11y_scrub_target, targetText)
     Text(
-        Format.timecode(position()),
-        style = FlickText.mono.copy(
-            color = if (scrubbing) colors.sparkSoft else Color.White.copy(alpha = 0.6f),
+        targetText,
+        style = FlickText.timecode.copy(
+            color = if (scrubbing) colors.spark else colors.onSurfaceDim,
         ),
+        modifier = Modifier.semantics { contentDescription = targetDescription },
+    )
+}
+
+/** The remote exposes the authoritative TV clock only while the optimistic head leads it. */
+@Composable
+private fun ConfirmedTimecode(position: () -> Long) {
+    val colors = LocalFlickColors.current
+    val confirmedText = Format.timecode(position())
+    val confirmedDescription = stringResource(R.string.a11y_scrub_confirmed, confirmedText)
+    Text(
+        stringResource(R.string.scrub_confirmed_visual, confirmedText),
+        style = FlickText.mono.copy(color = colors.onSurfaceFaint),
+        modifier = Modifier.semantics { contentDescription = confirmedDescription },
     )
 }
 
@@ -339,10 +403,10 @@ private fun PausedBadge() {
     val colors = LocalFlickColors.current
     Text(
         stringResource(R.string.np_paused_badge),
-        style = FlickText.monoLabel.copy(color = Color.White.copy(alpha = 0.7f), fontWeight = FontWeight.Bold),
+        style = FlickText.monoLabel.copy(color = colors.onSurfaceDim, fontWeight = FontWeight.Bold),
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
-            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(999.dp))
+            .border(1.dp, colors.outline, RoundedCornerShape(999.dp))
             .padding(horizontal = 12.dp, vertical = 5.dp),
     )
 }
@@ -365,12 +429,12 @@ private fun androidx.compose.foundation.layout.ColumnScope.BufferingContent(
         Spacer(Modifier.height(16.dp))
         Text(
             stringResource(R.string.buffering_title),
-            style = FlickText.heading.copy(color = Color.White),
+            style = FlickText.heading.copy(color = colors.onSurface),
         )
         Spacer(Modifier.height(10.dp))
         Text(
             stringResource(R.string.buffering_body),
-            style = FlickText.caption.copy(color = Color.White.copy(alpha = 0.7f)),
+            style = FlickText.caption.copy(color = colors.onSurfaceDim),
             modifier = Modifier.padding(horizontal = 12.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )

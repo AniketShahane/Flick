@@ -35,7 +35,8 @@ import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.OverscanSafe
+import com.flick.receiver.ui.theme.rememberReducedMotion
+import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -52,15 +53,23 @@ fun IdleScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val safeArea = rememberTvSafeAreaPadding()
     val pairFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { pairFocus.requestFocus() } }
 
-    val breathe = rememberInfiniteTransition(label = "idleBreathe")
-    val markAlpha by breathe.animateFloat(
-        initialValue = 0.35f, targetValue = 0.85f,
-        animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
-        label = "markAlpha",
-    )
+    val reducedMotion = rememberReducedMotion()
+    val markAlpha = if (reducedMotion) {
+        0.7f
+    } else {
+        val breathe = rememberInfiniteTransition(label = "idleBreathe")
+        val alpha by breathe.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0.85f,
+            animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
+            label = "markAlpha",
+        )
+        alpha
+    }
 
     var clock by remember { mutableStateOf(nowHhMm()) }
     LaunchedEffect(Unit) {
@@ -112,7 +121,7 @@ fun IdleScreen(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(OverscanSafe),
+                .padding(safeArea),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -135,7 +144,7 @@ fun IdleScreen(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(OverscanSafe),
+                .padding(safeArea),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             FlickTvButton(onClick = onOpenSettings) {

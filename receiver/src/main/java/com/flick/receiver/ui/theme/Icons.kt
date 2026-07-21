@@ -134,10 +134,12 @@ fun BrandMark(
 fun SkipGlyph(
     forward: Boolean,
     modifier: Modifier = Modifier,
-    size: Dp = 26.dp,
+    size: Dp = 32.dp,
     tint: Color = FlickColor.OnSurface,
 ) {
-    val monoStyle = remember(size) { FlickType.monoTabular(sizeSp = (size.value * 0.34f).toInt().coerceAtLeast(8)) }
+    // The numeral is visible TV copy, not incidental vector geometry: keep it at
+    // the ten-foot minimum and let the circular arrow scale around it.
+    val monoStyle = remember(size) { FlickType.monoTabular(sizeSp = 24) }
     Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.size(size)) {
             val s = this.size.minDimension

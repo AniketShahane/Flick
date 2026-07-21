@@ -56,7 +56,11 @@ fun MetricsOverlay(
         MetricRow(stringResource(R.string.metrics_net), netLine(snapshot), FlickColor.Live)
         MetricRow(
             stringResource(R.string.metrics_buf),
-            "${seconds(snapshot.bufferedAheadMs)} · ${snapshot.rebufferCount} stalls",
+            stringResource(
+                R.string.metrics_buffer_value,
+                seconds(snapshot.bufferedAheadMs),
+                snapshot.rebufferCount,
+            ),
             if (snapshot.rebufferCount == 0) FlickColor.Live else FlickColor.Caution,
         )
         MetricRow(stringResource(R.string.metrics_vid), vidLine(snapshot), FlickColor.OnSurface)
@@ -64,7 +68,7 @@ fun MetricsOverlay(
         MetricRow(stringResource(R.string.metrics_bitrate), mbps(snapshot.bitrateEstimateBps), FlickColor.OnSurface)
         MetricRow(
             stringResource(R.string.metrics_dropped),
-            "${snapshot.droppedFrames} · ${clock(snapshot.positionMs)}",
+            stringResource(R.string.metrics_dropped_value, snapshot.droppedFrames, clock(snapshot.positionMs)),
             if (snapshot.droppedFrames == 0L) FlickColor.OnSurface else FlickColor.Caution,
         )
         Text(
@@ -109,8 +113,9 @@ private fun vidLine(s: DiagnosticsSnapshot): String {
     return "$res · $fps"
 }
 
+@Composable
 private fun decLine(s: DiagnosticsSnapshot): String =
-    (s.decoderName ?: "—") + " · hw"
+    stringResource(R.string.metrics_decoder_value, s.decoderName ?: stringResource(R.string.metrics_unavailable))
 
 private fun mbps(bps: Long): String =
     if (bps <= 0L) "—" else String.format(Locale.US, "%.1f Mb/s", bps / 1_000_000.0)

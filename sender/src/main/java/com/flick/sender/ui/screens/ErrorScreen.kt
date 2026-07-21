@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
@@ -103,7 +105,8 @@ fun ErrorScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    val statusDescription = stringResource(R.string.a11y_network_status, pillText)
+    Box(Modifier.fillMaxSize().background(colors.surface), contentAlignment = Alignment.Center) {
         Column(
             Modifier.padding(horizontal = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -152,7 +155,12 @@ fun ErrorScreen(
             }
         }
 
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) {
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 24.dp)
+                .semantics { contentDescription = statusDescription },
+        ) {
             StatusPill(pillText, pillKind)
         }
     }

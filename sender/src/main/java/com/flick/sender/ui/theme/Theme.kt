@@ -4,7 +4,9 @@ import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -18,12 +20,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
 /**
- * FlickTheme — dark ("the cinema") and light ("the pocket"). On Android 12+ the
- * Material [androidx.compose.material3.ColorScheme] may take a Material-You tint
- * (so tonal chips / secondary containers pick up the wallpaper), but every
- * brand-critical visual reads [FlickColors] via [LocalFlickColors], so the Spark
- * playhead and play button stay **anchored** regardless of dynamic color.
+ * Literal Material 3 Expressive entry point for the phone. Dynamic color is retained
+ * only as a low-emphasis source for the system-derived base; warm ivory/plum,
+ * action/target, LAN/sync, health, and error jobs are deliberately anchored.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FlickTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -32,55 +33,68 @@ fun FlickTheme(
 ) {
     val flick = if (darkTheme) DarkFlickColors else LightFlickColors
     val context = LocalContext.current
-
+    val useDynamicTonalRoles = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val base = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+        useDynamicTonalRoles ->
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         darkTheme -> darkColorScheme()
         else -> lightColorScheme()
     }
 
-    // Anchor the roles the brand owns; let dynamic color keep the rest.
     val scheme = base.copy(
         primary = flick.spark,
         onPrimary = Color.White,
+        primaryContainer = flick.sparkLight,
+        onPrimaryContainer = if (flick.isLight) flick.onSurface else Color(0xFF3D1612),
         secondary = flick.link,
-        onSecondary = if (flick.isLight) Color.White else Color(0xFF06222B),
-        error = flick.trouble,
+        onSecondary = if (flick.isLight) Color.White else Color(0xFF06262A),
+        secondaryContainer = flick.link.copy(alpha = if (flick.isLight) 0.16f else 0.20f),
+        onSecondaryContainer = flick.link,
+        tertiary = flick.live,
+        onTertiary = Color.White,
+        tertiaryContainer = flick.live.copy(alpha = if (flick.isLight) 0.14f else 0.20f),
+        onTertiaryContainer = flick.live,
         background = flick.surface,
         onBackground = flick.onSurface,
         surface = flick.surface,
         onSurface = flick.onSurface,
-        surfaceVariant = flick.surfaceRaised,
+        // Wallpaper tint is intentionally confined to quiet tonal containment.
+        surfaceVariant = if (useDynamicTonalRoles) base.surfaceVariant else flick.surfaceTonal,
         onSurfaceVariant = flick.onSurfaceDim,
+        surfaceBright = flick.surfaceRaised,
+        surfaceDim = flick.surfaceRaisedAlt,
+        surfaceContainer = if (useDynamicTonalRoles) base.surfaceContainer else flick.surfaceTonal,
+        surfaceContainerHigh = if (useDynamicTonalRoles) base.surfaceContainerHigh else flick.surfaceRaised,
+        surfaceContainerHighest = if (useDynamicTonalRoles) base.surfaceContainerHighest else flick.surfaceRaised,
+        surfaceContainerLow = if (useDynamicTonalRoles) base.surfaceContainerLow else flick.surfaceRaisedAlt,
+        surfaceContainerLowest = flick.surface,
         outline = flick.outline,
+        outlineVariant = flick.outlineHairline,
+        error = flick.trouble,
+        onError = Color.White,
+        errorContainer = flick.trouble.copy(alpha = if (flick.isLight) 0.12f else 0.20f),
+        onErrorContainer = flick.trouble,
     )
 
     CompositionLocalProvider(LocalFlickColors provides flick) {
-        MaterialTheme(
+        MaterialExpressiveTheme(
             colorScheme = scheme,
-            typography = FlickTypography,
+            motionScheme = MotionScheme.expressive(),
             shapes = FlickShapes,
+            typography = FlickTypography,
             content = content,
         )
     }
 }
 
-/** Shorthand for the active brand palette inside composables. */
 val FlickColorsAccessor: FlickColors
     @Composable get() = LocalFlickColors.current
 
-/**
- * e2 "glass" — a translucent raised fill with a hairline border. True backdrop
- * blur needs a RenderEffect that isn't portable below Android 12, so this is the
- * flat-glass approximation used for controls floating over video.
- */
 fun Modifier.flickGlass(colors: FlickColors, shape: Shape): Modifier =
     this
         .background(color = colors.glass, shape = shape)
         .border(width = 1.dp, color = colors.glassBorder, shape = shape)
 
-/** e1 raised card fill + hairline. */
 fun Modifier.flickRaised(colors: FlickColors, shape: Shape): Modifier =
     this
         .background(color = colors.surfaceRaised, shape = shape)

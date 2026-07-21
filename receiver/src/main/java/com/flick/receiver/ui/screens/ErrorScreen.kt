@@ -29,6 +29,7 @@ import com.flick.receiver.session.ErrorKind
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 
 /**
  * T9 · Errors, calm and specific. Amber [ErrorKind.NotServing] = "reachable, not
@@ -44,8 +45,14 @@ fun ErrorScreen(
     onSecondary: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val safeArea = rememberTvSafeAreaPadding()
     val primaryFocus = remember { FocusRequester() }
-    LaunchedEffect(kind) { if (onPrimary != null) runCatching { primaryFocus.requestFocus() } }
+    val secondaryFocus = remember { FocusRequester() }
+    LaunchedEffect(kind, onPrimary != null) {
+        runCatching {
+            (if (onPrimary != null) primaryFocus else secondaryFocus).requestFocus()
+        }
+    }
 
     val accent = if (kind == ErrorKind.Unreachable) FlickColor.Trouble else FlickColor.Caution
     val device = deviceLabel ?: stringResource(R.string.device_fallback)
@@ -78,7 +85,9 @@ fun ErrorScreen(
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(0.6f),
+            modifier = Modifier
+                .fillMaxWidth(0.6f)
+                .padding(safeArea),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -102,7 +111,7 @@ fun ErrorScreen(
                 if (onPrimary != null) FlickTvButton(onClick = onPrimary, focusRequester = primaryFocus) {
                     Text(primaryLabel, fontSize = 24.sp, color = FlickColor.OnSurface)
                 }
-                FlickTvButton(onClick = onSecondary) {
+                FlickTvButton(onClick = onSecondary, focusRequester = secondaryFocus) {
                     Text(secondaryLabel, fontSize = 24.sp, color = FlickColor.OnSurfaceDim)
                 }
             }

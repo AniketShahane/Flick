@@ -4,9 +4,70 @@ This document describes the implemented v2 pair-to-play path. The binding schema
 
 ## Validation status
 
-Both modules are synchronized at `versionCode=2` / `versionName=0.2.0`. As of 2026-07-20, all 29 sender and 38 receiver JVM unit tests pass and the required synchronized build produces both debug APKs.
+Both modules are synchronized at `versionCode=2` / `versionName=0.2.0`.
 
-The JVM tests cover focused pure/helper seams; they do not execute the production `SharedPreferences` stores, Ktor client/server sockets, Activity intent/lifecycle integration, or a Media3 hardware decoder. No Android instrumentation result is claimed. No v2 APK pair has been installed and exercised on a real phone/TV for this release. System-camera cold/warm launch, actual pairing/resume, first-frame delivery, lifecycle/LAN transitions, and sustained 4K/Dolby Vision remain device-acceptance work. Earlier manual direct-play measurements are a transport/tuning baseline, not v2 validation.
+### Automated build, JVM, and lint gate
+
+As of 2026-07-21, the final automated gate passed:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew test :sender:assembleDebug :receiver:assembleDebug :sender:assembleDebugAndroidTest :receiver:assembleDebugAndroidTest :sender:lintDebug :receiver:lintDebug
+```
+
+Gradle completed 170 tasks (11 executed and 159 up-to-date). All 86 JVM tests passed—33
+sender and 53 receiver—with zero failures or errors. Both app debug APKs and both
+instrumentation-test APKs assembled. Sender lint reported 0 errors, 73 warnings, and 1 hint;
+receiver lint reported 0 errors, 62 warnings, and 6 hints. The lint warnings/hints remain
+non-blocking review inventory; a zero-error lint result is not a claim that every warning has
+been remediated.
+
+### Connected instrumentation and TV smoke
+
+On a connected, awake Google TV Streamer running API 34 at 1920×1080, the receiver Compose
+suite passed 10/10 and the sender component-level Compose suite passed 8/8. The TV Idle and
+Settings visual/D-pad smoke verified the cyan focus treatment, Back/navigation behavior,
+safe-area layout, and focus-driven Settings scrolling. That smoke exposed a Settings clipping
+defect; the defect was fixed and the affected path was re-verified.
+
+The sender instrumentation suite ran on the TV device, **not on an Android phone**. Its 8/8
+result validates the exercised component semantics and behavior in that host environment; it
+does not establish phone viewport, touch ergonomics, camera/deep-link integration, or phone
+accessibility acceptance.
+
+### Open hardware acceptance
+
+No phone was connected for this validation pass. Actual phone↔TV pairing and resume,
+camera/deep-link entry, first-frame direct-play, lifecycle and LAN transitions, and sustained
+4K HDR/Dolby Vision playback remain open hardware acceptance gates. Successful JVM tests,
+lint, APK assembly, and TV-hosted instrumentation must not be presented as evidence that those
+cross-device paths passed.
+
+### Material Expressive toolchain baseline
+
+The Material Expressive redesign pins AGP `9.3.0`, Gradle `9.5.0`, the Compose
+compiler plugin `2.3.21`, and `compileSdk=37`; `targetSdk` remains `36` during
+the UI migration. AGP 9's built-in Kotlin replaces the external
+`org.jetbrains.kotlin.android` plugin, while the Compose compiler plugin remains
+explicit. The project continues to launch Gradle with the repository-required
+JDK 21 command. AGP 9.3 supports API 37 and requires Gradle 9.5.0.
+
+The sender pins `androidx.compose.material3:material3:1.5.0-alpha24`, the line
+that exposes `MaterialExpressiveTheme` and `MotionScheme.expressive()`. Its
+transitive metadata requires Compose `1.12.0-beta01`. The shared Compose BOM is
+therefore pinned at `2026.06.01` for the stable receiver stack and common
+artifacts, while the sender's direct alpha dependency is intentionally allowed to
+select the newer Compose 1.12 family. This is a deliberate, isolated alpha risk;
+the toolchain gate must be green before any sender theme code adopts those APIs.
+
+The receiver remains TV-native: it uses `androidx.tv:tv-material:1.1.0` and the
+stable BOM-selected phone Material3 only for its single text field. It must never
+wrap its UI in the sender's `MaterialExpressiveTheme`.
+
+The JVM tests cover focused pure/helper seams; they do not execute the production
+`SharedPreferences` stores, Ktor client/server sockets, Activity intent/lifecycle integration,
+or a Media3 hardware decoder. The connected Compose results above cover only their stated UI
+scope. Earlier manual direct-play measurements remain a transport/tuning baseline, not current
+cross-device acceptance evidence.
 
 ## Architecture
 

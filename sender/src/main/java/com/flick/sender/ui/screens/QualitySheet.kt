@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
@@ -55,12 +57,16 @@ fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
     val throughputFraction = (throughputMbps / neededMbps).coerceIn(0.0, 1.0).toFloat()
     val bufferSeconds = state.bufferedMs / 1000.0
     val bufferFraction = (bufferSeconds / 12.0).coerceIn(0.0, 1.0).toFloat()
+    val networkStatus = stringResource(R.string.a11y_network_status, signal.chipText())
 
     BottomSheet(onDismiss = onDismiss) {
         SheetGrabber()
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.quality_title), style = FlickText.heading.copy(color = colors.onSurface))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.semantics { contentDescription = networkStatus },
+            ) {
                 LiveDot(colors.live, size = 5.dp, modifier = Modifier.padding(end = 5.dp))
                 Text(
                     stringResource(if (signal.healthy) R.string.quality_healthy else R.string.quality_watch),
@@ -106,8 +112,18 @@ fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
         )
 
         Spacer(Modifier.height(14.dp))
-        Fact(stringResource(R.string.quality_playing), "${item?.resolutionLabel ?: "—"} · ${hdrLabelFor(hdr)}")
-        Fact(stringResource(R.string.quality_network), "${signal.bandLabel()} · ${signal.rssiDbm} dBm")
+        Fact(
+            stringResource(R.string.quality_playing),
+            stringResource(
+                R.string.quality_playing_value,
+                item?.resolutionLabel ?: stringResource(R.string.media_unknown),
+                hdrLabelFor(hdr),
+            ),
+        )
+        Fact(
+            stringResource(R.string.quality_network),
+            stringResource(R.string.network_rssi, signal.bandLabel(), signal.rssiDbm),
+        )
 
         Spacer(Modifier.height(12.dp))
         Text(
@@ -118,10 +134,11 @@ fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
     }
 }
 
+@Composable
 private fun hdrLabelFor(hdr: HdrType): String = when (hdr) {
-    HdrType.DOLBY_VISION -> "Dolby Vision"
-    HdrType.HDR10 -> "HDR10"
-    HdrType.NONE -> "SDR"
+    HdrType.DOLBY_VISION -> stringResource(R.string.media_hdr_dolby_vision)
+    HdrType.HDR10 -> stringResource(R.string.media_hdr10)
+    HdrType.NONE -> stringResource(R.string.media_sdr)
 }
 
 @Composable

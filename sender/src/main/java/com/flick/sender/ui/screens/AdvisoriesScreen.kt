@@ -4,11 +4,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -30,6 +33,7 @@ fun AdvisoriesScreen(
 ) {
     val colors = LocalFlickColors.current
     val signal = rememberSignalInfo()
+    val diagnosticsDescription = stringResource(R.string.a11y_diagnostics)
     val showBand = signal.on24GHz
     val showBattery = !batteryExempt
 
@@ -94,6 +98,8 @@ fun AdvisoriesScreen(
             ),
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .semantics { contentDescription = diagnosticsDescription }
                 .clickable(onClick = onOpenDiagnostics)
                 .padding(vertical = 8.dp),
             textAlign = TextAlign.Center,

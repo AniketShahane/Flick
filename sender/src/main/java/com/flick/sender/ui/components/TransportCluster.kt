@@ -1,7 +1,6 @@
 package com.flick.sender.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +12,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,6 +23,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -32,7 +37,6 @@ import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.Motion
 
 /**
  * Play/pause that **morphs** (triangle ↔ bars) via flickSettle — never a hard
@@ -47,7 +51,7 @@ fun PlayPauseMorph(
 ) {
     val f by animateFloatAsState(
         targetValue = if (playing) 1f else 0f,
-        animationSpec = tween(Motion.FlickSettleMs, easing = Motion.FlickSettle),
+        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
         label = "morph",
     )
     Canvas(modifier) {
@@ -83,6 +87,8 @@ fun PrimaryPlayButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     size: Dp = 58.dp,
+    accessibilityLabel: String? = null,
+    accessibilityState: String? = null,
 ) {
     val colors = LocalFlickColors.current
     Box(
@@ -90,7 +96,12 @@ fun PrimaryPlayButton(
             .size(size)
             .clip(CircleShape)
             .background(FlickGradients.spark(dark = !colors.isLight), CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                accessibilityLabel?.let { contentDescription = it }
+                accessibilityState?.let { stateDescription = it }
+            },
         contentAlignment = Alignment.Center,
     ) {
         PlayPauseMorph(
@@ -107,8 +118,9 @@ fun SeekButton(
     forward: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    size: Dp = 40.dp,
+    size: Dp = 48.dp,
     tint: Color = LocalFlickColors.current.onSurface,
+    accessibilityLabel: String? = null,
 ) {
     val glyph: ImageVector = if (forward) FlickIcons.Fwd10 else FlickIcons.Back10
     Box(
@@ -116,7 +128,11 @@ fun SeekButton(
             .size(size)
             .clip(CircleShape)
             .border(1.5.dp, tint.copy(alpha = 0.22f), CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                accessibilityLabel?.let { contentDescription = it }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(imageVector = glyph, contentDescription = null, tint = tint, modifier = Modifier.size(size * 0.5f))
@@ -137,14 +153,23 @@ fun TransportCluster(
     onFwd10: () -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = LocalFlickColors.current.onSurface,
+    back10Label: String? = null,
+    playPauseLabel: String? = null,
+    playPauseState: String? = null,
+    forward10Label: String? = null,
 ) {
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SeekButton(forward = false, onClick = onBack10, tint = tint)
-        PrimaryPlayButton(playing = playing, onClick = onPlayPause)
-        SeekButton(forward = true, onClick = onFwd10, tint = tint)
+        SeekButton(forward = false, onClick = onBack10, tint = tint, accessibilityLabel = back10Label)
+        PrimaryPlayButton(
+            playing = playing,
+            onClick = onPlayPause,
+            accessibilityLabel = playPauseLabel,
+            accessibilityState = playPauseState,
+        )
+        SeekButton(forward = true, onClick = onFwd10, tint = tint, accessibilityLabel = forward10Label)
     }
 }

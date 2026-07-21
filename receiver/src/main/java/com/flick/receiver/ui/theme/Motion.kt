@@ -5,6 +5,9 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.tween
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+import android.provider.Settings
 
 /**
  * Motion — "flick & settle" (design-tokens.md §6). The six curves are shared,
@@ -54,4 +57,17 @@ object FlickMotion {
     fun <T> focusPop(): TweenSpec<T> = tween(FOCUS_POP_MS, easing = FocusPop)
     fun <T> chromeFadeIn(): TweenSpec<T> = tween(CHROME_FADE_IN_MS, easing = ChromeFade)
     fun <T> chromeFadeOut(): TweenSpec<T> = tween(CHROME_FADE_OUT_MS, easing = ChromeFade)
+}
+
+/**
+ * A zero animator scale is a request for static state, not merely faster motion.
+ * Foundation components branch on this before starting ambient/infinite effects;
+ * Compose's regular animation clock still scales the finite specs above.
+ */
+@Composable
+fun rememberReducedMotion(): Boolean {
+    val resolver = LocalContext.current.contentResolver
+    return runCatching {
+        Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) <= 0f
+    }.getOrDefault(false)
 }

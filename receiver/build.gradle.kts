@@ -1,17 +1,16 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
 android {
     namespace = "com.flick.receiver"
-    compileSdk = 36
+    compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
         applicationId = "com.flick.receiver"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 2
         versionName = "0.2.0"
 
@@ -33,20 +32,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-        // Module-wide opt-ins so the source stays free of scattered @OptIn.
-        // NOTE: Media3's @UnstableApi is an androidx.annotation.RequiresOptIn
-        // marker enforced by Android LINT (UnsafeOptInUsageError), NOT by the
-        // Kotlin compiler — a "-opt-in=...UnstableApi" arg here is ignored (and
-        // warns). It is handled below via lint { disable += "UnsafeOptInUsageError" }.
-        // These two are genuine kotlin.RequiresOptIn markers, so they belong here.
-        freeCompilerArgs += listOf(
-            "-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api",
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-        )
-    }
-
     // Media3's @UnstableApi player-internals (LoadControl, DataSource,
     // AnalyticsListener, PlayerView, ...) are used throughout this spike.
     // Disable the lint opt-in gate module-wide so `./gradlew build` (lint with
@@ -57,7 +42,7 @@ android {
 
     buildFeatures {
         compose = true
-        // AGP 8 defaults this to false, so no BuildConfig class is generated at
+        // AGP defaults this to false, so no BuildConfig class is generated at
         // all. FlickLog gates its verbose/debug logcat output on
         // BuildConfig.DEBUG, so the class must exist for the module to compile.
         buildConfig = true
@@ -70,16 +55,27 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        // Media3's @UnstableApi is an Android Lint marker handled below, while
+        // these Compose annotations are genuine Kotlin opt-ins.
+        freeCompilerArgs.addAll(
+            "-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+        )
+    }
+}
+
 dependencies {
     // --- Baseline (from Foundation's version catalog; not module-owned) ---
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
     // --- Compose (BOM-aligned; explicit coordinates owned by this module) ---
-    val composeBom = platform("androidx.compose:compose-bom:2025.05.01")
+    val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
-    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation(libs.androidx.activity.compose)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -92,7 +88,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // --- Compose for TV (leanback-focused components) ---
-    implementation("androidx.tv:tv-material:1.0.1")
+    implementation(libs.androidx.tv.material)
 
     // --- Media3 / ExoPlayer, pinned by contract to 1.10.1 ---
     implementation("androidx.media3:media3-exoplayer:1.10.1")
@@ -124,4 +120,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

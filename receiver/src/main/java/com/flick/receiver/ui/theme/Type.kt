@@ -70,8 +70,8 @@ object FlickType {
 }
 
 /**
- * TV typography for the theme. Roles map to the §2 TV scale. Components that
- * need a precise 10-ft size still set it explicitly; this supplies the defaults.
+ * TV typography for the theme. Roles map to the §2 ten-foot scale; screen owners
+ * must not override these defaults below 24sp for visible TV copy.
  */
 val FlickTvTypography: Typography = Typography(
     displayLarge = TextStyle(
@@ -91,8 +91,9 @@ val FlickTvTypography: Typography = Typography(
     titleLarge = TextStyle(
         fontFamily = FlickType.Display,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 28.sp,
-        lineHeight = 34.sp,
+        fontSize = 32.sp,
+        lineHeight = 40.sp,
+        letterSpacing = 0.01.em,
     ),
     bodyLarge = TextStyle(
         fontWeight = FontWeight.Medium,

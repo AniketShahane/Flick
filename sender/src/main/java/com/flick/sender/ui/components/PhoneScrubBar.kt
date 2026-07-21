@@ -42,12 +42,19 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
 import com.flick.sender.ui.theme.FlickGradients
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import kotlin.math.abs
@@ -78,10 +85,15 @@ fun PhoneScrubBar(
     onScrubEnd: () -> Unit,
     modifier: Modifier = Modifier,
     fillColor: Color? = null,
+    targetLabel: String? = null,
+    confirmedLabel: String? = null,
+    stateLabel: String? = null,
+    adjustableActionLabel: String? = null,
 ) {
     val colors = LocalFlickColors.current
     var dragging by remember { mutableStateOf(false) }
     var widthPx by remember { mutableStateOf(1) }
+    val endGate = remember { ScrubEndGate() }
 
     // If the bar is torn out from under a live drag (e.g. a mid-stream rebuffer swaps
     // the screen), the gesture coroutine is cancelled without reaching onScrubEnd —
@@ -89,7 +101,7 @@ fun PhoneScrubBar(
     // seek. Close the gesture on dispose so scrubbing always terminates cleanly.
     val currentOnScrubEnd by rememberUpdatedState(onScrubEnd)
     DisposableEffect(Unit) {
-        onDispose { if (dragging) currentOnScrubEnd() }
+        onDispose { endGate.finish(currentOnScrubEnd) }
     }
 
     val trackHeight by animateDpAsState(
@@ -112,28 +124,49 @@ fun PhoneScrubBar(
             .fillMaxWidth()
             .height(56.dp)
             .onSizeChanged { widthPx = it.width }
+            .semantics {
+                // This reads through the leaf lambda rather than moving the live
+                // playhead into the remote's composition scope.
+                progressBarRangeInfo = ProgressBarRangeInfo(targetFraction(), 0f..1f)
+                targetLabel?.let { contentDescription = it }
+                listOfNotNull(confirmedLabel, stateLabel)
+                    .takeIf { it.isNotEmpty() }
+                    ?.joinToString(separator = ", ")
+                    ?.let { stateDescription = it }
+                setProgress(adjustableActionLabel) { fraction ->
+                    endGate.start()
+                    onScrubStart()
+                    onScrub(fraction.coerceIn(0f, 1f))
+                    endGate.finish(currentOnScrubEnd)
+                    true
+                }
+            }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val w = { size.width.toFloat().coerceAtLeast(1f) }
+                    endGate.start()
                     dragging = true
-                    onScrubStart()
-                    onScrub((down.position.x / w()).coerceIn(0f, 1f))
-                    down.consume()
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                            ?: event.changes.firstOrNull()
-                        if (change == null) break
-                        if (!change.pressed) {
+                    try {
+                        onScrubStart()
+                        onScrub((down.position.x / w()).coerceIn(0f, 1f))
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                            if (change == null) break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            onScrub((change.position.x / w()).coerceIn(0f, 1f))
                             change.consume()
-                            break
                         }
-                        onScrub((change.position.x / w()).coerceIn(0f, 1f))
-                        change.consume()
+                    } finally {
+                        dragging = false
+                        endGate.finish(currentOnScrubEnd)
                     }
-                    dragging = false
-                    onScrubEnd()
                 }
             },
         contentAlignment = Alignment.CenterStart,
@@ -177,8 +210,9 @@ fun PhoneScrubBar(
             // Ghost ○ (TV-confirmed) when it trails the head.
             gf?.let { g ->
                 if (abs(g - tf) > 0.006f) {
+                    val ghostColor = if (colors.isLight) colors.onSurfaceDim else Color.White.copy(alpha = 0.6f)
                     drawCircle(
-                        color = Color.White.copy(alpha = 0.6f),
+                        color = ghostColor,
                         radius = 6.dp.toPx(),
                         center = Offset(g.coerceIn(0f, 1f) * w, cy),
                         style = Stroke(width = 2.dp.toPx()),
@@ -193,7 +227,8 @@ fun PhoneScrubBar(
                 radius = half + 8.dp.toPx(),
                 center = Offset(tx, cy),
             )
-            drawCircle(color = Color.White, radius = half, center = Offset(tx, cy))
+            drawCircle(color = colors.spark, radius = half, center = Offset(tx, cy))
+            drawCircle(color = colors.sparkLight, radius = half * 0.55f, center = Offset(tx, cy))
         }
 
         // SYNCING… shimmer chip.
@@ -237,12 +272,12 @@ fun PhoneScrubBar(
 @Composable
 private fun FramePreviewCard(bitmap: ImageBitmap?, label: () -> String?) {
     if (bitmap == null) return
-    val shape = RoundedCornerShape(11.dp)
+    val shape = RoundedCornerShape(FlickCorners.md)
     Column(
         Modifier
             .width(104.dp)
-            .border(1.5.dp, Color.White.copy(alpha = 0.4f), shape)
-            .background(Color(0xE008070C), shape),
+            .border(1.dp, LocalFlickColors.current.outlineHairline, shape)
+            .background(LocalFlickColors.current.surfaceRaised, shape),
     ) {
         Image(
             bitmap = bitmap,
@@ -254,11 +289,27 @@ private fun FramePreviewCard(bitmap: ImageBitmap?, label: () -> String?) {
         )
         Text(
             text = label() ?: "",
-            style = FlickText.mono.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White),
+            style = FlickText.mono.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = LocalFlickColors.current.onSurface),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
+    }
+}
+
+/** Keeps release, pointer cancellation, and composition disposal to one terminal callback. */
+private class ScrubEndGate {
+    private var active = false
+
+    fun start() {
+        active = true
+    }
+
+    fun finish(onScrubEnd: () -> Unit) {
+        if (active) {
+            active = false
+            onScrubEnd()
+        }
     }
 }

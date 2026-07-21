@@ -1,6 +1,7 @@
 package com.flick.receiver.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -32,6 +34,12 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
@@ -39,6 +47,7 @@ import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.SkipGlyph
+import com.flick.receiver.ui.theme.rememberReducedMotion
 
 /**
  * A circular transport button with the standard TV focus treatment (scale 1.08 +
@@ -52,27 +61,31 @@ private fun TransportButton(
     primary: Boolean,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    contentDescription: String? = null,
+    enabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val reducedMotion = rememberReducedMotion()
     val scale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1f,
-        animationSpec = FlickMotion.focusPop(),
+        targetValue = if (focused && enabled) 1.08f else 1f,
+        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
         label = "transportScale",
     )
     val borderColor = when {
-        focused -> FlickColor.Link
+        focused && enabled -> FlickColor.Link
         primary -> Color.Transparent
         else -> FlickColor.OnSurface.copy(alpha = 0.25f)
     }
     Box(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .focusProperties { canFocus = enabled }
             .size(diameter)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .shadow(
-                elevation = if (focused) 18.dp else 0.dp,
+                elevation = if (focused && enabled) 18.dp else 0.dp,
                 shape = CircleShape,
                 clip = false,
                 ambientColor = FlickColor.Link,
@@ -80,8 +93,23 @@ private fun TransportButton(
             )
             .clip(CircleShape)
             .then(if (primary) Modifier.background(FlickColor.SparkGradient) else Modifier)
-            .border(if (focused) 2.dp else 1.5.dp, borderColor, CircleShape)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+            .border(if (focused && enabled) 2.dp else 1.5.dp, borderColor, CircleShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
+            .then(
+                if (enabled) {
+                    Modifier.semantics(mergeDescendants = true) {
+                        this.role = Role.Button
+                        if (contentDescription != null) this.contentDescription = contentDescription
+                    }
+                } else {
+                    Modifier.clearAndSetSemantics { }
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) { content() }
 }
@@ -98,9 +126,10 @@ fun PlayPauseGlyph(
     tint: Color,
     modifier: Modifier = Modifier,
 ) {
+    val reducedMotion = rememberReducedMotion()
     val p by animateFloatAsState(
         targetValue = if (playing) 1f else 0f,
-        animationSpec = FlickMotion.flickSettle(),
+        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.flickSettle(),
         label = "playPauseMorph",
     )
     Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
@@ -125,7 +154,7 @@ fun PlayPauseGlyph(
 
 /**
  * The transport cluster (§7): back-10 / play-pause / fwd-10. The primary play
- * circle is a 64dp Spark gradient; skip buttons are 44dp outlined ghosts. On
+ * circle is a 64dp Spark gradient; skip buttons are 48dp outlined ghosts. On
  * entry, focus lands on play via [playFocusRequester].
  */
 @Composable
@@ -136,25 +165,43 @@ fun TransportCluster(
     onForward10: () -> Unit,
     modifier: Modifier = Modifier,
     playFocusRequester: FocusRequester? = null,
+    back10ContentDescription: String? = null,
+    playPauseContentDescription: String? = null,
+    forward10ContentDescription: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        TransportButton(onClick = onBack10, diameter = 44.dp, primary = false) {
-            SkipGlyph(forward = false, size = 24.dp, tint = FlickColor.OnSurface)
+        TransportButton(
+            onClick = onBack10,
+            diameter = 48.dp,
+            primary = false,
+            contentDescription = back10ContentDescription,
+            enabled = enabled,
+        ) {
+            SkipGlyph(forward = false, size = 32.dp, tint = FlickColor.OnSurface)
         }
         TransportButton(
             onClick = onPlayPause,
             diameter = 64.dp,
             primary = true,
             focusRequester = playFocusRequester,
+            contentDescription = playPauseContentDescription,
+            enabled = enabled,
         ) {
             PlayPauseGlyph(playing = playing, size = 30.dp, tint = FlickColor.Canvas)
         }
-        TransportButton(onClick = onForward10, diameter = 44.dp, primary = false) {
-            SkipGlyph(forward = true, size = 24.dp, tint = FlickColor.OnSurface)
+        TransportButton(
+            onClick = onForward10,
+            diameter = 48.dp,
+            primary = false,
+            contentDescription = forward10ContentDescription,
+            enabled = enabled,
+        ) {
+            SkipGlyph(forward = true, size = 32.dp, tint = FlickColor.OnSurface)
         }
     }
 }
@@ -173,29 +220,34 @@ fun VolumeCells(
     onChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     cells: Int = 10,
+    contentDescription: String? = null,
+    stateDescription: String? = null,
+    enabled: Boolean = true,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     var engaged by remember { mutableStateOf(false) }
     // Never leave the control stuck in adjust mode after focus moves away.
-    LaunchedEffect(focused) { if (!focused) engaged = false }
+    LaunchedEffect(focused, enabled) { if (!focused || !enabled) engaged = false }
     val filled = (level.coerceIn(0f, 1f) * cells).toInt()
     val borderColor = when {
-        engaged -> FlickColor.Spark
-        focused -> FlickColor.Link
+        engaged && enabled -> FlickColor.Spark
+        focused && enabled -> FlickColor.Link
         else -> FlickColor.OutlineHairline
     }
 
     Row(
         modifier = modifier
+            .focusProperties { canFocus = enabled }
             .clip(RoundedCornerShape(12.dp))
             .border(
-                width = if (focused || engaged) 2.dp else 1.dp,
+                width = if (enabled && (focused || engaged)) 2.dp else 1.dp,
                 color = borderColor,
                 shape = RoundedCornerShape(12.dp),
             )
             .padding(horizontal = 14.dp, vertical = 10.dp)
             .onKeyEvent { event ->
+                if (!enabled) return@onKeyEvent false
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter -> {
@@ -212,7 +264,23 @@ fun VolumeCells(
                     else -> false
                 }
             }
-            .clickable(interactionSource = interaction, indication = null, onClick = { engaged = !engaged }),
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = { engaged = !engaged },
+            )
+            .then(
+                if (enabled) {
+                    Modifier.semantics(mergeDescendants = true) {
+                        this.role = Role.Button
+                        if (contentDescription != null) this.contentDescription = contentDescription
+                        if (stateDescription != null) this.stateDescription = stateDescription
+                    }
+                } else {
+                    Modifier.clearAndSetSemantics { }
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {

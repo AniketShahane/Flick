@@ -11,6 +11,7 @@
     <string name="pair_hide_bigger">Done</string>
     <string name="pair_rename">Rename TV</string>
     <string name="pair_code_hint">Enter this code on your phone</string>
+    <string name="pair_qr_content_description">QR code for pairing this TV with Flick on your phone</string>
     <!-- Manual-entry escape hatch when the QR can\'t be scanned / discovery fails. -->
     <string name="pair_manual_hint">In Flick, enter host %1$s and port %2$d</string>
     <!-- Low-emphasis bind health, so a stale port reads differently from a wrong code. -->
@@ -45,6 +46,12 @@
     <string name="syncing_with_phone">SYNCING WITH PHONE…</string>
     <string name="scrub_confirmed">confirmed %1$s</string>
     <string name="scrub_target">target %1$s · snap on release</string>
+    <string name="transport_back_10">Skip back 10 seconds</string>
+    <string name="transport_play">Play</string>
+    <string name="transport_pause">Pause</string>
+    <string name="transport_forward_10">Skip forward 10 seconds</string>
+    <string name="volume">Volume</string>
+    <string name="volume_state">%1$d percent</string>
 
     <!-- T7 · Buffering -->
     <string name="buffering_title">Topping up — quality held</string>
@@ -75,6 +82,7 @@
     <!-- T10 · Settings + metrics overlay -->
     <string name="settings_title">Settings</string>
     <string name="settings_done">Done</string>
+    <string name="settings_disclosure">›</string>
     <string name="settings_device_name">Device name</string>
     <string name="settings_paired_phones">Paired phones</string>
     <string name="settings_paired_none">None yet</string>
@@ -88,6 +96,9 @@
     <string name="settings_diagnostics_empty">Nothing recorded yet</string>
     <string name="settings_diagnostics_clear">Clear diagnostics</string>
     <string name="settings_diagnostics_capture">Kept in memory only, never saved to this TV</string>
+    <string name="settings_diagnostics_entry">%1$s %2$s [%3$s] %4$s</string>
+    <string name="settings_diagnostics_address_redacted">[address]</string>
+    <string name="settings_diagnostics_value_redacted">[redacted]</string>
 
     <string name="metrics_net">NET</string>
     <string name="metrics_buf">BUF</string>
@@ -97,6 +108,9 @@
     <string name="metrics_dropped">DROPPED</string>
     <string name="metrics_footer">metrics overlay · settings › playback</string>
     <string name="metrics_unavailable">—</string>
+    <string name="metrics_buffer_value">%1$s · %2$d stalls</string>
+    <string name="metrics_dropped_value">%1$d · %2$s</string>
+    <string name="metrics_decoder_value">%1$s · hardware decoder</string>
 
     <!-- Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). -->
     <string-array name="tv_name_presets">

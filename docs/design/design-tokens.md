@@ -1,76 +1,113 @@
-# Flick design tokens — canonical
+# Flick Material Expressive design tokens — canonical
 
-Single source of truth for the visual language of **both** apps. `:sender` and `:receiver`
-implement these values **identically** (same hex, same type scale, same motion curves) in their
-own `ui/theme/` package. Source of record: `docs/design/flick-design-system.html` (Part 1 +
-Part 4). If this file and the HTML ever disagree, the HTML wins — fix this file.
+Single source of truth for the shared visual language of both apps. The visual source is
+[`references/material-expressive-option-2.png`](references/material-expressive-option-2.png),
+the user-selected paired phone/TV synchronized-scrub frame (SHA-256
+`12ec2bf743202bfee3c87f77ce6ea96009fc9825cd23454a4c9813654a8d692a`). This file—not
+`flick-design-system.html`—defines implementation decisions. `:sender` and `:receiver`
+share semantic names, color jobs, type scale, and motion intent; they do **not** share
+Compose theme or component types.
 
-Design thesis: **"Flick" is both the gesture and the movie.** Warm vermilion (Spark) for content
-& action; cool cyan (Link) strictly for connection & focus. They never swap jobs.
+Design thesis: **warm editorial direct-play.** The phone is a tactile, personal local-film
+remote: warm ivory paper, dark plum ink, cream containment, asymmetric media hierarchy,
+and a dominant lower-third scrubber. The TV is an uncluttered violet-black cinema canvas.
+Coral means user action and optimistic target; cyan means live LAN/sync and TV D-pad focus;
+green means serving; restrained gold means verified premium media. These jobs never swap.
+
+## Selected reference rules
+
+- Use local video frames as content imagery. Never imply cloud upload, accounts,
+  mirroring, or transcoding.
+- The cyan thread is a short-lived synchronization cue between devices, not a decorative
+  permanent connector or a progress value.
+- Target and network-confirmed scrub positions are distinct semantic values. During a
+  lag, communicate both with labels/semantics as well as color and ring/fill treatment.
+- The TV's cinematic image remains visually brightest. Chrome appears only when useful;
+  exactly one TV action owns focus whenever chrome or a modal is visible.
+- The reference illustrates a hero, not a license to put a large image, cyan glow, or
+  asymmetry into errors, advisories, diagnostics, or every list row.
 
 ---
 
 ## 1. Color
 
-### 1.1 Dark — "the cinema" (TV always; phone dark theme)
+### 1.1 TV dark — "the cinema" (TV always; phone dark theme)
 
 | Token | Hex | Use |
 |---|---|---|
-| `canvas` | `#08070C` | TV playback bed — near-black, violet-warmed. **Never `#000`.** |
-| `surface` (base) | `#0F0D14` | app background |
-| `surfaceRaised` | `#181521` | cards, sheets, tiles |
-| `surfaceRaisedAlt` | `#14121A` | secondary raised (kit cards) |
-| `glass` fill | `rgba(32,27,44,0.62)` + blur 24 | controls floating over video |
+| `canvas` | `#0B0912` | fixed TV playback bed — violet-black, **never `#000`** |
+| `surface` (base) | `#15111D` | non-media TV background |
+| `surfaceRaised` | `#211B2B` | contained TV cards, sheets, and chrome groups |
+| `surfaceRaisedAlt` | `#191521` | quiet secondary containment |
+| `glass` fill | `rgba(27,21,38,0.72)` + API-gated blur | TV chrome over film only |
 | `glassBorder` | `rgba(255,255,255,0.14)` | 1px hairline on glass |
-| `onSurface` | `#EDEAF2` | primary text/icons |
-| `onSurfaceDim` | `#9B94A8` | secondary text |
-| `onSurfaceFaint` | `#6A6478` | captions, mono labels |
-| `outline` | `#2C2838` | dividers, unfocused borders |
+| `onSurface` | `#F6F0F4` | primary 10-foot text/icons |
+| `onSurfaceDim` | `#C8BFCA` | secondary text |
+| `onSurfaceFaint` | `#988E9B` | captions, mono labels |
+| `outline` | `#403747` | dividers, unfocused borders |
 | `outlineHairline` | `rgba(255,255,255,0.07)` | card borders |
 
-### 1.2 Light — "the pocket" (phone light theme, Material-You-friendly)
+### 1.2 Phone light — "the film desk" (Material-You-friendly)
 
 | Token | Hex | Use |
 |---|---|---|
-| `surface` (base) | `#FAF8F5` | warm paper, **not clinical white** |
-| `surfaceRaised` | `#FFFFFF` | cards, sheets |
-| `surfaceTonal` | `#F0EBE4` | chips, M3 secondary containers |
-| `onSurface` | `#1D1826` | primary |
-| `onSurfaceDim` | `#6E6678` | secondary |
-| `onSurfaceFaint` | `#98909F` | captions |
-| `outline` | `#E7E1D9` | dividers/borders |
-| `sparkOnLight` | `#E63E1A` | Spark deepened one step for 4.5:1 on paper |
-| `linkOnLight` | `#0E7E9C` | Link deepened for contrast on paper |
+| `surface` (base) | `#FFF8ED` | warm ivory page, **not clinical white** |
+| `surfaceRaised` | `#FFFCF6` | paper-raised media and action cards |
+| `surfaceTonal` | `#F6E8D3` | cream tonal fields, chips, and asymmetric hero containment |
+| `onSurface` | `#3F3037` | dark-plum primary ink |
+| `onSurfaceDim` | `#705B62` | secondary ink |
+| `onSurfaceFaint` | `#9A8287` | captions and supporting metadata |
+| `outline` | `#E6D4C0` | warm hairlines/dividers |
+| `sparkOnLight` | `#C94B3D` | accessible coral text/icon on ivory; target thumb may use Spark fill |
+| `linkOnLight` | `#007F91` | accessible cyan text/icon on ivory |
 
 ### 1.3 Brand accents — the split (both themes)
 
 | Token | Hex | Gradient | Job |
 |---|---|---|---|
-| **Spark** | `#FF4B24` | `linear(120°, #FF6A47 → #FF4B24)` | content & action: playhead fill, play button, CTAs, wordmark dot |
-| `sparkLight` (tint) | `#FF6A47` | — | hover/lift/links-on-dark |
-| `sparkSoft` | `#FF8B6E` | — | pressed/hint text |
-| **Link** | `#3FD9FF` | — | connection & focus **only**: TV D-pad focus glow, pairing, sync shimmer, "connected" pills |
+| **Spark** | `#FF6B57` | `linear(120°, #FF8D7D → #FF6250)` | action and **optimistic target**: play button, CTA, filled playhead/thumb |
+| `sparkLight` (tint) | `#FF8D7D` | — | warm target bloom and contained emphasis |
+| `sparkSoft` | `#FFD0C8` | — | target-supporting detail on dark only |
+| **Link** | `#41E5F2` | — | live LAN, sync shimmer/thread, pairing, and TV D-pad **focus only** |
 
 ### 1.4 Semantic
 
 | Token | Hex | Meaning |
 |---|---|---|
-| `live` | `#34D389` | serving / connected / healthy |
-| `caution` | `#FFB454` | 2.4 GHz · weak signal · battery nudge |
-| `trouble` | `#FF3B5C` | unreachable / failed (**crimson ≠ Spark** — do not confuse) |
-| `info` | `#3FD9FF` | sync, pairing, tips (== Link) |
+| `live` | `#3A9B62` | serving / healthy; use `#277A4B` for small text on ivory |
+| `caution` | `#B87824` | 2.4 GHz · weak signal · battery nudge |
+| `trouble` | `#C9314D` | unreachable / failed (**crimson is never Spark**) |
+| `info` | `#41E5F2` | sync, pairing, tips (== Link) |
 
 ### 1.5 Premium sheen (quality badges only — DV/HDR — never UI chrome)
 
-`linear(115°, #E9C87C → #F7ECD2 45% → #D9B45F)`, badge text `#3A2E14`. HDR10 = outline variant
-(`1px rgba(233,200,124,0.55)`, text `#F7ECD2`).
+`linear(115°, #D6A34E → #FAE7B8 45% → #B9822C)`, badge text `#3D2B13`. It is a small,
+restrained verified-quality treatment for actual DV/HDR metadata only; it never becomes a
+button, focus ring, app background, or fabricated quality claim. HDR10 is the outline variant
+(`1px rgba(214,163,78,.62)`, text `#FAE7B8` on TV).
 
 ### 1.6 Material You (phone only)
 
-The phone **may** seed ambient tints + tonal chips from the picked video's dominant color
-(dynamic color on Android 12+). **The Spark playhead and play button stay anchored** (never
-re-tinted). **The TV never re-tints** — it holds fixed cinematic dark under the film. Ambient
-poster-glow behind transport clusters ≤ 30% opacity so HDR video stays the brightest thing.
+On Android 12+, phone dynamic color may influence low-emphasis tonal containers and media ambience,
+but warm ivory, plum ink, Spark action/target, Link sync, and serving green remain anchored.
+Never use dynamic color to obscure target-versus-confirmed meaning. The TV never re-tints; it
+holds the fixed cinema palette. Poster ambience behind TV transport stays at or below 24% opacity
+so HDR video remains brightest.
+
+### 1.7 Semantic role mapping (same intent, platform-native implementation)
+
+| Semantic job | Sender Material Expressive mapping | Receiver TV Material mapping |
+|---|---|---|
+| page/cinema base | warm-ivory `background` / `surface` | violet-black `background` / retained player surface |
+| contained content | cream `surfaceContainer` / `surfaceContainerHigh` | raised `surface` / `surfaceVariant` |
+| primary action and target | Spark `primary`; Spark filled thumb/play control | Spark primary/selected treatment, never focus |
+| live LAN/sync | Link secondary/container detail and explicit text | Link focus border/glow, pairing and sync shimmer |
+| serving health | `tertiary`/custom semantic role | custom semantic role, not a focus cue |
+| premium media | custom metadata badge only | custom metadata badge only |
+| failure/caution | Material error/custom advisory roles | TV error/custom advisory roles |
+
+Do not make a literal RGB copy of phone Material Expressive roles in TV Material. The semantic
+job is shared; component API, focus behavior, and containment stay form-factor-native.
 
 ---
 
@@ -105,28 +142,40 @@ Faces (all via Compose; no bundled files):
 
 ---
 
-## 3. Shape & spacing
+## 3. Shape, hierarchy & spacing
 
 - **8pt grid, 4pt sub-grid.** Spacing ramp: `4 · 8 · 16 · 24 · 32 · 48 · 64`.
-- Corner tokens: `sm 8 · md 12 · lg 16 · xl 24 · full 999`.
-- **Rounded is the resting personality; full-pill is reserved for _live_ things** — scrub tracks,
-  status pills, the connect chip.
-- Phone: single column, thumb-first. Primary transport in the **bottom 34%**. Min touch target
-  **48dp**; **scrubber thumb 56dp hit**.
+- Corner tokens: `sm 12 · md 18 · lg 24 · xl 32 · hero 40 · full 999`.
+- Phone hierarchy is intentionally asymmetric: a compact media still can sit above a generous
+  title/metadata block, while an off-center cream tonal contour creates the hero field. This is
+  one large, purposeful containment gesture per screen—not arbitrary per-row shapes.
+- Media cards use `lg` upper corners and `md` lower corners; frame previews use `md`; ordinary
+  rows and advisories use `md`; live/status and scrub tracks use `full`. No destructive cutouts
+  or non-rectangular touch regions are required.
+- Phone: single column, thumb-first. Primary transport and scrubber occupy the **bottom 34%**.
+  Minimum touch target **48dp**; scrubber thumb hit area **56dp** even when its visible target is
+  smaller.
 - TV: 12-column rhythm inside a **5% overscan-safe inset** (96×54px at 1920×1080). Video is
-  full-bleed; **all chrome/text lives inside the safe area**.
+  full-bleed; all chrome/text stays inside the safe area. TV containers stay low and wide rather
+  than copying the phone's asymmetric card geometry.
 
 ---
 
-## 4. Elevation, glass & focus
+## 4. Elevation, material & focus
 
-- Elevation: `e0` base (`surface`) · `e1` raised (`surfaceRaised` + `shadow 0 8 24 rgba(0,0,0,.35)`)
-  · `e2` glass (blur 24 · `rgba(32,27,44,.62)` · 1px `rgba(255,255,255,.14)` · top inner-glow).
-- Scrim = a soft top-transparent→`rgba(8,7,12,.78)` gradient, **never a hard bar**.
-- **TV focus (no hover on TV):** `scale 1.08 + tonal lift + 2dp Link-cyan border + soft glow`
-  (`0 0 0 4px rgba(63,217,255,.22), 0 0 24px rgba(63,217,255,.35)`). **Selected** keeps a Spark
-  tint **without** the glow so focus and selection never blur. Disabled = 38% opacity. Every TV
-  screen defines an explicit D-pad order and **exactly one element is focused at all times**.
+- Phone material: `e0` ivory page · `e1` cream tonal contour · `e2` near-white raised media/frame
+  preview with a soft warm shadow (`0 8 24 rgba(72,47,36,.16)`). Avoid fake glass over the paper
+  remote; opacity is not a substitute for hierarchy.
+- TV material: `e0` retained film/cinema canvas · `e1` violet translucent bottom scrim · `e2` a
+  restrained `rgba(27,21,38,.72)` chrome panel with 1px `rgba(255,255,255,.14)` border. API-gated
+  blur is optional; legibility cannot depend on it.
+- Scrim is a soft transparent-to-`rgba(11,9,18,.82)` gradient, never a hard bar.
+- **TV focus (no hover):** `scale 1.08 + tonal lift + 2dp Link-cyan border + soft glow`
+  (`0 0 0 4px rgba(65,229,242,.24)`, `0 0 24px rgba(65,229,242,.38)`). **Selected** uses a Spark
+  tint without cyan glow, so selection and focus never blur. Disabled is 38% opacity. Every TV
+  state defines an explicit D-pad order and exactly one focused element. The reference's central
+  play/pause is focused only for playback chrome; other states select their own single initial
+  actionable target.
 
 ---
 
@@ -165,15 +214,20 @@ release, single confirm pulse on play/pause, soft ripple on grip.
 ## 7. Component kit (build once, reuse)
 
 - **Scrub bar — two variants, one clock.**
-  - *Phone (tactile):* 10dp track, 24dp thumb (56dp hit), track grows to 12dp while dragging;
-    fill = Spark gradient. Frame-preview pops above the thumb while dragging (decoded on-device).
-  - *TV (cinematic):* 5dp bar; shows **buffered range** (`rgba(255,255,255,.28)`), **played** (Spark),
-    **target ●** (solid white w/ Link glow), **confirmed ○ ghost** (hollow white ring). See §Hero.
-- **Transport cluster:** back-10 / play-pause / fwd-10. Play/pause **morphs** (triangle ↔ bars via
-  `flickSettle`) — never a hard swap. Primary play = 56dp Spark-gradient circle.
-- **Status pills (full-pill):** `Serving · live` (green, pulsing dot), `Connecting…` (cyan),
-  `TV unreachable` (crimson). **Signal chip:** `61 Mb/s · 5 GHz` (mono tabular, wifi glyph) →
-  expands to the quality sheet.
+  - *Phone (tactile):* 10dp coral target fill, 24dp coral thumb (56dp hit); muted dashed/hollow
+    confirmed marker; track grows to 12dp while dragging. A near-white raised local frame-preview
+    card appears above the thumb, with tabular target time. The confirmed label is exposed to
+    accessibility while it differs from target.
+  - *TV (cinematic):* 5dp bar; buffered range `rgba(255,255,255,.28)`, played/target in Spark,
+    target `●` in solid coral, confirmed `○` in high-contrast pale ring, and cyan shimmer only
+    when lagging. See §Hero. Do not use cyan as a second playhead color.
+- **Transport cluster:** back-10 / play-pause / fwd-10. Play/pause morphs (triangle ↔ bars via
+  `flickSettle`)—never a hard swap. Phone primary play is a 56dp coral circle with warm lift;
+  TV primary play is large enough for 10-foot reading and takes the sole playback focus.
+- **Status strip/pills:** phone status is a quiet top strip, `Serving from this phone · 5 GHz`
+  with a green dot; `Connecting…` uses cyan; `TV unreachable` uses crimson. **Signal chip:**
+  `61 Mb/s · 5 GHz` (mono tabular, Wi-Fi glyph) expands to the quality sheet. Never claim a
+  healthy band, serving state, or bitrate without real state.
 - **Volume:** continuous slider on phone; **stepped cells on TV** (D-pad friendly).
 - **Video tile:** 16:9 filmic still, duration (mono tabular, bottom-right), DV/HDR badge (premium
   sheen, top-left), title + `4K · 8.4 GB` caption.
@@ -185,7 +239,8 @@ release, single confirm pulse on play/pause, soft ripple on grip.
 ## 8. The Hero — optimistic/ghost synchronized scrub (Part 4)
 
 The bar is **one session clock drawn twice**. Contract:
-- **Solid = optimistic (thumb)** — leads. **Ghost ○ = network-confirmed** — trails. Cyan = the live link.
+- **Solid coral = optimistic target (thumb)**—leads. **Pale hollow/dashed ○ =
+  network-confirmed**—trails. Cyan is the live link/sync shimmer, never either position.
 - **Healthy:** ghost and solid are superimposed — *sync is invisible when healthy* (Beat 1).
 - **Grab:** track swells, thumb ring blooms, frame-preview pops (`flickSettle`), TV wakes chrome
   (`chromeFade` in 200ms), soft ripple haptic; playback keeps rolling until release (Beat 2).

@@ -32,6 +32,10 @@
     <string name="wifi_band_6ghz">6 GHz</string>
     <string name="wifi_band_5ghz">5 GHz</string>
     <string name="wifi_band_24ghz">2.4 GHz</string>
+    <string name="wifi_band_generic">Wi-Fi</string>
+    <string name="network_chip_throughput">%1$s · %2$s</string>
+    <string name="network_chip_link_speed">%1$d Mb/s · %2$s</string>
+    <string name="network_rssi">%1$s · %2$d dBm</string>
     <string name="wifi_24ghz_warning">This phone is on 2.4 GHz Wi-Fi. That band can\'t sustain 4K peaks, so playback may stall. Switch this phone to the 5 GHz network for reliable casting.</string>
 
     <!-- S1 · Connect &amp; pair. -->
@@ -110,6 +114,13 @@
     <string name="pair_error_repair">Pairing couldn\'t be completed. Start again from the TV\'s pairing screen.</string>
     <string name="sender_device_generic">Phone</string>
     <string name="media_title_generic">Video</string>
+    <string name="media_hdr_dolby_vision">Dolby Vision</string>
+    <string name="media_hdr10">HDR10</string>
+    <string name="media_sdr">SDR</string>
+    <string name="media_unknown">—</string>
+    <string name="media_dv_badge">DV</string>
+    <string name="media_dolby_vision_badge">DOLBY VISION</string>
+    <string name="media_hdr10_badge">HDR10</string>
 
     <!-- S6–S9 · Now Playing / Paused / Seeking / Buffering. -->
     <string name="syncing">SYNCING…</string>
@@ -134,6 +145,7 @@
     <string name="quality_needs">%1$s / needs %2$d</string>
     <string name="quality_reserve">%1$.1f s reserve</string>
     <string name="quality_direct">Phone → TV directly · nothing leaves your Wi-Fi</string>
+    <string name="quality_playing_value">%1$s · %2$s</string>
 
     <!-- S11 · Advisories. -->
     <string name="advisories_title">Two quick tune-ups</string>
@@ -175,4 +187,34 @@
     <string name="error_generic_title">Something went wrong</string>
     <string name="error_generic_body">Flick couldn\'t start this cast. Try again.</string>
     <string name="error_generic_primary">Try again</string>
+
+    <!-- Resource-backed accessibility labels for the expressive sender surfaces. -->
+    <string name="a11y_open_connect">Connect to a TV</string>
+    <string name="a11y_cast_video">Cast %1$s to %2$s</string>
+    <string name="a11y_open_quality">Open signal and quality</string>
+    <string name="a11y_back_to_library">Back to your videos</string>
+    <string name="a11y_dismiss_sheet">Dismiss sheet</string>
+    <string name="a11y_sheet">Flick sheet</string>
+    <string name="a11y_pairing_status">Pairing status: %1$s</string>
+    <string name="a11y_serving_status">Serving status: %1$s</string>
+    <string name="a11y_play">Play on TV</string>
+    <string name="a11y_pause">Pause on TV</string>
+    <string name="a11y_skip_back">Skip back 10 seconds</string>
+    <string name="a11y_skip_forward">Skip forward 10 seconds</string>
+    <string name="a11y_scrub_target">Seek target: %1$s</string>
+    <string name="a11y_scrub_confirmed">TV confirmed: %1$s</string>
+    <string name="a11y_seek_target">Seek target</string>
+    <string name="a11y_tv_confirmed">TV-confirmed position</string>
+    <string name="scrub_confirmed_visual">TV %1$s</string>
+    <string name="a11y_volume">TV volume</string>
+    <string name="a11y_volume_value">%1$d percent</string>
+    <string name="a11y_adjust_volume">Adjust TV volume</string>
+    <string name="a11y_adjust_seek">Adjust seek target</string>
+    <string name="a11y_playing_state">Playing</string>
+    <string name="a11y_paused_state">Paused</string>
+    <string name="a11y_stop_casting">Stop casting</string>
+    <string name="a11y_diagnostics">Open diagnostics</string>
+    <string name="a11y_video_item">Open %1$s</string>
+    <string name="a11y_cancel_connecting">Cancel connection</string>
+    <string name="a11y_network_status">Network status: %1$s</string>
 </resources>

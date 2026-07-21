@@ -104,6 +104,8 @@ object FlickText {
 
 val FlickTypography = Typography(
     displayLarge = FlickText.title,
+    displayMedium = FlickText.title.copy(fontSize = 26.sp, lineHeight = 32.sp),
+    displaySmall = FlickText.title.copy(fontSize = 24.sp, lineHeight = 30.sp),
     headlineMedium = FlickText.title,
     headlineSmall = FlickText.heading,
     titleLarge = FlickText.heading,

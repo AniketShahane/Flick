@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
@@ -20,6 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -27,6 +31,7 @@ import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 /** A status dot; when [pulsing] it breathes 0.45 → 1.0 (design `fkPulse`). */
 @Composable
@@ -36,7 +41,8 @@ fun LiveDot(
     size: Dp = 6.dp,
     pulsing: Boolean = false,
 ) {
-    val alpha = if (pulsing) {
+    val reduceMotion = rememberReduceMotion()
+    val alpha = if (pulsing && !reduceMotion) {
         val t = rememberInfiniteTransition(label = "dot")
         t.animateFloat(
             initialValue = 0.45f,
@@ -120,6 +126,8 @@ fun SignalChip(
             .background(colors.surfaceRaised)
             .border(1.dp, colors.outlineHairline, PillShape)
             .clickable(onClick = onClick)
+            .semantics { role = Role.Button }
+            .heightIn(min = 48.dp)
             .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
