@@ -30,7 +30,7 @@ sealed interface Route { data object Connect : Route; data object Library : Rout
 data class PairedTv(val name: String, val host: String, val port: Int, val tvId: String)
 enum class PairErrorKind {
     CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
-    TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED,
+    TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED, ENDPOINT_CHANGED,
 }
 /** [host]/[port] are the QR's untrusted prefill hint — never dialed without a typed code. */
 data class PendingPairLaunch(val eventId: Long, val host: String? = null, val port: Int? = null)
@@ -148,23 +148,43 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     /**
-     * Pairs with a TV the user tapped in the discovered list. Discovery is
-     * re-snapshotted immediately before dialing, so a receiver that rebound between
-     * the tap and the typed code is still reached.
+     * Pairs with the exact TV record the user confirmed in the code sheet. Discovery is
+     * re-snapshotted immediately before dialing so a receiver that rebound between the
+     * tap and the typed code is still reached — but only the PORT may move. mDNS is
+     * unauthenticated, so re-deriving the host from it would let a LAN advertiser that
+     * claims the same service name / tvId collect a code the user authorized for a
+     * different address; the confirmed host is the only one ever dialed.
      */
-    fun submitDiscoveredPair(tvId: String, code: String) {
-        if (!PairLaunch.isCode(code)) { FlickLog.w("pair", "submit rejected reason=code"); _pairError.value = PairErrorKind.INVALID_ENTRY; return }
+    fun submitDiscoveredPair(tv: DiscoveredTv, code: String) {
+        val tvId = tv.tvId
+        val reject = when {
+            tvId == null -> "device"
+            !PairLaunch.isCanonicalIpv4(tv.host) || tv.port !in 1..65535 -> "endpoint"
+            !PairLaunch.isCode(code) -> "code"
+            else -> null
+        }
+        if (reject != null || tvId == null) {
+            FlickLog.w("pair", "submit rejected reason=$reject")
+            _pairError.value = if (reject == "code") PairErrorKind.INVALID_ENTRY else PairErrorKind.UNREACHABLE
+            return
+        }
         val attempt = beginPairingAttempt(); _pairError.value = null
         pairingJob = scope.launch {
-            val fresh = (nsd.refresh(tvId) ?: devices.value.firstOrNull { it.tvId == tvId } ?: _pairTarget.value?.takeIf { it.tvId == tvId })
-                ?.takeIf { PairLaunch.isCanonicalIpv4(it.host) && it.port in 1..65535 }
-            if (fresh == null) {
-                FlickLog.w("pair", "submit rejected reason=device")
-                if (pairingGate.isCurrent(attempt)) _pairError.value = PairErrorKind.UNREACHABLE
+            val fresh = nsd.refresh(tvId)
+            if (fresh != null && fresh.host != tv.host) {
+                // The advertisement moved hosts under the open sheet. Re-present it at the
+                // new address for an explicit second confirmation instead of dialing it.
+                FlickLog.w("pair", "submit aborted reason=host_changed")
+                if (pairingGate.isCurrent(attempt)) {
+                    if (PairLaunch.isCanonicalIpv4(fresh.host) && fresh.port in 1..65535) _pairTarget.value = fresh
+                    _pairError.value = PairErrorKind.ENDPOINT_CHANGED
+                }
                 return@launch
             }
-            FlickLog.i("pair", "submit host=${fresh.host} port=${fresh.port} codeLen=${code.length}")
-            runPairing(attempt, fresh.host, fresh.port, code)
+            // Only a record still at the confirmed host may supply a rebound port.
+            val port = fresh?.port?.takeIf { it in 1..65535 } ?: tv.port
+            FlickLog.i("pair", "submit host=${tv.host} port=$port codeLen=${code.length}")
+            runPairing(attempt, tv.host, port, code)
         }
     }
 

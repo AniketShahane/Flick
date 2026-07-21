@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,7 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,13 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -136,11 +138,15 @@ fun LibraryScreen(
             }
         }
 
+        val filterGroupShape = RoundedCornerShape(18.dp)
         Row(
             Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = if (compactHeight) 5.dp else 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 16.dp, vertical = if (compactHeight) 3.dp else 8.dp)
+                .clip(filterGroupShape)
+                .background(colors.surfaceRaisedAlt)
+                .border(1.dp, colors.outline.copy(alpha = 0.65f), filterGroupShape)
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             FilterChip(
                 text = stringResource(R.string.library_filter_recents),
@@ -231,27 +237,72 @@ private fun LibraryTile(
 @Composable
 private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LocalFlickColors.current
-    Text(
-        text = text,
-        style = FlickText.caption.copy(
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = if (selected) colors.surface else colors.onSurfaceDim,
-        ),
-        modifier = Modifier
-            .clip(PillShape)
-            .semantics {
-                role = Role.Tab
-                this.selected = selected
-            }
-            .then(
-                if (selected) Modifier.background(colors.onSurface)
-                else Modifier.border(1.dp, colors.outline, PillShape),
-            )
-            .clickable(onClick = onClick)
-            .heightIn(min = 48.dp)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+    val motionScheme = MaterialTheme.motionScheme
+    val container by animateColorAsState(
+        targetValue = if (selected) colors.spark.copy(alpha = 0.14f) else Color.Transparent,
+        animationSpec = motionScheme.fastEffectsSpec(),
+        label = "library filter container",
     )
+    val content by animateColorAsState(
+        targetValue = if (selected) {
+            if (colors.isLight) colors.spark else colors.sparkLight
+        } else {
+            colors.onSurfaceDim
+        },
+        animationSpec = motionScheme.fastEffectsSpec(),
+        label = "library filter content",
+    )
+    val indicator by animateColorAsState(
+        targetValue = if (selected) colors.spark else Color.Transparent,
+        animationSpec = motionScheme.fastEffectsSpec(),
+        label = "library filter indicator",
+    )
+    val visualShape = RoundedCornerShape(13.dp)
+
+    Box(
+        modifier = Modifier
+            .heightIn(min = 48.dp)
+            .clip(visualShape)
+            .selectable(
+                selected = selected,
+                role = Role.Tab,
+                onClick = onClick,
+            )
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            modifier = Modifier
+                .height(36.dp)
+                .clip(visualShape)
+                .background(container)
+                .then(
+                    if (selected) {
+                        Modifier.border(1.dp, colors.spark.copy(alpha = 0.30f), visualShape)
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(horizontal = 11.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(5.dp)
+                    .clip(PillShape)
+                    .background(indicator),
+            )
+            Text(
+                text = text,
+                style = FlickText.caption.copy(
+                    fontSize = 12.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = content,
+                ),
+            )
+        }
+    }
 }
 
 @Composable

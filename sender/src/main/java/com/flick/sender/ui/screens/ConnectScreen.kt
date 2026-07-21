@@ -84,6 +84,7 @@ fun ConnectScreen(controller: FlickController) {
         PairErrorKind.LOCKED -> stringResource(R.string.pair_error_locked)
         PairErrorKind.TV_STORAGE -> stringResource(R.string.pair_error_tv_storage)
         PairErrorKind.REPAIR_NEEDED -> stringResource(R.string.pair_error_repair)
+        PairErrorKind.ENDPOINT_CHANGED -> stringResource(R.string.pair_error_endpoint_changed)
         null -> null
     }
     val connecting = connection == ConnectionStatus.CONNECTING || connection == ConnectionStatus.PAIRING
@@ -229,7 +230,9 @@ fun ConnectScreen(controller: FlickController) {
             error = pairErrorText,
             connecting = connecting,
             codeRevision = codeRevision,
-            onSubmit = { code -> target.tvId?.let { controller.submitDiscoveredPair(it, code) } },
+            // The whole confirmed record is submitted, not just its id: the endpoint
+            // rendered above is the only one the typed code may be sent to.
+            onSubmit = { code -> controller.submitDiscoveredPair(target, code) },
             onDismiss = { controller.cancelPairing() },
         )
     } else if (manualOpen) {

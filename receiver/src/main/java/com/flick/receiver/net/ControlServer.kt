@@ -33,6 +33,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -557,7 +558,12 @@ class ControlServer(
     }
     private fun commandRejected(cast: String, command: String, code: String) = json(linkedMapOf("t" to "commandRejected", "v" to 2, "castId" to cast, "command" to command, "code" to code))
     private fun deniedFrame(reason: String) = json(deniedFrameFields(reason))
-    private fun json(values: Map<String, Any?>): String = JSONObject().also { target -> values.forEach { (key, value) -> target.put(key, value) } }.toString()
+    // Android's org.json does NOT wrap a java.util.List into a JSONArray: put()
+    // stores it raw and JSONStringer then emits it via toString() as a quoted
+    // string, so `cap` would ship as "[a, b]" and fail the sender's array schema.
+    private fun json(values: Map<String, Any?>): String = JSONObject().also { target ->
+        values.forEach { (key, value) -> target.put(key, if (value is Collection<*>) JSONArray(value) else value) }
+    }.toString()
 
     private fun ascii(value: String?, max: Int) = value != null && value.length <= max && value.all { it.code in 0x20..0x7e }
     private fun id(value: String?) = value?.matches(ID) == true

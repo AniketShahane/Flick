@@ -112,6 +112,7 @@
     <string name="pair_error_locked">Too many attempts — the TV is waiting. Give it a moment, then try the new code.</string>
     <string name="pair_error_tv_storage">The TV couldn\'t save this pairing. Restart Flick on the TV — retrying the code won\'t help.</string>
     <string name="pair_error_repair">Pairing couldn\'t be completed. Start again from the TV\'s pairing screen.</string>
+    <string name="pair_error_endpoint_changed">This TV\'s address just changed. Check it matches your TV, then enter the code again.</string>
     <string name="sender_device_generic">Phone</string>
     <string name="media_title_generic">Video</string>
     <string name="media_hdr_dolby_vision">Dolby Vision</string>
