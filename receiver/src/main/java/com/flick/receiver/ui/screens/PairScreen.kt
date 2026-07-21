@@ -44,11 +44,15 @@ import com.flick.receiver.ui.theme.OverscanSafe
 fun PairScreen(
     tvName: String,
     code: String,
-    qrPayload: String,
+    /** Null while no real binding exists; the QR is then simply not drawn. */
+    qrPayload: String?,
     host: String,
     port: Int,
     onRename: () -> Unit,
     networkReady: Boolean,
+    bindUptimeSec: Long = 0L,
+    rebindCount: Int = 0,
+    lastTeardown: String? = null,
     modifier: Modifier = Modifier,
 ) {
     var bigCode by remember { mutableStateOf(false) }
@@ -129,7 +133,7 @@ fun PairScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (networkReady) {
-                    QrCode(payload = qrPayload, size = 220.dp)
+                    if (qrPayload != null) QrCode(payload = qrPayload, size = 220.dp)
                     Text(
                         text = spacedCode,
                         style = FlickType.monoTabular(sizeSp = 44, weight = FontWeight.Bold),
@@ -142,9 +146,18 @@ fun PairScreen(
                         color = FlickColor.OnSurfaceFaint,
                     )
                     if (host.isNotBlank() && port > 0) {
+                        // mDNS-blocked fallback. With a durable control port this
+                        // number is finally stable enough to be worth typing.
                         Text(
                             text = stringResource(R.string.pair_manual_hint, host, port),
                             style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Medium),
+                            color = FlickColor.OnSurfaceFaint,
+                        )
+                        // Bind health: a stale port reads differently from a wrong code.
+                        Text(
+                            text = stringResource(R.string.pair_bind_health, bindUptimeSec, rebindCount) +
+                                (lastTeardown?.let { " · " + stringResource(R.string.pair_bind_last_teardown, it) } ?: ""),
+                            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Normal),
                             color = FlickColor.OnSurfaceFaint,
                         )
                     }

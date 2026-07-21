@@ -5,7 +5,7 @@
 
     <!-- T1 · First-run pair -->
     <string name="pair_title">Bring your movies\nto this screen</string>
-    <string name="pair_instructions">Scan this code with your phone camera to open Flick. Then enter this TV’s host, port, and code in Flick.</string>
+    <string name="pair_instructions">Scan this code with your phone camera to open Flick. It fills in this TV’s address for you — then type the code below to finish.</string>
     <string name="pair_this_tv">This TV — \"%1$s\"</string>
     <string name="pair_show_bigger">Show code bigger</string>
     <string name="pair_hide_bigger">Done</string>
@@ -13,6 +13,9 @@
     <string name="pair_code_hint">Enter this code on your phone</string>
     <!-- Manual-entry escape hatch when the QR can\'t be scanned / discovery fails. -->
     <string name="pair_manual_hint">In Flick, enter host %1$s and port %2$d</string>
+    <!-- Low-emphasis bind health, so a stale port reads differently from a wrong code. -->
+    <string name="pair_bind_health">link up %1$ds · %2$d rebinds</string>
+    <string name="pair_bind_last_teardown">last: %1$s</string>
     <string name="pair_locked">Pairing is temporarily locked. Try again shortly.</string>
     <string name="pair_success">Phone paired</string>
     <string name="settings_forget_all">Forget all phones</string>
@@ -80,6 +83,11 @@
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>
     <string name="settings_metrics_off">Off</string>
+    <string name="settings_diagnostics_title">Diagnostics</string>
+    <string name="settings_diagnostics_summary">Recent pairing, network and playback events on this TV</string>
+    <string name="settings_diagnostics_empty">Nothing recorded yet</string>
+    <string name="settings_diagnostics_clear">Clear diagnostics</string>
+    <string name="settings_diagnostics_capture">Kept in memory only, never saved to this TV</string>
 
     <string name="metrics_net">NET</string>
     <string name="metrics_buf">BUF</string>

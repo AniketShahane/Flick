@@ -44,10 +44,15 @@
     <string name="connect_code_title">Enter code</string>
     <string name="connect_code_sub">Shown on the TV</string>
     <string name="connect_manual">enter address manually</string>
+    <string name="connect_diagnostics">diagnostics</string>
+    <string name="connect_qr_hint">Open your phone\'s camera and point it at the QR on the TV. Flick reopens with the TV\'s address filled in — you still type the 4-digit code.</string>
     <string name="pair_code_heading">Enter the code on %1$s</string>
     <string name="pair_code_sub">It\'s the 4-digit code on your TV screen.</string>
+    <string name="pair_code_endpoint">Pairing with %1$s</string>
     <string name="pair_connect">Connect</string>
     <string name="manual_heading">Enter all three values shown on your TV</string>
+    <string name="manual_heading_qr">Enter the code on your TV</string>
+    <string name="manual_from_qr">The address below came from the TV\'s QR code. Type the 4-digit code on screen to confirm it.</string>
     <string name="manual_host_label">TV IP address</string>
     <string name="manual_port_label">Control port</string>
     <string name="manual_code_label">4-digit code</string>
@@ -96,6 +101,13 @@
     <string name="pair_error_qr">This QR code cannot be used. Update Flick on both devices and scan the current TV code.</string>
     <string name="pair_error_pair_required">This TV needs pairing first. Scan its QR, then enter the host, port, and code shown on screen.</string>
     <string name="pair_error_storage">Flick couldn’t save this pairing on your phone. Check storage, then pair again with the current TV code.</string>
+    <string name="pair_error_timeout">The TV didn\'t answer in time. Check both devices are on the same Wi-Fi.</string>
+    <string name="pair_error_rejected">The TV refused the connection. Make sure its pairing screen is showing, then try again.</string>
+    <string name="pair_error_expired">That code expired — a new one is on the TV.</string>
+    <string name="pair_error_surface">Open Flick\'s pairing screen on the TV.</string>
+    <string name="pair_error_locked">Too many attempts — the TV is waiting. Give it a moment, then try the new code.</string>
+    <string name="pair_error_tv_storage">The TV couldn\'t save this pairing. Restart Flick on the TV — retrying the code won\'t help.</string>
+    <string name="pair_error_repair">Pairing couldn\'t be completed. Start again from the TV\'s pairing screen.</string>
     <string name="sender_device_generic">Phone</string>
     <string name="media_title_generic">Video</string>
 
@@ -136,6 +148,15 @@
     <string name="advisory_battery_secondary">Later</string>
     <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
     <string name="advisories_alltuned">You\'re all tuned up.</string>
+    <string name="advisory_diagnostics_row">Open diagnostics</string>
+
+    <!-- In-app diagnostics log (the phone-side channel; adb logcat is not available to users). -->
+    <string name="diagnostics_title">Diagnostics</string>
+    <string name="diagnostics_sub">The last 200 lines Flick recorded on this phone. Nothing secret is written here.</string>
+    <string name="diagnostics_empty">Nothing recorded yet.</string>
+    <string name="diagnostics_copy">Copy</string>
+    <string name="diagnostics_copied">Copied to clipboard</string>
+    <string name="diagnostics_clear">Clear</string>
 
     <!-- S12 · Errors. -->
     <string name="error_reachable_title">Your TV is there — but not listening</string>

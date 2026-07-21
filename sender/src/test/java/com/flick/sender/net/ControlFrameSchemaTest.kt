@@ -50,6 +50,17 @@ class ControlFrameSchemaTest {
         assertFalse(ControlFrameSchema.preAuth(resumed + ("key" to proof)))
     }
 
+    @Test fun deniedAcceptsBothTheLegacyPairAndTheDiagnosticReasonAndNothingElse() {
+        assertTrue(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 2)))
+        ControlFrameSchema.deniedReasons.forEach {
+            assertTrue(it, ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 2, "reason" to it)))
+        }
+        assertFalse(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 2, "reason" to "wrong_code")))
+        assertFalse(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 2, "reason" to 3)))
+        assertFalse(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 2, "reason" to "code", "hint" to "x")))
+        assertFalse(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 3, "reason" to "code")))
+    }
+
     @Test fun sessionBusyIsValidWithoutCastIdButCannotCarryOne() {
         assertTrue(ControlFrameSchema.event(mapOf("t" to "busy", "v" to 2, "reason" to "active_cast")))
         assertFalse(ControlFrameSchema.event(mapOf("t" to "busy", "v" to 2, "reason" to "active_cast", "castId" to castId)))

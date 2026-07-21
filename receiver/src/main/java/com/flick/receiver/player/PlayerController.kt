@@ -29,6 +29,7 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.WifiTelemetry
 
 /**
@@ -179,6 +180,9 @@ class PlayerController(context: Context) {
         instrumentation.errorMessage = error.message ?: "Playback error"
         instrumentation.errorCode = error.errorCode
         instrumentation.errorCodeName = error.errorCodeName
+        // Codes and the classified wire result only — never the raw message,
+        // which can carry a tokenized URL.
+        FlickLog.e("player", "playbackError code=${error.errorCodeName} classified=${PlaybackFailureClassifier.classify(error).wire}")
     }
 
     private val analyticsListener = object : AnalyticsListener {
@@ -202,6 +206,12 @@ class PlayerController(context: Context) {
             if (!firstFrameGate.consumeIfMatches(mediaId)) return
             if (callbacks.mediaId != mediaId) return
             startupCallbacks = null
+            FlickLog.i(
+                "player",
+                "firstFrame decoder=${instrumentation.decoderName ?: "unknown"} " +
+                    "res=${instrumentation.videoWidth}x${instrumentation.videoHeight} " +
+                    "mime=${instrumentation.videoMimeType ?: "unknown"} transfer=${instrumentation.colorTransfer} renderTimeMs=$renderTimeMs",
+            )
             callbacks.onFirstFrame()
         }
 

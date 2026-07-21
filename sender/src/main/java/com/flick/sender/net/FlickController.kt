@@ -14,6 +14,7 @@ import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.TvAvailability
+import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -27,8 +28,12 @@ import org.json.JSONObject
 
 sealed interface Route { data object Connect : Route; data object Library : Route; data class Detail(val item: MediaItem) : Route; data object Connecting : Route; data object NowPlaying : Route; data class Failure(val kind: CastErrorKind, val failure: CastFailure) : Route }
 data class PairedTv(val name: String, val host: String, val port: Int, val tvId: String)
-enum class PairErrorKind { CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE }
-data class PendingPairLaunch(val eventId: Long)
+enum class PairErrorKind {
+    CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
+    TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED,
+}
+/** [host]/[port] are the QR's untrusted prefill hint — never dialed without a typed code. */
+data class PendingPairLaunch(val eventId: Long, val host: String? = null, val port: Int? = null)
 sealed interface CastStartState { data object Idle : CastStartState; data class ConnectingControl(val castId: String) : CastStartState; data class StartingSource(val castId: String) : CastStartState; data class AwaitingAcceptance(val castId: String) : CastStartState; data class AwaitingFirstFrame(val castId: String) : CastStartState; data class Active(val castId: String) : CastStartState; data class Failed(val castId: String, val code: String) : CastStartState }
 
 /** Application-scoped owner of pairing, control, service state and cast generations. */
@@ -58,6 +63,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     val pendingPairLaunch: StateFlow<PendingPairLaunch?> = _pendingPairLaunch.asStateFlow()
     private val _showQualitySheet = MutableStateFlow(false); val showQualitySheet = _showQualitySheet.asStateFlow()
     private val _showAdvisories = MutableStateFlow(false); val showAdvisories = _showAdvisories.asStateFlow()
+    private val _showDiagnostics = MutableStateFlow(false); val showDiagnostics = _showDiagnostics.asStateFlow()
     val devices = nsd.devices
     private val _mediaItems = MutableStateFlow<List<MediaItem>>(emptyList()); val mediaItems = _mediaItems.asStateFlow()
     private val _libraryLoading = MutableStateFlow(false); val libraryLoading = _libraryLoading.asStateFlow()
@@ -101,14 +107,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun toggleQualitySheet(show: Boolean) { _showQualitySheet.value = show }
     fun toggleAdvisories(show: Boolean) { _showAdvisories.value = show }
+    fun toggleDiagnostics(show: Boolean) { _showDiagnostics.value = show }
 
     fun acceptPairLaunch(event: IncomingPairEvent) {
         invalidatePairingAttempt()
-        _pairError.value = when (event.result) {
-            PairLaunchParseResult.Valid -> null; PairLaunchParseResult.UnsupportedVersion, PairLaunchParseResult.Invalid -> PairErrorKind.INVALID_QR
+        val launch = event.result as? PairLaunchParseResult.Valid
+        _pairError.value = if (launch != null) null else PairErrorKind.INVALID_QR
+        _pendingPairLaunch.value = launch?.let { PendingPairLaunch(event.eventId, it.host, it.port) }
+        FlickLog.i("pair", "launch result=${event.result.javaClass.simpleName} hasEndpoint=${launch?.host != null} eventId=${event.eventId}")
+        _pairTarget.value = null
+        // invalidatePairingAttempt() is already a no-op while authenticated, so a QR
+        // scanned mid-cast must not yank the user out of playback either.
+        if (_route.value != Route.NowPlaying && _route.value != Route.Connecting && currentCastId == null) {
+            _route.value = Route.Connect
         }
-        _pendingPairLaunch.value = if (event.result == PairLaunchParseResult.Valid) PendingPairLaunch(event.eventId) else null
-        _pairTarget.value = null; _route.value = Route.Connect
     }
     fun dismissPairLaunch(eventId: Long) {
         if (_pendingPairLaunch.value?.eventId == eventId) {
@@ -121,43 +133,128 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun selectDevice(tv: DiscoveredTv) {
         if ((tv.protocolVersion ?: 0) < ControlProtocolV2.VERSION) { _pairError.value = PairErrorKind.UPDATE_REQUIRED; _route.value = Route.Connect; return }
         val paired = store.last()?.takeIf { it.tvId == tv.tvId && !it.needsRepair }
-        if (paired != null) resume(paired) else { _pairTarget.value = null; _pairError.value = PairErrorKind.PAIRING_REQUIRED; _route.value = Route.Connect }
+        if (paired != null) { resume(paired); return }
+        // The tapped row is the only component that knows the TV's live control
+        // endpoint; keep it so the code sheet can dial it without the user retyping.
+        if (tv.tvId != null) {
+            _pairTarget.value = tv; _pairError.value = null
+        } else {
+            _pairTarget.value = null; _pairError.value = PairErrorKind.PAIRING_REQUIRED
+        }
+        _route.value = Route.Connect
     }
     fun cancelPairing() {
         invalidatePairingAttempt(); _pendingPairLaunch.value = null; _pairTarget.value = null; _pairError.value = null
     }
-    fun submitCode(code: String) { /* Legacy UI entry is intentionally not an endpoint. */ _pairError.value = PairErrorKind.INVALID_ENTRY }
-    fun connectManual(host: String, port: Int, code: String) = submitTvDisplayedPair(_pendingPairLaunch.value?.eventId ?: 0L, host, port.toString(), code)
+
+    /**
+     * Pairs with a TV the user tapped in the discovered list. Discovery is
+     * re-snapshotted immediately before dialing, so a receiver that rebound between
+     * the tap and the typed code is still reached.
+     */
+    fun submitDiscoveredPair(tvId: String, code: String) {
+        if (!PairLaunch.isCode(code)) { FlickLog.w("pair", "submit rejected reason=code"); _pairError.value = PairErrorKind.INVALID_ENTRY; return }
+        val attempt = beginPairingAttempt(); _pairError.value = null
+        pairingJob = scope.launch {
+            val fresh = (nsd.refresh(tvId) ?: devices.value.firstOrNull { it.tvId == tvId } ?: _pairTarget.value?.takeIf { it.tvId == tvId })
+                ?.takeIf { PairLaunch.isCanonicalIpv4(it.host) && it.port in 1..65535 }
+            if (fresh == null) {
+                FlickLog.w("pair", "submit rejected reason=device")
+                if (pairingGate.isCurrent(attempt)) _pairError.value = PairErrorKind.UNREACHABLE
+                return@launch
+            }
+            FlickLog.i("pair", "submit host=${fresh.host} port=${fresh.port} codeLen=${code.length}")
+            runPairing(attempt, fresh.host, fresh.port, code)
+        }
+    }
 
     fun submitTvDisplayedPair(eventId: Long, host: String, port: String, code: String) {
         if (eventId != 0L && _pendingPairLaunch.value?.eventId != eventId) return
-        if (!PairLaunch.isCanonicalIpv4(host) || !PairLaunch.isCanonicalPort(port) || !PairLaunch.isCode(code)) { _pairError.value = PairErrorKind.INVALID_ENTRY; return }
+        // The code itself is never logged, at any level: a 4-digit secret is trivially
+        // recovered from a hash, so only its length is recorded.
+        FlickLog.i("pair", "submit host=$host port=$port codeLen=${code.length}")
+        val reject = when {
+            !PairLaunch.isCanonicalIpv4(host) -> "host"
+            !PairLaunch.isCanonicalPort(port) -> "port"
+            !PairLaunch.isCode(code) -> "code"
+            else -> null
+        }
+        if (reject != null) { FlickLog.w("pair", "submit rejected reason=$reject"); _pairError.value = PairErrorKind.INVALID_ENTRY; return }
         val attempt = beginPairingAttempt(); _pairError.value = null
+        pairingJob = scope.launch { runPairing(attempt, host, port.toInt(), code) }
+    }
+
+    private suspend fun runPairing(attempt: Long, host: String, port: Int, code: String) {
         val legacyAtExactHost = store.legacyForHost(host)
-        pairingJob = scope.launch {
-            when (val result = control.pair(host, port.toInt(), deviceLabel, code)) {
-                is ControlClient.Result.Paired -> if (pairingGate.isCurrent(attempt)) {
-                    persistPaired(result.key, result.endpoint, host, port.toInt(), legacyAtExactHost?.host)?.let { pairing ->
-                        _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
-                        _pendingPairLaunch.value = null; _pairTarget.value = null; _route.value = Route.Library
-                    }
+        val first = control.pair(host, port, deviceLabel, code)
+        // Refused before a single byte of the code left the phone is the dead-port
+        // fingerprint of a receiver that rebound. Retry the SAME host only — a rogue
+        // advertiser must never be able to redirect a first pair to another address.
+        val result = if (first is ControlClient.Result.Unreachable && !first.pairCodeSent) {
+            retryAtSameHost(host, port, code) ?: first
+        } else first
+        FlickLog.i("pair", "result=${result.javaClass.simpleName}")
+        if (!pairingGate.isCurrent(attempt)) return
+        when (result) {
+            is ControlClient.Result.Paired ->
+                persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)?.let { pairing ->
+                    _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
+                    _pendingPairLaunch.value = null; _pairTarget.value = null; _route.value = Route.Library
                 }
-                is ControlClient.Result.PairedBusy -> if (pairingGate.isCurrent(attempt)) {
-                    val pairing = persistPaired(result.key, result.endpoint, host, port.toInt(), legacyAtExactHost?.host)
-                    if (pairing != null) {
-                        _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
-                        _pendingPairLaunch.value = null; _pairTarget.value = null
-                        if (PairResultPolicy.clearCode(result)) clearEnteredCode()
-                        publishBusyFailure()
-                    }
+            is ControlClient.Result.PairedBusy -> {
+                val pairing = persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)
+                if (pairing != null) {
+                    _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
+                    _pendingPairLaunch.value = null; _pairTarget.value = null
+                    if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                    publishBusyFailure()
                 }
-                ControlClient.Result.Denied -> if (pairingGate.isCurrent(attempt)) { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.CODE_MISMATCH }
-                ControlClient.Result.UpdateRequired -> if (pairingGate.isCurrent(attempt)) _pairError.value = PairErrorKind.UPDATE_REQUIRED
-                is ControlClient.Result.Unreachable -> if (pairingGate.isCurrent(attempt)) { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.UNREACHABLE }
-                is ControlClient.Result.ProtocolError -> if (pairingGate.isCurrent(attempt)) { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.INVALID_ENTRY }
-                ControlClient.Result.Busy -> if (pairingGate.isCurrent(attempt)) { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); publishBusyFailure() }
-                else -> if (pairingGate.isCurrent(attempt)) _pairError.value = PairErrorKind.INVALID_ENTRY
             }
+            is ControlClient.Result.Denied -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); applyDenied(result.reason) }
+            ControlClient.Result.UpdateRequired -> _pairError.value = PairErrorKind.UPDATE_REQUIRED
+            is ControlClient.Result.Unreachable -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.UNREACHABLE }
+            is ControlClient.Result.TimedOut -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.TIMED_OUT }
+            is ControlClient.Result.RejectedByTv -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.REJECTED }
+            is ControlClient.Result.ProtocolError -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.INVALID_ENTRY }
+            ControlClient.Result.Busy -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); publishBusyFailure() }
+            else -> _pairError.value = PairErrorKind.INVALID_ENTRY
+        }
+    }
+
+    /** Same-host-only rebind sweep, bounded in both candidate count and wall time. */
+    private suspend fun retryAtSameHost(host: String, typedPort: Int, code: String): ControlClient.Result? =
+        withTimeoutOrNull(PAIR_REBIND_BUDGET_MS) {
+            var ports = rebindPorts(host, typedPort)
+            if (ports.isEmpty()) {
+                withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
+                    devices.first { list -> list.any { it.host == host && it.port != typedPort } }
+                }
+                ports = rebindPorts(host, typedPort)
+            }
+            var last: ControlClient.Result? = null
+            for (candidate in ports) {
+                val outcome = control.pair(host, candidate, deviceLabel, code)
+                FlickLog.i("ws", "pair candidate $host:$candidate -> ${outcome.javaClass.simpleName}")
+                last = outcome
+                if (outcome !is ControlClient.Result.Unreachable || outcome.pairCodeSent) return@withTimeoutOrNull outcome
+            }
+            last
+        }
+
+    private fun rebindPorts(host: String, typedPort: Int): List<Int> =
+        devices.value.filter { it.host == host && it.port != typedPort && it.port in 1..65535 }
+            .map { it.port }.distinct().sorted().take(MAX_PAIR_REBIND_CANDIDATES)
+
+    private fun applyDenied(reason: String?) {
+        if (reason == "busy") { publishBusyFailure(); return }
+        _pairError.value = when (reason) {
+            "expired" -> PairErrorKind.CODE_EXPIRED
+            "surface" -> PairErrorKind.TV_SURFACE
+            "locked" -> PairErrorKind.LOCKED
+            "storage" -> PairErrorKind.TV_STORAGE
+            "proof", "unknown" -> PairErrorKind.REPAIR_NEEDED
+            // "code" and a receiver that sends no reason at all.
+            else -> PairErrorKind.CODE_MISMATCH
         }
     }
 
@@ -178,7 +275,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     candidate = candidates.next(devices.value)
                 }
                 if (candidate == null) break
-                when (val result = control.resume(pairing, candidate.host, candidate.port)) {
+                val result = control.resume(pairing, candidate.host, candidate.port)
+                FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
+                when (result) {
                     is ControlClient.Result.Resumed -> if (pairingGate.isCurrent(attempt)) {
                         if (!PairingPersistence.commit { store.commitVerifiedEndpoint(pairing.tvId, result.endpoint.tv, candidate.host, candidate.port) }) {
                             control.close()
@@ -191,8 +290,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                         return@launch
                     }
                     ControlClient.Result.Busy -> if (pairingGate.isCurrent(attempt)) { publishBusyFailure(); return@launch }
-                    ControlClient.Result.Denied, is ControlClient.Result.ProtocolError -> sawUntrustedFailure = true
-                    is ControlClient.Result.Unreachable -> sawTransportFailure = true
+                    // A policy close is not proof the stored key is bad; only a
+                    // credential-shaped denial may cost the pairing its trust.
+                    is ControlClient.Result.Denied ->
+                        if (result.reason in TRANSIENT_DENIALS) sawTransportFailure = true else sawUntrustedFailure = true
+                    is ControlClient.Result.ProtocolError -> sawUntrustedFailure = true
+                    is ControlClient.Result.Unreachable, is ControlClient.Result.TimedOut, is ControlClient.Result.RejectedByTv ->
+                        sawTransportFailure = true
                     else -> sawUntrustedFailure = true
                 }
                 if (!pairingGate.isCurrent(attempt)) return@launch
@@ -200,6 +304,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             if (pairingGate.isCurrent(attempt)) {
                 // A single spoofed/expired candidate must not poison a durable pairing.
                 if (sawUntrustedFailure) {
+                    FlickLog.w("pair", "marked needs_repair tvId=${pairing.tvId}")
                     store.markNeedsRepair(pairing.tvId)
                     _pairError.value = PairErrorKind.CODE_MISMATCH
                     _route.value = Route.Connect
@@ -225,30 +330,32 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
         _castFailure.value = null
-        _castingItem.value = item; _route.value = Route.Connecting; _castStart.value = CastStartState.ConnectingControl(castId)
+        _castingItem.value = item; _route.value = Route.Connecting; publishCastStart(CastStartState.ConnectingControl(castId))
         castJob = scope.launch {
             var readyCommit = false
             try {
                 val endpoint = control.authenticatedEndpoint() ?: throw CastStartupFailure("control_unreachable")
                 if (!com.flick.sender.NetworkUtils.isOwnedLanIpv4(endpoint.peerIp)) throw CastStartupFailure("no_compatible_lan")
                 if (item.uri.scheme != "content" || item.sizeBytes <= 0L) throw CastStartupFailure("source_unavailable")
-                _castStart.value = CastStartState.StartingSource(castId)
+                publishCastStart(CastStartState.StartingSource(castId))
                 ServerStateHolder.beginStarting(castId)
                 CastServerService.start(appContext, castId, item.uri, item.name, item.sizeBytes, endpoint.peerIp)
                 val server = withTimeoutOrNull(9_000) { ServerStateHolder.state.first { it.castId == castId && (it.status == ServerStatus.RUNNING || it.status == ServerStatus.ERROR) } }
                     ?: throw CastStartupFailure("startup_timeout")
                 val videoUrl = server.videoUrl
                 if (server.status != ServerStatus.RUNNING || videoUrl == null) throw CastStartupFailure("media_bind_failed")
-                accepted = CompletableDeferred(); ready = CompletableDeferred(); _castStart.value = CastStartState.AwaitingAcceptance(castId)
+                // endpoint() strips the path: the /v/{token} segment IS the capability.
+                FlickLog.i("cast", "source ready ${FlickLog.endpoint(videoUrl)}")
+                accepted = CompletableDeferred(); ready = CompletableDeferred(); publishCastStart(CastStartState.AwaitingAcceptance(castId))
                 loadSentCastId = castId
                 val title = ControlProtocolV2.normalizedLabel(item.name, 200)
                     ?: appContext.getString(R.string.media_title_generic)
                 session.loadMedia(castId, videoUrl, title, item.durationMs, 0L)
                 withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
-                _castStart.value = CastStartState.AwaitingFirstFrame(castId)
+                publishCastStart(CastStartState.AwaitingFirstFrame(castId))
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
-                readyCommit = true; _castStart.value = CastStartState.Active(castId); _route.value = Route.NowPlaying
+                readyCommit = true; publishCastStart(CastStartState.Active(castId)); _route.value = Route.NowPlaying
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
               catch (_: Exception) { terminal(castId, "unknown") }
             finally { if (!readyCommit) cleanup(castId) }
@@ -262,12 +369,27 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
         CastServerService.stop(appContext, castId)
-        if (currentCastId == castId) { currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) _castStart.value = CastStartState.Idle }
+        if (currentCastId == castId) { currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) publishCastStart(CastStartState.Idle) }
+    }
+    /** Cast ids are fingerprinted, never printed: they address a live media session. */
+    private fun publishCastStart(state: CastStartState) {
+        val castId = when (state) {
+            is CastStartState.ConnectingControl -> state.castId
+            is CastStartState.StartingSource -> state.castId
+            is CastStartState.AwaitingAcceptance -> state.castId
+            is CastStartState.AwaitingFirstFrame -> state.castId
+            is CastStartState.Active -> state.castId
+            is CastStartState.Failed -> state.castId
+            CastStartState.Idle -> null
+        }
+        FlickLog.i("cast", "state=${state.javaClass.simpleName} castIdFp=${FlickLog.fp(castId)}")
+        _castStart.value = state
     }
     private fun terminal(castId: String, code: String, retryable: Boolean = false, httpStatus: Int? = null) {
         if (currentCastId != castId) return
+        FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$retryable httpStatus=$httpStatus")
         _castFailure.value = CastFailure(code, retryable, httpStatus)
-        _castStart.value = CastStartState.Failed(castId, code)
+        publishCastStart(CastStartState.Failed(castId, code))
         retryItem = _castingItem.value.takeIf { retryable }
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = true)
         _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
@@ -343,6 +465,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private companion object {
         const val NSD_RESNAPSHOT_MS = 1_500L
         const val MAX_RESUME_CANDIDATES = 4
+        const val MAX_PAIR_REBIND_CANDIDATES = 3
+        const val PAIR_REBIND_BUDGET_MS = 4_000L
+        /** Denials that describe the TV's momentary state, not the stored credential. */
+        val TRANSIENT_DENIALS = setOf("surface", "locked", "busy", "storage")
     }
 }
 

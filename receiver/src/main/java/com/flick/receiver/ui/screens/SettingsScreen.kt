@@ -31,6 +31,10 @@ import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.util.FlickLog
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * T10a · Settings. The old always-on developer HUD survives here as one row —
@@ -46,6 +50,10 @@ fun SettingsScreen(
     onToggleMetrics: () -> Unit,
     onForgetAll: () -> Unit,
     onDone: () -> Unit,
+    diagnosticsVisible: Boolean = false,
+    diagnostics: List<FlickLog.Entry> = emptyList(),
+    onToggleDiagnostics: () -> Unit = {},
+    onClearDiagnostics: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val metricsFocus = remember { FocusRequester() }
@@ -121,6 +129,53 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_forget_all),
                     summary = stringResource(if (confirmForget) R.string.settings_forget_all_confirm else R.string.settings_forget_all_summary),
                 )
+            }
+
+            // Self-diagnosing TV: the same FlickTV lines adb would show, without a
+            // laptop. Memory-only; nothing here is persisted.
+            FlickTvRow(onClick = onToggleDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                LabeledColumn(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(R.string.settings_diagnostics_title),
+                    summary = stringResource(R.string.settings_diagnostics_summary),
+                )
+                ToggleGlyph(enabled = diagnosticsVisible)
+            }
+
+            if (diagnosticsVisible) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(FlickColor.SurfaceRaisedAlt)
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (diagnostics.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.settings_diagnostics_empty),
+                            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Normal),
+                            color = FlickColor.OnSurfaceFaint,
+                        )
+                    } else {
+                        val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
+                        diagnostics.forEach { entry ->
+                            Text(
+                                text = "${clock.format(Date(entry.atMs))} ${entry.level} [${entry.area}] ${entry.message}",
+                                style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Normal),
+                                color = FlickColor.OnSurfaceDim,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                FlickTvRow(onClick = onClearDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                    LabeledColumn(
+                        modifier = Modifier.weight(1f),
+                        title = stringResource(R.string.settings_diagnostics_clear),
+                        summary = stringResource(R.string.settings_diagnostics_capture),
+                    )
+                }
             }
 
             Box(Modifier.padding(top = 10.dp)) {

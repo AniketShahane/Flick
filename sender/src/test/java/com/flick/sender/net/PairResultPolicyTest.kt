@@ -17,12 +17,19 @@ class PairResultPolicyTest {
     private val key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     @Test fun clearsOnlyPostSendOutcomesThatCannotBeSafelyRetried() {
-        assertTrue(PairResultPolicy.clearCode(ControlClient.Result.Denied))
+        assertTrue(PairResultPolicy.clearCode(ControlClient.Result.Denied()))
+        assertTrue(PairResultPolicy.clearCode(ControlClient.Result.Denied("expired")))
         assertTrue(PairResultPolicy.clearCode(ControlClient.Result.Busy))
         assertTrue(PairResultPolicy.clearCode(ControlClient.Result.Unreachable(pairCodeSent = true)))
         assertTrue(PairResultPolicy.clearCode(ControlClient.Result.ProtocolError(pairCodeSent = true)))
+        assertTrue(PairResultPolicy.clearCode(ControlClient.Result.TimedOut(pairCodeSent = true)))
+        assertTrue(PairResultPolicy.clearCode(ControlClient.Result.RejectedByTv(pairCodeSent = true)))
         assertFalse(PairResultPolicy.clearCode(ControlClient.Result.Unreachable(pairCodeSent = false)))
         assertFalse(PairResultPolicy.clearCode(ControlClient.Result.ProtocolError(pairCodeSent = false)))
+        // A refused dial that never wrote the code is exactly the case the rebind
+        // retry re-uses the code for; it must not be erased.
+        assertFalse(PairResultPolicy.clearCode(ControlClient.Result.TimedOut(pairCodeSent = false)))
+        assertFalse(PairResultPolicy.clearCode(ControlClient.Result.RejectedByTv(pairCodeSent = false)))
         assertFalse(PairResultPolicy.clearCode(ControlClient.Result.UpdateRequired))
     }
 

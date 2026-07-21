@@ -4,7 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import com.flick.sender.util.FlickLog
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -126,6 +126,8 @@ class MediaHttpServer(context: Context) {
             }
             engine.start(false)
             server = engine
+            // Length only — the token itself is the media capability.
+            FlickLog.i("bind", "media server $bindHost:$SERVER_PORT tokenLen=${token.length}")
         }
     }
 
@@ -149,7 +151,7 @@ class MediaHttpServer(context: Context) {
             // release the listening socket without janking the UI.
             engine.stop(100, 300)
         } catch (e: Exception) {
-            Log.w(TAG, "Error while stopping server", e)
+            FlickLog.w("http", "server stop failed ${e.javaClass.simpleName}", e)
         }
     }
 
@@ -177,6 +179,7 @@ class MediaHttpServer(context: Context) {
         if (boundIp == null ||
             !call.request.host().trim().equals(boundIp, ignoreCase = true)
         ) {
+            FlickLog.w("http", "reject reason=host_pin status=403")
             call.respondText("Forbidden", status = HttpStatusCode.Forbidden)
             return
         }
@@ -189,6 +192,9 @@ class MediaHttpServer(context: Context) {
         if (served == null || pathToken == null ||
             !MessageDigest.isEqual(pathToken.toByteArray(), served.token.toByteArray())
         ) {
+            // The reason never leaves the device: the wire answer stays the
+            // byte-identical 404 that reveals nothing about token validity.
+            FlickLog.w("http", "reject reason=bad_token status=404")
             call.respondText("Not found", status = HttpStatusCode.NotFound)
             return
         }
@@ -216,6 +222,7 @@ class MediaHttpServer(context: Context) {
                     RangeResult.Unsatisfiable -> {
                         // 416 with Content-Range: bytes */total.
                         call.response.headers.append(HttpHeaders.ContentRange, "bytes */$total")
+                        FlickLog.w("http", "reject reason=range status=416")
                         call.respondText(
                             "Requested range not satisfiable",
                             status = HttpStatusCode.RequestedRangeNotSatisfiable,
@@ -259,6 +266,7 @@ class MediaHttpServer(context: Context) {
         // flood is shed with 503 rather than queued. The permit is released in a
         // finally so it survives a client disconnect or streaming exception.
         if (!transferPermits.tryAcquire()) {
+            FlickLog.w("http", "reject reason=busy status=503")
             call.respondText("Server busy", status = HttpStatusCode.ServiceUnavailable)
             return
         }
@@ -318,10 +326,10 @@ class MediaHttpServer(context: Context) {
             throw e
         } catch (e: IOException) {
             // Typically the TV closed the connection mid-transfer (seek/stop).
-            Log.d(TAG, "Streaming stopped")
+            FlickLog.d("http", "stream stopped ${e.javaClass.simpleName}")
         } catch (e: Exception) {
             // Revoked URI grant, etc. Never let it take down the server.
-            Log.w(TAG, "Streaming failed")
+            FlickLog.w("http", "stream failed ${e.javaClass.simpleName}")
         } finally {
             TransferTelemetry.exitTransfer()
         }
@@ -340,7 +348,6 @@ class MediaHttpServer(context: Context) {
     ) : OutgoingContent.NoContent()
 
     companion object {
-        private const val TAG = "MediaHttpServer"
         private const val BUFFER_SIZE = 256 * 1024
 
         // One TV plays one stream; a small pool absorbs its parallel range probes

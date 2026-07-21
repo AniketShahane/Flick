@@ -46,6 +46,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
+import com.flick.receiver.net.ControlPortStore
 import com.flick.receiver.net.ControlServer
 import com.flick.receiver.net.LanAddress
 import com.flick.receiver.net.LanBindingMonitor
@@ -53,6 +54,7 @@ import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.net.PairingManager
 import com.flick.receiver.net.PairingSurface
 import com.flick.receiver.net.ReceiverBindingGate
+import com.flick.receiver.net.controlPortTier
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackFrame
@@ -72,14 +74,27 @@ import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.OverscanSafe
+import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
 
 /** Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). */
 private val TV_NAME_PRESETS = listOf("Living Room TV", "Bedroom TV", "Den TV", "Office TV", "Flick TV")
+
+/**
+ * The address flow is the real trigger; this only covers an address change that
+ * produced no connectivity callback at all. It is deliberately slow — the old
+ * 2 s poll was the second half of the rebind-churn loop.
+ */
+private const val RECONCILE_SAFETY_NET_MS = 10_000L
+
+/** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
+private const val DIAGNOSTICS_VISIBLE = 14
 
 /**
  * The whole TV app: fixed cinematic dark, D-pad driven. It advertises the control
@@ -113,8 +128,17 @@ fun ReceiverApp(window: Window) {
         )
     }
     val server = remember { ControlServer(pairing, session, { playbackFlow.value }) }
+    val portStore = remember { ControlPortStore(context) }
     var boundHost by remember { mutableStateOf<String?>(null) }
     var boundPort by remember { mutableStateOf(-1) }
+    // Bind health, surfaced low-emphasis on the pair screen so a stale port is
+    // visually distinguishable from a wrong code.
+    var bindAtMs by remember { mutableStateOf(0L) }
+    var bindUptimeSec by remember { mutableStateOf(0L) }
+    var rebindCount by remember { mutableStateOf(0) }
+    var lastTeardown by remember { mutableStateOf<String?>(null) }
+    var showDiagnostics by remember { mutableStateOf(false) }
+    val logRevision by FlickLog.revision.collectAsState()
     var tvName by remember { mutableStateOf(pairing.tvName) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
@@ -153,6 +177,7 @@ fun ReceiverApp(window: Window) {
                     controller.onStart()
                     pairing.onForeground()
                     if (boundPort > 0) {
+                        FlickLog.i("nsd", "readvertise trigger=on_start port=$boundPort state=${NsdAdvertiser.STATE_READY}")
                         nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                     }
                 }
@@ -162,6 +187,8 @@ fun ReceiverApp(window: Window) {
                     bindingGate.onBackground()
                     pairing.onBackground()
                     val teardown = session.forceLocalTeardown()
+                    // The socket is NOT closed below any more, so this terminal
+                    // actually reaches the phone instead of racing the close.
                     teardown.castId?.let { server.sendTerminal(it, com.flick.receiver.net.CastFailureCode.TV_BACKGROUNDED, false, beforeReady = teardown.beforeReady) }
                     controller.onStop()
                     // Publish a terminal sample so the phone stops rendering a
@@ -169,11 +196,18 @@ fun ReceiverApp(window: Window) {
                     // released and the TV is backgrounded (the state feed keeps
                     // emitting whatever value this flow holds).
                     playbackFlow.value = PlaybackFrame.IDLE
-                    // No control is advertised or accepted while the decoder is released.
-                    nsd.unregister()
-                    server.stop()
-                    boundHost = null
-                    boundPort = -1
+                    // A screensaver, Home press or a system dialog is a visibility
+                    // change, not a network event. Tearing the socket down here
+                    // rebound a NEW port on every resume, so the number on the pair
+                    // screen and every persisted phone-side port died with it.
+                    // ReceiverBindingGate already refuses loadMedia while
+                    // backgrounded, so the posture is unchanged: the socket simply
+                    // stops accepting new casts instead of vanishing.
+                    if (boundPort > 0) {
+                        lastTeardown = "on_stop"
+                        FlickLog.i("nsd", "sleeping trigger=on_stop port=$boundPort")
+                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_SLEEPING, pairing.tvId)
+                    }
                 }
                 else -> Unit
             }
@@ -186,62 +220,67 @@ fun ReceiverApp(window: Window) {
             bindingGate.onBackground()
             session.forceLocalTeardown()
             controller.release()
-            server.stop()
+            FlickLog.i("bind", "teardown trigger=dispose")
+            server.stopDetached()
             nsd.unregister()
             lanMonitor.stop()
         }
     }
 
-    // A connectivity callback forces a fresh bind even when DHCP restores the same IPv4.
-    LaunchedEffect(lanMonitor, lifecycleStarted) {
-        if (!lifecycleStarted || !bindingGate.mayBindOrAdvertise()) return@LaunchedEffect
-        lanMonitor.changed.drop(1).collect {
-            if (boundHost != null) {
-                session.forceLocalTeardown()
-                server.stop(); nsd.unregister(); boundHost = null; boundPort = -1
-            }
-        }
-    }
-
-    // Bring up the control server + NSD advertising (LAN-bound; ephemeral port),
-    // polling until the LAN IP is available and re-binding whenever it changes.
-    // A one-shot bring-up left the TV undiscoverable forever when the app opened
-    // before Wi-Fi associated, or bound to a dead IP after a DHCP lease change.
-    LaunchedEffect(lifecycleStarted) {
-        while (isActive && lifecycleStarted && bindingGate.mayBindOrAdvertise()) {
-            val host = LanAddress.current()
-            if (host == null && boundHost != null) {
+    // The single owner of bind state. The LAN monitor only WAKES it — a capability
+    // burst on an unchanged address resolves to "same address, do nothing" — and
+    // the slow tick is a safety net for an address change that produced no
+    // callback at all. repeatOnLifecycle (not a Boolean Compose key) drives it:
+    // a false→true round trip between two compositions could otherwise complete
+    // the coroutine permanently and leave the TV silently undiscoverable.
+    LaunchedEffect(lifecycleOwner, server, lanMonitor) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            suspend fun release(trigger: String, previous: String?) {
+                FlickLog.i("bind", "teardown trigger=$trigger prev=${previous ?: "none"}")
+                lastTeardown = trigger
                 session.forceLocalTeardown()
                 server.stop()
                 nsd.unregister()
                 boundHost = null
                 boundPort = -1
             }
-            if (host != null && host != boundHost) {
-                // A new address is a control-loss boundary, even when the old
-                // address still exists. Invalidate the cast before advertising a
-                // new endpoint so an A callback cannot reach a re-bound server.
+            suspend fun reconcile() {
+                if (!bindingGate.mayBindOrAdvertise()) return
+                val host = LanAddress.current()
+                if (host == null) {
+                    if (boundHost != null) release("no_lan_address", boundHost)
+                    return
+                }
+                if (host == boundHost) return
+                // A new address is a control-loss boundary even when the old
+                // address still exists: invalidate the cast before advertising a
+                // new endpoint so a stale callback cannot reach a re-bound server.
                 if (boundHost != null) {
-                    session.forceLocalTeardown()
-                    server.stop()
-                    nsd.unregister()
-                    boundHost = null
-                    boundPort = -1
+                    FlickLog.i("bind", "rebind trigger=addr_changed old=$boundHost new=$host")
+                    release("addr_changed", boundHost)
+                    rebindCount++
                 }
-                val port = runCatching { server.start(host) }.getOrDefault(-1)
-                if (port > 0) {
-                    boundHost = host
-                    boundPort = port
-                    nsd.register(
-                        serviceName = tvName,
-                        port = port,
-                        model = Build.MODEL ?: "Android TV",
-                        state = NsdAdvertiser.STATE_READY,
-                        tvId = pairing.tvId,
-                    )
-                }
+                val persisted = portStore.lastPort()
+                val port = server.start(host, portStore.candidates())
+                if (port <= 0) return
+                portStore.remember(port)
+                boundHost = host
+                boundPort = port
+                bindAtMs = android.os.SystemClock.elapsedRealtime()
+                bindUptimeSec = 0L
+                FlickLog.i("bind", "started host=$host port=$port tier=${controlPortTier(port, persisted)}")
+                nsd.register(
+                    serviceName = tvName,
+                    port = port,
+                    model = Build.MODEL ?: "Android TV",
+                    state = NsdAdvertiser.STATE_READY,
+                    tvId = pairing.tvId,
+                )
             }
-            delay(2_000L)
+            merge(
+                lanMonitor.address.map { Unit },
+                flow { while (true) { emit(Unit); delay(RECONCILE_SAFETY_NET_MS) } },
+            ).collect { reconcile() }
         }
     }
 
@@ -258,6 +297,11 @@ fun ReceiverApp(window: Window) {
                 if (tick % 5 == 0) {
                     snapshot = controller.snapshot()
                     pairing.tick()
+                }
+                // Bind uptime only needs second resolution; refresh it rarely so
+                // the diagnostics line does not recompose at 10 Hz.
+                if (tick % 20 == 0 && bindAtMs > 0L) {
+                    bindUptimeSec = (android.os.SystemClock.elapsedRealtime() - bindAtMs) / 1000L
                 }
                 tick++
                 delay(100L)
@@ -432,15 +476,26 @@ fun ReceiverApp(window: Window) {
                                 if (server.forgetAllPairings()) showSettings = false
                             },
                             onDone = { showSettings = false },
+                            diagnosticsVisible = showDiagnostics,
+                            // Keyed on the log revision so the list re-reads the
+                            // ring buffer whenever a line is appended.
+                            diagnostics = remember(logRevision, showDiagnostics) {
+                                if (showDiagnostics) FlickLog.recent().take(DIAGNOSTICS_VISIBLE) else emptyList()
+                            },
+                            onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
+                            onClearDiagnostics = { FlickLog.clear() },
                         )
 
                         pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked || pairingSnapshot.pairedCount == 0 -> PairScreen(
                             tvName = tvName,
                             code = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: "—",
-                            qrPayload = pairing.qrPayload(),
+                            qrPayload = pairing.qrPayload(boundHost ?: "", boundPort),
                             host = boundHost ?: "",
                             port = boundPort,
                             networkReady = boundHost != null && boundPort > 0,
+                            bindUptimeSec = bindUptimeSec,
+                            rebindCount = rebindCount,
+                            lastTeardown = lastTeardown,
                             onRename = {
                                 val next = nextName(tvName)
                                 pairing.tvName = next

@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
+import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -13,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.ArrayDeque
 
 /**
@@ -21,6 +24,11 @@ import java.util.ArrayDeque
  * routers block mDNS) the caller falls back to manual address entry; NSD never
  * dead-ends. Resolves are serialized because [NsdManager] rejects a second
  * concurrent resolve with "listener already in use".
+ *
+ * The cache is keyed by serviceName and every successful resolve is stamped with a
+ * monotonic sequence: a receiver that re-registers to flip its TXT `state` looks
+ * like lost-then-found, and a late `onServiceLost` carrying an older stamp must
+ * never delete the record a newer resolve just wrote.
  */
 class NsdDiscovery(context: Context) {
 
@@ -38,13 +46,26 @@ class NsdDiscovery(context: Context) {
     private var retryJob: Job? = null
     private val retryGate = NsdRetryGate()
 
+    // serviceName -> the browse record last seen for it, so a loss (or a pre-connect
+    // freshness check) can re-enqueue a resolve instead of guessing.
+    private val lastInfoByName = HashMap<String, NsdServiceInfo>()
+    // serviceName -> the resolve sequence that produced the currently held record.
+    private val resolvedAt = HashMap<String, Long>()
+    private val _resolveRevision = MutableStateFlow(0L)
+
     fun start() {
         synchronized(lock) {
             if (!retryGate.begin()) return
             val listener = object : NsdManager.DiscoveryListener {
-                override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) = discoveryFailed { retryGate.startFailed() }
-                override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) = discoveryFailed { retryGate.stopFailed() }
-                override fun onDiscoveryStarted(serviceType: String?) {}
+                override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
+                    FlickLog.w("nsd", "discovery failed code=$errorCode")
+                    discoveryFailed { retryGate.startFailed() }
+                }
+                override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {
+                    FlickLog.w("nsd", "discovery failed code=$errorCode")
+                    discoveryFailed { retryGate.stopFailed() }
+                }
+                override fun onDiscoveryStarted(serviceType: String?) { FlickLog.i("nsd", "discovery started") }
                 override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed { retryGate.stopped() }
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                     if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
@@ -52,7 +73,7 @@ class NsdDiscovery(context: Context) {
                     }
                 }
                 override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                    removeByName(serviceInfo.serviceName)
+                    onLost(serviceInfo.serviceName)
                 }
             }
             discoveryListener = listener
@@ -76,8 +97,27 @@ class NsdDiscovery(context: Context) {
         }
     }
 
+    /**
+     * Re-resolves the cached record for [tvId] just before it is dialed.
+     * `NsdManager.resolveService` is known to answer from a cached SRV on several
+     * Android versions, so the port held here can be stale. Falls back to the cached
+     * record when the fresh resolve does not land inside [timeoutMs].
+     */
+    suspend fun refresh(tvId: String, timeoutMs: Long = REFRESH_TIMEOUT_MS): DiscoveredTv? {
+        val cached = _devices.value.firstOrNull { it.tvId == tvId } ?: return null
+        val before = synchronized(lock) {
+            val info = lastInfoByName[cached.name] ?: return cached
+            pending.addLast(info)
+            pumpResolve()
+            _resolveRevision.value
+        }
+        withTimeoutOrNull(timeoutMs) { _resolveRevision.first { it > before } }
+        return _devices.value.firstOrNull { it.tvId == tvId } ?: cached
+    }
+
     private fun enqueueResolve(info: NsdServiceInfo) {
         synchronized(lock) {
+            info.serviceName?.let { lastInfoByName[it] = info }
             pending.addLast(info)
             pumpResolve()
         }
@@ -90,6 +130,7 @@ class NsdDiscovery(context: Context) {
             resolving = true
             val listener = object : NsdManager.ResolveListener {
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                    FlickLog.w("nsd", "resolve failed code=$errorCode")
                     synchronized(lock) { resolving = false; pumpResolve() }
                 }
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
@@ -107,8 +148,9 @@ class NsdDiscovery(context: Context) {
         val host = info.host?.hostAddress ?: return
         val attrs = info.attributes ?: emptyMap()
         fun attr(key: String): String? = attrs[key]?.let { String(it) }
+        val name = info.serviceName ?: "TV"
         val tv = DiscoveredTv(
-            name = info.serviceName ?: "TV",
+            name = name,
             host = host,
             port = info.port,
             tvId = attr("id")?.takeIf { ControlProtocolV2.id(it) },
@@ -120,13 +162,46 @@ class NsdDiscovery(context: Context) {
                 else -> TvAvailability.UNKNOWN
             },
         )
-        _devices.value = (_devices.value.filter { it.host != tv.host } + tv)
-            .sortedByDescending { it.state == TvAvailability.READY }
+        FlickLog.i(
+            "nsd",
+            "resolved name=$name ${tv.host}:${tv.port} v=${tv.protocolVersion} state=${tv.state.name.lowercase()}",
+        )
+        synchronized(lock) {
+            val stamp = _resolveRevision.value + 1L
+            resolvedAt[name] = stamp
+            // Drop the same name (a re-registration) and any other record squatting the
+            // same host (a rename), so neither key can leave a duplicate behind.
+            _devices.value = (_devices.value.filter { it.name != name && it.host != tv.host } + tv)
+                .sortedByDescending { it.state == TvAvailability.READY }
+            _resolveRevision.value = stamp
+        }
     }
 
-    private fun removeByName(name: String?) {
+    /**
+     * A loss is treated as "re-resolve me", not "delete me": contract C4 flips TXT
+     * `state` by re-registering the same name, which surfaces here as a loss. The
+     * record is dropped only if no newer resolve lands inside the grace window.
+     */
+    private fun onLost(name: String?) {
         if (name == null) return
-        _devices.value = _devices.value.filter { it.name != name }
+        synchronized(lock) {
+            if (_devices.value.none { it.name == name }) return
+            val stampAtLoss = resolvedAt[name] ?: 0L
+            FlickLog.i("nsd", "lost name=$name — re-resolving")
+            lastInfoByName[name]?.let { pending.addLast(it); pumpResolve() }
+            retryScope.launch {
+                delay(LOSS_GRACE_MS)
+                synchronized(lock) {
+                    // A newer stamp means the re-resolve landed: the loss was stale.
+                    if ((resolvedAt[name] ?: 0L) <= stampAtLoss) {
+                        FlickLog.i("nsd", "dropped name=$name")
+                        resolvedAt.remove(name)
+                        lastInfoByName.remove(name)
+                        _devices.value = _devices.value.filter { it.name != name }
+                    }
+                }
+            }
+        }
     }
 
     private fun scheduleRetry() {
@@ -153,5 +228,7 @@ class NsdDiscovery(context: Context) {
     private companion object {
         const val SERVICE_TYPE = "_flick._tcp."
         const val SERVICE_TYPE_MATCH = "_flick._tcp"
+        const val LOSS_GRACE_MS = 2_500L
+        const val REFRESH_TIMEOUT_MS = 900L
     }
 }

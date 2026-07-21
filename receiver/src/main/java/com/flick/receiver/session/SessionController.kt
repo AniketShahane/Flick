@@ -12,6 +12,7 @@ import com.flick.receiver.net.PreflightProbe
 import com.flick.receiver.net.ProbeResult
 import com.flick.receiver.player.PlaybackFailureClassifier
 import com.flick.receiver.player.PlayerController
+import com.flick.receiver.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -104,10 +105,13 @@ class SessionController(
                 fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, retryable = true, beforeReady = true)
             }
         }
+        FlickLog.i("cast", "stage=checking castIdFp=${FlickLog.fp(castId)} src=${FlickLog.endpoint(url)} startMs=$startMs durationMs=$durationMs")
         val started = SystemClock.elapsedRealtime()
         probeJob = scope.launch {
+            val probeStarted = SystemClock.elapsedRealtime()
             when (val result = PreflightProbe.probe(url)) {
                 is ProbeResult.Ok -> {
+                    FlickLog.i("probe", "result=Ok latencyMs=${result.latencyMs}")
                     if (!gate.isCurrent(castId, generation)) return@launch
                     if (!lifecycleStarted()) {
                         fail(castId, generation, CastFailureCode.TV_BACKGROUNDED, retryable = false, beforeReady = true)
@@ -116,10 +120,22 @@ class SessionController(
                         startPlayer(castId, generation, result.latencyMs, started)
                     }
                 }
-                ProbeResult.Unreachable -> fail(castId, generation, CastFailureCode.MEDIA_UNREACHABLE, true, beforeReady = true)
-                ProbeResult.ConnectionRefused -> fail(castId, generation, CastFailureCode.SENDER_NOT_SERVING, true, beforeReady = true)
-                is ProbeResult.HttpError -> fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, result.status, true)
-                ProbeResult.BadResponse -> fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, beforeReady = true)
+                ProbeResult.Unreachable -> {
+                    FlickLog.w("probe", "result=Unreachable latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
+                    fail(castId, generation, CastFailureCode.MEDIA_UNREACHABLE, true, beforeReady = true)
+                }
+                ProbeResult.ConnectionRefused -> {
+                    FlickLog.w("probe", "result=ConnectionRefused latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
+                    fail(castId, generation, CastFailureCode.SENDER_NOT_SERVING, true, beforeReady = true)
+                }
+                is ProbeResult.HttpError -> {
+                    FlickLog.w("probe", "result=HttpError status=${result.status ?: -1} latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
+                    fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, result.status, true)
+                }
+                ProbeResult.BadResponse -> {
+                    FlickLog.w("probe", "result=BadResponse latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
+                    fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, beforeReady = true)
+                }
             }
         }
         return accepted
@@ -147,6 +163,7 @@ class SessionController(
                 startupDeadlineJob?.cancel()
                 startupDeadlineJob = null
                 stage = MediaStage.Active(castId, lease)
+                FlickLog.i("cast", "stage=active castIdFp=${FlickLog.fp(castId)} startupMs=${SystemClock.elapsedRealtime() - startedElapsedMs}")
                 val outcome = ControlCastResult.Ready(
                     castId = castId,
                     probeLatencyMs = probeLatencyMs,
@@ -208,6 +225,7 @@ class SessionController(
         beforeReady: Boolean,
     ) {
         if (!gate.isCurrent(id, generation)) return
+        FlickLog.w("cast", "fail code=${code.wire} retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
         controller.stop()
         startupDeadlineJob?.cancel()
         startupDeadlineJob = null

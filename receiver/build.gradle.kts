@@ -57,6 +57,10 @@ android {
 
     buildFeatures {
         compose = true
+        // AGP 8 defaults this to false, so no BuildConfig class is generated at
+        // all. FlickLog gates its verbose/debug logcat output on
+        // BuildConfig.DEBUG, so the class must exist for the module to compile.
+        buildConfig = true
     }
 
     testOptions {

@@ -34,6 +34,7 @@ import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.screens.FlickApp
 import com.flick.sender.ui.theme.FlickTheme
+import com.flick.sender.util.FlickLog
 
 class MainActivity : ComponentActivity() {
     private val pairEvents = kotlinx.coroutines.flow.MutableStateFlow<IncomingPairEvent?>(null)
@@ -59,10 +60,16 @@ class MainActivity : ComponentActivity() {
     /** Intent data is erased before composition has a chance to observe task state. */
     private fun acceptPairIntent(incoming: Intent?) {
         val raw = incoming?.data
+        // Validate into an in-memory result FIRST: only the parsed value is carried
+        // forward, never the Intent or the URI itself.
+        val parsed = raw?.let(PairLaunch::parse)
         val sanitized = incoming?.let { Intent(it).apply { data = null } }
         if (incoming != null) incoming.data = null
         setIntent(sanitized)
-        if (raw != null) pairEvents.value = IncomingPairEvent(++nextPairEventId, PairLaunch.parse(raw))
+        // Scheme and host only. A v3 payload is not secret, but logging raw URIs is
+        // a habit that eventually leaks one.
+        if (raw != null) FlickLog.i("pair", "launch intent scheme=${raw.scheme} host=${raw.host}")
+        if (parsed != null) pairEvents.value = IncomingPairEvent(++nextPairEventId, parsed)
     }
 }
 

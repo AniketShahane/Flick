@@ -23,6 +23,19 @@ class ResumeCandidatesTest {
         )
     }
 
+    @Test fun aLiveAdvertisementAtTheStoredAddressIsTriedBeforeTheStoredPort() {
+        // A same-host rebind is the receiver telling us the port moved; the stored
+        // port would otherwise burn a full connect timeout first.
+        val candidates = ResumeCandidates.ordered(
+            "192.168.42.88", 42421, tvId,
+            listOf(tv("192.168.42.88", 47654), tv("192.168.42.89", 47654)),
+        )
+        assertEquals(
+            listOf("192.168.42.88" to 47654, "192.168.42.88" to 42421, "192.168.42.89" to 47654),
+            candidates.map { it.host to it.port },
+        )
+    }
+
     @Test fun lateMatchingNsdEndpointIsTriedOnceAfterTheStoredPortFails() {
         val queue = ResumeCandidateQueue("192.168.42.88", 42421, tvId)
         assertEquals("192.168.42.88", queue.next(emptyList())?.host)

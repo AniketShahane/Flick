@@ -39,6 +39,9 @@ android {
 
     buildFeatures {
         compose = true
+        // AGP 8 does not generate BuildConfig unless this is opted in; FlickLog
+        // gates its verbose/debug diagnostics on BuildConfig.DEBUG.
+        buildConfig = true
     }
 
     packaging {

@@ -3,6 +3,7 @@ package com.flick.receiver.net
 import android.content.Context
 import android.os.SystemClock
 import android.util.Base64
+import com.flick.receiver.util.FlickLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
@@ -61,12 +62,14 @@ class PairingManager(
 
     @Synchronized fun requestOpen() {
         visible = true
+        FlickLog.d("pair", "surface=open")
         publishEligible()
     }
 
     @Synchronized fun closeSurface() {
         visible = false
         open = null // a code is never valid when it is not visibly rendered.
+        FlickLog.d("pair", "surface=closed")
         publish(PairingSurface.Standby)
     }
 
@@ -153,7 +156,17 @@ class PairingManager(
 
     @Synchronized fun pairedCount(): Int = storedRecords().size
     @Synchronized fun pairedLabel(): String? = prefs.getString(KEY_LAST_DEVICE, null)
-    fun qrPayload(): String = "flick://pair?v=2"
+
+    /**
+     * QR payload v3: a NON-SECRET endpoint so the phone can prefill host and port.
+     * The 4-digit code is never in it — it stays the out-of-band factor the user
+     * reads off the TV, so scanning alone still authorizes nothing. Returns null
+     * rather than a placeholder endpoint when no real binding exists.
+     */
+    fun qrPayload(host: String, port: Int): String? {
+        if (host.isBlank() || port !in 1..65535) return null
+        return "flick://pair?v=3&h=$host&p=$port"
+    }
 
     private fun publishEligible() {
         if (!visible) return publish(PairingSurface.Standby)
@@ -162,6 +175,8 @@ class PairingManager(
     private fun openNewCode() {
         val item = PairingSurface.Open(randomCode(), ++generation, elapsed() + CODE_TTL_MS)
         open = item; publish(item)
+        // NEVER the code value: a SHA-256 of four digits is a 10,000-entry lookup.
+        FlickLog.d("pair", "code rotated gen=${item.generation} ttlMs=$CODE_TTL_MS codeLen=${item.code.length}")
     }
     private fun beginLockout() {
         open = null
@@ -169,6 +184,7 @@ class PairingManager(
         val duration = (LOCKOUT_BASE_MS shl (lockoutRound - 1)).coerceAtMost(MAX_LOCKOUT_MS)
         lockoutUntilElapsed = elapsed() + duration; lockoutUntilWall = wall() + duration
         prefs.edit().putInt(KEY_LOCKOUT_ROUND, lockoutRound).putLong(KEY_LOCKOUT_UNTIL, lockoutUntilWall).commit()
+        FlickLog.w("pair", "lockout round=$lockoutRound durationMs=$duration")
         publish(PairingSurface.Locked(++generation, lockoutUntilElapsed))
     }
     private fun chargeHost(host: String) {

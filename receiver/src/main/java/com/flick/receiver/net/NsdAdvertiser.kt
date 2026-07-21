@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import com.flick.receiver.util.FlickLog
 
 /**
  * Advertises the TV's control server over NSD/mDNS (control-channel.md §2) so the
@@ -12,6 +13,13 @@ import android.os.Looper
  * port, and TXT attributes `model`, `v`, `state`. Registration needs no runtime
  * permission. All calls are guarded — discovery is best-effort (some routers
  * block mDNS; the phone falls back to manual entry).
+ *
+ * A visibility change flips TXT `state` between `ready` and `sleeping` by
+ * re-registering under the SAME service name and the SAME port. NsdManager has no
+ * update primitive, so a re-register is the only way to change a TXT record; the
+ * phone must therefore treat a same-name re-registration as an UPDATE, never as a
+ * loss. The socket stays bound throughout — `sleeping` means "not accepting new
+ * casts", not "gone".
  */
 class NsdAdvertiser(context: Context) {
 
@@ -33,6 +41,7 @@ class NsdAdvertiser(context: Context) {
         tvId: String,
     ) {
         unregister()
+        FlickLog.i("nsd", "register name=$serviceName port=$port state=$state v=$PROTOCOL_VERSION")
         request = Request(serviceName, port, model, state, tvId)
         startRegistration(request!!, generation)
     }
@@ -48,14 +57,28 @@ class NsdAdvertiser(context: Context) {
             setAttribute("id", request.tvId)
         }
         val reg = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) { if (generation == expectedGeneration) attempt = 0 }
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) { retry(expectedGeneration) }
+            override fun onServiceRegistered(info: NsdServiceInfo) {
+                FlickLog.i("nsd", "registered name=${request.serviceName} port=${request.port} state=${request.state}")
+                if (generation == expectedGeneration) attempt = 0
+            }
+            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                // The errorCode used to be discarded, so the 3-retry ladder gave up
+                // forever with no signal at all.
+                FlickLog.w("nsd", "register failed code=$errorCode attempt=$attempt port=${request.port}")
+                retry(expectedGeneration)
+            }
             override fun onServiceUnregistered(info: NsdServiceInfo) = Unit
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) { retry(expectedGeneration) }
+            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                FlickLog.w("nsd", "unregister failed code=$errorCode attempt=$attempt")
+                retry(expectedGeneration)
+            }
         }
         listener = reg
         runCatching { nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, reg) }
-            .onFailure { retry(expectedGeneration) }
+            .onFailure {
+                FlickLog.w("nsd", "registerService threw port=${request.port}", it)
+                retry(expectedGeneration)
+            }
     }
 
     private fun retry(expectedGeneration: Long) {
@@ -67,6 +90,7 @@ class NsdAdvertiser(context: Context) {
     }
 
     fun unregister() {
+        if (listener != null) FlickLog.i("nsd", "unregister port=${request?.port ?: -1}")
         generation++
         retry?.let(handler::removeCallbacks)
         retry = null

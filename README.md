@@ -38,15 +38,17 @@ Never commit serials, private addresses, SSID/BSSID values, pairing material, me
 
 ## Pair and cast
 
-1. Open Flick on the TV. Its pairing surface shows a QR plus a numeric host, ephemeral control port, and four-digit code.
-2. Scan the QR with the phone's system camera. It opens Flick with an empty host/port/code form. The QR is only `flick://pair?v=2`; it imports no endpoint or authorization data.
-3. Independently enter all three values shown on the TV and choose **Pair**. Opening Connect manually uses the same form when camera launch or mDNS is unavailable.
+1. Open Flick on the TV. Its pairing surface shows a QR plus a numeric host, a durable control port (`47654` by default), and a four-digit code.
+2. Scan the QR with the phone's system camera. The QR is `flick://pair?v=3&h=<tv-lan-ip>&p=<port>` — a non-secret endpoint, nothing more. It opens Flick with host and port filled in and the code cell focused; it never connects on its own.
+3. Type the four-digit code shown on the TV and choose **Pair**. The code is never in the QR: it stays the one thing you have to read off the screen, so a scan alone authorizes nothing. Opening Connect manually uses the same form when camera launch or mDNS is unavailable.
 4. Grant the phone video-library permission, choose a local item, and tap **Flick to TV**.
 5. Keep watching Connecting. The TV keeps the real player surface attached behind an opaque Preparing overlay, then Flick changes to Now Playing only after the TV validates the canonical source, completes a real byte-range probe, starts Media3, and reports the matching cast's first rendered frame.
 
 Pairing proves control authorization; it does not prove the TV can reach the phone's media server. Later connections discover candidate endpoints through NSD/mDNS, then authenticate the TV with mutual HMAC before updating the saved endpoint. Discovery alone is never trusted.
 
-There is no in-app camera scanner, QR-carried endpoint/code, media-URL entry on the TV, or one-scan authorization.
+There is no in-app camera scanner, QR-carried pairing code or key, media-URL entry on the TV, or one-scan authorization.
+
+If something goes wrong, both apps keep a memory-only diagnostics log: TV **Settings › Diagnostics**, phone **Diagnostics**. Over adb they are `adb logcat -s FlickTV:V` and `adb logcat -s FlickPhone:V`.
 
 ## Pairing behavior
 

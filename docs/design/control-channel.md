@@ -10,34 +10,36 @@ Flick direct-plays original phone bytes. The phone serves an authenticated HTTP 
 
 There are two independent version domains:
 
-- `flick://pair?v=2` is an app-launch envelope only.
+- `flick://pair?v=3` is an app-launch envelope carrying a **non-secret endpoint prefill**. `flick://pair?v=2` remains a valid launch-only envelope with no prefill, so an un-updated TV still opens the app.
 - WebSocket control protocol `v=2` is the pairing, resume, and cast protocol. NSD TXT `v` is `2`; TXT `id` is the non-secret stable `tvId`.
 
 This is a synchronized pre-1.0 release: both APKs advance from `versionCode=1`/`versionName=0.1.0` to `versionCode=2`/`versionName=0.2.0` and are installed together. A v2 sender never falls back to v1's optimistic cast or bearer-key resume. If NSD advertises `<2`, show **Update Flick on your TV** and send no cast command. When NSD is absent (including manual first pairing), send the v2-only `negotiate` frame before a code. A missing/non-exact v2 response within the six-second authentication deadline is the sender-local `update_required` result; no code is then transmitted. A v2 receiver may generically deny v1; it must not accept an unversioned command as v2.
 
 Rollback installs the previous implementation on **both** apps with a newly higher `versionCode`; do not reuse version code 1. Debug downgrade is only an explicit, signature-matching development operation. Uninstall/reinstall loses pairing data.
 
-## 2. Launch-only QR and initial pairing
+## 2. Endpoint-prefill QR and initial pairing
 
-The sole canonical QR URI is:
+The canonical QR URI is:
 
 ```text
-flick://pair?v=2
+flick://pair?v=3&h=<tv-lan-ip>&p=<port>
 ```
 
-It contains no host, port, TV identity, code, nonce, key, proof, capability, or other authorization data. The TV renders the QR plus a separately visible, private pairing surface with its numeric host, port, and four-digit code. The phone camera may launch Flick; the user independently types all three values. No in-app scanner is part of v2.
+It carries a **non-secret endpoint** — the TV's site-local IPv4 and its bound control port — and nothing else. It contains no TV identity, code, nonce, key, proof, or capability. **The four-digit code is never in the QR**; it stays the sole authorization factor, read off the TV screen and typed by the user, so scanning alone still authorizes nothing and the phone never accepts an endpoint the user did not authorize with a secret read off the TV.
 
-The parser accepts only a hierarchical URI with case-insensitive scheme `flick`, exact authority/host `pair`, empty path, no user-info, explicit authority port, or fragment, and exactly one query key `v` with exactly one value `2`. Any other key, duplicate, pairing field, malformed URI, or legacy `v=1` is invalid/unsupported. The parser returns only `Valid`, `Invalid`, or `UnsupportedVersion`: it neither preserves nor echoes the raw URI.
+The TV renders the QR plus a separately visible, private pairing surface with its numeric host, port, and four-digit code. The QR is emitted only while a real binding exists (host non-blank and port in `1..65535`); an `h=`/`p=` placeholder is never emitted. The phone camera may launch Flick, which **prefills host and port and focuses the code cell — it never auto-connects**. No in-app scanner is part of v2.
+
+The parser accepts only a hierarchical URI with case-insensitive scheme `flick`, exact authority/host `pair`, empty path, no user-info, no explicit authority port, and no fragment. The query is either exactly `{v}` with value `2` (legacy launch-only) or exactly `{v,h,p}` with `v=3`, in any order, with no duplicate or missing key; `h` must be a canonical dotted-decimal RFC1918 IPv4 and `p` a canonical decimal `1..65535`. Any other key, duplicate, malformed URI, non-canonical `h`/`p`, or legacy `v=1` is invalid/unsupported. The parser returns only `Valid`, `Invalid`, or `UnsupportedVersion`: it neither preserves nor echoes the raw URI. A `v=3` prefill is an **untrusted hint** until the typed code proves the endpoint.
 
 `MainActivity` handles cold `onCreate` and warm `onNewIntent` through the same ingress. Before Compose collection or suspension it copies `Intent.data` locally, calls `setIntent()` with a copy whose `data` is null, also sanitizes the incoming intent, parses only the local copy, and publishes an in-memory event with a process-local monotonically increasing ID. Raw URI/event data is never saved, logged, backed up, or replayed after process death. An ordinary launcher intent changes no pairing state.
 
-A valid event opens empty host, port, and code fields; it opens no socket. Pair is enabled only when the user entered:
+A valid `v=2` event opens empty host, port, and code fields. A valid `v=3` event prefills host and port from the QR and focuses the code cell. Neither opens a socket. Pair is enabled only when the effective values are:
 
 - a canonical dotted-decimal RFC1918 IPv4 address (four decimal octets `0..255`; no DNS, whitespace, sign, shorthand, integer, octal, hexadecimal, IPv6, loopback, link-local, multicast, or unspecified form);
 - canonical ASCII decimal port `1..65535`, no sign or leading zero; and
 - exactly four ASCII digits, retaining a leading zero.
 
-The sender connects only to that user-entered endpoint. It must not prefill or target an unpaired NSD/deep-link candidate. It retains typed host/port but clears code after a transport failure; it clears code and gives generic current-code guidance after `denied`; it never automatically retries pairing.
+The sender connects only to the endpoint shown in that form, and only when the user submits a code. A QR-supplied endpoint is a prefill hint, never a target on its own; an unpaired NSD candidate may also prefill but is never dialed blind. `47654` is offered as the default port in the manual sheet and never overrides a QR- or NSD-supplied port. The sender retains host/port but clears code after a transport failure; it clears code and gives guidance appropriate to the `denied` reason after `denied`; it never automatically retries pairing.
 
 ## 3. Transport and universal frame rules
 
@@ -110,10 +112,10 @@ Under one receiver synchronization boundary, success verifies the visible curren
 Every authorization denial that is safe to answer has exactly this wire response, then closes:
 
 ```json
-{"t":"denied","v":2}
+{"t":"denied","v":2,"reason":"code"}
 ```
 
-It never reveals wrong versus expired/locked/closed code, unknown key, transcript failure, or version detail. `update_required` is not a wire oracle.
+`reason` is exactly one of `code`, `expired`, `surface`, `locked`, `busy`, `storage`, `proof`, `unknown`. Only `code` and `expired` are derived from what the user typed, so the frame is not an enumeration oracle: it never distinguishes a known from an unknown key id, and never reveals transcript or version detail. `update_required` is not a wire oracle. Senders must also accept the legacy two-key `{"t":"denied","v":2}` form emitted by an un-updated receiver.
 
 Receiver pairing visibility is not authorization. `PairingManager`, rather than `forcePairing`, Compose-owned gates, or polling, owns `Standby`, `Open(code,generation,expiry)`, `Locked(generation,retryAt)`, and 1.5-second `Success(label,generation)` states. A code is valid only while `Open` is visibly rendered; Back, background/stop, cast adoption, or any other surface close invalidates it, and a late submission is generically denied. Four global wrong-code attempts retain it; the fifth consumes/rotates it and begins a 30-second cooldown. Later global rounds double to a maximum of eight minutes. A five-minute expiry rotates without a failed-attempt increment. The global round/wall-clock deadline is persisted and clamped on load; monotonic time is used only in process. A bounded per-host table throttles one host for 10 seconds after three wrong codes without blocking another host. Reopening cannot bypass active lockout. Confirmed **Forget all phones** stops/revokes the live controller, durably clears every TV-side key before changing UI state, and reopens first-run pairing.
 

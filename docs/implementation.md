@@ -33,19 +33,58 @@ The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/
 
 The service uses `WIFI_MODE_FULL_HIGH_PERF` and a six-hour-bounded partial wake lock while it owns the source. The foreground notification is private, contains generic direct-play status only, and carries a unique immutable Stop intent for its `castId`. Latest-start/resource ownership gates prevent delayed A startup/failure/stop from publishing, releasing, or stopping B. `START_NOT_STICKY` and unknown intents never reconstruct a cast.
 
+## Control port selection
+
+The control port is durable, persisted, and has a fixed default. An ephemeral port (`0`) meant every restart bound a different number: the port printed on the pairing screen went stale before the user finished typing it, the phone's persisted `port_<host>` was dead on every resume, and cached mDNS SRV records named a closed port.
+
+`DEFAULT_CONTROL_PORT = 47654` sits in the dynamic range and is deliberately clear of Cast's 8008/8009/8010 and of the sender's media port 8080. `ControlServer.start(host, ports)` walks the ladder in order:
+
+1. the port persisted from the last **successful** bind;
+2. `47654`;
+3. `47655..47663`, on `BindException`;
+4. `0` (ephemeral), as an absolute last resort so a hostile or unlucky collision on every fixed port can never make the TV undiscoverable.
+
+The receiver persists, advertises and renders the port that **actually bound**, never the one requested, and logs which tier won (`[bind] started host=<tv-lan-ip> port=<port> tier=persisted|default|ladder|ephemeral`). A failed candidate is logged at `w` rather than swallowed — silently absorbing `BindException` is exactly what would make a fixed-port strategy fail invisibly.
+
+`reuseAddress = true` is set on the CIO engine. It defaults to **false** in Ktor 3.1.3, so a same-port rebind throws `EADDRINUSE` while a prior peer socket lingers in `TIME_WAIT` — which a durable fixed port hits on every restart. The bind host remains the specific site-local IPv4 from `LanAddress.current()`, never `0.0.0.0`, and the anti-rebinding `Host` pin still compares the exact bound `host:port`.
+
+The binding is one immutable `(engine, host, port)` tuple published only after the engine has started; a socket accepted inside that publication window waits up to two seconds for it rather than being rejected. Engine start/stop run on `Dispatchers.IO` via `startSuspend`/`stopSuspend`; the blocking `start(Boolean)`/`stop(Long, Long)` bridges would hold the caller for up to ~1.1 s.
+
+Connectivity callbacks are re-sample triggers, not rebind events. `LanBindingMonitor` reports an **address**; `onCapabilitiesChanged` fires for RSSI, link speed, validation and `NOT_SUSPENDED` on a link that never changed address, and those updates carry no address at all. A single reconciler owns bind state, is woken by the distinct address flow with a slow 10 s safety-net tick, and resolves a capability burst on an unchanged address to "do nothing".
+
+A visibility change (screensaver, Home, a system dialog) no longer tears anything down. `ON_STOP` releases the decoder, publishes an idle frame, sends the `tv_backgrounded` terminal and closes the pairing surface, then **re-advertises with TXT `state=sleeping` while keeping the socket bound and the service registered**. `ReceiverBindingGate` already refuses `loadMedia` while backgrounded, so the posture is unchanged: the socket stops accepting new casts instead of vanishing. `ON_START` re-advertises `state=ready` on the still-live port. NSD has no update primitive, so a state flip re-registers under the **same service name and the same port**; the sender must treat a same-name re-registration as an update, never as a loss.
+
 ## Launch and initial pairing
 
-The TV QR payload is exactly `flick://pair?v=2`. The sender's `singleTask` activity routes both `onCreate` and `onNewIntent` through one ingress. It copies the URI locally, clears both incoming and stored intent data synchronously, parses only the copy, and publishes an unsaved process-local event. A valid event keys a new empty host/port/code form; it does not prefill or connect.
+The TV QR payload is
 
-Host entry accepts canonical dotted-decimal RFC1918 IPv4 only; port is canonical decimal `1..65535`; code is exactly four ASCII digits. Manual Connect uses the same full form. Unpaired NSD results are advisory and cannot supply a target.
+```text
+flick://pair?v=3&h=<tv-lan-ip>&p=<port>
+```
+
+with exactly the parameter set `{v,h,p}` in any order, no user-info, no URI port, no path and no fragment. **The four-digit code is never in the QR.** It stays a human-verified out-of-band factor read off the TV screen, so a scan alone still authorizes nothing. The QR is emitted only while a real binding exists (host non-blank and port in `1..65535`); there is never an `h=`/`p=` placeholder. The legacy bare `flick://pair?v=2` remains a valid launch-only envelope with no prefill, so an un-updated TV still opens the app.
+
+The sender's `singleTask` activity routes both `onCreate` and `onNewIntent` through one ingress. It copies the URI locally, clears both incoming and stored intent data synchronously, parses only the copy, and publishes an unsaved process-local event. On `v=3` it validates `h` with `isCanonicalIpv4` and `p` with `isCanonicalPort`, treats any failure as an invalid QR, **prefills host and port and focuses the code cell — it does not auto-connect**. The QR-supplied endpoint stays untrusted until the user-typed code proves it.
+
+Host entry accepts canonical dotted-decimal RFC1918 IPv4 only; port is canonical decimal `1..65535`; code is exactly four ASCII digits. Manual Connect uses the same full form, pre-filled with `47654` as a default only — it is never dialed blind and never overrides a QR- or NSD-supplied port. Unpaired NSD results are advisory and cannot supply a target.
 
 The sender opens the typed endpoint and sends `negotiate(v=2,minV=2,maxV=2)` with a fresh nonce. It sends `pair` only after the exact strict `negotiated` response, so an old receiver cannot consume the code during version detection. A valid `paired` result is durable before routing away.
 
 `PairingManager` is the receiver's sole authorization/UI source. An Open code is stable for five minutes and valid only while displayed. Four global failures retain it; failure five begins a 30-second lockout, with rounds doubling to an eight-minute maximum. The global round/deadline survives process restart; per-host state is bounded to 32 records and throttles a host for 10 seconds after three failures. Pair success atomically commits key/keyId/label, consumes the code, shows 1.5 seconds of Success, then returns to Standby without exposing a replacement code.
 
+### Peer identity
+
+The authenticated peer is read from `call.request.local.remoteAddress`, never `call.request.origin.remoteHost`.
+
+`remoteHost` resolves `InetSocketAddress.getHostName()` — a **synchronous reverse-DNS (PTR) query** on the LAN. Most consumer and ISP routers run dnsmasq and answer PTR for DHCP clients, so on those networks it returns a hostname such as `some-phone.lan`. That value failed the private-IPv4 gate and closed every legitimate phone's socket before one protocol frame was read, with no log and no `denied` frame; it was also published as `peerIp` in `paired`/`resumeChallenge`/`resumed` and is field 8 of the resume HMAC transcript, which the sender validates as an IPv4 literal. `remoteAddress` uses `getHostString()` and never resolves. `local` is used rather than `origin` because `origin` is overridable by a `Forwarded`/`XForwardedHeaders` plugin, while `local` is always the CIO connection point derived from the accepted socket. When the socket address is null Ktor returns the literal `"unknown"`, which correctly fails the gate — fail-closed is intended.
+
+Using a non-resolving, non-header-derived identity strengthens the posture: `remoteHost` was a resolver-controlled string feeding per-host pairing throttling and the HMAC transcript.
+
 The receiver caps unauthenticated WebSockets at four and applies a six-second auth deadline. Malformed pre-auth input has a three-frame budget. Both sides enforce the 16 KiB decoded frame cap, unfragmented UTF-8 text/object input, duplicate/trailing-data rejection, exact fields/types/ranges, and no unknown v2 message types. Device, TV, and title labels are normalized to canonical single-line values before sending; the receiver rejects noncanonical control/format/whitespace variants rather than silently changing an authorization transcript or command.
 
-Closing/hiding the pairing surface invalidates its open generation immediately; a late pair attempt is generically denied. TV Settings implements confirmed **Forget all phones**: it stops/revokes the active controller, clears credentials only after the durable write succeeds, resets throttle/lockout state, and reopens visible first-run pairing.
+A `denied` frame carries a coarse diagnostic reason: `{"t":"denied","v":2,"reason":"<enum>"}` over exactly `code`, `expired`, `surface`, `locked`, `busy`, `storage`, `proof`, `unknown`. Only `code` and `expired` are code-derived, so the frame stays non-enumerating — it is no oracle for guessing a key id, a device, or whether a TV has ever been paired. The sender accepts both the legacy two-key form (an un-updated receiver) and the three-key form, and maps each reason to distinct copy.
+
+Closing/hiding the pairing surface invalidates its open generation immediately; a late pair attempt is denied with `reason=surface`. TV Settings implements confirmed **Forget all phones**: it stops/revokes the active controller, clears credentials only after the durable write succeeds, resets throttle/lockout state, and reopens visible first-run pairing.
 
 ## Resume, discovery, and persistence
 
@@ -59,7 +98,7 @@ Legacy v1 host records are handled conservatively. The sender can identify a can
 
 After either initial pairing or resume, the sender waits 250 ms for the receiver's immediate `busy(active_cast)` disposition. A busy result after a successful initial pair is represented internally as `PairedBusy` so the newly issued key/endpoint is durably preserved before the user sees the busy failure. Accepted residual P2: v2 has no positive `available` frame, so silence after 250 ms is treated as available. A late busy can cause brief sender UI/foreground-service churn, but receiver ownership is decided independently under its mutex and the second phone cannot take the cast. A future protocol revision may add an explicit `available|busy` result.
 
-NSD failures clear listener state and schedule one bounded retry; stop cancels it. On TV, connectivity callbacks plus two-second address reconciliation tear down control/cast/NSD on loss or change, then bind and advertise a fresh endpoint while foregrounded—even when the restored DHCP address is unchanged.
+NSD failures clear listener state and schedule one bounded retry with the error code logged; stop cancels it. On TV, connectivity callbacks re-sample the address and the reconciler tears down control/cast/NSD only when the site-local IPv4 is actually **lost or different**, then binds and advertises a fresh endpoint while foregrounded. An unchanged address produces no rebind, whatever the callback said.
 
 ## Cast ownership and sender startup
 
@@ -93,13 +132,42 @@ Control connection, cast ID, and receiver cast generation guard every queued mut
 
 `stop(castId)` is the canonical terminal command for the current Checking/Preparing or Active cast. The receiver clears player/session ownership, sends cast-correlated `stopped`, and replays that retained result for a duplicate stop. The sender reducer treats matching `stopped` as terminal, runs cast-correlated foreground-service cleanup, and returns to Library; local cleanup never waits indefinitely for the acknowledgement. `cancelLoad` remains the sender's best-effort pre-ready cancellation path; local TV Back uses the same stopped terminal path rather than silently clearing an active cast.
 
-TV background, LAN loss/change, control stop/loss, cancellation, and terminal failure invalidate the session before stopping/clearing media items, URL, title, startup callback, retry state, and decoder ownership. NSD/control are not advertised while backgrounded. Foreground return requires a fresh authenticated cast; v2 has no background playback resume.
+TV background, LAN loss/change, control stop/loss, cancellation, and terminal failure invalidate the session before stopping/clearing media items, URL, title, startup callback, retry state, and decoder ownership. While backgrounded the TV stays bound and advertised as `state=sleeping`, and `ReceiverBindingGate` refuses `loadMedia`; the socket accepts no new cast. Foreground return requires a fresh authenticated cast; v2 has no background playback resume.
 
 Wire failures are stable lowercase codes with required `retryable` and optional HTTP status only when observed. Raw exception text is never serialized. Classification is evidence-conservative: actual parser/decoder/network/status evidence is used, while ambiguous codec/HDR failures stay broad (`unsupported_video_format`, `decoder_init`, or `unknown`). Phone-local pre-control/source/bind failures remain phone-only; adopted receiver failure reaches both devices only while control is still usable.
 
 ## Privacy and diagnostics
 
 Pairing preferences are excluded from legacy backup, cloud backup, and device transfer. The notification omits title, URL, token, and private address. Diagnostics may show redacted probe/startup time, HTTP status, Wi-Fi band/link speed/RSSI, decoder, resolution/HDR class, and buffer/rebuffer/drop/recovery counters; export/log/committed evidence must not include pairing material, full URL/token, raw private address, SSID/BSSID, serial, or title.
+
+### Runtime logging
+
+Both modules ship one small logger with an identical shape: `FlickLog` in `receiver/util` under tag **`FlickTV`**, and `FlickLog` in `sender/util` under tag **`FlickPhone`**. Line format is `[area] key=value key=value`.
+
+The `area` vocabulary is shared and identical on both sides: `bind`, `lan`, `nsd`, `ws`, `auth`, `pair`, `cast`, `probe`, `player`, `http`.
+
+`v`/`d` are gated on `BuildConfig.DEBUG` (both modules set `buildFeatures { buildConfig = true }`; AGP 8 defaults it to false and generates no class at all). `i`/`w`/`e` always emit. Every level appends to a 200-entry in-memory ring buffer exposed as a `StateFlow`, which is never persisted to disk or backed up. Helpers: `fp(value)` returns an 8-hex SHA-256 prefix; `endpoint(url)` returns `scheme://host:port` only, because the path is the media token.
+
+**Redaction contract.** Safe at any level: bound host/port, peer IP, NSD name/model/state/version, `tvId`, `keyId`, device labels, enum and sealed-class simple names, wire result codes, HTTP status, counts/lengths/attempts/generations, latencies, decoder name, resolution, HDR type, Wi-Fi band/RSSI. Never, at any level: the four-digit pairing code, the pairing `key`, the HMAC `proof`, the media session token, any full `/v/{token}` URL, the raw deep-link URI, SSID/BSSID.
+
+**Do not fingerprint the pairing code.** A SHA-256 of four digits has a 10,000-entry rainbow table, so a hash pasted into a bug report *is* the plaintext code. Log `codeLen=4` / `codePresent=true` instead. Nonces may be fingerprinted but never printed verbatim. There is deliberately no generic `log(frame)` helper — per-field call sites are what keeps secrets out.
+
+Log message bodies are English literals in code. This is developer output, not user-facing copy, and is a recorded exception to the strings.xml rule; the diagnostics UI chrome around them is still a string resource.
+
+Every pre-auth rejection names itself locally (`not_bound`, `port_unbound`, `host_pin`, `peer_not_private`, `preauth_limit`, `auth_timeout_or_denied`), and every lifecycle edge that touches the binding carries a named trigger (`on_start`, `on_stop`, `no_lan_address`, `addr_changed`, `dispose`). The wire bytes are unchanged: reasons are logged locally only.
+
+**Capture recipe.**
+
+```sh
+# TV
+adb connect <tv-lan-ip>:5555
+adb logcat -c && adb logcat -s FlickTV:V
+
+# Phone
+adb logcat -s FlickPhone:V
+```
+
+`adb logcat` is unusable on some OEM builds, so both apps also render their ring buffer in-app: TV **Settings › Diagnostics**, phone **Diagnostics › Copy**.
 
 ## Release and rollback
 

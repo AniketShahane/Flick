@@ -71,7 +71,9 @@ fun DeviceRow(
                 style = FlickText.caption.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface),
             )
             Text(
-                text = listOfNotNull(tv.model, stateLabel(tv.state)).joinToString(" · "),
+                // The live endpoint is shown here so the user reads the address off the
+                // phone rather than transcribing it from across the room.
+                text = listOfNotNull(tv.model, stateLabel(tv.state), "${tv.host}:${tv.port}").joinToString(" · "),
                 style = FlickText.caption.copy(fontSize = 10.sp, color = colors.onSurfaceFaint),
                 modifier = Modifier.padding(top = 2.dp),
             )

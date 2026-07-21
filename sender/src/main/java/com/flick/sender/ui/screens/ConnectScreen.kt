@@ -29,8 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -38,6 +39,7 @@ import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.PairErrorKind
+import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.components.DeviceRow
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.PairCodeField
@@ -57,6 +59,7 @@ fun ConnectScreen(controller: FlickController) {
     val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
     var manualOpen by remember { mutableStateOf(false) }
+    var qrHint by remember { mutableStateOf(false) }
 
     // Map the typed pairing outcome to localized copy (never raw exception text).
     val pairErrorText: String? = when (pairError) {
@@ -67,13 +70,20 @@ fun ConnectScreen(controller: FlickController) {
         PairErrorKind.INVALID_ENTRY -> stringResource(R.string.pair_error_invalid)
         PairErrorKind.PAIRING_REQUIRED -> stringResource(R.string.pair_error_pair_required)
         PairErrorKind.LOCAL_STORAGE -> stringResource(R.string.pair_error_storage)
+        PairErrorKind.TIMED_OUT -> stringResource(R.string.pair_error_timeout)
+        PairErrorKind.REJECTED -> stringResource(R.string.pair_error_rejected)
+        PairErrorKind.CODE_EXPIRED -> stringResource(R.string.pair_error_expired)
+        PairErrorKind.TV_SURFACE -> stringResource(R.string.pair_error_surface)
+        PairErrorKind.LOCKED -> stringResource(R.string.pair_error_locked)
+        PairErrorKind.TV_STORAGE -> stringResource(R.string.pair_error_tv_storage)
+        PairErrorKind.REPAIR_NEEDED -> stringResource(R.string.pair_error_repair)
         null -> null
     }
     val connecting = connection == ConnectionStatus.CONNECTING || connection == ConnectionStatus.PAIRING
 
     LaunchedEffect(Unit) { controller.onStart() }
-    // Every accepted QR is a new capability-free launch event. Keying the sheet by
-    // eventId discards prior host/port/code text before any pairing socket can open.
+    // Every accepted QR is a new launch event. Keying the sheet by eventId discards
+    // prior host/port/code text before any pairing socket can open.
     LaunchedEffect(pendingPairLaunch?.eventId) {
         if (pendingPairLaunch != null) manualOpen = true
     }
@@ -140,16 +150,28 @@ fun ConnectScreen(controller: FlickController) {
                 PairOptionCard(
                     title = stringResource(R.string.connect_qr_title),
                     subtitle = stringResource(R.string.connect_qr_sub),
-                    onClick = { manualOpen = true },
+                    // Scanning happens in the system camera, which re-launches Flick
+                    // through the flick://pair deep link; there is no in-app scanner.
+                    onClick = { qrHint = true },
                     icon = FlickIcons.Qr,
                     modifier = Modifier.weight(1.2f),
                 )
                 PairOptionCard(
                     title = stringResource(R.string.connect_code_title),
                     subtitle = stringResource(R.string.connect_code_sub),
-                    onClick = { manualOpen = true },
+                    onClick = {
+                        val single = devices.singleOrNull { it.tvId != null }
+                        if (single != null) controller.selectDevice(single) else manualOpen = true
+                    },
                     codeHint = "····",
                     modifier = Modifier.weight(1f),
+                )
+            }
+            if (qrHint) {
+                Text(
+                    stringResource(R.string.connect_qr_hint),
+                    style = FlickText.caption.copy(color = colors.onSurfaceDim),
+                    modifier = Modifier.padding(start = 4.dp, top = 10.dp, end = 4.dp),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -171,6 +193,18 @@ fun ConnectScreen(controller: FlickController) {
                     .clickable { manualOpen = true }
                     .padding(6.dp),
             )
+            // The pairing screen is where failures surface, so the log has to be
+            // openable from here — the advisories sheet has no reachable trigger.
+            Text(
+                text = stringResource(R.string.connect_diagnostics),
+                style = FlickText.caption.copy(
+                    color = colors.onSurfaceFaint,
+                    textDecoration = TextDecoration.Underline,
+                ),
+                modifier = Modifier
+                    .clickable { controller.toggleDiagnostics(true) }
+                    .padding(6.dp),
+            )
         }
     }
 
@@ -178,19 +212,24 @@ fun ConnectScreen(controller: FlickController) {
     if (target != null) {
         CodeSheet(
             tvName = target.name,
+            endpoint = "${target.host}:${target.port}",
             error = pairErrorText,
             connecting = connecting,
             codeRevision = codeRevision,
-            onSubmit = { controller.submitCode(it) },
+            onSubmit = { code -> target.tvId?.let { controller.submitDiscoveredPair(it, code) } },
             onDismiss = { controller.cancelPairing() },
         )
     } else if (manualOpen) {
         // Kept open through the attempt so a wrong code / unreachable host on the manual
         // escape-hatch reports the result instead of dismissing silently; a successful
         // connect changes the route, which unmounts this screen (and the sheet).
-        val launchId = pendingPairLaunch?.eventId
+        val launch = pendingPairLaunch
+        val launchId = launch?.eventId
         key(launchId) {
             ManualSheet(
+                initialHost = launch?.host.orEmpty(),
+                initialPort = launch?.port?.toString() ?: PairLaunch.DEFAULT_CONTROL_PORT.toString(),
+                fromQr = launch?.host != null && launch?.port != null,
                 error = pairErrorText,
                 connecting = connecting,
                 codeRevision = codeRevision,
@@ -204,9 +243,15 @@ fun ConnectScreen(controller: FlickController) {
     }
 }
 
+/**
+ * Code-only pairing for a TV the user tapped in the discovered list. The endpoint is
+ * shown read-only for confirmation — it comes from the live advertisement, and the
+ * typed code is still what authorizes it.
+ */
 @Composable
 private fun CodeSheet(
     tvName: String,
+    endpoint: String,
     error: String?,
     connecting: Boolean,
     codeRevision: Long,
@@ -225,7 +270,12 @@ private fun CodeSheet(
         Text(
             stringResource(R.string.pair_code_sub),
             style = FlickText.caption.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            stringResource(R.string.pair_code_endpoint, endpoint),
+            style = FlickText.mono.copy(color = colors.onSurfaceFaint),
+            modifier = Modifier.padding(top = 6.dp, bottom = 16.dp),
         )
         PairCodeField(code = code, onCodeChange = { code = it })
         if (error != null) {
@@ -244,15 +294,23 @@ private fun CodeSheet(
             FlickPrimaryButton(
                 text = stringResource(R.string.pair_connect),
                 onClick = { onSubmit(code) },
-                enabled = code.length == 4,
+                enabled = PairLaunch.isCode(code),
             )
         }
         Spacer(Modifier.height(8.dp))
     }
 }
 
+/**
+ * The three-field escape hatch. A QR-supplied endpoint only PREFILLS it: the user
+ * still types the code read off the TV and presses connect, so the phone never
+ * accepts an endpoint that was not authorized by an out-of-band secret.
+ */
 @Composable
 private fun ManualSheet(
+    initialHost: String,
+    initialPort: String,
+    fromQr: Boolean,
     error: String?,
     connecting: Boolean,
     codeRevision: Long,
@@ -260,13 +318,25 @@ private fun ManualSheet(
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("") }
+    var host by remember { mutableStateOf(initialHost) }
+    var port by remember { mutableStateOf(initialPort) }
     var code by remember { mutableStateOf("") }
+    val codeFocus = remember { FocusRequester() }
     LaunchedEffect(codeRevision) { code = "" }
+    LaunchedEffect(Unit) { runCatching { codeFocus.requestFocus() } }
     BottomSheet(onDismiss = onDismiss) {
         SheetGrabber()
-        Text(stringResource(R.string.manual_heading), style = FlickText.heading.copy(color = colors.onSurface))
+        Text(
+            stringResource(if (fromQr) R.string.manual_heading_qr else R.string.manual_heading),
+            style = FlickText.heading.copy(color = colors.onSurface),
+        )
+        if (fromQr) {
+            Text(
+                stringResource(R.string.manual_from_qr),
+                style = FlickText.caption.copy(color = colors.onSurfaceDim),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = host,
@@ -291,7 +361,7 @@ private fun ManualSheet(
             label = { Text(stringResource(R.string.manual_code_label)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().focusRequester(codeFocus),
         )
         if (error != null) {
             Text(
@@ -313,8 +383,8 @@ private fun ManualSheet(
                     // successful connect changes the route, which unmounts the sheet.
                     if (host.isNotBlank()) onConnect(host.trim(), port, code)
                 },
-                enabled = com.flick.sender.net.PairLaunch.isCanonicalIpv4(host) &&
-                    com.flick.sender.net.PairLaunch.isCanonicalPort(port) && com.flick.sender.net.PairLaunch.isCode(code),
+                enabled = PairLaunch.isCanonicalIpv4(host) &&
+                    PairLaunch.isCanonicalPort(port) && PairLaunch.isCode(code),
             )
         }
         Spacer(Modifier.height(8.dp))

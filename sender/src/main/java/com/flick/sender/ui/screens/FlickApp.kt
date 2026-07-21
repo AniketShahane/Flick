@@ -68,8 +68,17 @@ fun FlickApp(
                 batteryExempt = batteryExempt,
                 onOpenWifiSettings = onOpenWifiSettings,
                 onRequestBatteryExemption = onRequestBatteryExemption,
+                onOpenDiagnostics = {
+                    controller.toggleAdvisories(false)
+                    controller.toggleDiagnostics(true)
+                },
                 onDismiss = { controller.toggleAdvisories(false) },
             )
+        }
+
+        val showDiagnostics by controller.showDiagnostics.collectAsState()
+        if (showDiagnostics) {
+            DiagnosticsSheet(onDismiss = { controller.toggleDiagnostics(false) })
         }
     }
 }

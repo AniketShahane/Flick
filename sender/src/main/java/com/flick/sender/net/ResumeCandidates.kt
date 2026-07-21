@@ -16,7 +16,12 @@ internal object ResumeCandidates {
             .sortedWith(compareBy<Endpoint> { it.host }.thenBy { it.port })
             .take(3)
             .toList()
-        return listOf(last) + candidates
+        // A live advertisement at the SAME address is the receiver saying it rebound to
+        // a new port, so trying the stored port first would burn a full connect timeout.
+        // A candidate at a DIFFERENT address stays behind the stored endpoint, so a
+        // rogue advertiser can never jump ahead of the endpoint we actually verified.
+        val (rebound, elsewhere) = candidates.partition { it.host == lastHost }
+        return rebound + last + elsewhere
     }
 }
 

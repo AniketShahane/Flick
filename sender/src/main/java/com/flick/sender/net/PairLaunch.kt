@@ -3,7 +3,12 @@ package com.flick.sender.net
 import android.net.Uri
 
 sealed interface PairLaunchParseResult {
-    data object Valid : PairLaunchParseResult
+    /**
+     * A launch envelope this build understands. [host]/[port] are present only for
+     * the v3 payload; they are an UNTRUSTED prefill hint until the user-typed code
+     * proves the endpoint.
+     */
+    data class Valid(val host: String? = null, val port: Int? = null) : PairLaunchParseResult
     data object Invalid : PairLaunchParseResult
     data object UnsupportedVersion : PairLaunchParseResult
 }
@@ -12,6 +17,9 @@ data class IncomingPairEvent(val eventId: Long, val result: PairLaunchParseResul
 
 /** Parses only the launch envelope. Deliberately never retains a caller supplied URI. */
 object PairLaunch {
+    /** Receiver default control port. Only ever a prefill hint; never dialed blind. */
+    const val DEFAULT_CONTROL_PORT = 47654
+
     fun parse(uri: Uri?): PairLaunchParseResult = uri?.toString()?.let(::parse) ?: PairLaunchParseResult.Invalid
 
     fun parse(raw: String): PairLaunchParseResult {
@@ -26,10 +34,22 @@ object PairLaunch {
             if (separator < 0) return PairLaunchParseResult.Invalid
             it.substring(0, separator) to it.substring(separator + 1)
         } ?: return PairLaunchParseResult.Invalid
-        if (params.size != 1 || params.single().first != "v") return PairLaunchParseResult.Invalid
-        return when (params.single().second) {
-            "2" -> PairLaunchParseResult.Valid
-            "1" -> PairLaunchParseResult.UnsupportedVersion
+        val names = params.map { it.first }
+        // A repeated name would be silently collapsed by toMap(); reject it outright.
+        if (names.size != names.toSet().size) return PairLaunchParseResult.Invalid
+        val fields = params.toMap()
+        val nameSet = names.toSet()
+        val version = fields["v"] ?: return PairLaunchParseResult.Invalid
+        return when {
+            // Legacy launch-only envelope: an un-updated TV must still open the app.
+            nameSet == setOf("v") && version == "2" -> PairLaunchParseResult.Valid()
+            nameSet == setOf("v", "h", "p") && version == "3" -> {
+                val host = fields.getValue("h")
+                val port = fields.getValue("p")
+                if (!isCanonicalIpv4(host) || !isCanonicalPort(port)) PairLaunchParseResult.Invalid
+                else PairLaunchParseResult.Valid(host, port.toInt())
+            }
+            version == "1" -> PairLaunchParseResult.UnsupportedVersion
             else -> PairLaunchParseResult.Invalid
         }
     }

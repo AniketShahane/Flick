@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -9,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.ui.components.AdvisoryCard
@@ -23,6 +25,7 @@ fun AdvisoriesScreen(
     batteryExempt: Boolean,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -80,6 +83,19 @@ fun AdvisoriesScreen(
             stringResource(R.string.advisories_footer),
             style = FlickText.caption.copy(color = colors.onSurfaceFaint),
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp),
+            textAlign = TextAlign.Center,
+        )
+
+        Text(
+            stringResource(R.string.advisory_diagnostics_row),
+            style = FlickText.caption.copy(
+                color = colors.onSurfaceFaint,
+                textDecoration = TextDecoration.Underline,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenDiagnostics)
+                .padding(vertical = 8.dp),
             textAlign = TextAlign.Center,
         )
     }

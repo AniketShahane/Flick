@@ -2,6 +2,7 @@ package com.flick.sender.net
 
 import com.flick.sender.NetworkUtils
 import com.flick.sender.model.ConnectionStatus
+import com.flick.sender.util.FlickLog
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -32,9 +32,18 @@ class ControlClient(private val scope: CoroutineScope) {
         /** Pairing succeeded and the receiver immediately reported another active controller. */
         data class PairedBusy(val key: String, val endpoint: AuthenticatedEndpoint) : Result
         data class Resumed(val endpoint: AuthenticatedEndpoint) : Result
-        data object Denied : Result
+        /** [reason] is the receiver's denied-frame enum when it sent one, else null. */
+        data class Denied(val reason: String? = null) : Result
         data object UpdateRequired : Result
+        /** Nothing answered at all: the throwable arrived before or at the WS upgrade. */
         data class Unreachable(val pairCodeSent: Boolean = false) : Result
+        /** The dial neither completed nor failed inside the attempt window. */
+        data class TimedOut(val pairCodeSent: Boolean = false) : Result
+        /**
+         * The upgrade succeeded and the receiver then closed the socket. This is an
+         * ACTIVE rejection (peer-identity / policy gate), not "nothing is listening".
+         */
+        data class RejectedByTv(val pairCodeSent: Boolean = false) : Result
         data class ProtocolError(val pairCodeSent: Boolean = false) : Result
         data object Busy : Result
     }
@@ -61,21 +70,36 @@ class ControlClient(private val scope: CoroutineScope) {
             _connection.value = ConnectionStatus.PAIRING
             val clientNonce = ControlProtocolV2.randomId()
             socket.send(Frame.Text(frame("negotiate", "v" to 2, "minV" to 2, "maxV" to 2, "clientNonce" to clientNonce)))
-            val negotiated = receive(socket).objectOrNull() ?: return@open Result.UpdateRequired
+            val negotiated = receive(socket).objectOrNull()
+                ?: run { FlickLog.w("ws", "pair abort stage=negotiate reason=schema"); return@open Result.UpdateRequired }
             if (!ControlFrameSchema.preAuth(asMap(negotiated)) ||
                 negotiated.optString("t") != "negotiated" || negotiated.optInt("v", -1) != 2 ||
                 negotiated.optString("clientNonce") != clientNonce || negotiated.optString("serverNonce") == clientNonce || !ControlProtocolV2.id(negotiated.optString("serverNonce")) ||
-                !ControlProtocolV2.id(negotiated.optString("tvId")) || !caps(negotiated.optJSONArray("cap"))) return@open Result.UpdateRequired
+                !ControlProtocolV2.id(negotiated.optString("tvId")) || !caps(negotiated.optJSONArray("cap"))) {
+                FlickLog.w("ws", "pair abort stage=negotiate reason=schema")
+                return@open Result.UpdateRequired
+            }
             val serverNonce = negotiated.getString("serverNonce")
             // A write failure can occur after bytes leave the phone; do not offer a possibly consumed code again.
             codeSent = true
             socket.send(Frame.Text(frame("pair", "v" to 2, "clientNonce" to clientNonce, "serverNonce" to serverNonce, "code" to code, "device" to (ControlProtocolV2.normalizedLabel(device, 80) ?: "Phone"))))
             val paired = receive(socket).objectOrNull() ?: return@open Result.Unreachable(pairCodeSent = true)
-            if (ControlFrameSchema.preAuth(asMap(paired)) && paired.optString("t") == "denied") return@open Result.Denied
-            if (!ControlFrameSchema.preAuth(asMap(paired))) return@open Result.ProtocolError(pairCodeSent = true)
-            val parsed = pairedEndpoint(paired, host, port, clientNonce, serverNonce, false) ?: return@open Result.ProtocolError(pairCodeSent = true)
+            if (ControlFrameSchema.preAuth(asMap(paired)) && paired.optString("t") == "denied") {
+                val reason = deniedReason(paired)
+                FlickLog.w("ws", "pair abort stage=paired reason=denied denied=$reason")
+                return@open Result.Denied(reason)
+            }
+            if (!ControlFrameSchema.preAuth(asMap(paired))) {
+                FlickLog.w("ws", "pair abort stage=paired reason=schema")
+                return@open Result.ProtocolError(pairCodeSent = true)
+            }
+            val parsed = pairedEndpoint(paired, host, port, clientNonce, serverNonce, false)
+                ?: run { FlickLog.w("ws", "pair abort stage=paired reason=schema"); return@open Result.ProtocolError(pairCodeSent = true) }
             val key = paired.optString("key")
-            if (!ControlProtocolV2.key(key)) return@open Result.ProtocolError(pairCodeSent = true)
+            if (!ControlProtocolV2.key(key)) {
+                FlickLog.w("ws", "pair abort stage=paired reason=bad_key")
+                return@open Result.ProtocolError(pairCodeSent = true)
+            }
             when (busyDisposition(socket)) {
                 Result.Busy -> return@open Result.PairedBusy(key, parsed)
                 is Result.ProtocolError -> return@open Result.ProtocolError(pairCodeSent = true)
@@ -83,10 +107,14 @@ class ControlClient(private val scope: CoroutineScope) {
                 else -> return@open Result.ProtocolError(pairCodeSent = true)
             }
             installAuthenticated(socket, parsed)
+            // Never the key itself: the identifiers are enough to correlate a pairing.
+            FlickLog.i("auth", "paired tvId=${parsed.tvId} keyId=${parsed.keyId} $host:$port")
             Result.Paired(key, parsed)
         }
         return when (result) {
             is Result.Unreachable -> result.copy(pairCodeSent = result.pairCodeSent || codeSent)
+            is Result.TimedOut -> result.copy(pairCodeSent = result.pairCodeSent || codeSent)
+            is Result.RejectedByTv -> result.copy(pairCodeSent = result.pairCodeSent || codeSent)
             is Result.ProtocolError -> result.copy(pairCodeSent = result.pairCodeSent || codeSent)
             else -> result
         }
@@ -98,24 +126,52 @@ class ControlClient(private val scope: CoroutineScope) {
         return open(host, port) { socket ->
             val clientNonce = ControlProtocolV2.randomId()
             socket.send(Frame.Text(frame("resumeInit", "v" to 2, "tvId" to pairing.tvId, "keyId" to pairing.keyId, "clientNonce" to clientNonce)))
-            val challenge = receive(socket).objectOrNull() ?: return@open Result.Unreachable()
-            if (ControlFrameSchema.preAuth(asMap(challenge)) && challenge.optString("t") == "denied") return@open Result.Denied
-            if (!ControlFrameSchema.preAuth(asMap(challenge))) return@open Result.ProtocolError()
-            val parsed = pairedEndpoint(challenge, host, port, clientNonce, null, true) ?: return@open Result.ProtocolError()
-            if (parsed.tvId != pairing.tvId || parsed.keyId != pairing.keyId) return@open Result.ProtocolError()
+            val challenge = receive(socket).objectOrNull()
+                ?: run { FlickLog.w("ws", "resume abort stage=resumeInit reason=schema"); return@open Result.Unreachable() }
+            if (ControlFrameSchema.preAuth(asMap(challenge)) && challenge.optString("t") == "denied") {
+                val reason = deniedReason(challenge)
+                FlickLog.w("ws", "resume abort stage=resumeChallenge reason=denied denied=$reason")
+                return@open Result.Denied(reason)
+            }
+            if (!ControlFrameSchema.preAuth(asMap(challenge))) {
+                FlickLog.w("ws", "resume abort stage=resumeChallenge reason=schema")
+                return@open Result.ProtocolError()
+            }
+            val parsed = pairedEndpoint(challenge, host, port, clientNonce, null, true)
+                ?: run { FlickLog.w("ws", "resume abort stage=resumeChallenge reason=schema"); return@open Result.ProtocolError() }
+            if (parsed.tvId != pairing.tvId || parsed.keyId != pairing.keyId) {
+                FlickLog.w("ws", "resume abort stage=resumeChallenge reason=bad_key")
+                return@open Result.ProtocolError()
+            }
             val serverNonce = challenge.getString("serverNonce")
-            if (serverNonce == clientNonce) return@open Result.ProtocolError()
+            if (serverNonce == clientNonce) {
+                FlickLog.w("ws", "resume abort stage=resumeChallenge reason=schema")
+                return@open Result.ProtocolError()
+            }
             val proof = ControlProtocolV2.proof(pairing.key, "client", pairing.tvId, pairing.keyId, clientNonce, serverNonce, parsed.peerIp, host, port, parsed.tv)
             socket.send(Frame.Text(frame("resumeProof", "v" to 2, "tvId" to pairing.tvId, "keyId" to pairing.keyId, "clientNonce" to clientNonce, "serverNonce" to serverNonce, "proof" to proof)))
-            val resumed = receive(socket).objectOrNull() ?: return@open Result.Unreachable()
-            if (ControlFrameSchema.preAuth(asMap(resumed)) && resumed.optString("t") == "denied") return@open Result.Denied
-            if (!ControlFrameSchema.preAuth(asMap(resumed))) return@open Result.ProtocolError()
-            val final = pairedEndpoint(resumed, host, port, clientNonce, serverNonce, true) ?: return@open Result.ProtocolError()
+            val resumed = receive(socket).objectOrNull()
+                ?: run { FlickLog.w("ws", "resume abort stage=resumeProof reason=schema"); return@open Result.Unreachable() }
+            if (ControlFrameSchema.preAuth(asMap(resumed)) && resumed.optString("t") == "denied") {
+                val reason = deniedReason(resumed)
+                FlickLog.w("ws", "resume abort stage=resumeProof reason=denied denied=$reason")
+                return@open Result.Denied(reason)
+            }
+            if (!ControlFrameSchema.preAuth(asMap(resumed))) {
+                FlickLog.w("ws", "resume abort stage=resumeProof reason=schema")
+                return@open Result.ProtocolError()
+            }
+            val final = pairedEndpoint(resumed, host, port, clientNonce, serverNonce, true)
+                ?: run { FlickLog.w("ws", "resume abort stage=resumeProof reason=schema"); return@open Result.ProtocolError() }
             if (final != parsed || !ControlProtocolV2.constantTimeEquals(
                     ControlProtocolV2.proof(pairing.key, "server", pairing.tvId, pairing.keyId, clientNonce, serverNonce, final.peerIp, host, port, final.tv),
-                    resumed.optString("proof"))) return@open Result.ProtocolError()
+                    resumed.optString("proof"))) {
+                FlickLog.w("ws", "resume abort stage=resumeProof reason=bad_key")
+                return@open Result.ProtocolError()
+            }
             busyDisposition(socket)?.let { return@open it }
             installAuthenticated(socket, final)
+            FlickLog.i("auth", "resumed tvId=${final.tvId} keyId=${final.keyId} $host:$port")
             Result.Resumed(final)
         }
     }
@@ -138,24 +194,45 @@ class ControlClient(private val scope: CoroutineScope) {
     fun shutdown() { close(); client.close() }
     fun authenticatedEndpoint(): AuthenticatedEndpoint? = endpoint
 
-    private suspend fun open(host: String, port: Int, action: suspend (DefaultClientWebSocketSession) -> Result): Result = try {
-        closeInternal()
-        withTimeout(6_000) {
-            val socket = client.webSocketSession(host = host, port = port, path = "/control")
-            session = socket
-            val result = action(socket)
-            if (result !is Result.Paired && result !is Result.Resumed) {
+    private suspend fun open(host: String, port: Int, action: suspend (DefaultClientWebSocketSession) -> Result): Result {
+        FlickLog.d("ws", "dial $host:$port")
+        // Distinguishes "the upgrade never completed" from "the receiver upgraded and
+        // then closed on us" — the latter is an ACTIVE pre-auth rejection and must
+        // never be reported as an unreachable TV.
+        var upgraded = false
+        return try {
+            closeInternal()
+            // withTimeoutOrNull, not withTimeout: null means OUR window elapsed, while a
+            // cancellation from an enclosing timeout still propagates as a
+            // CancellationException and must not be reported as a TV that timed out.
+            withTimeoutOrNull(OPEN_TIMEOUT_MS) {
+                val socket = client.webSocketSession(host = host, port = port, path = "/control")
+                upgraded = true
+                session = socket
+                val result = action(socket)
+                if (result !is Result.Paired && result !is Result.Resumed) {
+                    _connection.value = ConnectionStatus.DISCONNECTED
+                    closeInternal()
+                }
+                result
+            } ?: run {
+                FlickLog.w("ws", "connect timed out $host:$port upgraded=$upgraded")
                 _connection.value = ConnectionStatus.DISCONNECTED
-                closeInternal()
+                closeInternal(); Result.TimedOut()
             }
-            result
+        } catch (e: CancellationException) {
+            _connection.value = ConnectionStatus.DISCONNECTED
+            closeInternal(); throw e
+        } catch (e: Exception) {
+            // The single highest-value line on the phone: it names the exact throwable
+            // behind what the UI used to flatten into "couldn't reach that TV".
+            FlickLog.w("ws", "connect failed $host:$port ${e.javaClass.simpleName} upgraded=$upgraded", e)
+            _connection.value = ConnectionStatus.DISCONNECTED
+            closeInternal()
+            // Past the upgrade, "nothing is listening" is provably wrong: a
+            // ClosedReceiveChannelException here is the receiver's pre-auth policy close.
+            if (upgraded) Result.RejectedByTv() else Result.Unreachable()
         }
-    } catch (e: CancellationException) {
-        _connection.value = ConnectionStatus.DISCONNECTED
-        closeInternal(); throw e
-    } catch (_: Exception) {
-        _connection.value = ConnectionStatus.DISCONNECTED
-        closeInternal(); Result.Unreachable()
     }
 
     private fun installAuthenticated(socket: DefaultClientWebSocketSession, value: AuthenticatedEndpoint) {
@@ -251,7 +328,12 @@ class ControlClient(private val scope: CoroutineScope) {
         runCatching { socket.close(CloseReason(code, "invalid")) }
     }
 
+    /** Reason enum from the receiver's denied frame; absent on an older receiver. */
+    private fun deniedReason(frame: JSONObject): String? =
+        frame.optString("reason").takeIf { it.isNotEmpty() }
+
     private companion object {
+        const val OPEN_TIMEOUT_MS = 6_000L
         // P2 residual: without a wire-level ready acknowledgement, silence in this fixed window cannot prove availability.
         const val BUSY_DISPOSITION_MS = 250L
     }

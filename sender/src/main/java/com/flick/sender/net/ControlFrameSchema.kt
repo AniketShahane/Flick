@@ -10,13 +10,25 @@ object ControlFrameSchema {
         "protocol_error", "unknown",
     )
 
+    /**
+     * Diagnostic reasons a receiver may attach to `denied`. Only `code` and
+     * `expired` are code-derived, so the set stays non-enumerating: it gives no
+     * guessing oracle to an attacker who can already see the close.
+     */
+    val deniedReasons = setOf("code", "expired", "surface", "locked", "busy", "storage", "proof", "unknown")
+
     fun preAuth(frame: Map<String, Any?>): Boolean = when (frame["t"]) {
         "negotiated" -> exact(frame, setOf("t", "v", "clientNonce", "serverNonce", "tvId", "cap")) &&
             version(frame) && id(frame["clientNonce"]) && id(frame["serverNonce"]) && id(frame["tvId"]) && caps(frame["cap"])
         "paired" -> endpoint(frame, setOf("t", "v", "key", "keyId", "tv", "tvId", "peerIp", "serverHost", "serverPort", "cap")) && key(frame["key"])
         "resumeChallenge" -> endpoint(frame, setOf("t", "v", "tv", "tvId", "keyId", "clientNonce", "serverNonce", "peerIp", "serverHost", "serverPort", "cap")) && id(frame["clientNonce"]) && id(frame["serverNonce"])
         "resumed" -> endpoint(frame, setOf("t", "v", "tv", "tvId", "keyId", "clientNonce", "serverNonce", "peerIp", "serverHost", "serverPort", "cap", "proof")) && id(frame["clientNonce"]) && id(frame["serverNonce"]) && key(frame["proof"])
-        "denied" -> exact(frame, setOf("t", "v")) && version(frame)
+        // Two exact field sets, never a permissive check: the 2-key form is what an
+        // un-updated receiver emits, the 3-key form carries the diagnostic reason.
+        "denied" -> version(frame) && (
+            exact(frame, setOf("t", "v")) ||
+                (exact(frame, setOf("t", "v", "reason")) && frame["reason"] in deniedReasons)
+            )
         else -> false
     }
 
