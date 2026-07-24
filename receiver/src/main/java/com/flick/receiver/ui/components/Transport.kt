@@ -10,13 +10,10 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,11 +23,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -49,21 +46,33 @@ import androidx.tv.material3.Icon
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.rememberReducedMotion
+import com.flick.receiver.ui.theme.sparkShadow
 
-internal val SecondaryTransportTargetSize = 48.dp
-internal val PrimaryTransportTargetSize = 56.dp
-internal val TransportGlyphSize = 32.dp
+/** Back-10 / forward-10 square (spec §5.3 row 3). Above the 48 dp touch floor. */
+internal val SecondaryTransportTargetSize = 52.dp
+
+/** The play button — the single largest affordance in the transport. */
+internal val PrimaryTransportTargetSize = 66.dp
+
+internal val TransportGlyphSize = 26.dp
+internal val PrimaryTransportGlyphSize = 35.dp
+
+/** Gap between the three transport buttons. */
+internal val TransportClusterGap = 16.dp
 
 /**
- * A circular transport button with the standard TV focus treatment (scale 1.08 +
- * cyan border + glow). [primary] paints the Spark-gradient play circle; secondary
- * buttons are outlined ghosts (back-10 / fwd-10).
+ * A squared transport button (spec §5.3 row 3). [primary] paints the amber play
+ * key — an opaque `Spark` fill, ink in `OnSpark`, an amber drop shadow, and a
+ * WHITE focus ring because amber on amber vanishes. Secondary keys are the cool
+ * translucent squares.
  */
 @Composable
 private fun TransportButton(
     onClick: () -> Unit,
-    diameter: Dp,
+    side: Dp,
+    shape: Shape,
     primary: Boolean,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
@@ -74,32 +83,31 @@ private fun TransportButton(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val reducedMotion = rememberReducedMotion()
+    val ringVisible = focused && enabled
     val scale by animateFloatAsState(
-        targetValue = if (focused && enabled) 1.08f else 1f,
+        targetValue = if (ringVisible && !reducedMotion) FlickMotion.FOCUS_SCALE else 1f,
         animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
         label = "transportScale",
     )
-    val borderColor = when {
-        focused && enabled -> FlickColor.Link
-        primary -> Color.Transparent
-        else -> FlickColor.OnSurface.copy(alpha = 0.25f)
-    }
     Box(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .focusProperties { canFocus = enabled }
-            .size(diameter)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .shadow(
-                elevation = if (focused && enabled) 18.dp else 0.dp,
-                shape = CircleShape,
-                clip = false,
-                ambientColor = FlickColor.Link,
-                spotColor = FlickColor.Link,
+            .size(side)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = if (enabled) 1f else 0.38f
+            }
+            .flickFocusRing(
+                visible = ringVisible,
+                shape = shape,
+                ringColor = if (primary) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
             )
-            .clip(CircleShape)
-            .then(if (primary) Modifier.background(FlickColor.SparkGradient) else Modifier)
-            .border(if (focused && enabled) 2.dp else 1.5.dp, borderColor, CircleShape)
+            .then(if (primary) Modifier.sparkShadow(shape = shape) else Modifier)
+            .clip(shape)
+            .background(if (primary) FlickColor.Spark else FlickColor.ControlFillStrong)
+            .then(if (primary) Modifier else Modifier.border(1.dp, FlickColor.Outline, shape))
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -121,7 +129,7 @@ private fun TransportButton(
 }
 
 /**
- * Play/pause that MORPHS rather than hard-swaps (§7): a synchronized crossfade +
+ * Play/pause that MORPHS rather than hard-swaps: a synchronized crossfade +
  * scale on [FlickMotion.FlickSettle]. Shows the pause bars while [playing], the
  * play triangle while paused.
  */
@@ -159,8 +167,7 @@ fun PlayPauseGlyph(
 }
 
 /**
- * The transport cluster (§7): back-10 / play-pause / fwd-10. The primary play
- * circle is a 56dp Spark gradient; skip buttons are 48dp outlined ghosts. On
+ * The transport cluster (spec §5.3 row 3): back-10 / play-pause / fwd-10. On
  * entry, focus lands on play via [playFocusRequester].
  */
 @Composable
@@ -179,43 +186,50 @@ fun TransportCluster(
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(TransportClusterGap),
     ) {
         TransportButton(
             onClick = onBack10,
-            diameter = SecondaryTransportTargetSize,
+            side = SecondaryTransportTargetSize,
+            shape = FlickShape.Lg,
             primary = false,
             contentDescription = back10ContentDescription,
             enabled = enabled,
         ) {
             Icon(
-                imageVector = Icons.Rounded.Replay10,
+                imageVector = FlickIcons.Replay10,
                 contentDescription = null,
-                tint = FlickColor.OnSurface,
+                tint = Color.White,
                 modifier = Modifier.size(TransportGlyphSize),
             )
         }
         TransportButton(
             onClick = onPlayPause,
-            diameter = PrimaryTransportTargetSize,
+            side = PrimaryTransportTargetSize,
+            shape = FlickShape.Play,
             primary = true,
             focusRequester = playFocusRequester,
             contentDescription = playPauseContentDescription,
             enabled = enabled,
         ) {
-            PlayPauseGlyph(playing = playing, size = TransportGlyphSize, tint = FlickColor.Canvas)
+            PlayPauseGlyph(
+                playing = playing,
+                size = PrimaryTransportGlyphSize,
+                tint = FlickColor.OnSpark,
+            )
         }
         TransportButton(
             onClick = onForward10,
-            diameter = SecondaryTransportTargetSize,
+            side = SecondaryTransportTargetSize,
+            shape = FlickShape.Lg,
             primary = false,
             contentDescription = forward10ContentDescription,
             enabled = enabled,
         ) {
             Icon(
-                imageVector = Icons.Rounded.Forward10,
+                imageVector = FlickIcons.Forward10,
                 contentDescription = null,
-                tint = FlickColor.OnSurface,
+                tint = Color.White,
                 modifier = Modifier.size(TransportGlyphSize),
             )
         }
@@ -223,12 +237,15 @@ fun TransportCluster(
 }
 
 /**
- * Stepped-cell volume (§7) — D-pad friendly, engage-to-adjust so it is never a
- * focus trap. Focused-but-idle passes Left/Right through to the focus system so
- * the D-pad can leave the control. DPAD-center toggles an "engaged" mode (Spark
- * emphasis); only while engaged do Left/Right step [onChange] by 10% and stay
- * captured. Center/Back disengages; losing focus disengages. Filled cells
- * reflect [level] (0..1).
+ * Stepped-cell volume — D-pad friendly, engage-to-adjust so it is never a focus
+ * trap. The design omits volume; the app keeps it, restyled onto the amber
+ * transport vocabulary.
+ *
+ * Focused-but-idle passes Left/Right through to the focus system so the D-pad
+ * can leave the control. DPAD-center toggles an "engaged" mode (amber emphasis);
+ * only while engaged do Left/Right step [onChange] by 10% and stay captured.
+ * Center/Back disengages; losing focus disengages. Filled cells reflect [level]
+ * (0..1).
  */
 @Composable
 fun VolumeCells(
@@ -242,26 +259,35 @@ fun VolumeCells(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val reducedMotion = rememberReducedMotion()
     var engaged by remember { mutableStateOf(false) }
     // Never leave the control stuck in adjust mode after focus moves away.
     LaunchedEffect(focused, enabled) { if (!focused || !enabled) engaged = false }
     val filled = (level.coerceIn(0f, 1f) * cells).toInt()
-    val borderColor = when {
-        engaged && enabled -> FlickColor.Spark
-        focused && enabled -> FlickColor.Link
-        else -> FlickColor.OutlineHairline
-    }
+    val ringVisible = focused && enabled
+    val shape = FlickShape.Lg
+    val scale by animateFloatAsState(
+        targetValue = if (ringVisible && !reducedMotion) FlickMotion.FOCUS_SCALE else 1f,
+        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
+        label = "volumeScale",
+    )
+    val fill = if (engaged && enabled) FlickColor.SelectedFill else FlickColor.ControlFillStrong
+    val stroke = if (engaged && enabled) FlickColor.SelectedBorder else FlickColor.Outline
 
     Row(
         modifier = modifier
+            .defaultMinSize(minHeight = SecondaryTransportTargetSize)
             .focusProperties { canFocus = enabled }
-            .clip(RoundedCornerShape(12.dp))
-            .border(
-                width = if (enabled && (focused || engaged)) 2.dp else 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(12.dp),
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = if (enabled) 1f else 0.38f
+            }
+            .flickFocusRing(visible = ringVisible, shape = shape)
+            .clip(shape)
+            .background(fill)
+            .border(1.dp, stroke, shape)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
             .onKeyEvent { event ->
                 if (!enabled) return@onKeyEvent false
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
@@ -298,15 +324,18 @@ fun VolumeCells(
                 },
             ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(
             imageVector = FlickIcons.Volume,
             contentDescription = null,
-            tint = if (engaged) FlickColor.Spark else FlickColor.OnSurface,
-            modifier = Modifier.size(28.dp),
+            tint = if (engaged) FlickColor.Spark else Color.White,
+            modifier = Modifier.size(24.dp),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             repeat(cells) { i ->
                 Box(
                     modifier = Modifier
@@ -315,8 +344,8 @@ fun VolumeCells(
                         .background(
                             when {
                                 i < filled && engaged -> FlickColor.Spark
-                                i < filled -> FlickColor.OnSurface
-                                else -> FlickColor.OnSurface.copy(alpha = 0.22f)
+                                i < filled -> FlickColor.SparkLight
+                                else -> FlickColor.TrackBase
                             },
                         ),
                 )

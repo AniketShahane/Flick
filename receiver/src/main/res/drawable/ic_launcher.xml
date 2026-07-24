@@ -1,26 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Flick launcher icon: the brand mark (play triangle + motion streaks) on a
-     dark tonal disc. Self-contained vector; no raster assets. -->
+<!--
+  Flick launcher icon, legacy/full-bleed form: the brand mark (blue play triangle
+  + three amber motion streaks) on the #04070F canvas. Kept as the pre-adaptive
+  fallback; the manifest points at @mipmap/ic_launcher.
+
+  Geometry is the design's 64-unit grid, with the 9-unit round-join stroke
+  resolved into the outline so a single flat fill carries the triangle.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp"
     android:height="48dp"
     android:viewportWidth="64"
     android:viewportHeight="64">
+
     <path
-        android:fillColor="#14111A"
+        android:fillColor="#04070F"
         android:pathData="M0,0h64v64H0z" />
+
+    <!-- motion streaks: (9,22.5,13x5) (4,31.5,11x5) (9,40.5,13x5), r=2.5 -->
     <path
-        android:fillColor="#FF4B24"
-        android:fillAlpha="0.85"
-        android:pathData="M9,22.5h13a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H9a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
-    <path
-        android:fillColor="#FF4B24"
+        android:fillColor="#FFB61E"
         android:fillAlpha="0.5"
-        android:pathData="M5,31.5h10a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H5a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
+        android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
     <path
-        android:fillColor="#FF4B24"
-        android:strokeColor="#FF4B24"
-        android:strokeWidth="6"
-        android:strokeLineJoin="round"
-        android:pathData="M28,17 L51,32 L28,47 Z" />
+        android:fillColor="#FFB61E"
+        android:fillAlpha="0.85"
+        android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
+    <path
+        android:fillColor="#FFB61E"
+        android:fillAlpha="0.5"
+        android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
+
+    <!-- play triangle M28,15 L56,32 L28,49, outset 4.5 with round joins -->
+    <path
+        android:fillColor="#1240E8"
+        android:pathData="M30.34,11.15L58.34,28.15a4.5,4.5 0 0 1 0,7.7L30.34,52.85a4.5,4.5 0 0 1 -6.84,-3.85L23.5,15a4.5,4.5 0 0 1 6.84,-3.85z" />
 </vector>

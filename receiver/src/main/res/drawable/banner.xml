@@ -1,40 +1,103 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Leanback launcher banner (320x180 dp): the Flick lockup — mark + wordmark
-     stand-in — on the dark canvas. Self-contained vector; no raster assets. -->
+<!--
+  Leanback launcher banner (320 x 180 dp): the Flick lockup — the brand mark plus
+  the "flick" wordmark drawn as real letterforms — on the #04070F canvas, with the
+  design's brand-blue wash hanging off the top edge.
+
+  The wordmark is built from round-capped strokes at a 13-unit weight, matching
+  the mark's own rounded language: ascender 50, x-height 74, baseline 118. The
+  dot on the "i" is the amber accent.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="320dp"
     android:height="180dp"
     android:viewportWidth="320"
     android:viewportHeight="180">
+
     <path
-        android:fillColor="#0F0D14"
+        android:fillColor="#04070F"
         android:pathData="M0,0h320v180H0z" />
-    <!-- brand mark, scaled/positioned left -->
+
+    <path android:pathData="M0,0h320v180H0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="160"
+                android:centerY="-18"
+                android:gradientRadius="230">
+                <item
+                    android:color="#381240E8"
+                    android:offset="0" />
+                <item
+                    android:color="#0004070F"
+                    android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- brand mark on the 64-unit grid, centred on the banner's vertical axis -->
     <group
-        android:translateX="86"
-        android:translateY="58"
-        android:scaleX="1"
-        android:scaleY="1">
+        android:translateX="35"
+        android:translateY="58">
         <path
-            android:fillColor="#FF4B24"
-            android:fillAlpha="0.85"
-            android:pathData="M9,22.5h13a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H9a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
-        <path
-            android:fillColor="#FF4B24"
+            android:fillColor="#FFB61E"
             android:fillAlpha="0.5"
-            android:pathData="M5,31.5h10a2.5,2.5 0 0 1 2.5,2.5a2.5,2.5 0 0 1 -2.5,2.5H5a2.5,2.5 0 0 1 -2.5,-2.5a2.5,2.5 0 0 1 2.5,-2.5z" />
+            android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
         <path
-            android:fillColor="#FF4B24"
-            android:strokeColor="#FF4B24"
-            android:strokeWidth="6"
-            android:strokeLineJoin="round"
-            android:pathData="M28,17 L51,32 L28,47 Z" />
+            android:fillColor="#FFB61E"
+            android:fillAlpha="0.85"
+            android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
+        <path
+            android:fillColor="#FFB61E"
+            android:fillAlpha="0.5"
+            android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
+        <path
+            android:fillColor="#1240E8"
+            android:pathData="M30.34,11.15L58.34,28.15a4.5,4.5 0 0 1 0,7.7L30.34,52.85a4.5,4.5 0 0 1 -6.84,-3.85L23.5,15a4.5,4.5 0 0 1 6.84,-3.85z" />
     </group>
-    <!-- wordmark underline accents -->
-    <path
-        android:fillColor="#EDEAF2"
-        android:pathData="M150,84 h130 v7 H150 z" />
-    <path
-        android:fillColor="#6A6478"
-        android:pathData="M150,98 h96 v4 H150 z" />
+
+    <!-- "flick" wordmark -->
+    <group
+        android:translateX="-2"
+        android:translateY="6">
+        <!-- f -->
+        <path
+            android:pathData="M140,54h-4a8,8 0 0 0 -8,8V118 M118,80.5H142"
+            android:strokeColor="#F2F6FF"
+            android:strokeWidth="13"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <!-- l -->
+        <path
+            android:pathData="M160,50V118"
+            android:strokeColor="#F2F6FF"
+            android:strokeWidth="13"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <!-- i -->
+        <path
+            android:pathData="M180,74V118"
+            android:strokeColor="#F2F6FF"
+            android:strokeWidth="13"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:fillColor="#FFB61E"
+            android:pathData="M180,51a7,7 0 0 1 0,14a7,7 0 0 1 0,-14z" />
+        <!-- c -->
+        <path
+            android:pathData="M236.5,83a21,21 0 1 0 0,26"
+            android:strokeColor="#F2F6FF"
+            android:strokeWidth="13"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <!-- k -->
+        <path
+            android:pathData="M260,50V118 M279,76L260,98 M267,90L281,118"
+            android:strokeColor="#F2F6FF"
+            android:strokeWidth="13"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
 </vector>

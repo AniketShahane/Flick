@@ -1,58 +1,74 @@
 package com.flick.receiver.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.SubtitleCueKind
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.glass
 import java.util.Locale
 
+/** Fixed label gutter — the whole point of the HUD is that values line up. */
+private val LabelGutter = 84.dp
+
 /**
- * T10b · the opt-in metrics overlay (default OFF; toggled from settings). The old
- * developer HUD restyled as a well-typed glass card, pinned safely top-left, with
- * a Link accent edge. Purely presentational — it never takes D-pad focus. Reads
- * the existing [DiagnosticsSnapshot] telemetry unchanged.
+ * T10b · the opt-in developer HUD (default OFF; toggled from settings). This is
+ * deliberately the *power-user* layer and stays subordinate to the Stream metrics
+ * panel: no glass gloss, no rounded generosity — a dense mono readout on a dark
+ * plate with a brand-blue rule down its edge, pinned inside the safe area by its
+ * caller.
+ *
+ * Amber marks the one number a tuner watches (throughput); green/amber carry the
+ * existing health semantics. Purely presentational — it never takes D-pad focus,
+ * and it reads the [DiagnosticsSnapshot] telemetry unchanged.
  */
 @Composable
 fun MetricsOverlay(
     snapshot: DiagnosticsSnapshot,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(8.dp)
+    val shape = FlickShape.Sm
     Column(
         modifier = modifier
-            .widthIn(min = 320.dp, max = 460.dp)
+            .widthIn(min = 320.dp, max = 470.dp)
             .clip(shape)
-            .glass(shape)
+            .background(FlickColor.ScrimVeil)
+            .border(1.dp, FlickColor.OutlineHairline, shape)
             .drawBehind {
-                // 3dp Link accent along the left edge.
+                // 3dp brand rule along the leading edge. Blue, never amber: amber
+                // means focus everywhere else and this surface is never focusable.
                 drawRect(
-                    color = FlickColor.Link,
+                    color = FlickColor.PrimaryOnDark,
                     topLeft = Offset(0f, 0f),
                     size = Size(3.dp.toPx(), size.height),
                 )
             }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(start = 17.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         MetricRow(stringResource(R.string.metrics_net), netLine(snapshot), FlickColor.Live)
         MetricRow(
@@ -64,38 +80,53 @@ fun MetricsOverlay(
             ),
             if (snapshot.rebufferCount == 0) FlickColor.Live else FlickColor.Caution,
         )
-        MetricRow(stringResource(R.string.metrics_vid), vidLine(snapshot), FlickColor.OnSurface)
-        MetricRow(stringResource(R.string.metrics_dec), decLine(snapshot), FlickColor.OnSurface)
-        MetricRow(stringResource(R.string.metrics_sub), subtitleLine(snapshot), FlickColor.OnSurface)
-        MetricRow(stringResource(R.string.metrics_bitrate), mbps(snapshot.bitrateEstimateBps), FlickColor.OnSurface)
+        MetricRow(stringResource(R.string.metrics_vid), vidLine(snapshot), FlickColor.OnChrome)
+        MetricRow(stringResource(R.string.metrics_dec), decLine(snapshot), FlickColor.OnChrome)
+        MetricRow(stringResource(R.string.metrics_sub), subtitleLine(snapshot), FlickColor.OnChrome)
+        MetricRow(stringResource(R.string.metrics_bitrate), mbps(snapshot.bitrateEstimateBps), FlickColor.Spark)
         MetricRow(
             stringResource(R.string.metrics_dropped),
             stringResource(R.string.metrics_dropped_value, snapshot.droppedFrames, clock(snapshot.positionMs)),
-            if (snapshot.droppedFrames == 0L) FlickColor.OnSurface else FlickColor.Caution,
+            if (snapshot.droppedFrames == 0L) FlickColor.Live else FlickColor.Caution,
+        )
+        Box(
+            modifier = Modifier
+                .padding(top = 3.dp)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(FlickColor.OutlineHairline),
         )
         Text(
             text = stringResource(R.string.metrics_footer),
-            style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Medium),
+            style = FlickType.monoEyebrow(trackingEm = 0.12f),
             color = FlickColor.OnSurfaceFaint,
         )
     }
 }
 
 @Composable
-private fun MetricRow(label: String, value: String, valueColor: androidx.compose.ui.graphics.Color) {
+private fun MetricRow(label: String, value: String, valueColor: Color) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
             text = label,
-            style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Bold),
-            color = FlickColor.OnSurfaceDim,
+            style = FlickType.monoEyebrow(trackingEm = 0.14f),
+            color = FlickColor.OnPanelLabel,
+            modifier = Modifier
+                .width(LabelGutter)
+                .padding(top = 3.dp),
+            maxLines = 1,
         )
         Text(
             text = value,
-            style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Medium),
+            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Medium),
             color = valueColor,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

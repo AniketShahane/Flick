@@ -17,6 +17,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
@@ -124,6 +125,14 @@ class PlayerController(context: Context) {
 
     /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
     private var lastVolume: Float = 1f
+
+    // Facts about the audio the decoder is actually being fed, for the honest
+    // codec chips. Written only from the analytics listener and cleared for each
+    // new session, so a chip can never describe the previous film.
+    private var audioMimeType: String? = null
+    private var audioChannelCount: Int = Format.NO_VALUE
+    private var audioCodecs: String? = null
+
     private data class StartupCallbacks(
         val mediaId: String,
         val onFirstFrame: () -> Unit,
@@ -316,6 +325,19 @@ class PlayerController(context: Context) {
             }
         }
 
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?,
+        ) {
+            // Whatever the audio renderer actually received — the only honest
+            // source for the "E-AC-3 · 5.1" chip. Unknown fields stay unset so
+            // the chip is dropped rather than guessed.
+            format.sampleMimeType?.let { audioMimeType = it }
+            if (format.channelCount > 0) audioChannelCount = format.channelCount
+            format.codecs?.takeIf { it.isNotBlank() }?.let { audioCodecs = it }
+        }
+
         override fun onVideoDecoderInitialized(
             eventTime: AnalyticsListener.EventTime,
             decoderName: String,
@@ -324,6 +346,12 @@ class PlayerController(context: Context) {
         ) {
             instrumentation.decoderName = decoderName
         }
+    }
+
+    private fun resetAudioFormat() {
+        audioMimeType = null
+        audioChannelCount = Format.NO_VALUE
+        audioCodecs = null
     }
 
     private fun closeSeekFillWindow() {
@@ -584,6 +612,7 @@ class PlayerController(context: Context) {
         stableReadySinceMs = 0L
         probeLatencyMs = 0L
         instrumentation.reset()
+        resetAudioFormat()
         val exo = player ?: createPlayer().also { player = it }
         // stop() releases the terminal session but intentionally keeps this
         // foreground player instance reusable. Rebind before any new playback.
@@ -609,6 +638,7 @@ class PlayerController(context: Context) {
         cancelPendingRecovery()
         recoveryGateCount = 0
         instrumentation.reset()
+        resetAudioFormat()
         // A startup adoption always gets a fresh listener/renderer instance.
         // Switch the platform session to B before releasing A, then publish B
         // to Compose. This prevents a physical media key targeting released A.
@@ -710,6 +740,43 @@ class PlayerController(context: Context) {
     fun setVolume(level: Float) {
         lastVolume = level.coerceIn(0f, 1f)
         player?.volume = lastVolume
+    }
+
+    // --- Subtitle track surface ----------------------------------------------
+    // Read/write of Media3's text-track selection for the subtitles panel. Both
+    // are main-thread only and touch nothing but trackSelectionParameters — the
+    // media item, load control, decoder policy and recovery state are untouched.
+
+    /**
+     * The text tracks Media3 currently reports, in container order. Empty while
+     * no player exists or the media declares no subtitles — the panel then shows
+     * only its Off row rather than inventing tracks.
+     */
+    fun subtitleTracks(): List<SubtitleTrackInfo> {
+        val exo = player ?: return emptyList()
+        return subtitleTracksFrom(exo.currentTracks)
+    }
+
+    /**
+     * Select the text track carrying [id] (from [subtitleTracks]); null turns
+     * subtitles off. An id that no longer resolves against the live listing is
+     * ignored, so a stale panel choice can never override an unrelated track.
+     */
+    fun selectSubtitleTrack(id: String?) {
+        val exo = player ?: return
+        val builder = exo.trackSelectionParameters.buildUpon()
+        if (id == null) {
+            exo.trackSelectionParameters = builder
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            return
+        }
+        val selection: TrackSelectionOverride = subtitleTrackOverride(exo.currentTracks, id) ?: return
+        exo.trackSelectionParameters = builder
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(selection)
+            .build()
     }
 
     /** Whether a media session is currently loaded (drives idle-vs-playing UI). */
@@ -816,6 +883,9 @@ class PlayerController(context: Context) {
             subtitleTrackSelected = instrumentation.subtitleTrackSelected,
             subtitleTrackMimeType = instrumentation.subtitleTrackMimeType,
             subtitleCueKind = instrumentation.subtitleCueKind,
+            audioMimeType = audioMimeType,
+            audioChannelCount = audioChannelCount,
+            audioCodecs = audioCodecs,
         )
     }
 

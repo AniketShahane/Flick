@@ -5,14 +5,13 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,29 +21,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.ui.components.FlickTvButton
+import com.flick.receiver.ui.components.LiveDot
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.idleAmbientBackground
 import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 /**
- * T2 · Idle — "ready to cast". Screensaver-grade standby: the mark breathes, the
- * ambient gradient sits low. The pairing hint whispers; focus rests on the pill.
+ * T2 · Idle — "ready to cast". Screensaver-grade standby on the ambient blue
+ * wash (spec §5.6): the mark breathes, the clock runs, and the live dot says the
+ * TV is still listening. Focus rests on "Pair another phone".
  */
 @Composable
 fun IdleScreen(
@@ -59,39 +58,27 @@ fun IdleScreen(
 
     val reducedMotion = rememberReducedMotion()
     val markAlpha = if (reducedMotion) {
-        0.7f
+        0.85f
     } else {
         val breathe = rememberInfiniteTransition(label = "idleBreathe")
         val alpha by breathe.animateFloat(
-            initialValue = 0.35f,
-            targetValue = 0.85f,
-            animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
+            initialValue = 0.42f,
+            targetValue = 0.92f,
+            animationSpec = infiniteRepeatable(
+                tween(2600, easing = FlickMotion.Breathe),
+                RepeatMode.Reverse,
+            ),
             label = "markAlpha",
         )
         alpha
     }
 
-    var clock by remember { mutableStateOf(nowHhMm()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            clock = nowHhMm()
-            delay(10_000L)
-        }
-    }
+    val clock = rememberIdleWallClock()
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(FlickColor.Canvas)
-            .drawBehind {
-                drawRect(
-                    Brush.radialGradient(
-                        colors = listOf(FlickColor.SurfaceRaised.copy(alpha = 0.6f), FlickColor.Canvas),
-                        center = center.copy(x = size.width * 0.7f, y = size.height * 0.85f),
-                        radius = size.maxDimension * 0.7f,
-                    ),
-                )
-            },
+            .idleAmbientBackground(),
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -99,22 +86,15 @@ fun IdleScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             BrandMark(
-                size = 64.dp,
-                modifier = Modifier
-                    .size(64.dp)
-                    .alpha(markAlpha),
+                size = 72.dp,
+                tint = FlickColor.PrimaryOnDark,
+                modifier = Modifier.alpha(markAlpha),
             )
             Text(
                 text = clock,
-                style = FlickType.monoTabular(sizeSp = 56, weight = FontWeight.Bold),
-                color = FlickColor.OnSurface.copy(alpha = 0.9f),
-                modifier = Modifier.padding(top = 20.dp),
-            )
-            Text(
-                text = stringResource(R.string.idle_ready),
-                fontSize = 24.sp,
-                color = FlickColor.OnSurfaceDim,
-                modifier = Modifier.padding(top = 12.dp),
+                style = FlickType.monoTabular(sizeSp = 56, weight = FontWeight.SemiBold),
+                color = FlickColor.OnSurface,
+                modifier = Modifier.padding(top = 22.dp),
             )
         }
 
@@ -123,21 +103,17 @@ fun IdleScreen(
                 .align(Alignment.BottomStart)
                 .padding(safeArea),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .drawBehind { drawCircle(FlickColor.Live) },
-            )
+            LiveDot(color = FlickColor.Live, size = 7.dp, pulsing = true)
             Text(
                 text = if (pairedLabel != null) {
                     stringResource(R.string.idle_paired_with, pairedLabel)
                 } else {
                     stringResource(R.string.idle_ready)
                 },
-                fontSize = 24.sp,
-                color = FlickColor.OnSurfaceFaint,
+                style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                color = FlickColor.OnSurfaceDim,
             )
         }
 
@@ -147,15 +123,47 @@ fun IdleScreen(
                 .padding(safeArea),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            FlickTvButton(onClick = onOpenSettings) {
-                Text(stringResource(R.string.idle_settings), fontSize = 24.sp, color = FlickColor.OnSurfaceDim)
+            FlickTvButton(
+                onClick = onOpenSettings,
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.idle_settings),
+                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                    color = FlickColor.OnSurfaceDim,
+                )
             }
-            FlickTvButton(onClick = onPairAnother, focusRequester = pairFocus) {
-                Text(stringResource(R.string.idle_pair_another), fontSize = 24.sp, color = FlickColor.OnSurface)
+            FlickTvButton(
+                onClick = onPairAnother,
+                focusRequester = pairFocus,
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.idle_pair_another),
+                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                    color = FlickColor.OnSurface,
+                )
             }
         }
     }
 }
 
-private fun nowHhMm(): String =
-    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+/**
+ * The real device time in the TV's own 12-/24-hour setting, re-read on each minute
+ * boundary. `DateFormat.getTimeFormat` is the only source that honours the
+ * platform toggle — a hardcoded pattern would disagree with the playback chrome
+ * clock on a 12-hour TV.
+ */
+@Composable
+private fun rememberIdleWallClock(): String {
+    val context = LocalContext.current
+    val formatter = remember(context) { android.text.format.DateFormat.getTimeFormat(context) }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L - System.currentTimeMillis() % 60_000L)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    return remember(formatter, nowMs) { formatter.format(Date(nowMs)) }
+}

@@ -2,22 +2,39 @@
 <resources>
     <string name="app_name">Flick</string>
     <string name="brand_wordmark">flick</string>
+    <!-- Lockup eyebrow on the pair and idle screens: "RECEIVER · LIVING ROOM TV". -->
+    <string name="receiver_eyebrow">RECEIVER · %1$s</string>
 
     <!-- T1 · First-run pair -->
-    <string name="pair_title">Bring your movies\nto this screen</string>
-    <string name="pair_instructions">Scan this code with your phone camera to open Flick. It fills in this TV’s address for you — then type the code below to finish.</string>
-    <string name="pair_this_tv">This TV — \"%1$s\"</string>
+    <string name="pair_title">Scan to flick\nfrom your phone.</string>
+    <string name="pair_instructions">Open Flick, tap Devices, and point your camera at the code. Everything stays on your Wi-Fi.</string>
+    <!-- The one word inside pair_instructions that renders in the amber accent. -->
+    <string name="pair_instructions_highlight">Flick</string>
     <string name="pair_show_bigger">Show code bigger</string>
     <string name="pair_hide_bigger">Done</string>
     <string name="pair_rename">Rename TV</string>
     <string name="pair_code_hint">Enter this code on your phone</string>
     <string name="pair_qr_content_description">QR code for pairing this TV with Flick on your phone</string>
     <!-- Manual-entry escape hatch when the QR can\'t be scanned / discovery fails. -->
-    <string name="pair_manual_hint">In Flick, enter host %1$s and port %2$d</string>
+    <string name="pair_manual_eyebrow">OR ADD THIS TV BY HAND</string>
+    <string name="pair_manual_ip_label">IP address</string>
+    <string name="pair_manual_port_label">Port</string>
+    <string name="pair_manual_code_label">Pairing code</string>
+    <!-- Shown when PairingManager exposes no remaining TTL — never invent a countdown. -->
+    <string name="pair_one_sender">One sender at a time</string>
+    <!-- Only when a real remaining-TTL value exists; %1$s is a m:ss timer. -->
+    <!-- Rendered uppercase in tracked mono, so it must stay short enough for one
+         line inside the manual-entry card — see PairColumnItemGap. -->
+    <string name="pair_code_rotates">Code rotates in %1$s · one sender</string>
+    <string name="pair_listening">Listening · no account, nothing uploaded</string>
+    <string name="pair_url">flick://%1$s:%2$d</string>
     <!-- Low-emphasis bind health, so a stale port reads differently from a wrong code. -->
     <string name="pair_bind_health">link up %1$ds · %2$d rebinds</string>
     <string name="pair_bind_last_teardown">last: %1$s</string>
-    <string name="pair_locked">Pairing is temporarily locked. Try again shortly.</string>
+    <!-- Must hold ONE line at 24 sp inside the manual-entry card: this replaces the
+         timer row, and a second line overflows the pair column's vertical budget
+         (see PairColumnItemGap) and crushes the action row's labels. -->
+    <string name="pair_locked">Pairing locked — try again shortly.</string>
     <string name="pair_success">Phone paired</string>
     <string name="settings_forget_all">Forget all phones</string>
     <string name="settings_forget_all_summary">Remove every paired phone from this TV</string>
@@ -31,29 +48,116 @@
     <string name="idle_pair_another">Pair another phone</string>
     <string name="idle_settings">Settings</string>
 
-    <!-- Connecting (pre-flight probe gate) -->
+    <!-- Connecting (pre-flight probe gate) / handshake -->
     <string name="connecting_title">Starting your film…</string>
-    <string name="connecting_detail">Confirming direct-play at full quality</string>
+    <string name="connecting_detail">Opening a direct stream — no transcode, no cloud.</string>
+    <!-- Used only when both the device label and the media title are known. -->
+    <string name="connecting_device_title">%1$s is flicking %2$s</string>
 
     <!-- T3–T6 · Playback chrome -->
-    <string name="badge_dolby_vision">DOLBY VISION</string>
-    <string name="badge_hdr10">HDR10</string>
     <string name="now_playing_from">from %1$s</string>
-    <string name="now_playing_source">4K · direct-play</string>
-    <string name="paused_label">PAUSED</string>
+    <string name="now_playing_flicked_from">Flicked from %1$s</string>
+    <string name="now_playing_eyebrow">NOW PLAYING · DIRECT FILE</string>
+    <string name="playback_surface_description">Film surface</string>
+    <string name="paused_title">Paused</string>
     <string name="paused_remote">PAUSED — REMOTE</string>
     <string name="syncing">SYNCING…</string>
     <string name="syncing_with_phone">SYNCING WITH PHONE…</string>
     <string name="scrub_confirmed">confirmed %1$s</string>
     <string name="scrub_target">target %1$s · snap on release</string>
+    <string name="scrub_remaining">−%1$s</string>
     <string name="transport_back_10">Skip back 10 seconds</string>
     <string name="transport_play">Play</string>
     <string name="transport_pause">Pause</string>
     <string name="transport_forward_10">Skip forward 10 seconds</string>
+    <!-- The ±10 s seek-burst readout; the _hold variant adds the repeat multiplier. -->
     <string name="remote_seek_step">%1$s%2$d s</string>
     <string name="remote_seek_hold">%1$s%2$d s · %3$d×</string>
     <string name="volume">Volume</string>
     <string name="volume_state">%1$d percent</string>
+    <!-- Outlined pill under the source pill; distinct from error_end_session. -->
+    <string name="session_end_pill">END SESSION</string>
+    <!-- Net-health pill: band plus the TV\'s own RSSI. Band-only when RSSI is unread. -->
+    <string name="net_pill">%1$s · %2$d dBm</string>
+    <string name="net_pill_band_only">%1$s</string>
+
+    <!-- Spec chips — real telemetry only; omit any chip whose value is unknown. -->
+    <string name="chip_video">%1$s %2$s</string>
+    <string name="chip_audio">%1$s · %2$s</string>
+    <string name="chip_resolution_4k">4K</string>
+    <string name="chip_resolution_1440p">1440p</string>
+    <string name="chip_resolution_1080p">1080p</string>
+    <string name="chip_resolution_720p">720p</string>
+    <string name="chip_resolution_sd">SD</string>
+    <string name="chip_hdr_dolby_vision">DOLBY VISION</string>
+    <string name="chip_hdr_hdr10">HDR10</string>
+    <string name="chip_hdr_sdr">SDR</string>
+    <string name="chip_channels_mono">MONO</string>
+    <string name="chip_channels_stereo">STEREO</string>
+    <string name="chip_channels_51">5.1</string>
+    <string name="chip_channels_71">7.1</string>
+    <string name="chip_channels_other">%1$d CH</string>
+
+    <!-- Codec display names, mapped from the live sample MIME. -->
+    <string name="codec_dolby_vision">DOLBY VISION</string>
+    <string name="codec_hevc">HEVC</string>
+    <string name="codec_avc">H.264</string>
+    <string name="codec_av1">AV1</string>
+    <string name="codec_vp9">VP9</string>
+    <string name="codec_mpeg4">MPEG-4</string>
+    <string name="codec_eac3">E-AC-3</string>
+    <string name="codec_eac3_joc">DOLBY ATMOS</string>
+    <string name="codec_ac3">AC-3</string>
+    <string name="codec_aac">AAC</string>
+    <string name="codec_dts">DTS</string>
+    <string name="codec_dts_hd">DTS-HD</string>
+    <string name="codec_truehd">TRUEHD</string>
+    <string name="codec_opus">OPUS</string>
+    <string name="codec_flac">FLAC</string>
+    <string name="codec_vorbis">VORBIS</string>
+    <string name="codec_mp3">MP3</string>
+    <string name="codec_pcm">PCM</string>
+
+    <!-- Subtitles: transport card + panel -->
+    <string name="subtitles_card_title">Subtitles</string>
+    <string name="subtitles_state_off">OFF</string>
+    <string name="subtitles_panel_title">Subtitles</string>
+    <string name="subtitles_close">Close subtitles</string>
+    <string name="subtitles_off">Off</string>
+    <!-- When a track carries no label or language. -->
+    <string name="subtitles_track_fallback">Track %1$d</string>
+    <!-- Meta chip: format · carriage, e.g. "SRT · EMBEDDED". -->
+    <string name="subtitles_track_meta">%1$s · %2$s</string>
+    <string name="subtitles_source_embedded">EMBEDDED</string>
+    <string name="subtitles_source_image">IMAGE</string>
+    <string name="subtitles_size_label">SIZE</string>
+    <string name="subtitles_size_small">Small</string>
+    <string name="subtitles_size_medium">Medium</string>
+    <string name="subtitles_size_large">Large</string>
+
+    <!-- Stream metrics: transport card + panel -->
+    <string name="metrics_card_title">Stream metrics</string>
+    <string name="metrics_panel_title">Stream metrics</string>
+    <string name="metrics_panel_close">Close stream metrics</string>
+    <string name="metrics_health_healthy">HEALTHY · DIRECT PLAY</string>
+    <string name="metrics_health_degraded">DEGRADED · RECOVERING</string>
+    <string name="metrics_throughput_eyebrow">THROUGHPUT · LAST 40 s</string>
+    <string name="metrics_label_resolution">RESOLUTION</string>
+    <string name="metrics_label_codec">CODEC</string>
+    <string name="metrics_label_frame_rate">FRAME RATE</string>
+    <string name="metrics_label_bitrate">BITRATE</string>
+    <string name="metrics_label_buffer">BUFFER</string>
+    <string name="metrics_label_latency">LATENCY</string>
+    <string name="metrics_label_dropped">DROPPED FRAMES</string>
+    <string name="metrics_label_decoder">DECODER</string>
+    <string name="metrics_label_transport">TRANSPORT</string>
+    <string name="metrics_value_resolution">%1$d × %2$d</string>
+    <string name="metrics_value_frame_rate">%1$s fps</string>
+    <string name="metrics_value_mbps">%1$s Mb/s</string>
+    <string name="metrics_value_seconds">%1$s s</string>
+    <string name="metrics_value_millis">%1$d ms</string>
+    <string name="metrics_value_dropped">%1$d</string>
+    <string name="metrics_value_transport">TCP · %1$s</string>
 
     <!-- T7 · Buffering -->
     <string name="buffering_title">Topping up — quality held</string>

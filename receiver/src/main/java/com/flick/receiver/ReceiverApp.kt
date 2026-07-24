@@ -12,13 +12,20 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.accessibility.CaptioningManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -28,19 +35,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.State
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -66,20 +77,29 @@ import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.PlayerController
 import com.flick.receiver.player.SUBTITLE_GLYPH_BACKGROUND_ALPHA
 import com.flick.receiver.player.SUBTITLE_WINDOW_ALPHA
+import com.flick.receiver.player.SubtitleTrackInfo
+import com.flick.receiver.player.ThroughputHistory
+import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
-import com.flick.receiver.ui.components.FlickWordmark
+import com.flick.receiver.ui.components.GlassPanel
+import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.screens.ErrorScreen
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.MetricsOverlay
 import com.flick.receiver.ui.screens.PairScreen
+import com.flick.receiver.ui.screens.PlaybackPanel
 import com.flick.receiver.ui.screens.PlaybackScreen
 import com.flick.receiver.ui.screens.QualityInfo
 import com.flick.receiver.ui.screens.SettingsScreen
+import com.flick.receiver.ui.screens.SubtitleSize
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
@@ -102,6 +122,18 @@ private const val RECONCILE_SAFETY_NET_MS = 10_000L
 
 /** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
 private const val DIAGNOSTICS_VISIBLE = 14
+
+/** Handshake card + spinner ring metrics (receiver-expressive-spec.md §5.2). */
+private val HANDSHAKE_CARD_WIDTH = 450.dp
+private val HANDSHAKE_RING_SIZE = 48.dp
+private val HANDSHAKE_RING_STROKE = 3.5.dp
+
+/** The lit portion of the handshake ring, and where it rests when motion is off. */
+private const val HANDSHAKE_RING_SWEEP = 90f
+private const val HANDSHAKE_RING_RESTING_ANGLE = 315f
+
+/** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
+private val SUBTITLE_SIZES = SubtitleSize.values()
 
 /**
  * The whole TV app: fixed cinematic dark, D-pad driven. It advertises the control
@@ -148,6 +180,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val logRevision by FlickLog.revision.collectAsState()
     var tvName by remember { mutableStateOf(pairing.tvName) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
+    // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
+    // adds a timer of its own.
+    val throughputHistory = remember { ThroughputHistory() }
+    var throughput by remember { mutableStateOf(ThroughputSnapshot.EMPTY) }
+    var subtitleTracks by remember { mutableStateOf<List<SubtitleTrackInfo>>(emptyList()) }
+    // Ordinal rather than the enum itself so the saver never has to reflect on it.
+    var subtitleSizeOrdinal by rememberSaveable { mutableStateOf(SubtitleSize.Medium.ordinal) }
+    val subtitleSize = SUBTITLE_SIZES[subtitleSizeOrdinal.coerceIn(0, SUBTITLE_SIZES.lastIndex)]
+    // Bridges the Compose choice to the detached PlayerView's SubtitleView, which
+    // lives outside composition.
+    val subtitleSizePreference = remember { SubtitleSizePreference() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     // Movable content preserves the same AndroidView/Surface across the opaque
     // preparing overlay and the visible playback chrome.
@@ -155,6 +198,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         movableContentOf {
             PlayerSurface(
                 controller = controller,
+                subtitleSizePreference = subtitleSizePreference,
                 onViewAvailable = { playerView = it },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -165,6 +209,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var metricsEnabled by rememberSaveable { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
+    var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
     var capturedRemoteButton by remember { mutableStateOf<TvRemoteButton?>(null) }
     var remoteSeekDeltaMs by remember { mutableStateOf<Long?>(null) }
     var remoteSeekSpeedLevel by remember { mutableStateOf(1) }
@@ -309,6 +354,13 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 if (frame.phase == PlaybackPhase.Error) session.onFatalPlaybackError()
                 if (tick % 5 == 0) {
                     snapshot = controller.snapshot()
+                    // Two ticks per histogram bar, so 40 bars really do span the
+                    // 40 s the metrics panel's eyebrow promises.
+                    throughputHistory.append(snapshot.bitrateEstimateBps)
+                    throughput = throughputHistory.snapshot()
+                    // Media3 republishes text tracks as the container is parsed;
+                    // the same 2 Hz arm keeps the panel honest without a listener.
+                    subtitleTracks = controller.subtitleTracks()
                     pairing.tick()
                 }
                 // Bind uptime only needs second resolution; refresh it rarely so
@@ -336,11 +388,24 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         if (surfaceMode == PlayerSurfaceMode.Hidden) playerView = null
     }
 
+    // A new cast must never inherit the previous film's telemetry: stale bars or
+    // a stale track list would be fabricated readings of the stream on screen.
+    LaunchedEffect((stage as? MediaStage.Active)?.castId) {
+        throughputHistory.clear()
+        throughput = ThroughputSnapshot.EMPTY
+        subtitleTracks = emptyList()
+        openPanel = PlaybackPanel.None
+    }
+
+    // The size choice multiplies the viewport-relative caption size the receiver
+    // already computes; the platform caption-manager scale still governs the base.
+    LaunchedEffect(subtitleSize) { subtitleSizePreference.update(subtitleSize.scale) }
+
     // With chrome hidden there is no focusable transport, so park focus on the
     // root catcher. Activity-level remote routing handles playback commands;
     // keeping a Compose focus owner also preserves ordinary fallback dispatch.
     LaunchedEffect(stage, chromeVisible) {
-        if (stage is MediaStage.Active && !chromeVisible) {
+        if (rootFocusCatcherEnabled(stage, chromeVisible)) {
             runCatching { rootFocus.requestFocus() }
         }
     }
@@ -376,9 +441,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     // Chrome reveal + auto-hide (chromeFade). Re-armed on every poke / state change.
-    LaunchedEffect(session.chromePoke, frame.phase, session.seeking) {
+    // An open side panel suspends the countdown: hiding the chrome force-closes the
+    // panel underneath it, and the metrics histogram spans 40 s while a track list
+    // has to be scannable. With no panel open the timing is unchanged.
+    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel) {
         chromeVisible = true
-        if (frame.phase == PlaybackPhase.Playing && !session.seeking) {
+        if (frame.phase == PlaybackPhase.Playing && !session.seeking && openPanel == PlaybackPanel.None) {
             delay(4000L)
             chromeVisible = false
         }
@@ -404,17 +472,23 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             else -> TvRemoteEventType.Other
         }
         val active = stage is MediaStage.Active
+        // An open side panel owns the whole D-pad: the policy captures physical
+        // left/right as ±10 s seeks before it ever consults chrome visibility, so
+        // the panel's own horizontal rows (the caption size cells) are only
+        // reachable while the receiver declines the playback gesture. The policy
+        // itself is untouched — this is the state we hand it.
+        val playbackGestures = active && openPanel == PlaybackPanel.None
         val capturedBefore = capturedRemoteButton
         val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
         val decision = tvRemoteDecision(
             button = button,
             eventType = eventType,
             repeatCount = event.repeatCount,
-            playbackActive = active,
+            playbackActive = playbackGestures,
             chromeVisible = chromeVisible,
             capturedButton = capturedRemoteButton,
         )
-        if (active && eventType == TvRemoteEventType.Down && seekButton &&
+        if (playbackGestures && eventType == TvRemoteEventType.Down && seekButton &&
             (decision.capture || capturedBefore == button)
         ) {
             if (decision.capture) {
@@ -466,6 +540,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             showSettings -> showSettings = false
             pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
             stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
+            // An open side panel is the topmost surface: dismiss it before Back is
+            // allowed to hide the chrome underneath it or end the cast.
+            stage is MediaStage.Active && openPanel != PlaybackPanel.None -> openPanel = PlaybackPanel.None
             stage is MediaStage.Active && chromeVisible -> chromeVisible = false
             stage is MediaStage.Active -> if (!server.stopLocalCast()) session.backToStandby()
             stage is MediaStage.Error -> session.backToStandby()
@@ -481,7 +558,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 .fillMaxSize()
                 .background(FlickColor.Canvas)
                 .focusRequester(rootFocus)
-                .focusable(enabled = stage is MediaStage.Active && !chromeVisible),
+                .focusable(enabled = rootFocusCatcherEnabled(stage, chromeVisible)),
         ) {
             when (stage) {
                 is MediaStage.Active -> if (surfaceMode == PlayerSurfaceMode.VisiblePlayback) {
@@ -508,18 +585,47 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         onForward10 = { session.onSkip(10_000L) },
                         onSetVolume = { session.onSetVolume(it) },
                         playFocusRequester = playFocus,
+                        diagnostics = snapshot,
+                        throughput = throughput,
+                        subtitleTracks = subtitleTracks,
+                        subtitleSize = subtitleSize,
+                        openPanel = openPanel,
+                        onOpenPanel = { openPanel = it },
+                        onSelectSubtitleTrack = { id ->
+                            controller.selectSubtitleTrack(id)
+                            // Media3 confirms the selection asynchronously; show the
+                            // command immediately and let the 2 Hz re-read above
+                            // reconcile it against what the player actually did.
+                            subtitleTracks = subtitleTracks.map { it.copy(isSelected = id != null && it.id == id) }
+                        },
+                        onSelectSubtitleSize = { subtitleSizeOrdinal = it.ordinal },
+                        // Same terminal path as Back on the playback surface.
+                        onEndSession = { if (!server.stopLocalCast()) session.backToStandby() },
                     ) { playerSurface() }
-                    if (metricsEnabled) {
-                        MetricsOverlay(
-                            snapshot = snapshot,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(safeArea),
-                        )
+                    // The dev HUD may only paint over bare film. The chrome now owns
+                    // the top-left corner (source pill above the focusable END
+                    // SESSION pill) and its side panels claim the full height above
+                    // the transport, so with chrome up this plate would cover
+                    // focusables and hide their amber ring; while chrome is up the
+                    // Stream metrics panel is the read (spec §5.5).
+                    AnimatedVisibility(
+                        visible = metricsEnabled && !chromeVisible,
+                        enter = fadeIn(FlickMotion.chromeFadeIn()),
+                        exit = fadeOut(FlickMotion.chromeFadeOut()),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(safeArea),
+                    ) {
+                        MetricsOverlay(snapshot = snapshot)
                     }
                 }
 
-                is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) ConnectingScreen { playerSurface() }
+                is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) {
+                    ConnectingScreen(
+                        deviceLabel = deviceLabel,
+                        title = session.title,
+                    ) { playerSurface() }
+                }
 
                 is MediaStage.Error -> ErrorScreen(
                     kind = stage.kind,
@@ -572,6 +678,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             bindUptimeSec = bindUptimeSec,
                             rebindCount = rebindCount,
                             lastTeardown = lastTeardown,
+                            // The real rotation deadline PairingManager already
+                            // holds — never a synthesised countdown.
+                            codeExpiresAtElapsedMs =
+                                (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
                             onRename = {
                                 val next = nextName(tvName)
                                 pairing.tvName = next
@@ -583,7 +693,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         )
 
                         pairingSnapshot.surface is PairingSurface.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(stringResource(R.string.pair_success), fontSize = 32.sp, color = FlickColor.OnSurface)
+                            Text(
+                                text = stringResource(R.string.pair_success),
+                                style = FlickType.display(sizeSp = 34, trackingEm = -0.045f),
+                                color = FlickColor.OnSurface,
+                            )
                         }
 
                         else -> IdleScreen(
@@ -602,55 +716,142 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 }
 
+/**
+ * The handshake (spec §5.2): a veil over the still-covered player surface and one
+ * glass card. [deviceLabel] and [title] are the live session's own values — the
+ * personalised headline only appears once both are actually known.
+ */
 @Composable
-private fun ConnectingScreen(videoContent: @Composable () -> Unit) {
+private fun ConnectingScreen(
+    deviceLabel: String?,
+    title: String?,
+    videoContent: @Composable () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
     ) {
         videoContent()
         Box(
-            modifier = Modifier.fillMaxSize().background(FlickColor.Canvas),
+            modifier = Modifier.fillMaxSize().background(FlickColor.ScrimVeil),
             contentAlignment = Alignment.Center,
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
+            GlassPanel(
+                modifier = Modifier.width(HANDSHAKE_CARD_WIDTH),
+                shape = FlickShape.Hero,
+                tone = GlassPanelTone.Panel,
+                contentPadding = PaddingValues(32.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                riseDistance = FlickMotion.TvRiseCard,
             ) {
-                FlickWordmark()
+                HandshakeRing()
                 Text(
-                    text = stringResource(R.string.connecting_title),
-                    fontFamily = FlickType.Display,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 34.sp,
+                    text = if (deviceLabel != null && title != null) {
+                        stringResource(R.string.connecting_device_title, deviceLabel, title)
+                    } else {
+                        stringResource(R.string.connecting_title)
+                    },
+                    style = FlickType.display(sizeSp = 27, trackingEm = -0.04f, lineHeightRatio = 1.12f),
                     color = FlickColor.OnSurface,
+                    textAlign = TextAlign.Center,
                 )
                 Text(
                     text = stringResource(R.string.connecting_detail),
-                    fontSize = 24.sp,
+                    style = FlickType.body(sizeSp = 24),
                     color = FlickColor.OnSurfaceDim,
+                    textAlign = TextAlign.Center,
                 )
             }
         }
     }
 }
 
+/**
+ * The amber handshake spinner. It rests at a fixed angle under reduced motion.
+ *
+ * The angle is read inside the draw lambda, not during composition, so a spinner
+ * over a live decoder invalidates only the draw phase.
+ */
+@Composable
+private fun HandshakeRing(modifier: Modifier = Modifier) {
+    val startAngle: State<Float> = if (rememberReducedMotion()) {
+        remember { mutableStateOf(HANDSHAKE_RING_RESTING_ANGLE) }
+    } else {
+        rememberInfiniteTransition(label = "handshake").animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = FlickMotion.tvSpin(),
+            label = "handshakeSweep",
+        )
+    }
+    Box(
+        modifier = modifier
+            .size(HANDSHAKE_RING_SIZE)
+            .drawBehind {
+                val stroke = Stroke(width = HANDSHAKE_RING_STROKE.toPx())
+                drawArc(
+                    color = FlickColor.Spark.copy(alpha = 0.22f),
+                    startAngle = 0f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = stroke,
+                )
+                drawArc(
+                    color = FlickColor.Spark,
+                    startAngle = startAngle.value,
+                    sweepAngle = HANDSHAKE_RING_SWEEP,
+                    useCenter = false,
+                    style = stroke,
+                )
+            },
+    )
+}
+
+/**
+ * The Small/Medium/Large caption choice, shared between Compose state and the
+ * detached [PlayerView], which lives outside composition. [scale] MULTIPLIES the
+ * viewport-relative size the receiver already computes, so the platform caption
+ * manager and the layout listeners keep governing the baseline.
+ */
+private class SubtitleSizePreference {
+    var scale: Float = SubtitleSize.Medium.scale
+        private set
+
+    /** Non-null only while a subtitle view is attached, so no view is retained. */
+    var reapply: (() -> Unit)? = null
+
+    fun update(newScale: Float) {
+        if (newScale == scale) return
+        scale = newScale
+        reapply?.invoke()
+    }
+}
+
 @Composable
 private fun PlayerSurface(
     controller: PlayerController,
+    subtitleSizePreference: SubtitleSizePreference,
     onViewAvailable: (PlayerView) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The film itself is the one unlabelled thing a screen reader would otherwise
+    // find on the playback surface; the label belongs on the real surface, not only
+    // on a test's stand-in for it.
+    val surfaceDescription = stringResource(R.string.playback_surface_description)
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.semantics { contentDescription = surfaceDescription },
         factory = { ctx ->
             PlayerView(ctx).apply {
                 useController = false
                 setKeepContentOnPlayerReset(true)
                 setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setBackgroundColor(FlickColor.Canvas.toArgb())
-                configureSubtitles(ctx.getSystemService(CaptioningManager::class.java))
+                setBackgroundColor(FlickColor.CanvasPlayback.toArgb())
+                configureSubtitles(
+                    ctx.getSystemService(CaptioningManager::class.java),
+                    subtitleSizePreference,
+                )
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -663,7 +864,10 @@ private fun PlayerSurface(
     )
 }
 
-private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
+private fun PlayerView.configureSubtitles(
+    captions: CaptioningManager?,
+    sizePreference: SubtitleSizePreference,
+) {
     val subtitles = subtitleView ?: return
     // Text cues use one Media3 cue window as the translucent plate. A partially
     // transparent BACKGROUND_COLOR is painted per glyph/run and overlaps into a
@@ -683,18 +887,21 @@ private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
     )
 
     fun applyTextSize(captionScale: Float = if (captions?.isEnabled == true) captions.fontScale else 1f) {
+        // The user's size choice multiplies the computed baseline; it never
+        // replaces it, so the caption-manager scale keeps its authority.
+        val baselineSp = reducedSubtitleTextSizeSp(
+            viewHeightPx = subtitles.height,
+            scaledDensity = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP,
+                1f,
+                subtitles.resources.displayMetrics,
+            ),
+            captionFontScale = captionScale,
+            defaultTextSizeFraction = androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION,
+        )
         subtitles.setFixedTextSize(
             TypedValue.COMPLEX_UNIT_SP,
-            reducedSubtitleTextSizeSp(
-                viewHeightPx = subtitles.height,
-                scaledDensity = TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_SP,
-                    1f,
-                    subtitles.resources.displayMetrics,
-                ),
-                captionFontScale = captionScale,
-                defaultTextSizeFraction = androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION,
-            ),
+            (baselineSp * sizePreference.scale).coerceAtLeast(1f),
         )
     }
 
@@ -716,6 +923,9 @@ private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
         captions?.addCaptioningChangeListener(captionListener)
         subtitles.addOnLayoutChangeListener(layoutListener)
         subtitles.context.registerComponentCallbacks(configurationListener)
+        // Bound to the same attach window as the platform listeners, so a
+        // detached view is never re-measured and never retained.
+        sizePreference.reapply = { applyTextSize() }
         listening = true
         applyTextSize()
     }
@@ -724,6 +934,7 @@ private fun PlayerView.configureSubtitles(captions: CaptioningManager?) {
         captions?.removeCaptioningChangeListener(captionListener)
         subtitles.removeOnLayoutChangeListener(layoutListener)
         subtitles.context.unregisterComponentCallbacks(configurationListener)
+        sizePreference.reapply = null
         listening = false
     }
     subtitles.addOnAttachStateChangeListener(
@@ -767,6 +978,22 @@ internal fun playerSurfaceMode(stage: MediaStage): PlayerSurfaceMode = when (sta
     is MediaStage.Checking, is MediaStage.Preparing -> PlayerSurfaceMode.CoveredConnecting
     is MediaStage.Active -> PlayerSurfaceMode.VisiblePlayback
     else -> PlayerSurfaceMode.Hidden
+}
+
+/**
+ * Whether the root catcher must hold D-pad focus, i.e. whether the stage on screen
+ * renders no focusable of its own.
+ *
+ * Playback with hidden chrome is the obvious case. The handshake is the other one:
+ * it is a purely informational card, and `TvRemoteKeyPolicy` deliberately declines
+ * to consume keys before playback is active — so without a catcher Compose would
+ * have no focus owner at all and nothing to hand focus back from when the stage
+ * advances. Idle, pair, settings and error all carry their own focusables.
+ */
+internal fun rootFocusCatcherEnabled(stage: MediaStage, chromeVisible: Boolean): Boolean = when (stage) {
+    is MediaStage.Checking, is MediaStage.Preparing -> true
+    is MediaStage.Active -> !chromeVisible
+    else -> false
 }
 
 private fun qualityInfo(s: DiagnosticsSnapshot): QualityInfo {

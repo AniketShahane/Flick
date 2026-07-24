@@ -1,51 +1,58 @@
 package com.flick.receiver.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.calculateEndPadding
-import androidx.compose.foundation.layout.calculateStartPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.idleAmbientBackground
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Row padding shared by every focusable settings row and the static info row. */
+private val RowPadding = PaddingValues(horizontal = 20.dp, vertical = 15.dp)
+
 /**
  * T10a · Settings. The old always-on developer HUD survives here as one row —
  * "Playback metrics overlay", off by default, phrased for the curious. Focus
- * lands on that toggle.
+ * lands on that toggle, and the row order below it (forget-all → diagnostics →
+ * done) is the D-pad path `SettingsScreenFocusTest` walks.
  */
 @Composable
 fun SettingsScreen(
@@ -68,8 +75,9 @@ fun SettingsScreen(
         start = safeArea.calculateStartPadding(layoutDirection),
         top = safeArea.calculateTopPadding() + 16.dp,
         end = safeArea.calculateEndPadding(layoutDirection),
-        // The focused control scales and casts a 16dp shadow. Keep both inside
-        // the scroll viewport instead of allowing the last row to be clipped.
+        // The focused control scales and carries a detached ring outside its own
+        // bounds. Keep both inside the scroll viewport instead of allowing the
+        // last row to be clipped.
         bottom = safeArea.calculateBottomPadding() + 34.dp,
     )
     val metricsFocus = remember { FocusRequester() }
@@ -79,7 +87,7 @@ fun SettingsScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(FlickColor.Surface),
+            .idleAmbientBackground(),
     ) {
         LazyColumn(
             modifier = Modifier
@@ -91,23 +99,26 @@ fun SettingsScreen(
             item(key = "title") {
                 Text(
                     text = stringResource(R.string.settings_title),
-                    fontFamily = FlickType.Display,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 34.sp,
+                    style = FlickType.display(sizeSp = 34, trackingEm = -0.045f),
                     color = FlickColor.OnSurface,
+                    modifier = Modifier.padding(bottom = 4.dp),
                 )
             }
 
             item(key = "rename") {
-                FlickTvRow(onClick = onRename, modifier = Modifier.fillMaxWidth()) {
+                FlickTvRow(
+                    onClick = onRename,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = RowPadding,
+                ) {
                     LabeledColumn(
                         modifier = Modifier.weight(1f),
                         title = stringResource(R.string.settings_device_name),
                         summary = tvName,
                     )
                     Text(
-                        stringResource(R.string.settings_disclosure),
-                        fontSize = 24.sp,
+                        text = stringResource(R.string.settings_disclosure),
+                        style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
                         color = FlickColor.OnSurfaceFaint,
                     )
                 }
@@ -118,9 +129,10 @@ fun SettingsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(11.dp))
+                        .clip(FlickShape.Md)
                         .background(FlickColor.SurfaceRaisedAlt)
-                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                        .border(1.dp, FlickColor.OutlineHairline, FlickShape.Md)
+                        .padding(RowPadding),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     LabeledColumn(
@@ -136,6 +148,7 @@ fun SettingsScreen(
                     onClick = onToggleMetrics,
                     focusRequester = metricsFocus,
                     modifier = Modifier.fillMaxWidth(),
+                    contentPadding = RowPadding,
                 ) {
                     LabeledColumn(
                         modifier = Modifier.weight(1f),
@@ -152,11 +165,16 @@ fun SettingsScreen(
                         if (confirmForget) onForgetAll() else confirmForget = true
                     },
                     modifier = Modifier.fillMaxWidth(),
+                    contentPadding = RowPadding,
                 ) {
                     LabeledColumn(
                         modifier = Modifier.weight(1f),
                         title = stringResource(R.string.settings_forget_all),
-                        summary = stringResource(if (confirmForget) R.string.settings_forget_all_confirm else R.string.settings_forget_all_summary),
+                        summary = stringResource(
+                            if (confirmForget) R.string.settings_forget_all_confirm
+                            else R.string.settings_forget_all_summary,
+                        ),
+                        summaryColor = if (confirmForget) FlickColor.Caution else FlickColor.OnSurfaceDim,
                     )
                 }
             }
@@ -164,7 +182,11 @@ fun SettingsScreen(
             // Self-diagnosing TV: the same FlickTV lines adb would show, without a
             // laptop. Memory-only; nothing here is persisted.
             item(key = "diagnostics") {
-                FlickTvRow(onClick = onToggleDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                FlickTvRow(
+                    onClick = onToggleDiagnostics,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = RowPadding,
+                ) {
                     LabeledColumn(
                         modifier = Modifier.weight(1f),
                         title = stringResource(R.string.settings_diagnostics_title),
@@ -179,15 +201,16 @@ fun SettingsScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(11.dp))
+                            .clip(FlickShape.Md)
                             .background(FlickColor.SurfaceRaisedAlt)
-                            .padding(horizontal = 18.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                            .border(1.dp, FlickColor.OutlineHairline, FlickShape.Md)
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         if (diagnostics.isEmpty()) {
                             Text(
                                 text = stringResource(R.string.settings_diagnostics_empty),
-                                style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Normal),
+                                style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Medium),
                                 color = FlickColor.OnSurfaceFaint,
                             )
                         } else {
@@ -201,16 +224,21 @@ fun SettingsScreen(
                                         entry.area,
                                         redactDiagnostic(entry.message),
                                     ),
-                                    style = FlickType.monoTabular(sizeSp = 24, weight = FontWeight.Normal),
+                                    style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Medium),
                                     color = FlickColor.OnSurfaceDim,
                                     maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
                     }
                 }
                 item(key = "clearDiagnostics") {
-                    FlickTvRow(onClick = onClearDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                    FlickTvRow(
+                        onClick = onClearDiagnostics,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = RowPadding,
+                    ) {
                         LabeledColumn(
                             modifier = Modifier.weight(1f),
                             title = stringResource(R.string.settings_diagnostics_clear),
@@ -222,8 +250,15 @@ fun SettingsScreen(
 
             item(key = "done") {
                 Box(Modifier.padding(top = 10.dp)) {
-                    FlickTvButton(onClick = onDone) {
-                        Text(stringResource(R.string.settings_done), fontSize = 24.sp, color = FlickColor.OnSurface)
+                    FlickTvButton(
+                        onClick = onDone,
+                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 11.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.settings_done),
+                            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                            color = FlickColor.OnSurface,
+                        )
                     }
                 }
             }
@@ -242,20 +277,39 @@ private fun redactDiagnostic(message: String): String {
 }
 
 @Composable
-private fun LabeledColumn(title: String, summary: String, modifier: Modifier = Modifier) {
+private fun LabeledColumn(
+    title: String,
+    summary: String,
+    modifier: Modifier = Modifier,
+    summaryColor: Color = FlickColor.OnSurfaceDim,
+) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, color = FlickColor.OnSurface)
-        Text(summary, fontSize = 24.sp, color = FlickColor.OnSurfaceDim)
+        Text(
+            text = title,
+            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+            color = FlickColor.OnSurface,
+        )
+        Text(
+            text = summary,
+            style = FlickType.body(sizeSp = 24, weight = FontWeight.Medium, lineHeightRatio = 1.1f),
+            color = summaryColor,
+        )
     }
 }
 
+/** Amber = on, per the §2c role split; the track never carries the focus ring. */
 @Composable
 private fun ToggleGlyph(enabled: Boolean) {
     Box(
         modifier = Modifier
             .size(width = 56.dp, height = 30.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (enabled) FlickColor.Link.copy(alpha = 0.9f) else FlickColor.OnSurface.copy(alpha = 0.18f)),
+            .clip(FlickShape.Pill)
+            .background(if (enabled) FlickColor.SelectedFill else FlickColor.ControlFill)
+            .border(
+                1.dp,
+                if (enabled) FlickColor.SelectedBorder else FlickColor.Outline,
+                FlickShape.Pill,
+            ),
         contentAlignment = if (enabled) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
         Box(
@@ -263,7 +317,7 @@ private fun ToggleGlyph(enabled: Boolean) {
                 .padding(horizontal = 4.dp)
                 .size(22.dp)
                 .drawBehind {
-                    drawCircle(if (enabled) FlickColor.Canvas else FlickColor.OnSurfaceDim)
+                    drawCircle(if (enabled) FlickColor.Spark else FlickColor.OnSurfaceFaint)
                 },
         )
     }
