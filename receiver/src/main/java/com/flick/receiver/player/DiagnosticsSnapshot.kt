@@ -62,6 +62,12 @@ data class DiagnosticsSnapshot(
     val subtitleTrackMimeType: String? = null,
     /** Shape of the current cue group; payload contents are intentionally excluded. */
     val subtitleCueKind: SubtitleCueKind = SubtitleCueKind.NONE,
+    /** Sample MIME of the decoded audio (e.g. "audio/eac3-joc"); null until the renderer reports one. */
+    val audioMimeType: String? = null,
+    /** Channel count of the decoded audio; [Format.NO_VALUE] until known. */
+    val audioChannelCount: Int = Format.NO_VALUE,
+    /** Container-declared RFC 6381 codec string for the decoded audio ("ec-3"); null when the container declares none. */
+    val audioCodecs: String? = null,
 ) {
     /** True 4K UHD (>= 3840x2160). This is the flag the spike is proving out. */
     val is4k: Boolean get() = width >= 3840 && height >= 2160

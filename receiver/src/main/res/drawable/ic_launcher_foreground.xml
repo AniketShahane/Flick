@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon foreground: the Flick mark alone on the 108-unit canvas. Also the
+  <monochrome> layer, which the launcher re-tints from its own alpha — so every
+  path here stays a flat fill.
+
+  The 64-unit mark is scaled to 58 units and centred at (54,54), which keeps its
+  furthest corner 32 units from centre — inside the 33-unit radius of the 66-unit
+  safe zone, so no launcher mask (circle, squircle, teardrop) can clip it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:scaleX="0.90625"
+        android:scaleY="0.90625"
+        android:translateX="25"
+        android:translateY="25">
+
+        <!-- motion streaks: (9,22.5,13x5) (4,31.5,11x5) (9,40.5,13x5), r=2.5 -->
+        <path
+            android:fillColor="#FFB61E"
+            android:fillAlpha="0.5"
+            android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
+        <path
+            android:fillColor="#FFB61E"
+            android:fillAlpha="0.85"
+            android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
+        <path
+            android:fillColor="#FFB61E"
+            android:fillAlpha="0.5"
+            android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
+
+        <!-- play triangle M28,15 L56,32 L28,49, outset 4.5 with round joins -->
+        <path
+            android:fillColor="#1240E8"
+            android:pathData="M30.34,11.15L58.34,28.15a4.5,4.5 0 0 1 0,7.7L30.34,52.85a4.5,4.5 0 0 1 -6.84,-3.85L23.5,15a4.5,4.5 0 0 1 6.84,-3.85z" />
+    </group>
+</vector>

@@ -1,123 +1,128 @@
 package com.flick.receiver.ui.components
 
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.util.lerp
 import androidx.tv.material3.Text
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.glass
 import com.flick.receiver.ui.theme.rememberReducedMotion
 
-/** Semantic tone for a live status pill (§7). */
-enum class PillTone(val accent: Color) {
-    Live(FlickColor.Live),
-    Link(FlickColor.Link),
-    Caution(FlickColor.Caution),
-    Trouble(FlickColor.Trouble),
+/**
+ * The design `tvPulse` envelope (spec §6). Returns null — meaning "hold the
+ * static end-state" — when the caller is not pulsing or the device asked for
+ * reduced motion.
+ */
+@Composable
+private fun rememberPulsePhase(active: Boolean): State<Float>? {
+    val reducedMotion = rememberReducedMotion()
+    return if (active && !reducedMotion) {
+        val transition = rememberInfiniteTransition(label = "tvPulse")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = FlickMotion.tvPulse(),
+            label = "tvPulsePhase",
+        )
+    } else {
+        null
+    }
 }
 
 /**
- * Full-pill status chip (§7): `Serving · live`, `Connecting…`, `TV unreachable`.
- * The leading dot [pulsing] breathes for live/connecting states. Text sits at the
- * 10-ft minimum (24sp).
+ * The breathing live dot — the design's `tvPulse` (spec §6) and the only place it
+ * lives. Shared by the chrome net-health pill, the metrics-panel health pill, and
+ * the pairing / idle / error status rows.
  */
 @Composable
-fun StatusPill(
-    text: String,
-    tone: PillTone,
+fun LiveDot(
+    color: Color,
     modifier: Modifier = Modifier,
+    size: Dp = 7.dp,
     pulsing: Boolean = false,
 ) {
-    val reducedMotion = rememberReducedMotion()
-    val dotAlpha = if (pulsing && !reducedMotion) {
-        val t = rememberInfiniteTransition(label = "pillPulse")
-        val a by t.animateFloat(
-            initialValue = 0.45f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
-            label = "pillDot",
-        )
-        a
-    } else 1f
-
-    Row(
+    val phase = rememberPulsePhase(pulsing)
+    Box(
         modifier = modifier
-            .semantics { liveRegion = LiveRegionMode.Polite }
-            .clip(FlickShape.Pill)
-            .background(tone.accent.copy(alpha = 0.10f))
-            .border(1.dp, tone.accent.copy(alpha = 0.45f), FlickShape.Pill)
-            .padding(horizontal = 18.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .drawBehind {
-                    drawCircle(color = tone.accent.copy(alpha = dotAlpha))
+            .size(size)
+            .then(
+                if (phase != null) {
+                    Modifier.graphicsLayer {
+                        val p = phase.value
+                        val s = lerp(FlickMotion.PULSE_SCALE_MIN, FlickMotion.PULSE_SCALE_MAX, p)
+                        scaleX = s
+                        scaleY = s
+                        alpha = lerp(FlickMotion.PULSE_ALPHA_MIN, FlickMotion.PULSE_ALPHA_MAX, p)
+                    }
+                } else {
+                    Modifier
                 },
-        )
-        Text(
-            text = text,
-            color = FlickColor.OnSurface,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
+            )
+            .drawBehind { drawCircle(color = color) },
+    )
 }
 
 /**
- * Premium-sheen quality badge (§1.5) — DV/HDR ONLY, never UI chrome. Filled uses
- * the gold sheen gradient; HDR10 uses the outline variant.
+ * A glass chrome pill floating over the film (spec §5.3 top chrome) — the
+ * "Flicked from …" source pill, the net-health pill and the clock pill. Purely
+ * informational: nothing in the top chrome is focusable.
  */
 @Composable
-fun QualityBadge(
+fun GlassPill(
     text: String,
     modifier: Modifier = Modifier,
-    filled: Boolean = true,
+    dotColor: Color? = null,
+    dotPulsing: Boolean = false,
+    style: TextStyle = FlickType.monoEyebrow(trackingEm = 0.12f),
+    color: Color = FlickColor.OnChrome,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 15.dp, vertical = 7.dp),
+    leading: @Composable (() -> Unit)? = null,
 ) {
-    val shape = FlickShape.Sm
-    val base = if (filled) {
-        Modifier.background(FlickColor.SheenGradient, shape)
-    } else {
-        Modifier
-            .background(Color.Transparent, shape)
-            .border(1.dp, FlickColor.SheenGoldA.copy(alpha = 0.55f), shape)
+    GlassPillContainer(modifier = modifier, contentPadding = contentPadding) {
+        if (leading != null) leading()
+        if (dotColor != null) LiveDot(color = dotColor, size = 6.dp, pulsing = dotPulsing)
+        Text(text = text, color = color, style = style)
     }
+}
+
+/** The bare glass pill surface, for chrome that needs a custom row of content. */
+@Composable
+fun GlassPillContainer(
+    modifier: Modifier = Modifier,
+    shape: Shape = FlickShape.Pill,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 15.dp, vertical = 7.dp),
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.spacedBy(9.dp),
+    content: @Composable RowScope.() -> Unit,
+) {
     Row(
         modifier = modifier
             .clip(shape)
-            .then(base)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .glass(shape)
+            .padding(contentPadding),
         verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = text,
-            color = if (filled) FlickColor.OnSheen else FlickColor.SheenGoldB,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-        )
-    }
+        horizontalArrangement = horizontalArrangement,
+        content = content,
+    )
 }

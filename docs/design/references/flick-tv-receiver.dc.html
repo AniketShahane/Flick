@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400..700,0..1,0&display=swap" rel="stylesheet"/>
+<style>
+  body { margin:0; font-family:Manrope, system-ui, sans-serif; -webkit-font-smoothing:antialiased; background:#04070F; }
+  a { color:#6FA0FF; text-decoration:none; }
+  a:hover { color:#FFC44D; }
+  @keyframes tvPulse { 0%,100% { opacity:.35; transform:scale(.8) } 50% { opacity:1; transform:scale(1.25) } }
+  @keyframes tvGlow { 0%,100% { opacity:.4 } 50% { opacity:.9 } }
+  @keyframes tvScan { 0% { top:-8% } 100% { top:104% } }
+  @keyframes tvRise { from { transform:translateY(46px) scale(.97); opacity:0 } to { transform:translateY(0) scale(1); opacity:1 } }
+  @keyframes tvBurst { 0% { transform:scale(.7); opacity:0 } 22% { transform:scale(1); opacity:1 } 100% { transform:scale(1.14); opacity:0 } }
+  @keyframes tvSpin { to { transform:rotate(360deg) } }
+  @keyframes tvSheen { 0% { background-position:-320px 0 } 100% { background-position:520px 0 } }
+</style>
+</helmet>
+
+<div style="min-height:100vh;box-sizing:border-box;padding:44px 40px 60px;background:#04070F;background-image:radial-gradient(1200px 700px at 50% -10%,rgba(18,64,232,.22),transparent 65%);display:flex;flex-direction:column;align-items:center;gap:26px">
+
+  <div style="display:flex;align-items:center;gap:16px;align-self:flex-start;padding-left:8px">
+    <svg width="34" height="34" viewBox="0 0 64 64" aria-label="Flick"><rect x="9" y="22.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".45"></rect><rect x="4" y="31.5" width="11" height="5" rx="2.5" fill="#FFB61E" opacity=".75"></rect><rect x="9" y="40.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".45"></rect><path d="M28 15 L56 32 L28 49 Z" fill="#4A78FF" stroke="#4A78FF" stroke-width="9" stroke-linejoin="round"></path></svg>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="font-family:Archivo,sans-serif;font-size:18px;font-weight:800;letter-spacing:-.03em;color:#F2F6FF">Flick — Android TV receiver</div>
+      <div style="font:600 10px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:#7E90BE">1920 × 1080 · 10-FOOT UI · ARROW KEYS + ENTER TO NAVIGATE</div>
+    </div>
+  </div>
+
+  <div style="flex:none;width:1920px;height:1080px;position:relative;overflow:hidden;border-radius:16px;box-shadow:0 0 0 12px #0A0E1A,0 0 0 13px rgba(255,255,255,.06),0 60px 140px rgba(0,0,0,.75);color:#F2F6FF;font-family:Manrope,system-ui,sans-serif">
+
+    <!-- ══════════ PAIRING ══════════ -->
+    <sc-if value="{{ atPair }}" hint-placeholder-val="{{ true }}">
+      <div data-screen-label="Pairing" style="position:absolute;inset:0;background:#060C1E;background-image:radial-gradient(980px 660px at 10% -6%,rgba(18,64,232,.5),transparent 62%),radial-gradient(880px 600px at 96% 104%,rgba(255,182,30,.22),transparent 62%);box-sizing:border-box;padding:92px 104px;display:grid;grid-template-columns:1fr 620px;gap:80px;align-items:center">
+
+        <div style="display:flex;flex-direction:column;gap:40px;min-width:0">
+
+          <div style="display:flex;align-items:center;gap:20px">
+            <svg width="76" height="76" viewBox="0 0 64 64" aria-label="Flick"><rect x="9" y="22.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><rect x="4" y="31.5" width="11" height="5" rx="2.5" fill="#FFB61E" opacity=".82"></rect><rect x="9" y="40.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><path d="M28 15 L56 32 L28 49 Z" fill="#F2F6FF" stroke="#F2F6FF" stroke-width="9" stroke-linejoin="round"></path></svg>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-family:Archivo,sans-serif;font-size:46px;font-weight:800;letter-spacing:-.045em;line-height:1;color:#F2F6FF">Flick</div>
+              <div style="font:600 15px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.2em;color:#8FA4D6">RECEIVER 1.4 · LIVING ROOM TV</div>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:26px">
+            <div style="font-family:Archivo,sans-serif;font-size:104px;font-weight:800;letter-spacing:-.05em;line-height:.88;color:#FFFFFF;text-wrap:pretty">Scan to flick<br/>from your phone.</div>
+            <div style="font-size:31px;font-weight:600;line-height:1.4;letter-spacing:-.015em;color:#A9BCE6;max-width:820px;text-wrap:pretty">Open Flick, tap <span style="color:#FFC44D">Devices</span>, and point your camera at the code. Everything stays on your Wi-Fi.</div>
+          </div>
+
+          <div style="background:rgba(9,17,42,.78);border:1px solid rgba(255,255,255,.1);border-radius:40px;padding:38px 42px;display:flex;flex-direction:column;gap:26px;box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 26px 60px rgba(0,0,0,.4)">
+            <div style="font:600 15px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.2em;color:#7E90BE">OR ADD THIS TV BY HAND</div>
+            <div style="display:grid;grid-template-columns:1fr 1px 200px 1px 300px;gap:32px;align-items:center">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:19px;font-weight:700;letter-spacing:-.01em;color:#8FA4D6">IP address</div>
+                <div style="font:600 44px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:-.02em;color:#FFFFFF;font-variant-numeric:tabular-nums">192.168.1.42</div>
+              </div>
+              <div style="align-self:stretch;background:rgba(255,255,255,.12)"></div>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:19px;font-weight:700;letter-spacing:-.01em;color:#8FA4D6">Port</div>
+                <div style="font:600 44px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:-.02em;color:#FFFFFF;font-variant-numeric:tabular-nums">8009</div>
+              </div>
+              <div style="align-self:stretch;background:rgba(255,255,255,.12)"></div>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:19px;font-weight:700;letter-spacing:-.01em;color:#FFC44D">Pairing code</div>
+                <div style="font:600 46px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.1em;color:#FFB61E;font-variant-numeric:tabular-nums">4RT·92K</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;font-size:18px;font-weight:600;color:#7E90BE">
+              <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 500;font-size:22px;line-height:1;width:22px;height:22px;overflow:hidden;display:block;color:#7E90BE">timer</span>
+              Code rotates in 4:52 · one sender at a time
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:34px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:14px">
+              <span style="width:14px;height:14px;border-radius:99px;background:#5BE38C;animation:tvPulse 1.9s ease-in-out infinite"></span>
+              <div style="font-size:21px;font-weight:700;letter-spacing:-.01em;color:#C9D8F7">Listening on Home-5G · no account, nothing uploaded</div>
+            </div>
+            <div onClick="{{ simulate }}" style="display:inline-flex;align-items:center;gap:12px;border:2px solid rgba(255,255,255,.2);border-radius:999px;padding:14px 24px;cursor:pointer;font:600 15px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:#A9BCE6;transition:transform .32s cubic-bezier(.2,1.5,.4,1),background .2s" style-hover="transform:scale(1.04);background:rgba(255,255,255,.09)" style-active="transform:scale(.97)">
+              <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:20px;line-height:1;width:20px;height:20px;overflow:hidden;display:block">smartphone</span>
+              SIMULATE A PHONE CONNECTING
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:30px;align-items:stretch">
+          <div style="position:relative;background:#FFFFFF;border-radius:52px;padding:46px;box-shadow:0 40px 90px rgba(0,0,0,.5)">
+            <svg viewBox="-1 -1 27 27" width="100%" style="display:block">
+              <path d="M14 0h1v1h-1zM15 0h1v1h-1zM8 1h1v1h-1zM13 1h1v1h-1zM8 2h1v1h-1zM10 2h1v1h-1zM12 2h1v1h-1zM14 2h1v1h-1zM15 2h1v1h-1zM8 3h1v1h-1zM10 3h1v1h-1zM11 3h1v1h-1zM12 3h1v1h-1zM14 3h1v1h-1zM8 4h1v1h-1zM9 4h1v1h-1zM10 4h1v1h-1zM12 4h1v1h-1zM14 4h1v1h-1zM8 5h1v1h-1zM11 5h1v1h-1zM12 5h1v1h-1zM13 5h1v1h-1zM15 5h1v1h-1zM8 6h1v1h-1zM13 6h1v1h-1zM14 6h1v1h-1zM15 6h1v1h-1zM13 7h1v1h-1zM14 7h1v1h-1zM15 7h1v1h-1zM1 8h1v1h-1zM2 8h1v1h-1zM4 8h1v1h-1zM5 8h1v1h-1zM6 8h1v1h-1zM7 8h1v1h-1zM8 8h1v1h-1zM11 8h1v1h-1zM13 8h1v1h-1zM15 8h1v1h-1zM19 8h1v1h-1zM20 8h1v1h-1zM21 8h1v1h-1zM22 8h1v1h-1zM1 9h1v1h-1zM2 9h1v1h-1zM3 9h1v1h-1zM4 9h1v1h-1zM7 9h1v1h-1zM9 9h1v1h-1zM11 9h1v1h-1zM12 9h1v1h-1zM15 9h1v1h-1zM22 9h1v1h-1zM23 9h1v1h-1zM1 10h1v1h-1zM7 10h1v1h-1zM10 10h1v1h-1zM12 10h1v1h-1zM15 10h1v1h-1zM22 10h1v1h-1zM23 10h1v1h-1zM24 10h1v1h-1zM0 11h1v1h-1zM1 11h1v1h-1zM2 11h1v1h-1zM4 11h1v1h-1zM6 11h1v1h-1zM8 11h1v1h-1zM9 11h1v1h-1zM10 11h1v1h-1zM14 11h1v1h-1zM15 11h1v1h-1zM16 11h1v1h-1zM19 11h1v1h-1zM20 11h1v1h-1zM24 11h1v1h-1zM3 12h1v1h-1zM4 12h1v1h-1zM8 12h1v1h-1zM11 12h1v1h-1zM12 12h1v1h-1zM15 12h1v1h-1zM16 12h1v1h-1zM17 12h1v1h-1zM19 12h1v1h-1zM21 12h1v1h-1zM1 13h1v1h-1zM2 13h1v1h-1zM3 13h1v1h-1zM5 13h1v1h-1zM6 13h1v1h-1zM9 13h1v1h-1zM12 13h1v1h-1zM15 13h1v1h-1zM18 13h1v1h-1zM19 13h1v1h-1zM21 13h1v1h-1zM23 13h1v1h-1zM0 14h1v1h-1zM4 14h1v1h-1zM5 14h1v1h-1zM6 14h1v1h-1zM10 14h1v1h-1zM13 14h1v1h-1zM14 14h1v1h-1zM15 14h1v1h-1zM17 14h1v1h-1zM19 14h1v1h-1zM22 14h1v1h-1zM24 14h1v1h-1zM0 15h1v1h-1zM1 15h1v1h-1zM3 15h1v1h-1zM4 15h1v1h-1zM5 15h1v1h-1zM6 15h1v1h-1zM8 15h1v1h-1zM9 15h1v1h-1zM11 15h1v1h-1zM12 15h1v1h-1zM16 15h1v1h-1zM20 15h1v1h-1zM22 15h1v1h-1zM23 15h1v1h-1zM24 15h1v1h-1zM11 16h1v1h-1zM12 16h1v1h-1zM14 16h1v1h-1zM15 16h1v1h-1zM16 16h1v1h-1zM18 16h1v1h-1zM19 16h1v1h-1zM20 16h1v1h-1zM21 16h1v1h-1zM22 16h1v1h-1zM8 17h1v1h-1zM10 17h1v1h-1zM12 17h1v1h-1zM13 17h1v1h-1zM14 17h1v1h-1zM16 17h1v1h-1zM17 17h1v1h-1zM19 17h1v1h-1zM21 17h1v1h-1zM23 17h1v1h-1zM10 18h1v1h-1zM13 18h1v1h-1zM14 18h1v1h-1zM18 18h1v1h-1zM19 18h1v1h-1zM20 18h1v1h-1zM8 19h1v1h-1zM9 19h1v1h-1zM10 19h1v1h-1zM12 19h1v1h-1zM13 19h1v1h-1zM18 19h1v1h-1zM20 19h1v1h-1zM24 19h1v1h-1zM9 20h1v1h-1zM10 20h1v1h-1zM11 20h1v1h-1zM12 20h1v1h-1zM14 20h1v1h-1zM15 20h1v1h-1zM20 20h1v1h-1zM22 20h1v1h-1zM9 21h1v1h-1zM13 21h1v1h-1zM14 21h1v1h-1zM16 21h1v1h-1zM17 21h1v1h-1zM18 21h1v1h-1zM19 21h1v1h-1zM21 21h1v1h-1zM22 21h1v1h-1zM23 21h1v1h-1zM24 21h1v1h-1zM11 22h1v1h-1zM12 22h1v1h-1zM14 22h1v1h-1zM16 22h1v1h-1zM17 22h1v1h-1zM18 22h1v1h-1zM24 22h1v1h-1zM12 23h1v1h-1zM13 23h1v1h-1zM19 23h1v1h-1zM20 23h1v1h-1zM21 23h1v1h-1zM22 23h1v1h-1zM23 23h1v1h-1zM24 23h1v1h-1zM10 24h1v1h-1zM12 24h1v1h-1zM15 24h1v1h-1zM16 24h1v1h-1zM17 24h1v1h-1zM20 24h1v1h-1zM23 24h1v1h-1zM24 24h1v1h-1z" fill="#0A1533"></path>
+              <path d="M0 0h7v7h-7z M18 0h7v7h-7z M0 18h7v7h-7z" fill="#0A1533"></path>
+              <path d="M1 1h5v5h-5z M19 1h5v5h-5z M1 19h5v5h-5z" fill="#FFFFFF"></path>
+              <path d="M2 2h3v3h-3z M20 2h3v3h-3z" fill="#1240E8"></path>
+              <path d="M2 20h3v3h-3z" fill="#FFB61E"></path>
+            </svg>
+            <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:112px;height:112px;border-radius:32px;background:#FFFFFF;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 8px #FFFFFF">
+              <svg width="64" height="64" viewBox="0 0 64 64"><rect x="9" y="22.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><rect x="4" y="31.5" width="11" height="5" rx="2.5" fill="#FFB61E" opacity=".85"></rect><rect x="9" y="40.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><path d="M28 15 L56 32 L28 49 Z" fill="#1240E8" stroke="#1240E8" stroke-width="9" stroke-linejoin="round"></path></svg>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:14px;font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.16em;color:#8FA4D6">
+            <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 500;font-size:22px;line-height:1;width:22px;height:22px;overflow:hidden;display:block;color:#8FA4D6">wifi</span>
+            flick://192.168.1.42:8009
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══════════ HANDSHAKE ══════════ -->
+    <sc-if value="{{ handshaking }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:40;background:rgba(4,7,15,.82);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);display:flex;align-items:center;justify-content:center">
+        <div style="width:900px;background:rgba(12,22,52,.86);border:1px solid rgba(255,255,255,.14);border-radius:52px;padding:64px;display:flex;flex-direction:column;gap:34px;align-items:center;text-align:center;animation:tvRise .5s cubic-bezier(.2,1.1,.3,1) both;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 50px 120px rgba(0,0,0,.6)">
+          <div style="width:96px;height:96px;border-radius:999px;border:7px solid rgba(255,182,30,.22);border-top-color:#FFB61E;animation:tvSpin 1s linear infinite"></div>
+          <div style="font-family:Archivo,sans-serif;font-size:54px;font-weight:800;letter-spacing:-.04em;line-height:1.02;color:#FFFFFF">Sami's Pixel is flicking<br/>Harbour Lights</div>
+          <div style="font-size:26px;font-weight:600;color:#A9BCE6">Opening a direct stream — no transcode, no cloud.</div>
+          <div style="font:600 16px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.18em;color:#FFC44D">192.168.1.88 → 192.168.1.42:8009</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══════════ PLAYBACK ══════════ -->
+    <sc-if value="{{ atPlay }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Now playing" style="position:absolute;inset:0;background:#02040A;overflow:hidden">
+
+        <div onClick="{{ toggleChrome }}" style="position:absolute;inset:0;cursor:pointer;background:linear-gradient(150deg,#041A3A 0%,#1D6FD1 54%,#8FDCFF 100%)">
+          <div style="position:absolute;inset:0;background:radial-gradient(900px 640px at 26% 34%,rgba(255,240,214,.4),transparent 62%),radial-gradient(760px 700px at 82% 76%,rgba(9,26,72,.72),transparent 60%)"></div>
+          <div style="position:absolute;inset:0;background:radial-gradient(120% 100% at 50% 45%,transparent 40%,rgba(2,4,10,.72) 100%)"></div>
+          <div style="position:absolute;left:0;right:0;bottom:0;height:56%;background:linear-gradient(to top,rgba(2,4,10,.92) 0%,rgba(2,4,10,.55) 42%,transparent 100%)"></div>
+          <div style="position:absolute;left:0;right:0;top:0;height:26%;background:linear-gradient(to bottom,rgba(2,4,10,.78),transparent)"></div>
+        </div>
+
+        <sc-if value="{{ subsOn }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;left:0;right:0;bottom:{{ subBottom }};display:flex;justify-content:center;pointer-events:none;padding:0 260px">
+            <div style="background:rgba(2,4,10,.62);border-radius:20px;padding:14px 30px;font-weight:700;letter-spacing:-.015em;line-height:1.28;text-align:center;color:#FFFFFF;text-shadow:0 3px 14px rgba(0,0,0,.7);font-size:{{ subSize }}">{{ subLine }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ burstBack }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:38%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;pointer-events:none;background:radial-gradient(60% 50% at 30% 50%,rgba(255,182,30,.16),transparent 70%);animation:tvBurst .72s ease-out both">
+            <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:120px;line-height:1;width:120px;height:120px;overflow:hidden;display:block;color:#FFFFFF">replay_10</span>
+            <div style="font-family:Archivo,sans-serif;font-size:44px;font-weight:800;letter-spacing:-.03em;color:#FFFFFF">−10s</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ burstFwd }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;right:0;top:0;bottom:0;width:38%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;pointer-events:none;background:radial-gradient(60% 50% at 70% 50%,rgba(255,182,30,.16),transparent 70%);animation:tvBurst .72s ease-out both">
+            <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:120px;line-height:1;width:120px;height:120px;overflow:hidden;display:block;color:#FFFFFF">forward_10</span>
+            <div style="font-family:Archivo,sans-serif;font-size:44px;font-weight:800;letter-spacing:-.03em;color:#FFFFFF">+10s</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ paused }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:50%;top:28%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:22px;background:rgba(2,4,10,.5);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:18px 34px 18px 24px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);pointer-events:none">
+            <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:46px;line-height:1;width:46px;height:46px;overflow:hidden;display:block;color:#FFB61E">pause</span>
+            <div style="font-family:Archivo,sans-serif;font-size:34px;font-weight:800;letter-spacing:-.03em;color:#FFFFFF">Paused</div>
+          </div>
+        </sc-if>
+
+        <!-- top chrome -->
+        <sc-if value="{{ chromeOn }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;left:0;right:0;top:0;padding:56px 72px;display:flex;align-items:flex-start;justify-content:space-between;gap:40px;pointer-events:none">
+            <div style="display:flex;align-items:center;gap:18px;background:rgba(9,17,42,{{ glassA }});border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:14px 30px 14px 18px;backdrop-filter:blur(30px) saturate(1.5);-webkit-backdrop-filter:blur(30px) saturate(1.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.2)">
+              <svg width="34" height="34" viewBox="0 0 64 64"><rect x="9" y="22.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><rect x="4" y="31.5" width="11" height="5" rx="2.5" fill="#FFB61E" opacity=".85"></rect><rect x="9" y="40.5" width="13" height="5" rx="2.5" fill="#FFB61E" opacity=".5"></rect><path d="M28 15 L56 32 L28 49 Z" fill="#F2F6FF" stroke="#F2F6FF" stroke-width="9" stroke-linejoin="round"></path></svg>
+              <div style="font-size:21px;font-weight:700;letter-spacing:-.015em;color:#F2F6FF">Flicked from Sami's Pixel</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px">
+              <div style="display:flex;align-items:center;gap:12px;background:rgba(9,17,42,{{ glassA }});border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:14px 24px;backdrop-filter:blur(30px) saturate(1.5);-webkit-backdrop-filter:blur(30px) saturate(1.5)">
+                <span style="width:11px;height:11px;border-radius:99px;background:{{ healthFg }}"></span>
+                <div style="font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:#DCE5FF">{{ netLabel }}</div>
+              </div>
+              <div style="background:rgba(9,17,42,{{ glassA }});border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:14px 24px;font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:#DCE5FF;backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px)">21:47</div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- bottom chrome -->
+        <sc-if value="{{ chromeOn }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;left:56px;right:56px;bottom:48px;border:1px solid rgba(150,190,255,.3);border-radius:52px;padding:44px 52px 40px;display:flex;flex-direction:column;gap:34px;background:rgba(22,58,140,{{ glassA }});backdrop-filter:blur(46px) saturate(2.1) brightness(1.06);-webkit-backdrop-filter:blur(46px) saturate(2.1) brightness(1.06);box-shadow:inset 0 1.5px 0 rgba(214,232,255,.42),inset 0 -1px 0 rgba(88,132,220,.28),inset 0 40px 90px rgba(120,170,255,.09),0 44px 110px rgba(2,8,26,.5);animation:tvRise .42s cubic-bezier(.2,1.1,.3,1) both">
+            <div style="position:absolute;inset:0;border-radius:52px;pointer-events:none;background:linear-gradient(160deg,rgba(190,220,255,.22) 0%,rgba(120,170,255,.06) 34%,transparent 58%),radial-gradient(120% 90% at 8% 0%,rgba(255,255,255,.2),transparent 60%),radial-gradient(90% 80% at 96% 108%,rgba(255,182,30,.1),transparent 62%)"></div>
+            <div style="position:absolute;left:12%;right:12%;top:0;height:1px;border-radius:99px;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(230,242,255,.75),transparent)"></div>
+
+            <div style="position:relative;display:flex;align-items:flex-end;justify-content:space-between;gap:44px">
+              <div style="min-width:0;display:flex;flex-direction:column;gap:14px">
+                <div style="font:600 16px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.2em;color:#FFC44D">NOW PLAYING · DIRECT FILE</div>
+                <div style="font-family:Archivo,sans-serif;font-size:68px;font-weight:800;letter-spacing:-.045em;line-height:.98;color:#FFFFFF">Harbour Lights</div>
+              </div>
+              <div style="flex:none;display:flex;align-items:center;gap:12px">
+                <div style="border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:12px 20px;font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:#DCE5FF">4K DOLBY VISION</div>
+                <div style="border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:12px 20px;font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:#DCE5FF">EN 5.1 ATMOS</div>
+                <div style="border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:12px 20px;font:600 17px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:#DCE5FF">18.4 GB</div>
+              </div>
+            </div>
+
+            <div style="position:relative;display:flex;align-items:center;gap:28px">
+              <div style="flex:none;width:150px;font:600 30px/1 'IBM Plex Mono',ui-monospace,monospace;color:#FFFFFF;font-variant-numeric:tabular-nums">{{ posTime }}</div>
+              <div style="flex:1;min-width:0;position:relative;height:16px;border-radius:99px;background:rgba(255,255,255,.16);overflow:visible">
+                <div style="position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:rgba(255,255,255,.26);width:{{ bufferedPct }}"></div>
+                <div style="position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:linear-gradient(90deg,#FFB61E,#FFD87A);width:{{ playedPct }}"></div>
+                <div style="position:absolute;top:50%;left:{{ playedPct }};transform:translate(-50%,-50%);width:30px;height:30px;border-radius:99px;background:#FFFFFF;box-shadow:0 0 0 7px rgba(255,182,30,.34),0 6px 18px rgba(0,0,0,.5)"></div>
+              </div>
+              <div style="flex:none;width:150px;text-align:right;font:600 30px/1 'IBM Plex Mono',ui-monospace,monospace;color:#A9BCE6;font-variant-numeric:tabular-nums">−{{ remainTime }}</div>
+            </div>
+
+            <div style="position:relative;display:flex;align-items:center;justify-content:space-between;gap:32px">
+
+              <div onClick="{{ toggleSubs }}" style="position:relative;display:flex;align-items:center;gap:16px;background:{{ ccBg }};border:1px solid rgba(255,255,255,.18);border-radius:26px;padding:20px 30px;cursor:pointer;transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.04)" style-active="transform:scale(.96)">
+                <div style="position:absolute;inset:-11px;border-radius:36px;border:5px solid #FFB61E;pointer-events:none;transition:opacity .18s;opacity:{{ ringCc }}"></div>
+                <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:38px;line-height:1;width:38px;height:38px;overflow:hidden;display:block;color:{{ ccFg }}">closed_caption</span>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div style="font-size:23px;font-weight:700;letter-spacing:-.015em;color:{{ ccFg }}">Subtitles</div>
+                  <div style="font:600 14px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:{{ ccSubFg }}">{{ ccState }}</div>
+                </div>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:32px">
+                <div onClick="{{ back10 }}" style="position:relative;width:104px;height:104px;border-radius:34px;background:rgba(148,190,255,.16);border:1px solid rgba(190,220,255,.34);box-shadow:inset 0 1px 0 rgba(230,242,255,.4);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.06);background:rgba(255,255,255,.22)" style-active="transform:scale(.93)">
+                  <div style="position:absolute;inset:-11px;border-radius:44px;border:5px solid #FFB61E;pointer-events:none;transition:opacity .18s;opacity:{{ ringBack }}"></div>
+                  <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:52px;line-height:1;width:52px;height:52px;overflow:hidden;display:block;color:#FFFFFF">replay_10</span>
+                </div>
+
+                <div onClick="{{ togglePlay }}" style="position:relative;width:132px;height:132px;border-radius:44px;background:#FFB61E;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 20px 50px rgba(255,182,30,.32);transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.05)" style-active="transform:scale(.93)">
+                  <div style="position:absolute;inset:-13px;border-radius:56px;border:5px solid #FFFFFF;pointer-events:none;transition:opacity .18s;opacity:{{ ringPlay }}"></div>
+                  <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 700;font-size:70px;line-height:1;width:70px;height:70px;overflow:hidden;display:block;color:#33240A">{{ playIcon }}</span>
+                </div>
+
+                <div onClick="{{ fwd10 }}" style="position:relative;width:104px;height:104px;border-radius:34px;background:rgba(148,190,255,.16);border:1px solid rgba(190,220,255,.34);box-shadow:inset 0 1px 0 rgba(230,242,255,.4);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.06);background:rgba(255,255,255,.22)" style-active="transform:scale(.93)">
+                  <div style="position:absolute;inset:-11px;border-radius:44px;border:5px solid #FFB61E;pointer-events:none;transition:opacity .18s;opacity:{{ ringFwd }}"></div>
+                  <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:52px;line-height:1;width:52px;height:52px;overflow:hidden;display:block;color:#FFFFFF">forward_10</span>
+                </div>
+              </div>
+
+              <div onClick="{{ toggleMetrics }}" style="position:relative;display:flex;align-items:center;gap:16px;background:{{ mxBg }};border:1px solid rgba(255,255,255,.18);border-radius:26px;padding:20px 30px;cursor:pointer;transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.04)" style-active="transform:scale(.96)">
+                <div style="position:absolute;inset:-11px;border-radius:36px;border:5px solid #FFB61E;pointer-events:none;transition:opacity .18s;opacity:{{ ringMx }}"></div>
+                <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:38px;line-height:1;width:38px;height:38px;overflow:hidden;display:block;color:{{ mxFg }}">monitoring</span>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div style="font-size:23px;font-weight:700;letter-spacing:-.015em;color:{{ mxFg }}">Stream metrics</div>
+                  <div style="font:600 14px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:{{ mxSubFg }}">{{ mbpsLabel }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- subtitles panel -->
+        <sc-if value="{{ subPanel }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:56px;bottom:486px;z-index:30;width:620px;background:rgba(22,58,140,.5);border:1px solid rgba(150,190,255,.3);border-radius:40px;padding:32px 34px;display:flex;flex-direction:column;gap:22px;backdrop-filter:blur(36px) saturate(1.6);-webkit-backdrop-filter:blur(36px) saturate(1.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 44px 110px rgba(0,0,0,.62);animation:tvRise .38s cubic-bezier(.2,1.1,.3,1) both">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:20px">
+              <div style="font-family:Archivo,sans-serif;font-size:34px;font-weight:800;letter-spacing:-.04em;color:#FFFFFF">Subtitles</div>
+              <div onClick="{{ closePanels }}" style="width:46px;height:46px;border-radius:16px;background:rgba(190,220,255,.16);display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:rgba(190,220,255,.3)">
+                <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:26px;line-height:1;width:26px;height:26px;overflow:hidden;display:block;color:#DCE5FF">close</span>
+              </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:7px">
+              <sc-for list="{{ tracks }}" as="t" hint-placeholder-count="5">
+                <div onClick="{{ t.pick }}" style="display:flex;align-items:center;gap:15px;border-radius:20px;padding:11px 18px;cursor:pointer;transition:transform .28s cubic-bezier(.2,1.5,.4,1);background:{{ t.bg }}" style-hover="transform:scale(1.02)">
+                  <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:27px;line-height:1;width:27px;height:27px;overflow:hidden;display:block;color:{{ t.icon }}">{{ t.mark }}</span>
+                  <div style="flex:1;min-width:0;font-size:23px;font-weight:700;letter-spacing:-.02em;color:{{ t.fg }}">{{ t.label }}</div>
+                  <div style="font:600 13px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.12em;color:{{ t.metaFg }}">{{ t.meta }}</div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:14px">
+              <div style="flex:none;font:600 13px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.18em;color:#9FB6E6">SIZE</div>
+              <div style="flex:1;display:flex;gap:9px">
+                <sc-for list="{{ sizes }}" as="z" hint-placeholder-count="3">
+                  <div onClick="{{ z.pick }}" style="flex:1;text-align:center;border-radius:16px;padding:12px 0;cursor:pointer;font-size:20px;font-weight:700;letter-spacing:-.015em;transition:transform .28s cubic-bezier(.2,1.5,.4,1);background:{{ z.bg }};color:{{ z.fg }}" style-hover="transform:scale(1.03)">{{ z.label }}</div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- metrics panel -->
+        <sc-if value="{{ mxPanel }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;right:56px;bottom:486px;z-index:30;width:740px;background:rgba(22,58,140,.5);border:1px solid rgba(150,190,255,.3);border-radius:40px;padding:32px 34px;display:flex;flex-direction:column;gap:22px;backdrop-filter:blur(36px) saturate(1.6);-webkit-backdrop-filter:blur(36px) saturate(1.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 44px 110px rgba(0,0,0,.62);animation:tvRise .38s cubic-bezier(.2,1.1,.3,1) both">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:18px">
+              <div style="display:flex;align-items:center;gap:16px;min-width:0">
+                <div style="font-family:Archivo,sans-serif;font-size:34px;font-weight:800;letter-spacing:-.04em;color:#FFFFFF;white-space:nowrap">Stream metrics</div>
+                <div style="display:inline-flex;align-items:center;gap:10px;border-radius:999px;padding:8px 15px;background:{{ healthBg }}">
+                  <span style="width:10px;height:10px;border-radius:99px;background:{{ healthFg }}"></span>
+                  <div style="font:600 13px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:{{ healthFg }};white-space:nowrap">{{ healthLabel }}</div>
+                </div>
+              </div>
+              <div onClick="{{ closePanels }}" style="flex:none;width:46px;height:46px;border-radius:16px;background:rgba(190,220,255,.16);display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:rgba(190,220,255,.3)">
+                <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:26px;line-height:1;width:26px;height:26px;overflow:hidden;display:block;color:#DCE5FF">close</span>
+              </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px">
+                <div style="font:600 13px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.18em;color:#9FB6E6">THROUGHPUT · LAST 40 s</div>
+                <div style="font:600 28px/1 'IBM Plex Mono',ui-monospace,monospace;color:#FFB61E;font-variant-numeric:tabular-nums">{{ mbpsLabel }}</div>
+              </div>
+              <div style="height:74px;display:flex;align-items:flex-end;gap:5px">
+                <sc-for list="{{ hist }}" as="b" hint-placeholder-count="40">
+                  <div style="flex:1;border-radius:4px 4px 0 0;background:{{ b.bg }};height:{{ b.h }}"></div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px 20px">
+              <sc-for list="{{ stats }}" as="st" hint-placeholder-count="9">
+                <div style="display:flex;flex-direction:column;gap:7px;min-width:0">
+                  <div style="font:600 12px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.16em;color:#9FB6E6">{{ st.label }}</div>
+                  <div style="font-size:22px;font-weight:700;letter-spacing:-.02em;color:{{ st.fg }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ st.value }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ chromeOn }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ disconnect }}" style="position:absolute;left:56px;top:150px;display:inline-flex;align-items:center;gap:12px;border:2px solid rgba(255,255,255,.18);border-radius:999px;padding:12px 22px;cursor:pointer;font:600 14px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:.14em;color:#A9BCE6;transition:transform .3s cubic-bezier(.2,1.5,.4,1)" style-hover="transform:scale(1.04);background:rgba(255,255,255,.08)">
+            <span style="font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 600;font-size:19px;line-height:1;width:19px;height:19px;overflow:hidden;display:block">link_off</span>
+            END SESSION
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 2010, &quot;height&quot;: 1270 },
+  &quot;startScreen&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;pairing&quot;, &quot;playing&quot;], &quot;default&quot;: &quot;pairing&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Prototype&quot; },
+  &quot;netQuality&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;Strong 5 GHz&quot;, &quot;Congested 2.4 GHz&quot;], &quot;default&quot;: &quot;Strong 5 GHz&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Prototype&quot; },
+  &quot;chromeGlass&quot;: { &quot;editor&quot;: &quot;range&quot;, &quot;min&quot;: 0, &quot;max&quot;: 70, &quot;step&quot;: 1, &quot;default&quot;: 13, &quot;unit&quot;: &quot;%&quot;, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Prototype&quot; },
+  &quot;autoHideChrome&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Prototype&quot; }
+}">
+class Component extends DCLogic {
+  TRACKS = [
+    { key: 'off', label: 'Off', meta: '—', line: '' },
+    { key: 'en', label: 'English', meta: 'SRT · EMBEDDED', line: "The ferry won't wait for us — not tonight." },
+    { key: 'sdh', label: 'English SDH', meta: 'SRT · HEARING', line: '[harbour bell tolls] The ferry won’t wait for us.' },
+    { key: 'es', label: 'Español (Latinoamérica)', meta: 'PGS · IMAGE', line: 'El transbordador no nos esperará, no esta noche.' },
+    { key: 'fr', label: 'Français', meta: 'SRT · EXTERNAL', line: "Le ferry ne nous attendra pas, pas ce soir." }
+  ];
+  SIZES = [{ key: 'sm', label: 'Small', px: 34, up: 210 }, { key: 'md', label: 'Medium', px: 44, up: 250 }, { key: 'lg', label: 'Large', px: 58, up: 290 }];
+  FOCUS = ['cc', 'back', 'play', 'fwd', 'mx'];
+
+  state = {
+    screen: this.props.startScreen === 'playing' ? 'playing' : 'pairing',
+    handshaking: false,
+    playing: true,
+    pos: 4312,
+    dur: 8076,
+    track: 'en',
+    size: 'md',
+    subPanel: false,
+    mxPanel: false,
+    chrome: true,
+    focus: 2,
+    burst: null,
+    mbps: 61.4,
+    hist: Array.from({ length: 40 }, (_, i) => 58 + Math.sin(i / 3) * 6)
+  };
+
+  componentDidMount() {
+    this.n = 0;
+    this.timer = setInterval(() => this.tick(), 120);
+    this.onKey = e => this.key(e);
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    clearTimeout(this.hsT); clearTimeout(this.burstT); clearTimeout(this.idleT);
+    window.removeEventListener('keydown', this.onKey);
+  }
+
+  weak() { return (this.props.netQuality ?? 'Strong 5 GHz') !== 'Strong 5 GHz'; }
+
+  tick() {
+    this.n++;
+    this.setState(s => {
+      const out = {};
+      if (s.screen === 'playing' && s.playing) out.pos = Math.min(s.dur, s.pos + 0.6);
+      if (this.n % 5 === 0) {
+        const base = this.weak() ? 15.6 : 61.4;
+        const v = +(base + (Math.random() - 0.5) * (this.weak() ? 6 : 9)).toFixed(1);
+        out.mbps = v;
+        out.hist = s.hist.slice(1).concat(v);
+      }
+      return Object.keys(out).length ? out : null;
+    });
+  }
+
+  key(e) {
+    const s = this.state;
+    if (s.screen === 'pairing') { if (e.key === 'Enter') { e.preventDefault(); this.simulate(); } return; }
+    if (e.key === 'Escape') { this.setState({ subPanel: false, mxPanel: false }); return; }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      this.setState(p => ({ chrome: true, focus: Math.max(0, Math.min(this.FOCUS.length - 1, p.focus + (e.key === 'ArrowRight' ? 1 : -1))) }));
+      this.armIdle();
+      return;
+    }
+    if (e.key === 'Enter') { e.preventDefault(); this.activate(); return; }
+    if (e.key === ' ') { e.preventDefault(); this.togglePlay(); }
+  }
+
+  activate() {
+    const f = this.FOCUS[this.state.focus];
+    if (f === 'cc') this.toggleSubs();
+    else if (f === 'back') this.seek(-10);
+    else if (f === 'play') this.togglePlay();
+    else if (f === 'fwd') this.seek(10);
+    else this.toggleMetrics();
+  }
+
+  armIdle() {
+    clearTimeout(this.idleT);
+    if (!(this.props.autoHideChrome ?? false)) return;
+    this.idleT = setTimeout(() => {
+      if (!this.state.subPanel && !this.state.mxPanel) this.setState({ chrome: false });
+    }, 4200);
+  }
+
+  seek(d) {
+    clearTimeout(this.burstT);
+    this.setState(s => ({ pos: Math.max(0, Math.min(s.dur, s.pos + d)), burst: d < 0 ? 'back' : 'fwd', chrome: true }));
+    this.burstT = setTimeout(() => this.setState({ burst: null }), 720);
+    this.armIdle();
+  }
+  togglePlay = () => { this.setState(s => ({ playing: !s.playing, chrome: true })); this.armIdle(); };
+  toggleSubs = () => this.setState(s => ({ subPanel: !s.subPanel, mxPanel: false, chrome: true, focus: 0 }));
+  toggleMetrics = () => this.setState(s => ({ mxPanel: !s.mxPanel, subPanel: false, chrome: true, focus: 4 }));
+
+  simulate = () => {
+    this.setState({ handshaking: true });
+    clearTimeout(this.hsT);
+    this.hsT = setTimeout(() => this.setState({ handshaking: false, screen: 'playing', playing: true, pos: 0, chrome: true, focus: 2 }, () => this.armIdle()), 1900);
+  };
+
+  fmt(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    const p = n => String(n).padStart(2, '0');
+    return h ? h + ':' + p(m) + ':' + p(x) : m + ':' + p(x);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const weak = this.weak();
+    const pct = v => (Math.max(0, Math.min(1, v / s.dur)) * 100).toFixed(2) + '%';
+    const tr = this.TRACKS.find(t => t.key === s.track) || this.TRACKS[0];
+    const sz = this.SIZES.find(z => z.key === s.size) || this.SIZES[1];
+    const ring = k => (this.FOCUS[s.focus] === k && !s.subPanel && !s.mxPanel ? '1' : '0');
+    const peak = weak ? 26 : 78;
+
+    const stats = [
+      { label: 'RESOLUTION', value: weak ? '1920 × 1080' : '3840 × 2160', fg: '#FFFFFF' },
+      { label: 'CODEC', value: 'HEVC Main10', fg: '#FFFFFF' },
+      { label: 'FRAME RATE', value: '23.976 fps', fg: '#FFFFFF' },
+      { label: 'BITRATE', value: s.mbps.toFixed(1) + ' Mb/s', fg: '#FFB61E' },
+      { label: 'BUFFER', value: weak ? '2.1 s' : '7.4 s', fg: weak ? '#FFA23A' : '#FFFFFF' },
+      { label: 'LATENCY', value: weak ? '96 ms' : '38 ms', fg: weak ? '#FFA23A' : '#FFFFFF' },
+      { label: 'DROPPED FRAMES', value: weak ? '184 (0.4%)' : '0', fg: weak ? '#FFA23A' : '#5BE38C' },
+      { label: 'DECODER', value: 'MediaCodec HW', fg: '#FFFFFF' },
+      { label: 'TRANSPORT', value: weak ? 'TCP · 2.4 GHz' : 'TCP · 5 GHz', fg: '#FFFFFF' }
+    ];
+
+    return {
+      atPair: s.screen === 'pairing', atPlay: s.screen === 'playing', handshaking: s.handshaking,
+      glassA: ((this.props.chromeGlass ?? 26) / 100).toFixed(2),
+      simulate: this.simulate,
+      disconnect: () => this.setState({ screen: 'pairing', subPanel: false, mxPanel: false, playing: false }),
+      toggleChrome: () => { this.setState(p => ({ chrome: !p.chrome, subPanel: false, mxPanel: false })); this.armIdle(); },
+      chromeOn: s.chrome,
+
+      playing: s.playing, paused: !s.playing,
+      playIcon: s.playing ? 'pause' : 'play_arrow',
+      togglePlay: this.togglePlay,
+      back10: () => this.seek(-10), fwd10: () => this.seek(10),
+      burstBack: s.burst === 'back', burstFwd: s.burst === 'fwd',
+
+      posTime: this.fmt(s.pos), remainTime: this.fmt(s.dur - s.pos),
+      playedPct: pct(s.pos), bufferedPct: pct(Math.min(s.dur, s.pos + (weak ? 180 : 620))),
+
+      subsOn: s.track !== 'off', subLine: tr.line, subSize: sz.px + 'px',
+      subBottom: (s.chrome ? sz.up + 260 : sz.up) + 'px',
+
+      toggleSubs: this.toggleSubs, toggleMetrics: this.toggleMetrics,
+      closePanels: () => this.setState({ subPanel: false, mxPanel: false }),
+      subPanel: s.subPanel, mxPanel: s.mxPanel,
+
+      ccBg: s.subPanel ? '#FFB61E' : 'rgba(148,190,255,.14)',
+      ccFg: s.subPanel ? '#33240A' : '#FFFFFF',
+      ccSubFg: s.subPanel ? 'rgba(51,36,10,.7)' : '#A9BCE6',
+      ccState: s.track === 'off' ? 'OFF' : tr.label.toUpperCase(),
+      mxBg: s.mxPanel ? '#FFB61E' : 'rgba(148,190,255,.14)',
+      mxFg: s.mxPanel ? '#33240A' : '#FFFFFF',
+      mxSubFg: s.mxPanel ? 'rgba(51,36,10,.7)' : '#A9BCE6',
+
+      ringCc: ring('cc'), ringBack: ring('back'), ringPlay: ring('play'), ringFwd: ring('fwd'), ringMx: ring('mx'),
+
+      tracks: this.TRACKS.map(t => {
+        const on = t.key === s.track;
+        return {
+          label: t.label, meta: t.meta, mark: on ? 'check_circle' : 'radio_button_unchecked',
+          bg: on ? 'rgba(255,182,30,.18)' : 'rgba(255,255,255,.06)',
+          fg: on ? '#FFD87A' : '#DCE5FF', icon: on ? '#FFB61E' : '#7E90BE',
+          metaFg: on ? 'rgba(255,216,122,.75)' : '#7E90BE',
+          pick: () => this.setState({ track: t.key })
+        };
+      }),
+      sizes: this.SIZES.map(z => ({
+        label: z.label,
+        bg: z.key === s.size ? '#F2F6FF' : 'rgba(255,255,255,.08)',
+        fg: z.key === s.size ? '#0A1533' : '#A9BCE6',
+        pick: () => this.setState({ size: z.key })
+      })),
+
+      mbpsLabel: s.mbps.toFixed(1) + ' Mb/s',
+      netLabel: weak ? '2.4 GHz · −71 dBm' : '5 GHz · −44 dBm',
+      healthLabel: weak ? 'DEGRADED · RECOVERING' : 'HEALTHY · DIRECT PLAY',
+      healthFg: weak ? '#FFA23A' : '#5BE38C',
+      healthBg: weak ? 'rgba(255,162,58,.16)' : 'rgba(91,227,140,.16)',
+      hist: s.hist.map(v => ({
+        h: Math.max(6, Math.min(100, (v / peak) * 100)).toFixed(1) + '%',
+        bg: v < peak * 0.5 ? 'rgba(255,162,58,.6)' : 'rgba(255,182,30,.85)'
+      })),
+      stats
+    };
+  }
+}
+</script>
+</body>
+</html>
