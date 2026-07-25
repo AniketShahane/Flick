@@ -149,7 +149,7 @@ fun SubtitlesPanel(
         ) {
             Text(
                 text = stringResource(R.string.subtitles_panel_title),
-                style = FlickType.display(sizeSp = 27, trackingEm = -0.04f, lineHeightRatio = 1.05f),
+                style = FlickType.display(sizeSp = 27),
                 color = Color.White,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
@@ -220,7 +220,7 @@ fun SubtitlesPanel(
                     ) {
                         Text(
                             text = stringResource(option.labelRes),
-                            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24),
                             color = if (on) FlickColor.OnLight else FlickColor.OnSurfaceDim,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
@@ -269,7 +269,7 @@ private fun TrackRow(
         ) {
             Text(
                 text = label,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                 color = if (selected) FlickColor.SparkLight else FlickColor.OnChrome,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

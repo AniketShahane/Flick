@@ -53,6 +53,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.res.ResourcesCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -695,7 +696,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         pairingSnapshot.surface is PairingSurface.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = stringResource(R.string.pair_success),
-                                style = FlickType.display(sizeSp = 34, trackingEm = -0.045f),
+                                style = FlickType.display(sizeSp = 34),
                                 color = FlickColor.OnSurface,
                             )
                         }
@@ -752,7 +753,7 @@ private fun ConnectingScreen(
                     } else {
                         stringResource(R.string.connecting_title)
                     },
-                    style = FlickType.display(sizeSp = 27, trackingEm = -0.04f, lineHeightRatio = 1.12f),
+                    style = FlickType.display(sizeSp = 27),
                     color = FlickColor.OnSurface,
                     textAlign = TextAlign.Center,
                 )
@@ -875,6 +876,11 @@ private fun PlayerView.configureSubtitles(
     // baked into their pixels and remain unchanged as the safe fallback.
     subtitles.setApplyEmbeddedStyles(false)
     subtitles.setApplyEmbeddedFontSizes(false)
+    // Embedded styles are off, so a null typeface here would leave cues on the
+    // platform default — Roboto Regular (400), under the module's ten-foot weight
+    // floor and a different family from every other glyph on screen. Media3 takes
+    // an android.graphics.Typeface, not a Compose FontFamily, so the bundled face
+    // is loaded from res/font directly.
     subtitles.setStyle(
         CaptionStyleCompat(
             AndroidColor.WHITE,
@@ -882,7 +888,7 @@ private fun PlayerView.configureSubtitles(
             AndroidColor.argb(SUBTITLE_WINDOW_ALPHA, 0, 0, 0),
             CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
             AndroidColor.BLACK,
-            null,
+            ResourcesCompat.getFont(context, R.font.geist_semibold),
         ),
     )
 

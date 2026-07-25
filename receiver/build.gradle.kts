@@ -101,12 +101,6 @@ dependencies {
     // --- Coroutines ---
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 
-    // --- Downloadable Google Fonts (Space Grotesk / Roboto Mono), BOM-aligned.
-    //     Loading is best-effort: the families fall back to the platform default
-    //     if the provider is unavailable, so nothing hard-fails on a device
-    //     without Google Play Services. ---
-    implementation("androidx.compose.ui:ui-text-google-fonts")
-
     // --- TV control server (control-channel.md): Ktor CIO + WebSockets. This is
     //     the SECOND server on the TV — control-only, pairing-gated, LAN-bound;
     //     it carries no media and no file access. The media path stays direct-play

@@ -34,8 +34,8 @@ the final review pass.
 
 ### Shipped this cycle — the redesign (branch, not yet pushed)
 - **Full Flick design system** on both apps (`ui/theme/` in each module): the Spark/Link color
-  split, dark+light (phone) / fixed cinematic dark (TV), Space Grotesk + Roboto Mono via
-  downloadable Google Fonts (graceful fallback), the six motion easings (`flickSettle`,
+  split, dark+light (phone) / fixed cinematic dark (TV), Bricolage Grotesque + Geist + Geist Mono
+  bundled as `res/font` binaries (no provider, no fallback), the six motion easings (`flickSettle`,
   `playheadGlide`, `syncSpring`, `crossDissolve`, `chromeFade`, `focusPop`), the icon set, and the
   component kit. Source of truth: `docs/design/design-tokens.md`.
 - **Phone (`:sender`)** — a real MediaStore-backed **video gallery** (Coil video-frame stills, DV/HDR
@@ -68,9 +68,6 @@ survival, transactional cast-startup); receiver hardened (pairing brute-force pr
 ## Deferred (intentional — not blockers)
 - **Camera QR scanning** on the phone (CameraX + ML Kit). Discovery + TV-displayed code + manual
   entry already cover pairing; the TV only *displays* the QR.
-- **Downloadable-font certs**: `font_certs.xml` ships an **empty** cert array on purpose (public
-  repo — no third-party crypto committed); fonts fall back to the platform Sans/Mono until the real
-  `com_google_android_gms_fonts_certs` array is dropped in locally.
 - **Sender config-change retention**: rotation is survived via `configChanges` (the WS/session stay
   alive); a `ViewModel`/retained holder would be the more idiomatic long-term home.
 - **Same-protocol `http→http` redirects** in Media3's data source (trusted-peer-gated; cross-protocol

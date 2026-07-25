@@ -2,225 +2,230 @@ package com.flick.sender.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.googlefonts.Font
-import androidx.compose.ui.text.googlefonts.GoogleFont
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
 
 /**
- * Typography from design-tokens.md §2. Display / titles use Archivo, UI and body
- * copy use Manrope, and every numeric or telemetry style uses IBM Plex Mono with
- * **tabular figures mandatory** so digits never shimmy while the clock runs. All
- * three faces load via downloadable Google Fonts and **fall back gracefully** to
- * the platform default if the provider is unavailable (see [googleFamilyOrDefault]);
- * weight, tracking and `tnum` still apply to the fallback face.
+ * Bricolage Grotesque carries display and titles, Geist carries body, labels and buttons,
+ * and Geist Mono carries every running number.
+ *
+ * The faces are bundled `res/font` resources, never downloadable. A device whose Play
+ * Services font catalogue lags would silently render the platform default with no error,
+ * so there is no provider and no fallback family — the APK is the only source.
+ *
+ * Each family declares only the weights this scale actually requests, because an
+ * unreferenced `res/font` file is dead APK weight and an undeclared weight silently
+ * resolves to the nearest declared one.
  */
-private val provider = GoogleFont.Provider(
-    providerAuthority = "com.google.android.gms.fonts",
-    providerPackage = "com.google.android.gms",
-    certificates = R.array.com_google_android_gms_fonts_certs,
+val Bricolage: FontFamily = FontFamily(
+    Font(R.font.bricolage_bold, FontWeight.Bold),
+    Font(R.font.bricolage_extrabold, FontWeight.ExtraBold),
 )
 
-private fun googleFamilyOrDefault(
-    name: String,
-    weights: List<FontWeight>,
-    fallback: FontFamily,
-): FontFamily = runCatching {
-    val font = GoogleFont(name)
-    FontFamily(weights.map { Font(googleFont = font, fontProvider = provider, weight = it) })
-}.getOrDefault(fallback)
-
-val Archivo: FontFamily = googleFamilyOrDefault(
-    name = "Archivo",
-    weights = listOf(FontWeight.Medium, FontWeight.SemiBold, FontWeight.Bold, FontWeight.ExtraBold),
-    fallback = FontFamily.SansSerif,
+/**
+ * ExtraBold backs no style below: call sites reach for it through `copy(fontWeight = …)`
+ * and `SpanStyle` to lead an advisory, so dropping it would silently render those at Bold.
+ */
+val Geist: FontFamily = FontFamily(
+    Font(R.font.geist_semibold, FontWeight.SemiBold),
+    Font(R.font.geist_bold, FontWeight.Bold),
+    Font(R.font.geist_extrabold, FontWeight.ExtraBold),
 )
 
-val Manrope: FontFamily = googleFamilyOrDefault(
-    name = "Manrope",
-    weights = listOf(FontWeight.Medium, FontWeight.SemiBold, FontWeight.Bold, FontWeight.ExtraBold),
-    fallback = FontFamily.SansSerif,
+val GeistMono: FontFamily = FontFamily(
+    Font(R.font.geist_mono_semibold, FontWeight.SemiBold),
 )
 
-val PlexMono: FontFamily = googleFamilyOrDefault(
-    name = "IBM Plex Mono",
-    weights = listOf(FontWeight.Medium, FontWeight.SemiBold),
-    fallback = FontFamily.Monospace,
-)
-
-/** Tabular-figures feature — required everywhere a live number is drawn. */
-private const val TNUM = "tnum"
+/**
+ * Required on every live readout. `tnum` keeps a ticking timecode from re-laying out the
+ * row; `zero` keeps the pairing code the user reads off the TV from turning `0` into `O`.
+ *
+ * Geist Mono satisfies both in its outlines rather than through these tags — it is
+ * monospaced by construction and draws the slash in the default zero — so the string is
+ * declared intent that also survives a re-cut which moves either behind a feature.
+ */
+private const val NUMERIC_FEATURES = "tnum, zero"
 
 /** Standalone Flick text styles used directly by components. */
 object FlickText {
 
-    // --- Archivo: display & titles ---
+    // --- Bricolage Grotesque: display & titles ---
 
     val displayLarge = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 44.sp,
         lineHeight = 42.sp,
         letterSpacing = (-0.045).em,
     )
     val headlineLarge = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 30.sp,
         lineHeight = 31.sp,
         letterSpacing = (-0.04).em,
     )
     val headlineMedium = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 26.sp,
         lineHeight = 30.sp,
         letterSpacing = (-0.04).em,
     )
     val headlineSmall = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 24.sp,
         lineHeight = 28.sp,
         letterSpacing = (-0.035).em,
     )
     val titleLarge = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 23.sp,
         lineHeight = 24.sp,
         letterSpacing = (-0.035).em,
     )
     val titleMedium = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.Bold,
         fontSize = 19.sp,
         lineHeight = 23.sp,
         letterSpacing = (-0.03).em,
     )
     val titleSmall = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Bricolage,
         fontWeight = FontWeight.Bold,
         fontSize = 16.sp,
         lineHeight = 20.sp,
         letterSpacing = (-0.025).em,
     )
+
+    // --- Geist: body, labels & buttons ---
+    //
+    // Tracking is pinned to 0 rather than left unspecified: Material's ProvideTextStyle
+    // would otherwise leak a display face's negative tracking into body copy nested in a
+    // button.
+
     val labelLarge = TextStyle(
-        fontFamily = Archivo,
+        fontFamily = Geist,
         fontWeight = FontWeight.Bold,
         fontSize = 14.5.sp,
         lineHeight = 17.sp,
-        letterSpacing = (-0.025).em,
+        letterSpacing = 0.em,
     )
-
-    // --- Manrope: body & labels ---
-
     val bodyLarge = TextStyle(
-        fontFamily = Manrope,
+        fontFamily = Geist,
         fontWeight = FontWeight.Bold,
         fontSize = 14.5.sp,
         lineHeight = 19.5.sp,
-        letterSpacing = (-0.015).em,
+        letterSpacing = 0.em,
     )
     val bodyMedium = TextStyle(
-        fontFamily = Manrope,
+        fontFamily = Geist,
         fontWeight = FontWeight.SemiBold,
         fontSize = 12.5.sp,
         lineHeight = 17.sp,
+        letterSpacing = 0.em,
     )
     val bodySmall = TextStyle(
-        fontFamily = Manrope,
+        fontFamily = Geist,
         fontWeight = FontWeight.SemiBold,
         fontSize = 12.sp,
         lineHeight = 18.sp,
+        letterSpacing = 0.em,
     )
     val labelMedium = TextStyle(
-        fontFamily = Manrope,
+        fontFamily = Geist,
         fontWeight = FontWeight.Bold,
         fontSize = 12.5.sp,
         lineHeight = 15.sp,
-        letterSpacing = (-0.01).em,
+        letterSpacing = 0.em,
     )
     val labelSmall = TextStyle(
-        fontFamily = Manrope,
+        fontFamily = Geist,
         fontWeight = FontWeight.Bold,
         fontSize = 11.5.sp,
         lineHeight = 14.sp,
-        letterSpacing = (-0.01).em,
+        letterSpacing = 0.em,
     )
 
-    // --- IBM Plex Mono: every live number, always tabular ---
+    // --- Geist Mono: every live number, always tabular ---
 
     /** Section eyebrow — caller supplies UPPERCASE copy. */
     val monoEyebrow = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 9.5.sp,
-        letterSpacing = 0.13.em,
-        fontFeatureSettings = TNUM,
+        fontSize = 11.sp,
+        letterSpacing = 0.11.em,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Wider eyebrow for the discovery count line. */
     val monoEyebrowWide = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 10.sp,
+        fontSize = 11.sp,
         letterSpacing = 0.16.em,
-        fontFeatureSettings = TNUM,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Badge chip riding on a poster or tile. */
     val monoBadge = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 9.5.sp,
-        letterSpacing = 0.08.em,
-        fontFeatureSettings = TNUM,
+        fontSize = 11.sp,
+        letterSpacing = 0.06.em,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Badge chip in the detail sheet's fact row. */
     val monoChip = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 10.sp,
+        fontSize = 11.sp,
         letterSpacing = 0.08.em,
-        fontFeatureSettings = TNUM,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Compact telemetry: durations, sizes, decoder names. */
     val monoSmall = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
         fontSize = 11.sp,
-        fontFeatureSettings = TNUM,
+        letterSpacing = 0.em,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Throughput and the scrub time row. */
     val monoValue = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
         fontSize = 12.5.sp,
-        fontFeatureSettings = TNUM,
+        letterSpacing = 0.em,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** The pairing code. */
     val monoDisplay = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
         fontSize = 21.sp,
         letterSpacing = 0.14.em,
-        fontFeatureSettings = TNUM,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     /** Quality-sheet gauge readout. */
     val monoGauge = TextStyle(
-        fontFamily = PlexMono,
+        fontFamily = GeistMono,
         fontWeight = FontWeight.SemiBold,
         fontSize = 25.sp,
-        fontFeatureSettings = TNUM,
+        letterSpacing = 0.em,
+        fontFeatureSettings = NUMERIC_FEATURES,
     )
 
     // --- Legacy aliases: kept so call sites outside ui/theme keep compiling. ---

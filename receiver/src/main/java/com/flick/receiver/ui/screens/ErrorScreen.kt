@@ -111,13 +111,13 @@ fun ErrorScreen(
             PhoneGlyph(accent = accent, waiting = unreachable)
             Text(
                 text = title,
-                style = FlickType.display(sizeSp = 34, trackingEm = -0.045f, lineHeightRatio = 1.06f),
+                style = FlickType.display(sizeSp = 34),
                 color = FlickColor.OnSurface,
                 textAlign = TextAlign.Center,
             )
             Text(
                 text = detail,
-                style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.3f),
+                style = FlickType.body(sizeSp = 24),
                 color = FlickColor.OnSurfaceDim,
                 textAlign = TextAlign.Center,
             )
@@ -136,7 +136,7 @@ fun ErrorScreen(
                     ) {
                         Text(
                             text = primaryLabel,
-                            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                             color = FlickColor.OnSpark,
                         )
                     }
@@ -148,7 +148,7 @@ fun ErrorScreen(
                 ) {
                     Text(
                         text = secondaryLabel,
-                        style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                        style = FlickType.body(sizeSp = 24),
                         color = FlickColor.OnSurfaceDim,
                     )
                 }

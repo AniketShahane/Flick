@@ -192,17 +192,21 @@ animation, keep the ring.
 
 ## 4. Typography
 
-Keep the downloadable-Google-Fonts mechanism and the graceful fallback. Change the
-families to match the design's voice:
+The faces are bundled `res/font` binaries. There is no downloadable-font provider and
+no fallback family: Play Services font catalogues lag hardest on TV hardware, and a lag
+would render the platform default silently, with no error.
 
-- **Display** (headlines, now-playing title, wordmark): **Archivo**, weights
-  500/600/700/800. Falls back to platform default.
-- **Body/UI**: **Manrope**, weights 500/600/700/800. Falls back to platform default.
-- **Mono** (timecode, telemetry, eyebrows): **IBM Plex Mono**, weights 500/600.
-  Falls back to platform monospace. `tnum` mandatory on every running number.
+- **Display** (headlines, now-playing title, wordmark): **Bricolage Grotesque**, weights
+  700/800.
+- **Body/UI**: **Geist**, weights 500/600/700.
+- **Mono** (timecode, telemetry, eyebrows): **Geist Mono**, weights 500/600.
+  `tnum, zero` mandatory on every running number.
 
-Letter-spacing from the design: display `-0.045em` to `-0.05em` (tight), mono
-eyebrows `+0.14em` to `+0.2em` (wide, uppercase).
+Letter-spacing at ten feet is *looser* than the phone's, never tighter — tight tracking
+closes counters at 3 m. Display sits at `-0.02em`, body and labels at `+0.005em`, mono
+eyebrows `+0.14em` to `+0.2em` (wide, uppercase). No weight below 500 and no size below
+16 sp anywhere; body copy starts at 24 sp. `FlickType`'s helpers clamp to those floors,
+so a call site cannot pass its way under them.
 
 Update `FlickTvTypography` role sizes to the §1a scale.
 
@@ -215,11 +219,11 @@ Update `FlickTvTypography` role sizes to the §1a scale.
 Two columns inside the safe area: content `1fr` / QR column `310 dp`, gap `40 dp`.
 
 **Left column** (gap 20 dp):
-1. **Lockup** — `BrandMark` 38 dp + column: "Flick" Archivo 800 / 23 sp /
+1. **Lockup** — `BrandMark` 38 dp + column: "Flick" Bricolage 800 / 23 sp /
    `-0.045em`, and eyebrow `RECEIVER · <TV NAME>` mono 16 sp / `+0.2em` /
    `OnSurfaceMuted`. (Design's hardcoded "1.4" is replaced by nothing — do not
    invent a version string; use the real TV name.)
-2. **Headline** — `pair_title`, Archivo 800, **52 sp**, line-height 0.88,
+2. **Headline** — `pair_title`, Bricolage 800, **52 sp**, line-height 0.88,
    `-0.05em`, `#FFFFFF`.
 3. **Body** — `pair_instructions`, 24 sp / 600 / `OnSurfaceDim`, max width 410 dp,
    with the word "Flick" in `SparkBright`.
@@ -255,7 +259,7 @@ hairline, entering on `FlickMotion.flickSettle()` with a 23 dp rise.
 
 Contents: a 48 dp amber spinner ring (3.5 dp stroke, `Spark` on `Spark` @ 22 %,
 continuous rotation — **skip the rotation under `rememberReducedMotion()`**),
-then `connecting_title` Archivo 800 / 27 sp, then `connecting_detail` 24 sp
+then `connecting_title` Bricolage 800 / 27 sp, then `connecting_detail` 24 sp
 `OnSurfaceDim`. Where a device label is known, the title becomes
 "<device> is flicking <title>" using the real session values.
 
@@ -276,7 +280,7 @@ bottom, `GlassBorderCool` 1 dp border, the §2d inner top hairline, entering on
 `flickSettle` with a 21 dp rise. Three rows, 17 dp gap:
 
 1. **Header row** — left: eyebrow `NOW PLAYING · DIRECT FILE` mono 16 sp `SparkBright`,
-   then title Archivo 800 **34 sp** `-0.045em` `#FFFFFF` (ellipsize, single line).
+   then title Bricolage 800 **34 sp** `-0.045em` `#FFFFFF` (ellipsize, single line).
    Right: spec chips, 1 dp `rgba(255,255,255,.2)` border, 8 dp radius, mono 16 sp
    `OnChrome`. Chips come from **real telemetry only** (§7): resolution + HDR
    class, audio codec + channel count, video codec. **Drop the design's
@@ -301,9 +305,9 @@ the same row. It keeps its `Volume` `contentDescription`.
 
 **Overlays** (unchanged behaviour, restyled):
 - Seek burst: 38 % width side wash, radial `Spark` @ 16 %, 60 dp glyph +
-  `±10s` Archivo 800 22 sp, on `tvBurst` (0.72 s scale-and-fade).
+  `±10s` Bricolage 800 22 sp, on `tvBurst` (0.72 s scale-and-fade).
 - Paused chip: at 28 % height, `Glass` pill, 23 dp `Spark` pause glyph + "Paused"
-  Archivo 800 17 sp.
+  Bricolage 800 17 sp.
 - Buffering: keep the existing calm treatment, restyled to the new tokens.
 - Quality flourish (`QualityInfo`): restyle to the new glass; keep the 4.5 s
   auto-dismiss.
@@ -327,7 +331,7 @@ entry.
 Left-anchored above the transport panel, 310 dp wide, `GlassPanel`, 20 dp radius,
 16/17 dp padding, entering on `flickSettle` with a rise.
 
-- Header: "Subtitles" Archivo 800 27 sp + a focusable close button (23 dp square,
+- Header: "Subtitles" Bricolage 800 27 sp + a focusable close button (23 dp square,
   8 dp radius).
 - Track list from **real Media3 tracks** (§7): each row = check glyph
   (`check_circle` when selected, `radio_button_unchecked` otherwise, tinted
@@ -345,7 +349,7 @@ Every row is D-pad focusable per §3. `Back` closes the panel.
 
 Right-anchored above the transport panel, 370 dp wide, `GlassPanel`, 20 dp radius.
 
-- Header: "Stream metrics" Archivo 800 27 sp + a health pill (`HEALTHY · DIRECT PLAY`
+- Header: "Stream metrics" Bricolage 800 27 sp + a health pill (`HEALTHY · DIRECT PLAY`
   in `Live`, or `DEGRADED · RECOVERING` in `Caution`, chosen from the real
   `DiagnosticsSnapshot.status`) + a focusable close button.
 - **Throughput histogram**: `THROUGHPUT · LAST 40 s` eyebrow + the live value in
@@ -364,7 +368,7 @@ stays as the separate opt-in Settings toggle (design brief Part 3 item 10).
 ### 5.6 Idle, Error, Settings, MetricsOverlay
 
 Not drawn in the design file — **re-skin to the new tokens, keep structure and
-behaviour**. Specifically: new palette, Archivo/Manrope/IBM Plex Mono, amber
+behaviour**. Specifically: new palette, Bricolage/Geist/Geist Mono, amber
 focus rings, glass panels, safe-area anchoring, and the §1a type floors. Keep
 every string listed in §0 and keep the existing focus requesters and back
 handling. Idle gains the design's ambient blue radial wash + a pulsing `Live`

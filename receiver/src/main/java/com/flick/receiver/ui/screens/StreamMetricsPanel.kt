@@ -168,7 +168,7 @@ fun StreamMetricsPanel(
             ) {
                 Text(
                     text = stringResource(R.string.metrics_panel_title),
-                    style = FlickType.display(sizeSp = 27, trackingEm = -0.04f, lineHeightRatio = 1.05f),
+                    style = FlickType.display(sizeSp = 27),
                     color = Color.White,
                     modifier = Modifier.weight(1f, fill = false),
                     maxLines = 1,

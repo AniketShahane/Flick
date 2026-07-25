@@ -145,12 +145,12 @@ fun PairScreen(
                 )
                 Text(
                     text = stringResource(R.string.pair_title),
-                    style = FlickType.display(sizeSp = 52, trackingEm = -0.05f, lineHeightRatio = 0.88f),
+                    style = FlickType.display(sizeSp = 52),
                     color = Color.White,
                 )
                 Text(
                     text = highlightedInstructions(),
-                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.18f),
+                    style = FlickType.body(sizeSp = 24),
                     color = FlickColor.OnSurfaceDim,
                     modifier = Modifier.widthIn(max = PairBodyMaxWidth),
                 )
@@ -170,7 +170,7 @@ fun PairScreen(
                         LiveDot(color = FlickColor.Live, size = 7.dp, pulsing = true)
                         Text(
                             text = stringResource(R.string.pair_listening),
-                            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                             color = FlickColor.OnSurfaceSoft,
                         )
                     }
@@ -189,7 +189,7 @@ fun PairScreen(
                     ) {
                         Text(
                             text = stringResource(R.string.pair_show_bigger),
-                            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24),
                             color = FlickColor.OnSurface,
                         )
                     }
@@ -200,7 +200,7 @@ fun PairScreen(
                     ) {
                         Text(
                             text = stringResource(R.string.pair_rename),
-                            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24),
                             color = FlickColor.OnSurfaceDim,
                         )
                     }
@@ -286,7 +286,7 @@ private fun ManualEntryCard(
         if (locked) {
             Text(
                 text = stringResource(R.string.pair_locked),
-                style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.15f),
+                style = FlickType.body(sizeSp = 24),
                 color = FlickColor.Caution,
             )
         } else {
@@ -372,13 +372,13 @@ private fun WaitingForNetworkCard() {
             )
             Text(
                 text = stringResource(R.string.pair_waiting_network_title),
-                style = FlickType.display(sizeSp = 27, trackingEm = -0.04f),
+                style = FlickType.display(sizeSp = 27),
                 color = FlickColor.OnSurface,
             )
         }
         Text(
             text = stringResource(R.string.pair_waiting_network_detail),
-            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.2f),
+            style = FlickType.body(sizeSp = 24),
             color = FlickColor.OnSurfaceDim,
         )
     }
@@ -462,13 +462,13 @@ private fun EnlargedCode(
             )
             Text(
                 text = stringResource(if (locked) R.string.pair_locked else R.string.pair_code_hint),
-                style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.15f),
+                style = FlickType.body(sizeSp = 24),
                 color = if (locked) FlickColor.Caution else FlickColor.OnSurfaceDim,
             )
             FlickTvButton(onClick = onDone, focusRequester = doneFocus) {
                 Text(
                     text = stringResource(R.string.pair_hide_bigger),
-                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                    style = FlickType.body(sizeSp = 24),
                     color = FlickColor.OnSurface,
                 )
             }

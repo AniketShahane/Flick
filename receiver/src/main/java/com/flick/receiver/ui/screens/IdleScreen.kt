@@ -112,7 +112,7 @@ fun IdleScreen(
                 } else {
                     stringResource(R.string.idle_ready)
                 },
-                style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                style = FlickType.body(sizeSp = 24),
                 color = FlickColor.OnSurfaceDim,
             )
         }
@@ -129,7 +129,7 @@ fun IdleScreen(
             ) {
                 Text(
                     text = stringResource(R.string.idle_settings),
-                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                    style = FlickType.body(sizeSp = 24),
                     color = FlickColor.OnSurfaceDim,
                 )
             }
@@ -140,7 +140,7 @@ fun IdleScreen(
             ) {
                 Text(
                     text = stringResource(R.string.idle_pair_another),
-                    style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                    style = FlickType.body(sizeSp = 24),
                     color = FlickColor.OnSurface,
                 )
             }

@@ -374,7 +374,7 @@ private fun TopChrome(
             GlassPill(
                 text = deviceLabel?.let { stringResource(R.string.now_playing_flicked_from, it) }
                     ?: stringResource(R.string.app_name),
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                 color = FlickColor.OnSurface,
                 contentPadding = PaddingValues(start = 9.dp, top = 7.dp, end = 15.dp, bottom = 7.dp),
                 leading = { BrandMark(size = 17.dp, tint = FlickColor.OnSurface) },
@@ -608,7 +608,7 @@ private fun TransportHeaderRow(
             )
             Text(
                 text = title.orEmpty(),
-                style = FlickType.display(sizeSp = 34, trackingEm = -0.045f, lineHeightRatio = 0.98f),
+                style = FlickType.display(sizeSp = 34),
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -843,7 +843,7 @@ private fun PanelCard(
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = title,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                 color = if (open) FlickColor.OnSpark else Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -922,7 +922,7 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
                     } else {
                         stringResource(R.string.remote_seek_step, sign, seconds)
                     },
-                    style = FlickType.display(sizeSp = 24, trackingEm = -0.03f),
+                    style = FlickType.display(sizeSp = 24),
                     color = Color.White,
                     maxLines = 1,
                 )
@@ -946,7 +946,7 @@ private fun PausedChip(modifier: Modifier = Modifier) {
         )
         Text(
             text = stringResource(R.string.paused_title),
-            style = FlickType.display(sizeSp = 24, trackingEm = -0.03f),
+            style = FlickType.display(sizeSp = 24),
             color = Color.White,
             maxLines = 1,
         )
@@ -996,7 +996,7 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
         )
         Text(
             text = stringResource(R.string.buffering_title),
-            style = FlickType.display(sizeSp = 27, trackingEm = -0.04f, lineHeightRatio = 1.05f),
+            style = FlickType.display(sizeSp = 27),
             color = Color.White,
             maxLines = 1,
         )
@@ -1025,7 +1025,7 @@ private fun QualityCard(info: QualityInfo, modifier: Modifier = Modifier) {
         ) {
             Text(
                 text = info.qualityLabel,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

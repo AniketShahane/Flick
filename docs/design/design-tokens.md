@@ -113,13 +113,20 @@ job is shared; component API, focus behavior, and containment stay form-factor-n
 
 ## 2. Typography
 
-Faces (all via Compose; no bundled files):
-- **Display / titles / wordmark:** Space Grotesk (geometric, kinetic). Load via **downloadable
-  Google Fonts** (`androidx.compose.ui:ui-text-google-fonts`) with graceful fallback to the
-  platform default. Do **not** hard-fail if the provider is unavailable.
-- **UI / body:** platform default (Roboto/Google Sans Text) — zero font-loading cost.
-- **Timecode / telemetry:** Roboto Mono (downloadable) or platform monospace, **tabular figures
-  mandatory** — `TextStyle(fontFeatureSettings = "tnum")`. Digits must not shimmy while the clock runs.
+Faces (bundled `res/font` binaries in both modules; **no downloadable-font provider, no
+fallback family** — a device with a lagging Play Services font catalogue would silently render
+the platform default and the design would just look wrong, with no error):
+- **Display / titles / wordmark:** Bricolage Grotesque, weights 700/800.
+- **UI / body / labels / buttons:** Geist — 600/700/800 on the phone, 500/600/700 on the TV.
+- **Timecode / telemetry / pairing codes:** Geist Mono, **tabular figures mandatory** —
+  `TextStyle(fontFeatureSettings = "tnum, zero")`. Digits must not shimmy while the clock runs,
+  and the slashed zero keeps a pairing code read off the TV from being typed in as `O`.
+
+All three are SIL OFL 1.1; the licenses ship at `<module>/src/main/assets/licenses/`.
+
+The two scale tables below are the original design intent, not the shipped numbers. The
+implemented scale lives in `sender/.../ui/theme/Type.kt` and `receiver/.../ui/theme/Type.kt`;
+neither module goes below weight 500, and the TV floors are 24 sp body / 16 sp label.
 
 ### Phone scale (arm's length)
 | Role | size/line | weight | tracking |

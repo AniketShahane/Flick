@@ -99,7 +99,7 @@ fun SettingsScreen(
             item(key = "title") {
                 Text(
                     text = stringResource(R.string.settings_title),
-                    style = FlickType.display(sizeSp = 34, trackingEm = -0.045f),
+                    style = FlickType.display(sizeSp = 34),
                     color = FlickColor.OnSurface,
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
@@ -118,7 +118,7 @@ fun SettingsScreen(
                     )
                     Text(
                         text = stringResource(R.string.settings_disclosure),
-                        style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                        style = FlickType.body(sizeSp = 24),
                         color = FlickColor.OnSurfaceFaint,
                     )
                 }
@@ -256,7 +256,7 @@ fun SettingsScreen(
                     ) {
                         Text(
                             text = stringResource(R.string.settings_done),
-                            style = FlickType.body(sizeSp = 24, lineHeightRatio = 1.1f),
+                            style = FlickType.body(sizeSp = 24),
                             color = FlickColor.OnSurface,
                         )
                     }
@@ -286,12 +286,12 @@ private fun LabeledColumn(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = title,
-            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold, lineHeightRatio = 1.1f),
+            style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
             color = FlickColor.OnSurface,
         )
         Text(
             text = summary,
-            style = FlickType.body(sizeSp = 24, weight = FontWeight.Medium, lineHeightRatio = 1.1f),
+            style = FlickType.body(sizeSp = 24, weight = FontWeight.Medium),
             color = summaryColor,
         )
     }

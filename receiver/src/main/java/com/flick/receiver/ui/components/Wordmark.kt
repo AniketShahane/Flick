@@ -41,7 +41,7 @@ fun FlickWordmark(
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = stringResource(R.string.brand_wordmark),
-                style = FlickType.display(sizeSp = textSizeSp, trackingEm = -0.045f),
+                style = FlickType.display(sizeSp = textSizeSp),
                 color = tint,
             )
             if (eyebrow != null) {
