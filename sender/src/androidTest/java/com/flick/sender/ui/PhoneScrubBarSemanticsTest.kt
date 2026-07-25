@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.flick.sender.ui.components.PhoneScrubBar
 import com.flick.sender.ui.theme.FlickTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -101,5 +102,53 @@ class PhoneScrubBarSemanticsTest {
 
         assertEquals(1, starts)
         assertEquals(1, ends)
+    }
+
+    @Test
+    fun draggingAcrossTheBarTracksTheFingerAndTerminatesOnce() {
+        val target = mutableFloatStateOf(0f)
+        var starts = 0
+        var ends = 0
+        val values = mutableListOf<Float>()
+
+        composeRule.setContent {
+            FlickTheme(darkTheme = true, dynamicColor = false) {
+                PhoneScrubBar(
+                    targetFraction = { target.floatValue },
+                    ghostFraction = { 0.10f },
+                    // Deliberately off: the sync chip mounts an ungated shimmer loop,
+                    // and an animation that never ends keeps waitForIdle from returning
+                    // on any device whose animator scale is not zero.
+                    syncing = false,
+                    framePreview = null,
+                    previewLabel = { "0:30" },
+                    onScrubStart = { starts++ },
+                    onScrub = { fraction ->
+                        target.floatValue = fraction
+                        values += fraction
+                    },
+                    onScrubEnd = { ends++ },
+                    bufferedFraction = { 0.55f },
+                    positionMs = { 65_000L },
+                    durationMs = { 125_000L },
+                    targetLabel = "Seek target",
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Seek target")
+            .performTouchInput {
+                down(centerLeft)
+                moveTo(centerRight)
+                up()
+            }
+
+        composeRule.runOnIdle {
+            assertEquals(1, starts)
+            assertEquals(1, ends)
+            assertTrue("expected at least a down and a move", values.size >= 2)
+            assertTrue("drag should start at the left edge", values.first() < 0.05f)
+            assertTrue("drag should end at the right edge", values.last() > 0.9f)
+        }
     }
 }

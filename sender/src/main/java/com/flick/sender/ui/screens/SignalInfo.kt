@@ -2,11 +2,12 @@ package com.flick.sender.ui.screens
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.flick.sender.R
@@ -29,6 +30,12 @@ data class SignalInfo(
     val healthy: Boolean get() = band != WifiBand.GHZ_24
     val on24GHz: Boolean get() = band == WifiBand.GHZ_24
 
+    /** False when Wi-Fi is not the active transport: band and RSSI are then unknown, not zero. */
+    val hasLink: Boolean get() = band != null
+
+    /** True only while this phone's server is actually writing bytes. */
+    val serving: Boolean get() = throughputBitsPerSec > 0L
+
     @Composable
     fun bandLabel(): String = when (band) {
         WifiBand.GHZ_6 -> stringResource(R.string.wifi_band_6ghz)
@@ -47,25 +54,47 @@ data class SignalInfo(
         linkSpeedMbps > 0 -> stringResource(R.string.network_chip_link_speed, linkSpeedMbps, bandLabel())
         else -> bandLabel()
     }
+
+    /** Band plus signal strength for a fact row; an honest dash when Wi-Fi is not up. */
+    @Composable
+    fun linkLabel(): String = when {
+        band == null -> stringResource(R.string.media_unknown)
+        rssiDbm != 0 -> stringResource(R.string.network_rssi, bandLabel(), rssiDbm)
+        else -> bandLabel()
+    }
 }
 
-/** Polls the phone's Wi-Fi link + the media-server throughput every ~2s. */
+/**
+ * Polls the phone's Wi-Fi link + the media-server throughput every ~2s and publishes
+ * the result as [State] rather than a value. Nothing here is read at composition scope,
+ * so the poll invalidates only the leaves that actually read `.value` — screens that
+ * unwrap it at their own scope rebuild their whole tree on every tick.
+ */
 @Composable
-fun rememberSignalInfo(): SignalInfo {
+fun rememberSignalState(): State<SignalInfo> {
     val context = LocalContext.current
-    val stats by TransferTelemetry.stats.collectAsState()
-    var wifi by remember { mutableStateOf<WifiLinkInfo?>(null) }
+    val stats = TransferTelemetry.stats.collectAsState()
+    val wifi = remember { mutableStateOf<WifiLinkInfo?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
             TransferTelemetry.refresh()
-            wifi = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) }
+            wifi.value = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) }
             delay(2000L)
         }
     }
-    return SignalInfo(
-        throughputBitsPerSec = stats.bitsPerSec,
-        band = wifi?.band,
-        linkSpeedMbps = wifi?.linkSpeedMbps ?: 0,
-        rssiDbm = wifi?.rssiDbm ?: 0,
-    )
+    return remember(stats, wifi) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            val link = wifi.value
+            SignalInfo(
+                throughputBitsPerSec = stats.value.bitsPerSec,
+                band = link?.band,
+                linkSpeedMbps = link?.linkSpeedMbps ?: 0,
+                rssiDbm = link?.rssiDbm ?: 0,
+            )
+        }
+    }
 }
+
+/** Convenience for surfaces that genuinely want the whole record in their own scope. */
+@Composable
+fun rememberSignalInfo(): SignalInfo = rememberSignalState().value

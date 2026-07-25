@@ -18,9 +18,18 @@ object Format {
         }
     }
 
-    /** ms → `2h 14m` style, for captions. */
+    /** Time left → `−1:23:45`. U+2212 keeps the glyph aligned with tabular digits. */
+    fun remaining(positionMs: Long, durationMs: Long): String =
+        "−" + timecode((durationMs - positionMs).coerceAtLeast(0L))
+
+    /**
+     * ms → `2h 14m` style, for captions. Whole-minute division would render every
+     * sub-minute phone clip as "0m", so anything under a minute is reported in seconds.
+     */
     fun durationHuman(ms: Long): String {
-        val totalMin = (ms.coerceAtLeast(0L)) / 60000L
+        val totalSec = (ms.coerceAtLeast(0L)) / 1000L
+        if (totalSec < 60L) return "${totalSec}s"
+        val totalMin = totalSec / 60L
         val h = totalMin / 60L
         val m = totalMin % 60L
         return if (h > 0L) "${h}h ${m}m" else "${m}m"

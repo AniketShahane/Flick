@@ -6,8 +6,10 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -54,5 +56,25 @@ class VolumeSliderSemanticsTest {
             assertEquals(listOf(1f), received)
             assertEquals(1f, value.floatValue)
         }
+    }
+
+    @Test
+    fun percentReadoutIsExposedAsItsOwnNode() {
+        composeRule.setContent {
+            FlickTheme(darkTheme = true, dynamicColor = false) {
+                VolumeSlider(
+                    value = 0.62f,
+                    onValueChange = {},
+                    percentLabel = "62%",
+                    accessibilityLabel = "TV volume",
+                    valueDescription = "62 percent",
+                    adjustableActionLabel = "Adjust TV volume",
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("62%").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("TV volume")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "62 percent"))
     }
 }

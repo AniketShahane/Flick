@@ -5,36 +5,38 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 
-/** A status dot; when [pulsing] it breathes 0.45 → 1.0 (design `fkPulse`). */
+/** A status dot; when [pulsing] it breathes alpha .4↔1 and scale .82↔1.18 over 1.6 s. */
 @Composable
 fun LiveDot(
     color: Color,
@@ -43,19 +45,29 @@ fun LiveDot(
     pulsing: Boolean = false,
 ) {
     val reduceMotion = rememberReduceMotion()
-    val alpha = if (pulsing && !reduceMotion) {
-        val t = rememberInfiniteTransition(label = "dot")
-        t.animateFloat(
-            initialValue = 0.45f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
-            label = "dotAlpha",
-        ).value
-    } else {
-        1f
+    if (!pulsing || reduceMotion) {
+        Canvas(modifier.size(size)) { drawCircle(color = color) }
+        return
     }
-    androidx.compose.foundation.Canvas(modifier.size(size)) {
-        drawCircle(color = color.copy(alpha = color.alpha * alpha))
+    val transition = rememberInfiniteTransition(label = "live dot")
+    val phase = transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = Motion.PulseMs / 2, easing = Motion.Breathe),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "live dot phase",
+    )
+    // The dot overshoots its own box the way the CSS transform does; the Canvas is
+    // unclipped so the swell never moves anything around it.
+    Canvas(modifier.size(size)) {
+        val t = phase.value
+        drawCircle(
+            color = color.copy(alpha = color.alpha * lerp(Motion.PulseMinAlpha, 1f, t)),
+            radius = this.size.minDimension / 2f *
+                lerp(Motion.PulseMinScale, Motion.PulseMaxScale, t),
+        )
     }
 }
 
@@ -71,49 +83,31 @@ fun StatusPill(text: String, kind: StatusKind, modifier: Modifier = Modifier) {
         StatusKind.TROUBLE -> colors.trouble
         StatusKind.CAUTION -> colors.caution
     }
+    // Amber never clears its contrast floor as ink, so the caution pill inverts:
+    // solid fill, dark ink. Every other state is a tint of its own accent.
+    val fill = if (kind == StatusKind.CAUTION) colors.caution else accent.copy(alpha = 0.14f)
+    val ink = if (kind == StatusKind.CAUTION) colors.onCaution else accent
     Row(
         modifier = modifier
             .clip(PillShape)
-            .background(accent.copy(alpha = 0.12f))
-            .border(1.dp, accent.copy(alpha = 0.35f), PillShape)
-            .padding(horizontal = 11.dp, vertical = 6.dp),
+            .background(fill)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LiveDot(
-            color = accent,
+            color = ink,
+            size = 7.dp,
             pulsing = kind == StatusKind.LIVE || kind == StatusKind.CONNECTING,
-            modifier = Modifier.padding(end = 6.dp),
+            modifier = Modifier.padding(end = 8.dp),
         )
-        Text(
-            text = text,
-            style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = accent),
-        )
+        Text(text = text, style = FlickText.labelMedium.copy(color = ink))
     }
 }
 
-/** The cyan "connected TV" chip (Link is connection only). */
-@Composable
-fun ConnectChip(name: String, modifier: Modifier = Modifier) {
-    val colors = LocalFlickColors.current
-    Row(
-        modifier = modifier
-            .clip(PillShape)
-            .background(colors.link.copy(alpha = 0.10f))
-            .border(1.dp, colors.link.copy(alpha = 0.30f), PillShape)
-            .padding(horizontal = 11.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        LiveDot(color = colors.link, pulsing = true, modifier = Modifier.padding(end = 6.dp))
-        Text(
-            text = name,
-            style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.link),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-/** Signal chip → `61 Mb/s · 5 GHz`, mono tabular, expands to the quality sheet. */
+/**
+ * Signal chip → `61.4 Mb/s · 5 GHz`, mono tabular, expands to the quality sheet.
+ * The 48 dp box is the touch target; the visible pill sits centred inside it.
+ */
 @Composable
 fun SignalChip(
     text: String,
@@ -122,28 +116,54 @@ fun SignalChip(
     healthy: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
-    val glyphTint = if (healthy) colors.live else colors.caution
-    Row(
+    val fill: Color
+    val ink: Color
+    when {
+        healthy -> {
+            fill = colors.link.copy(alpha = 0.18f)
+            ink = colors.link
+        }
+        // Amber-on-pale fails contrast, so the weak state inverts on light surfaces.
+        colors.isLight -> {
+            fill = colors.caution
+            ink = colors.onCaution
+        }
+        else -> {
+            fill = colors.caution.copy(alpha = 0.20f)
+            ink = colors.caution
+        }
+    }
+    val interaction = remember { MutableInteractionSource() }
+    Box(
         modifier = modifier
-            .clip(PillShape)
-            .background(colors.surfaceRaised)
-            .border(1.dp, colors.outlineHairline, PillShape)
-            .clickable(onClick = onClick)
-            .semantics { role = Role.Button }
             .heightIn(min = 48.dp)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .pressScale(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics { role = Role.Button },
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = FlickIcons.Wifi,
-            contentDescription = null,
-            tint = glyphTint,
-            modifier = Modifier.size(14.dp).padding(end = 0.dp),
-        )
-        Text(
-            text = text,
-            style = FlickText.mono.copy(fontWeight = FontWeight.SemiBold, color = colors.onSurface),
-            modifier = Modifier.padding(start = 7.dp),
-        )
+        Row(
+            modifier = Modifier
+                .clip(PillShape)
+                .background(fill)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = FlickIcons.Signal,
+                contentDescription = null,
+                tint = ink,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = text,
+                style = FlickText.monoSmall.copy(color = ink),
+                modifier = Modifier.padding(start = 7.dp),
+            )
+        }
     }
 }

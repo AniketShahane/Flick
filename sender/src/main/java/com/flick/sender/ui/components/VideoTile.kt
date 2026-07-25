@@ -1,9 +1,9 @@
 package com.flick.sender.ui.components
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -17,7 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -25,7 +25,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -42,8 +41,9 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.PremiumGoldB
-import com.flick.sender.ui.theme.PremiumInk
+import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.TileShadow
+import com.flick.sender.ui.theme.pressScale
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -56,7 +56,7 @@ private val videoImageLoaderLock = Any()
 
 /**
  * The app-scoped Coil [ImageLoader] that decodes a still frame straight out of a local
- * video (design: the tiles are filmic 16:9 stills, not generic icons).
+ * video (design: the tiles are filmic stills, not generic icons).
  */
 @Composable
 fun rememberVideoImageLoader(): ImageLoader {
@@ -71,9 +71,9 @@ fun rememberVideoImageLoader(): ImageLoader {
 }
 
 /**
- * Library tile (design S3 / component kit): 16:9 still with a DV/HDR badge
- * top-left (premium sheen), the duration bottom-right (mono tabular), then the
- * title + `4K · 8.4 GB` caption.
+ * Library tile (design §5.2.5): a real decoded frame under a bottom scrim, the
+ * resolution + dynamic-range chip top-left, the duration bottom-right, then the
+ * title and a size/length caption.
  */
 @Composable
 fun VideoTile(
@@ -86,12 +86,8 @@ fun VideoTile(
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
-    val shape = RoundedCornerShape(
-        topStart = FlickCorners.lg,
-        topEnd = FlickCorners.lg,
-        bottomStart = FlickCorners.md,
-        bottomEnd = FlickCorners.md,
-    )
+    val shape = RoundedCornerShape(FlickCorners.tile)
+    val interaction = remember { MutableInteractionSource() }
 
     val request = remember(item.uri, item.durationMs) {
         ImageRequest.Builder(context)
@@ -103,16 +99,20 @@ fun VideoTile(
 
     Column(
         modifier = modifier
-            .clip(shape)
-            .background(colors.surfaceRaised)
-            .border(1.dp, colors.outlineHairline, shape)
-            .clickable(onClick = onClick)
+            .pressScale(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .semantics { role = Role.Button },
+        verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f),
+                // A ratio, not a fixed height: the grid reflows with the window, and a
+                // pinned dp would crop the still to a sliver on a wide column.
+                .aspectRatio(if (compact) CompactPosterRatio else PosterRatio)
+                .shadow(10.dp, shape, clip = false, ambientColor = TileShadow, spotColor = TileShadow)
+                .clip(shape)
+                .background(colors.surfaceTonal),
         ) {
             AsyncImage(
                 model = request,
@@ -121,92 +121,69 @@ fun VideoTile(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0.4f to Color.Transparent,
-                            1f to colors.canvas.copy(alpha = 0.75f),
-                        ),
-                    ),
-            )
-            QualityBadge(
-                hdr = hdr,
-                resolutionLabel = item.resolutionLabel,
-                modifier = Modifier.align(Alignment.TopStart).padding(6.dp),
-            )
+            Box(Modifier.fillMaxSize().background(FlickGradients.posterScrim))
             Text(
-                text = Format.timecode(item.durationMs),
-                style = FlickText.mono.copy(color = Color.White, fontWeight = FontWeight.Bold),
+                text = badgeLabel(hdr, item.resolutionLabel),
+                style = FlickText.monoBadge.copy(color = colors.onSurface),
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(colors.canvas.copy(alpha = 0.75f))
-                    .padding(horizontal = 5.dp, vertical = 2.dp),
+                    .align(Alignment.TopStart)
+                    .padding(10.dp)
+                    .clip(PillShape)
+                    .background(colors.canvas)
+                    .padding(horizontal = 9.dp, vertical = 6.dp),
             )
+            // A zero duration means MediaStore had no value, not a zero-length film.
+            if (item.durationMs > 0L) {
+                Text(
+                    text = Format.timecode(item.durationMs),
+                    style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(bottom = 10.dp, end = 11.dp),
+                )
+            }
         }
-        Column(
-            Modifier.padding(
-                horizontal = 10.dp,
-                vertical = if (compact) 6.dp else 9.dp,
-            ),
-        ) {
+        Column {
             Text(
                 text = item.name,
-                style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = colors.onSurface),
-                maxLines = 1,
+                style = FlickText.labelLarge.copy(color = colors.onSurface),
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "${item.resolutionLabel} · ${Format.bytes(item.sizeBytes)}",
-                style = FlickText.mono.copy(color = colors.onSurfaceFaint),
-                modifier = Modifier.padding(top = 2.dp),
+                text = metaLabel(item, stringResource(R.string.media_unknown)),
+                style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceFaint),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 3.dp),
             )
         }
     }
 }
 
-/**
- * Quality chip: Dolby Vision / HDR10 in the premium gold sheen, otherwise the
- * plain resolution label in a hairline outline.
- */
+/** "4K DV" / "4K HDR10" / "4K" — the dynamic range is only claimed once probed. */
 @Composable
-fun QualityBadge(
-    hdr: HdrType,
-    resolutionLabel: String,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LocalFlickColors.current
-    when (hdr) {
-        HdrType.DOLBY_VISION -> Text(
-            text = stringResource(R.string.media_dv_badge),
-            style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = PremiumInk),
-            modifier = modifier
-                .clip(RoundedCornerShape(4.dp))
-                .background(FlickGradients.premiumSheen)
-                .padding(horizontal = 5.dp, vertical = 2.dp),
-        )
-        HdrType.HDR10 -> Text(
-            text = stringResource(R.string.media_hdr10_badge),
-            style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = PremiumGoldB),
-            modifier = modifier
-                .clip(RoundedCornerShape(4.dp))
-                .border(1.dp, PremiumGoldB.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 5.dp, vertical = 2.dp),
-        )
-        HdrType.NONE -> Text(
-            text = resolutionLabel,
-            style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White),
-            modifier = modifier
-                .clip(RoundedCornerShape(4.dp))
-                .background(colors.canvas.copy(alpha = 0.50f))
-                .border(1.dp, colors.glassBorder, RoundedCornerShape(FlickCorners.sm))
-                .padding(horizontal = 5.dp, vertical = 2.dp),
-        )
-    }
+private fun badgeLabel(hdr: HdrType, resolutionLabel: String): String = when (hdr) {
+    HdrType.DOLBY_VISION -> stringResource(
+        R.string.library_tile_badge,
+        resolutionLabel,
+        stringResource(R.string.media_dv_badge),
+    )
+    HdrType.HDR10 -> stringResource(
+        R.string.library_tile_badge,
+        resolutionLabel,
+        stringResource(R.string.media_hdr10_badge),
+    )
+    HdrType.NONE -> resolutionLabel
 }
 
-/** Alias to the corner token so callers can reference the tile radius. */
-internal val TileCorner = FlickCorners.md
+private fun metaLabel(item: MediaItem, unknown: String): String {
+    val length = if (item.durationMs > 0L) Format.durationHuman(item.durationMs) else unknown
+    val size = if (item.sizeBytes > 0L) Format.bytes(item.sizeBytes) else unknown
+    return "$length · $size"
+}
+
+// The mock's 179 dp column carries a 122 dp still. Short screens drop to 16:9 so the
+// poster does not eat the row on a landscape phone.
+private const val PosterRatio = 179f / 122f
+private const val CompactPosterRatio = 16f / 9f

@@ -1,14 +1,13 @@
 package com.flick.sender.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,23 +17,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.FlickCorners
+import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 
 enum class AdvisoryTone { CAUTION, INFO }
 
 /**
- * A tinted, actionable advisory (design §7 / S11) — never a modal, never a toast
- * wall. Names the specific number at stake and the exact fix.
+ * A tinted, actionable advisory (S11) — never a modal, never a toast wall. Names
+ * the specific condition at stake and the exact fix. [CAUTION][AdvisoryTone.CAUTION]
+ * carries the amber caution fill used by the library band banner;
+ * [INFO][AdvisoryTone.INFO] sits on the inverse surface so two stacked cards never
+ * shout at each other.
  */
 @Composable
 fun AdvisoryCard(
@@ -49,57 +50,58 @@ fun AdvisoryCard(
     onSecondary: (() -> Unit)? = null,
 ) {
     val colors = LocalFlickColors.current
-    val accent = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.spark
-    val shape = RoundedCornerShape(FlickCorners.md)
+    val container = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.inverseSurface
+    val ink = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.onInverseSurface
+    val glyph = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.spark
     Row(
         modifier = modifier
-            .clip(shape)
-            .background(accent.copy(alpha = 0.08f))
-            .border(1.dp, accent.copy(alpha = 0.28f), shape)
-            .padding(14.dp),
+            .clip(RoundedCornerShape(FlickCorners.warning))
+            .background(container)
+            .padding(horizontal = 17.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(13.dp),
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = accent,
-            modifier = Modifier.size(18.dp).padding(top = 1.dp),
+            tint = glyph,
+            modifier = Modifier.size(22.dp),
         )
-        Column(Modifier.padding(start = 11.dp)) {
+        Column {
             Text(
                 text = title,
-                style = FlickText.body.copy(fontWeight = FontWeight.Bold, color = colors.onSurface),
+                style = FlickText.bodySmall.copy(fontWeight = FontWeight.ExtraBold, color = ink),
             )
             Text(
                 text = body,
-                style = FlickText.caption.copy(color = colors.onSurfaceDim),
-                modifier = Modifier.padding(top = 2.dp),
+                style = FlickText.bodySmall.copy(color = ink.copy(alpha = 0.86f)),
+                modifier = Modifier.padding(top = 3.dp),
             )
             Row(
-                Modifier.padding(top = 9.dp),
+                Modifier.padding(top = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Start,
             ) {
                 Text(
                     text = primaryLabel,
-                    style = FlickText.caption.copy(fontWeight = FontWeight.Bold, color = Color.White),
+                    style = FlickText.labelMedium.copy(color = container),
                     modifier = Modifier
                         .clip(PillShape)
-                        .background(accent)
+                        .background(ink)
                         .clickable(onClick = onPrimary)
                         .semantics { role = Role.Button }
                         .heightIn(min = 48.dp)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                        .padding(horizontal = 16.dp, vertical = 15.dp),
                 )
                 if (secondaryLabel != null && onSecondary != null) {
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = secondaryLabel,
-                        style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold, color = accent),
+                        style = FlickText.labelMedium.copy(color = ink.copy(alpha = 0.78f)),
                         modifier = Modifier
+                            .clip(PillShape)
                             .clickable(onClick = onSecondary)
                             .semantics { role = Role.Button }
                             .heightIn(min = 48.dp)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .padding(horizontal = 14.dp, vertical = 15.dp),
                     )
                 }
             }

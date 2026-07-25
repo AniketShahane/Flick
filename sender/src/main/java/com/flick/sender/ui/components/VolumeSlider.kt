@@ -5,11 +5,13 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,30 +26,39 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickIcons
+import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.LocalFlickColors
 
-/** Continuous volume slider (phone). Stepped cells are the TV variant. */
+/**
+ * Continuous TV volume. A 13dp track with a bright fill and the amber blade thumb;
+ * the trailing [percentLabel] is fixed-width so the digits never shift the track.
+ * The visual band is short, but the gesture/semantics box stays a legal target.
+ */
 @Composable
 fun VolumeSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    tint: Color = Color.White,
+    tint: Color = LocalFlickColors.current.onSurfaceDim,
+    percentLabel: String? = null,
     accessibilityLabel: String? = null,
     valueDescription: String? = null,
     adjustableActionLabel: String? = null,
 ) {
+    val colors = LocalFlickColors.current
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = FlickIcons.Volume,
             contentDescription = null,
-            tint = tint.copy(alpha = 0.7f),
-            modifier = Modifier.size(16.dp).padding(end = 0.dp),
+            tint = tint,
+            modifier = Modifier.size(22.dp),
         )
+        Spacer(Modifier.width(14.dp))
         Box(
             Modifier
-                .padding(start = 9.dp)
                 .weight(1f)
                 .height(48.dp)
                 .semantics {
@@ -82,23 +93,45 @@ fun VolumeSlider(
         ) {
             Canvas(Modifier.fillMaxSize()) {
                 val cy = size.height / 2f
-                val th = 5.dp.toPx()
-                val r = th / 2f
+                val track = TrackHeight.toPx()
+                val r = track / 2f
                 drawRoundRect(
-                    color = tint.copy(alpha = 0.16f),
+                    color = colors.fillTrack,
                     topLeft = Offset(0f, cy - r),
-                    size = Size(size.width, th),
+                    size = Size(size.width, track),
                     cornerRadius = CornerRadius(r, r),
                 )
                 val fillW = value.coerceIn(0f, 1f) * size.width
+                if (fillW > 0f) {
+                    drawRoundRect(
+                        color = colors.onSurface,
+                        topLeft = Offset(0f, cy - r),
+                        size = Size(fillW, track),
+                        cornerRadius = CornerRadius(r, r),
+                    )
+                }
+                val bladeW = ThumbWidth.toPx()
+                val bladeH = ThumbHeight.toPx()
+                val bx = fillW.coerceIn(bladeW / 2f, (size.width - bladeW / 2f).coerceAtLeast(bladeW / 2f))
                 drawRoundRect(
-                    color = tint.copy(alpha = 0.9f),
-                    topLeft = Offset(0f, cy - r),
-                    size = Size(fillW, th),
-                    cornerRadius = CornerRadius(r, r),
+                    color = colors.spark,
+                    topLeft = Offset(bx - bladeW / 2f, cy - bladeH / 2f),
+                    size = Size(bladeW, bladeH),
+                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
                 )
-                drawCircle(color = Color.White, radius = 8.dp.toPx(), center = Offset(fillW, cy))
             }
+        }
+        if (percentLabel != null) {
+            Spacer(Modifier.width(14.dp))
+            Text(
+                text = percentLabel,
+                style = FlickText.monoSmall.copy(color = tint, textAlign = TextAlign.End),
+                modifier = Modifier.width(36.dp),
+            )
         }
     }
 }
+
+private val TrackHeight = 13.dp
+private val ThumbWidth = 6.dp
+private val ThumbHeight = 26.dp

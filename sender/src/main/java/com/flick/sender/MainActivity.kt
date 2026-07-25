@@ -47,6 +47,13 @@ class MainActivity : ComponentActivity() {
         // Each screen owns the content insets it needs; the activity only owns the
         // edge-to-edge window contract so those insets are never applied twice.
         enableEdgeToEdge()
+        // Without this the platform paints its own translucent band behind the
+        // navigation bar, which cuts across the cinematic gradient the remote and the
+        // connecting overlay draw to the bottom edge. Icon legibility is handled by
+        // FlickApp, which inverts both bars per route.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
         acceptPairIntent(intent)
         setContent {
             FlickTheme {

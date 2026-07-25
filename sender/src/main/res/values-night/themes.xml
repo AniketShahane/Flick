@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      System dark mode resolves the Compose palette to the cinematic set, so the
+      cold-start frame and the status-bar icons have to follow it here too — a pale
+      window background would flash white before a near-black app. The navigation-bar
+      icons are owned by FlickApp's insets controller instead of this theme, because
+      they also have to invert per-route on the forced-cinematic screens.
+    -->
+    <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#050C1D</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

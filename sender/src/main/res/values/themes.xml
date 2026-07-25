@@ -4,7 +4,17 @@
       Compose supplies the real Material3 theming (see FlickTheme in Kotlin);
       this window theme just needs to be a no-action-bar shell that Compose draws
       into. Parented on the platform Material theme so no AppCompat/Material
-      library XML dependency is required.
+      library XML dependency is required. The window background matches the
+      Compose canvas so the cold-start frame does not flash white, and both
+      system bars stay transparent because MainActivity draws edge to edge.
+      values-night carries the cinematic counterpart; the navigation-bar icon
+      appearance is set from FlickApp rather than here because it also has to
+      invert per-route.
     -->
-    <style name="Theme.FlickSender" parent="@android:style/Theme.Material.Light.NoActionBar" />
+    <style name="Theme.FlickSender" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F2F6FF</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

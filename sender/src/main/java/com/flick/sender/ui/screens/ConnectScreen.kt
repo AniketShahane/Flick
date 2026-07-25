@@ -1,6 +1,7 @@
 package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,9 +14,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -24,36 +25,40 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
+import com.flick.sender.model.TvAvailability
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.components.DeviceRow
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.PairCodeField
-import com.flick.sender.ui.components.PairOptionCard
+import com.flick.sender.ui.components.PairQrCard
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.PillShape
 
-/** S1 — first-run connect & pair. Discovery first; QR / code are equal citizens. */
+/** S1 — first-run connect & pair. Discovery leads; the code card is the escape hatch. */
 @Composable
 fun ConnectScreen(controller: FlickController) {
     val colors = LocalFlickColors.current
@@ -66,7 +71,6 @@ fun ConnectScreen(controller: FlickController) {
     val manualLabel = stringResource(R.string.connect_manual)
     val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
     var manualOpen by remember { mutableStateOf(false) }
-    var qrHint by remember { mutableStateOf(false) }
 
     // Map the typed pairing outcome to localized copy (never raw exception text).
     val pairErrorText: String? = when (pairError) {
@@ -97,127 +101,79 @@ fun ConnectScreen(controller: FlickController) {
     }
     LaunchedEffect(pairError) { if (pairError == PairErrorKind.INVALID_QR) manualOpen = false }
 
+    // The blue row is the recommendation: whichever TV the code sheet is open for,
+    // otherwise the first one advertising itself awake (discovery sorts READY first).
+    val featuredHost = pairTarget?.host
+        ?: devices.firstOrNull { it.state == TvAvailability.READY }?.host
+
     Column(
         Modifier
             .fillMaxSize()
-            .background(colors.surface)
+            .background(colors.canvas)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 18.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 116.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
-        Column(
-            Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Spacer(Modifier.height(22.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(
-                text = stringResource(R.string.connect_title),
-                style = FlickText.heading.copy(color = colors.onSurface),
+                text = stringResource(R.string.connect_heading),
+                style = FlickText.displayLarge.copy(color = colors.onSurface),
             )
-            Row(Modifier.padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(FlickIcons.Private, contentDescription = null, tint = colors.live, modifier = Modifier.size(12.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    stringResource(R.string.connect_wifi_note),
-                    style = FlickText.caption.copy(color = colors.onSurfaceDim),
-                )
-            }
-            if (pairErrorText != null && pairTarget == null && !manualOpen) {
-                Text(
-                    pairErrorText,
-                    style = FlickText.caption.copy(color = colors.trouble),
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            }
+            PrivacyPill()
+        }
 
-            Spacer(Modifier.height(18.dp))
+        if (pairErrorText != null && pairTarget == null && !manualOpen) {
+            PairErrorCard(pairErrorText)
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                text = stringResource(R.string.connect_found_label, devices.size),
-                style = FlickText.monoLabel.copy(color = colors.onSurfaceFaint),
-                modifier = Modifier.padding(horizontal = 4.dp),
+                text = stringResource(R.string.connect_nearby_label, devices.size),
+                style = FlickText.monoEyebrowWide.copy(color = colors.onSurfaceFaint),
+                modifier = Modifier.padding(start = 4.dp),
             )
-            Spacer(Modifier.height(8.dp))
-
             if (devices.isEmpty()) {
                 Text(
-                    stringResource(R.string.connect_searching),
-                    style = FlickText.caption.copy(color = colors.onSurfaceFaint),
-                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                    text = stringResource(R.string.connect_searching),
+                    style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                    modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
                 )
             } else {
                 devices.forEach { tv ->
                     DeviceRow(
                         tv = tv,
-                        selected = pairTarget?.host == tv.host,
+                        featured = tv.host == featuredHost,
                         onClick = { controller.selectDevice(tv) },
-                        modifier = Modifier.padding(bottom = 8.dp),
                     )
                 }
             }
-
-            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PairOptionCard(
-                    title = stringResource(R.string.connect_qr_title),
-                    subtitle = stringResource(R.string.connect_qr_sub),
-                    // Scanning happens in the system camera, which re-launches Flick
-                    // through the flick://pair deep link; there is no in-app scanner.
-                    onClick = { qrHint = true },
-                    icon = FlickIcons.Qr,
-                    modifier = Modifier.weight(1.2f),
-                )
-                PairOptionCard(
-                    title = stringResource(R.string.connect_code_title),
-                    subtitle = stringResource(R.string.connect_code_sub),
-                    onClick = {
-                        val single = devices.singleOrNull { it.tvId != null }
-                        if (single != null) controller.selectDevice(single) else manualOpen = true
-                    },
-                    codeHint = "····",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (qrHint) {
-                Text(
-                    stringResource(R.string.connect_qr_hint),
-                    style = FlickText.caption.copy(color = colors.onSurfaceDim),
-                    modifier = Modifier.padding(start = 4.dp, top = 10.dp, end = 4.dp),
-                )
-            }
-            Spacer(Modifier.height(24.dp))
         }
 
+        PairQrCard(
+            onClick = {
+                val single = devices.singleOrNull { it.tvId != null }
+                if (single != null) controller.selectDevice(single) else manualOpen = true
+            },
+        )
+
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp),
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
+            FooterAction(
                 text = stringResource(R.string.connect_manual),
-                style = FlickText.caption.copy(
-                    color = colors.onSurfaceFaint,
-                    textDecoration = TextDecoration.Underline,
-                ),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .semantics { contentDescription = manualLabel }
-                    .clickable { manualOpen = true }
-                    .padding(6.dp),
+                accessibilityLabel = manualLabel,
+                onClick = { manualOpen = true },
             )
             // The pairing screen is where failures surface, so the log has to be
             // openable from here — the advisories sheet has no reachable trigger.
-            Text(
+            FooterAction(
                 text = stringResource(R.string.connect_diagnostics),
-                style = FlickText.caption.copy(
-                    color = colors.onSurfaceFaint,
-                    textDecoration = TextDecoration.Underline,
-                ),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .semantics { contentDescription = diagnosticsLabel }
-                    .clickable { controller.toggleDiagnostics(true) }
-                    .padding(6.dp),
+                accessibilityLabel = diagnosticsLabel,
+                onClick = { controller.toggleDiagnostics(true) },
             )
         }
     }
@@ -245,7 +201,7 @@ fun ConnectScreen(controller: FlickController) {
             ManualSheet(
                 initialHost = launch?.host.orEmpty(),
                 initialPort = launch?.port?.toString() ?: PairLaunch.DEFAULT_CONTROL_PORT.toString(),
-                fromQr = launch?.host != null && launch?.port != null,
+                fromQr = launch?.host != null && launch.port != null,
                 error = pairErrorText,
                 connecting = connecting,
                 codeRevision = codeRevision,
@@ -257,6 +213,77 @@ fun ConnectScreen(controller: FlickController) {
             )
         }
     }
+}
+
+/** The one promise the product makes before anything is tapped. */
+@Composable
+private fun PrivacyPill() {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .clip(PillShape)
+            .background(colors.spark)
+            .padding(start = 13.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Private,
+            contentDescription = null,
+            tint = colors.onSpark,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(9.dp))
+        Text(
+            text = stringResource(R.string.connect_wifi_note),
+            style = FlickText.labelMedium.copy(color = colors.onSpark),
+        )
+    }
+}
+
+/** The last pairing outcome, held on screen until the next attempt replaces it. */
+@Composable
+private fun PairErrorCard(message: String) {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlickCorners.warning))
+            .background(colors.trouble.copy(alpha = 0.12f))
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Warning,
+            contentDescription = null,
+            tint = colors.trouble,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = message,
+            style = FlickText.bodySmall.copy(color = colors.trouble),
+        )
+    }
+}
+
+/** Quiet text action. Interactive copy has to clear 4.5:1, so it uses the dim ink. */
+@Composable
+private fun FooterAction(
+    text: String,
+    accessibilityLabel: String,
+    onClick: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    Text(
+        text = text,
+        style = FlickText.labelMedium.copy(color = colors.onSurfaceDim, textAlign = TextAlign.Center),
+        modifier = Modifier
+            .clip(PillShape)
+            .semantics { contentDescription = accessibilityLabel }
+            .clickable(onClick = onClick)
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 14.dp, vertical = 15.dp),
+    )
 }
 
 /**
@@ -281,30 +308,32 @@ private fun CodeSheet(
         SheetGrabber()
         Text(
             stringResource(R.string.pair_code_heading, tvName),
-            style = FlickText.heading.copy(color = colors.onSurface),
+            style = FlickText.titleLarge.copy(color = colors.onSurface),
         )
         Text(
             stringResource(R.string.pair_code_sub),
-            style = FlickText.caption.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.padding(top = 4.dp),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            modifier = Modifier.padding(top = 6.dp),
         )
         Text(
             stringResource(R.string.pair_code_endpoint, endpoint),
-            style = FlickText.mono.copy(color = colors.onSurfaceFaint),
-            modifier = Modifier.padding(top = 6.dp, bottom = 16.dp),
+            // A mono value, not an eyebrow: onSurfaceFaint is only cleared for tracked
+            // uppercase labels, and this line is what the user checks before typing.
+            style = FlickText.monoSmall.copy(color = colors.onSurfaceDim),
+            modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
         )
         PairCodeField(code = code, onCodeChange = { code = it })
         if (error != null) {
             Text(
                 error,
-                style = FlickText.caption.copy(color = colors.trouble),
-                modifier = Modifier.padding(top = 12.dp),
+                style = FlickText.bodySmall.copy(color = colors.trouble),
+                modifier = Modifier.padding(top = 14.dp),
             )
         }
         Spacer(Modifier.height(18.dp))
         if (connecting) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator(color = colors.link, modifier = Modifier.size(28.dp))
+                CircularProgressIndicator(color = colors.primary, modifier = Modifier.size(28.dp))
             }
         } else {
             FlickPrimaryButton(
@@ -344,21 +373,22 @@ private fun ManualSheet(
         SheetGrabber()
         Text(
             stringResource(if (fromQr) R.string.manual_heading_qr else R.string.manual_heading),
-            style = FlickText.heading.copy(color = colors.onSurface),
+            style = FlickText.titleLarge.copy(color = colors.onSurface),
         )
         if (fromQr) {
             Text(
                 stringResource(R.string.manual_from_qr),
-                style = FlickText.caption.copy(color = colors.onSurfaceDim),
-                modifier = Modifier.padding(top = 4.dp),
+                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                modifier = Modifier.padding(top = 6.dp),
             )
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(14.dp))
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
             label = { Text(stringResource(R.string.manual_host_label)) },
             singleLine = true,
+            shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
@@ -368,6 +398,7 @@ private fun ManualSheet(
             label = { Text(stringResource(R.string.manual_port_label)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
@@ -377,19 +408,20 @@ private fun ManualSheet(
             label = { Text(stringResource(R.string.manual_code_label)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth().focusRequester(codeFocus),
         )
         if (error != null) {
             Text(
                 error,
-                style = FlickText.caption.copy(color = colors.trouble),
-                modifier = Modifier.padding(top = 12.dp),
+                style = FlickText.bodySmall.copy(color = colors.trouble),
+                modifier = Modifier.padding(top = 14.dp),
             )
         }
         Spacer(Modifier.height(16.dp))
         if (connecting) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator(color = colors.link, modifier = Modifier.size(28.dp))
+                CircularProgressIndicator(color = colors.primary, modifier = Modifier.size(28.dp))
             }
         } else {
             FlickPrimaryButton(

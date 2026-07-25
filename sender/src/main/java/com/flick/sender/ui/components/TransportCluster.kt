@@ -1,47 +1,59 @@
 package com.flick.sender.ui.components
 
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
+import com.flick.sender.R
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.FabShadow
+import com.flick.sender.ui.theme.Ink
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
- * Play/pause that **morphs** (triangle ↔ bars) via flickSettle — never a hard
- * swap (design §7). The two half-shapes interpolate corner-for-corner between the
- * play triangle and the two pause bars as [playing] flips.
+ * Play/pause that **morphs** (triangle ↔ bars) — never a hard swap. The two
+ * half-shapes interpolate corner-for-corner between the play triangle and the two
+ * pause bars as [playing] flips.
  */
 @Composable
 fun PlayPauseMorph(
@@ -49,12 +61,15 @@ fun PlayPauseMorph(
     color: Color,
     modifier: Modifier = Modifier,
 ) {
-    val f by animateFloatAsState(
+    val reduceMotion = rememberReduceMotion()
+    val morph = animateFloatAsState(
         targetValue = if (playing) 1f else 0f,
-        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+        animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.defaultSpatialSpec<Float>()),
         label = "morph",
     )
     Canvas(modifier) {
+        // Read in the draw scope: the morph is a 340ms shape tween, not a state change.
+        val f = morph.value
         val u = size.minDimension / 24f
         fun blend(ax: Float, ay: Float, bx: Float, by: Float) =
             Offset(lerp(ax, bx, f) * u, lerp(ay, by, f) * u)
@@ -80,23 +95,34 @@ fun PlayPauseMorph(
     }
 }
 
-/** Primary play control — a Spark-gradient circle wrapping the white morph. */
+/** Primary play control — the amber FAB carrying the morph. */
 @Composable
 fun PrimaryPlayButton(
     playing: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    size: Dp = 58.dp,
+    size: Dp = FabSize,
     accessibilityLabel: String? = null,
     accessibilityState: String? = null,
 ) {
-    val colors = LocalFlickColors.current
+    val shape = RoundedCornerShape(FlickCorners.fab)
+    val interaction = remember { MutableInteractionSource() }
+    val scale = pressScale(interaction, Motion.PressFab, Motion.fabSettle<Float>())
     Box(
         modifier = modifier
             .size(size)
-            .clip(CircleShape)
-            .background(FlickGradients.spark(dark = !colors.isLight), CircleShape)
-            .clickable(onClick = onClick)
+            .graphicsLayer {
+                scaleX = scale.value
+                scaleY = scale.value
+            }
+            .shadow(16.dp, shape, clip = false, ambientColor = FabShadow, spotColor = FabShadow)
+            .clip(shape)
+            .background(FlickGradients.fab)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .semantics(mergeDescendants = true) {
                 role = Role.Button
                 accessibilityLabel?.let { contentDescription = it }
@@ -104,31 +130,45 @@ fun PrimaryPlayButton(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // The amber fill is palette-independent, so its ink is the fixed navy rather
+        // than a surface role that would invert on the light theme.
         PlayPauseMorph(
             playing = playing,
-            color = Color.White,
-            modifier = Modifier.size(size * 0.36f),
+            color = Ink,
+            modifier = Modifier.size(size * 0.53f),
         )
     }
 }
 
-/** ±10s skip — the arc glyph with the "10" overlaid (the vector can't carry text). */
+/** ±10s skip — the arc glyph with the seek amount overlaid (the vector can't carry text). */
 @Composable
 fun SeekButton(
     forward: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    size: Dp = 48.dp,
+    size: Dp = SeekSize,
     tint: Color = LocalFlickColors.current.onSurface,
     accessibilityLabel: String? = null,
 ) {
+    val colors = LocalFlickColors.current
     val glyph: ImageVector = if (forward) FlickIcons.Fwd10 else FlickIcons.Back10
+    val shape = RoundedCornerShape(FlickCorners.seekBtn)
+    val interaction = remember { MutableInteractionSource() }
+    val scale = pressScale(interaction, Motion.PressSeek, Motion.flickSettle<Float>())
     Box(
         modifier = modifier
             .size(size)
-            .clip(CircleShape)
-            .border(1.5.dp, tint.copy(alpha = 0.22f), CircleShape)
-            .clickable(onClick = onClick)
+            .graphicsLayer {
+                scaleX = scale.value
+                scaleY = scale.value
+            }
+            .clip(shape)
+            .background(colors.fillControl)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .semantics(mergeDescendants = true) {
                 role = Role.Button
                 accessibilityLabel?.let { contentDescription = it }
@@ -137,14 +177,14 @@ fun SeekButton(
     ) {
         Icon(imageVector = glyph, contentDescription = null, tint = tint, modifier = Modifier.size(size * 0.5f))
         Text(
-            text = "10",
-            style = FlickText.mono.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, color = tint),
-            modifier = Modifier.offset(y = size * 0.11f),
+            text = stringResource(R.string.np_seek_seconds),
+            style = FlickText.monoBadge.copy(color = tint),
+            modifier = Modifier.offset(y = size * 0.10f),
         )
     }
 }
 
-/** back-10 · play/pause · fwd-10 (design transport cluster). */
+/** back-10 · play/pause · fwd-10. */
 @Composable
 fun TransportCluster(
     playing: Boolean,
@@ -160,7 +200,7 @@ fun TransportCluster(
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SeekButton(forward = false, onClick = onBack10, tint = tint, accessibilityLabel = back10Label)
@@ -173,3 +213,25 @@ fun TransportCluster(
         SeekButton(forward = true, onClick = onFwd10, tint = tint, accessibilityLabel = forward10Label)
     }
 }
+
+/**
+ * Press response as a deferred value: only the press/release edge recomposes, the
+ * spring itself is consumed inside a graphicsLayer.
+ */
+@Composable
+private fun pressScale(
+    interaction: MutableInteractionSource,
+    pressed: Float,
+    spec: FiniteAnimationSpec<Float>,
+): State<Float> {
+    val reduceMotion = rememberReduceMotion()
+    val isPressed by interaction.collectIsPressedAsState()
+    return animateFloatAsState(
+        targetValue = if (isPressed) pressed else 1f,
+        animationSpec = Motion.orSnap(reduceMotion, spec),
+        label = "press",
+    )
+}
+
+private val FabSize = 76.dp
+private val SeekSize = 60.dp

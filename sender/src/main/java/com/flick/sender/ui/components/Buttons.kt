@@ -1,41 +1,25 @@
 package com.flick.sender.ui.components
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
-import com.flick.sender.ui.theme.FlickGradients
-import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.PrimaryShadow
+import com.flick.sender.ui.theme.pressScale
 
-/** Full-width Material primary action using the selected Spark role. */
+/** Full-width brand-blue action: the pairing sheets' Connect/Pair and the empty-state CTA. */
 @Composable
 fun FlickPrimaryButton(
     text: String,
@@ -44,60 +28,43 @@ fun FlickPrimaryButton(
     enabled: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
+    val interaction = remember { MutableInteractionSource() }
     Button(
         onClick = onClick,
         enabled = enabled,
         shape = PillShape,
+        interactionSource = interaction,
         colors = ButtonDefaults.buttonColors(
-            containerColor = colors.spark,
-            contentColor = Color.White,
+            containerColor = colors.primary,
+            contentColor = colors.onPrimary,
+            disabledContainerColor = colors.primaryContainer,
+            disabledContentColor = colors.onPrimaryContainer,
         ),
-        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
-    ) {
-        Text(text, style = FlickText.body.copy(fontWeight = FontWeight.Bold))
-    }
-}
-
-/**
- * The "Flick to <TV>" CTA (design S4): gradient pill whose leading motion streaks
- * imply the toss, with the play glyph and label.
- */
-@Composable
-fun FlickCastButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    accessibilityLabel: String? = null,
-) {
-    val colors = LocalFlickColors.current
-    Box(
+        contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
         modifier = modifier
             .fillMaxWidth()
-            .clip(PillShape)
-            .background(FlickGradients.spark(dark = !colors.isLight))
-            .clickable(onClick = onClick)
-            .semantics(mergeDescendants = true) { accessibilityLabel?.let { contentDescription = it } }
-            .padding(vertical = 15.dp, horizontal = 18.dp),
-        contentAlignment = Alignment.Center,
+            .heightIn(min = 48.dp)
+            .pressScale(interaction)
+            // Only the enabled pill is lifted; a disabled one must not read as tappable.
+            .then(
+                if (enabled) {
+                    Modifier.shadow(
+                        elevation = 14.dp,
+                        shape = PillShape,
+                        clip = false,
+                        ambientColor = PrimaryShadow,
+                        spotColor = PrimaryShadow,
+                    )
+                } else {
+                    Modifier
+                },
+            ),
     ) {
-        // Leading streaks.
-        Row(
-            Modifier.align(Alignment.CenterStart),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Box(Modifier.size(width = 10.dp, height = 3.dp).clip(PillShape).background(Color.White.copy(alpha = 0.65f)))
-            Box(Modifier.size(width = 6.dp, height = 3.dp).clip(PillShape).background(Color.White.copy(alpha = 0.4f)))
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(FlickIcons.Play, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(9.dp))
-            Text(text, style = FlickText.body.copy(fontWeight = FontWeight.Bold, color = Color.White))
-        }
+        Text(text, style = FlickText.titleSmall)
     }
 }
 
-/** Quiet secondary action ("play on this phone instead"). */
+/** Quiet secondary action — "Cancel", "play on this phone instead". */
 @Composable
 fun FlickSubtleButton(
     text: String,
@@ -105,33 +72,16 @@ fun FlickSubtleButton(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
+    val interaction = remember { MutableInteractionSource() }
     TextButton(
         onClick = onClick,
         shape = PillShape,
-        colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceDim),
-        modifier = modifier.heightIn(min = 48.dp),
-    ) { Text(text, style = FlickText.caption.copy(fontWeight = FontWeight.SemiBold)) }
-}
-
-/** Compact high-contrast action for persistent library tasks such as media reselection. */
-@Composable
-fun FlickTonalButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LocalFlickColors.current
-    Button(
-        onClick = onClick,
-        shape = PillShape,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = colors.spark.copy(alpha = 0.14f),
-            contentColor = if (colors.isLight) colors.spark else colors.sparkLight,
-        ),
-        border = BorderStroke(1.dp, colors.spark.copy(alpha = 0.34f)),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-        modifier = modifier.heightIn(min = 48.dp),
+        interactionSource = interaction,
+        // labelLarge is 14.5sp bold, the size onSurfaceFaint needs to clear the
+        // contrast floor on the pale canvas (design §7).
+        colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceFaint),
+        modifier = modifier.heightIn(min = 48.dp).pressScale(interaction),
     ) {
-        Text(text, style = FlickText.caption.copy(fontWeight = FontWeight.Bold))
+        Text(text, style = FlickText.labelLarge)
     }
 }

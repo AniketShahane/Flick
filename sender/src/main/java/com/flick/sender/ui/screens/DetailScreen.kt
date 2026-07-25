@@ -1,9 +1,11 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,14 +14,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,18 +31,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
@@ -51,28 +56,34 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
-import com.flick.sender.ui.components.FlickCastButton
-import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.rememberVideoImageLoader
-import com.flick.sender.ui.theme.FlickGradients
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.PremiumInk
+import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.PrimaryShadow
+import com.flick.sender.ui.theme.SheetShape
+import com.flick.sender.ui.theme.TileShadow
+import com.flick.sender.ui.theme.rememberReduceMotion
 
-/** S4 — detail / "cast this". Poster-forward, honest badges, direct-play promise. */
+/**
+ * S4 — detail / "cast this". A risen sheet over the video's own frame: honest
+ * badges, the direct-play promise, one blue CTA. Back and the scrim both route
+ * through [FlickController.back], so the shell's own BackHandler stays the only
+ * one on this route.
+ */
 @Composable
 fun DetailScreen(controller: FlickController, item: MediaItem) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val imageLoader = rememberVideoImageLoader()
-    val compactHeight = isCompactHeight(LocalConfiguration.current.screenHeightDp)
-    val castDescription = stringResource(
-        R.string.a11y_cast_video,
-        item.name,
-        connectedTv?.name ?: stringResource(R.string.np_tv_generic),
-    )
+    val rise = rememberSheetRise()
+    val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
+    val castDescription = stringResource(R.string.a11y_cast_video, item.name, tvName)
+    val dismissDescription = stringResource(R.string.a11y_back_to_library)
     val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
@@ -84,155 +95,243 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             .crossfade(true)
             .build()
     }
+    val scrimSource = remember { MutableInteractionSource() }
+    val sheetSource = remember { MutableInteractionSource() }
 
-    val backLabel = stringResource(R.string.a11y_back_to_library)
-    Column(Modifier.fillMaxSize().background(colors.surface)) {
+    Box(Modifier.fillMaxSize().background(colors.canvas)) {
+        AsyncImage(
+            model = request,
+            contentDescription = null,
+            imageLoader = imageLoader,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
         Box(
             Modifier
-                .fillMaxWidth()
-                .height(if (compactHeight) 152.dp else 240.dp),
-        ) {
-            AsyncImage(
-                model = request,
-                contentDescription = item.name,
-                imageLoader = imageLoader,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0f to Color(0x2608070C),
-                            0.4f to Color.Transparent,
-                            1f to Color(0xF20F0D14),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .statusBarsPadding()
-                    .padding(14.dp)
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Color(0x8008070C))
-                    .semantics { contentDescription = backLabel }
-                    .clickable { controller.back() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(FlickIcons.Back, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-            }
-            Column(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(16.dp)
-                    .padding(start = if (compactHeight) 56.dp else 0.dp),
-            ) {
-                Text(
-                    text = item.name,
-                    style = FlickText.heading.copy(color = Color.White),
-                    maxLines = if (compactHeight) 2 else 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    "${Format.durationHuman(item.durationMs)} · ${item.resolutionLabel}",
-                    style = FlickText.caption.copy(color = Color.White.copy(alpha = 0.7f)),
-                    modifier = Modifier.padding(top = 3.dp),
-                )
-            }
-        }
+                .fillMaxSize()
+                .background(colors.scrim)
+                .semantics { contentDescription = dismissDescription }
+                .clickable(interactionSource = scrimSource, indication = null) { controller.back() },
+        )
 
         Column(
             Modifier
-                .weight(1f)
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .sheetRiseTransform(rise)
+                .clip(SheetShape)
+                .background(colors.surface)
+                .clickable(interactionSource = sheetSource, indication = null, onClick = {})
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .navigationBarsPadding()
+                .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp),
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (item.width > 0 && item.height > 0) {
-                    TechBadge("${item.resolutionLabel} · ${item.width}×${item.height}")
-                } else {
-                    TechBadge(item.resolutionLabel)
+            SheetGrabber()
+            Spacer(Modifier.height(4.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+                AsyncImage(
+                    model = request,
+                    contentDescription = null,
+                    imageLoader = imageLoader,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(width = 122.dp, height = 78.dp)
+                        .shadow(
+                            elevation = 14.dp,
+                            shape = RoundedCornerShape(FlickCorners.detailPoster),
+                            clip = false,
+                            ambientColor = TileShadow,
+                            spotColor = TileShadow,
+                        )
+                        .clip(RoundedCornerShape(FlickCorners.detailPoster))
+                        .background(colors.surfaceRaisedAlt),
+                )
+                Column(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = item.name,
+                        style = FlickText.titleLarge.copy(color = colors.onSurface),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = detailMeta(item),
+                        style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                when (hdr) {
-                    HdrType.DOLBY_VISION -> TechBadge(stringResource(R.string.media_dolby_vision_badge), premium = true)
-                    HdrType.HDR10 -> TechBadge(stringResource(R.string.media_hdr10_badge))
-                    HdrType.NONE -> {}
-                }
-                TechBadge(Format.bytes(item.sizeBytes), dim = true)
             }
-            Spacer(Modifier.height(12.dp))
+
+            Spacer(Modifier.height(17.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                // Resolution, dynamic range and size are the only source facts the
+                // phone can read; codec and frame rate never leave MediaStore.
+                DetailChip(
+                    text = resolutionText(item),
+                    containerColor = colors.inverseSurface,
+                    contentColor = colors.onInverseSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                DetailChip(
+                    text = hdrChipLabel(hdr),
+                    containerColor = colors.primaryContainer,
+                    contentColor = colors.onPrimaryContainer,
+                )
+                DetailChip(
+                    text = Format.bytes(item.sizeBytes),
+                    containerColor = colors.primaryContainer,
+                    contentColor = colors.onPrimaryContainer,
+                )
+            }
+
+            Spacer(Modifier.height(17.dp))
+            val promiseLead = stringResource(R.string.detail_directplay_title)
+            val promiseBody = stringResource(R.string.detail_directplay_body)
             Row(
                 Modifier
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(colors.surfaceRaised)
-                    .border(1.dp, colors.outlineHairline, RoundedCornerShape(13.dp))
-                    .padding(12.dp),
+                    .clip(RoundedCornerShape(FlickCorners.qualityCard))
+                    .background(colors.spark)
+                    .padding(15.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(FlickIcons.Check, contentDescription = null, tint = colors.live, modifier = Modifier.size(15.dp).padding(top = 1.dp))
-                Column(Modifier.padding(start = 9.dp)) {
-                    Text(
-                        stringResource(R.string.detail_directplay_title),
-                        style = FlickText.caption.copy(fontWeight = FontWeight.Bold, color = colors.onSurface),
-                    )
-                    Text(
-                        stringResource(R.string.detail_directplay_body),
-                        style = FlickText.caption.copy(color = colors.onSurfaceDim),
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
+                Icon(
+                    imageVector = FlickIcons.CheckCircle,
+                    contentDescription = null,
+                    tint = colors.onSpark,
+                    modifier = Modifier.size(21.dp),
+                )
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) { append(promiseLead) }
+                        append(" ")
+                        append(promiseBody)
+                    },
+                    style = FlickText.bodySmall.copy(color = colors.onSpark),
+                )
             }
-        }
 
-        Column(
-            Modifier
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 18.dp)
-                .navigationBarsPadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            FlickCastButton(
+            Spacer(Modifier.height(17.dp))
+            FlickToTvButton(
                 text = connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
                     ?: stringResource(R.string.detail_cta_noconnect),
-                onClick = { controller.flickToTv(item) },
                 accessibilityLabel = castDescription,
+                onClick = { controller.flickToTv(item) },
             )
-            Spacer(Modifier.height(6.dp))
-            FlickSubtleButton(
+
+            Spacer(Modifier.height(14.dp))
+            Text(
                 text = stringResource(R.string.detail_play_here),
-                onClick = {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW)
-                                .setDataAndType(item.uri, "video/*")
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                        )
+                // WCAG's large-text exemption starts above this size, so the only escape
+                // from casting takes the dim ink rather than the faint one.
+                style = FlickText.labelLarge.copy(color = colors.onSurfaceDim),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PillShape)
+                    .clickable(role = Role.Button) {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW)
+                                    .setDataAndType(item.uri, "video/*")
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                            )
+                        }
                     }
-                },
+                    .heightIn(min = 48.dp)
+                    .padding(vertical = 15.dp),
             )
         }
     }
 }
 
+/** The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected. */
 @Composable
-private fun TechBadge(text: String, premium: Boolean = false, dim: Boolean = false) {
+private fun FlickToTvButton(
+    text: String,
+    accessibilityLabel: String,
+    onClick: () -> Unit,
+) {
     val colors = LocalFlickColors.current
-    val shape = RoundedCornerShape(6.dp)
-    if (premium) {
-        Text(
-            text,
-            style = FlickText.mono.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold, color = PremiumInk),
-            modifier = Modifier.clip(shape).background(FlickGradients.premiumSheen).padding(horizontal = 8.dp, vertical = 4.dp),
+    val reduceMotion = rememberReduceMotion()
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) Motion.PressRow else 1f,
+        animationSpec = Motion.orSnap(reduceMotion, Motion.flickSettle()),
+        label = "ctaPress",
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .scale(pressScale)
+            .shadow(
+                elevation = 14.dp,
+                shape = PillShape,
+                clip = false,
+                ambientColor = PrimaryShadow,
+                spotColor = PrimaryShadow,
+            )
+            .clip(PillShape)
+            .background(colors.primary)
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
+            .padding(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Cast,
+            contentDescription = null,
+            tint = colors.onPrimary,
+            modifier = Modifier.size(21.dp),
         )
-    } else {
-        Text(
-            text,
-            style = FlickText.mono.copy(fontWeight = FontWeight.Bold, color = if (dim) colors.onSurfaceDim else colors.onSurface),
-            modifier = Modifier
-                .clip(shape)
-                .border(1.dp, if (dim) colors.outlineHairline else colors.outline, shape)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
+        Text(text, style = FlickText.titleSmall.copy(color = colors.onPrimary))
     }
+}
+
+@Composable
+private fun DetailChip(
+    text: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        style = FlickText.monoChip.copy(color = contentColor),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier
+            .clip(PillShape)
+            .background(containerColor)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+    )
+}
+
+/** `4K · 3840 × 2160` when MediaStore knew the pixels, otherwise the class alone. */
+@Composable
+private fun resolutionText(item: MediaItem): String =
+    if (item.width > 0 && item.height > 0) {
+        stringResource(R.string.sheet_resolution_pixels, item.resolutionLabel, item.width, item.height)
+    } else {
+        item.resolutionLabel
+    }
+
+@Composable
+private fun hdrChipLabel(hdr: HdrType): String = when (hdr) {
+    HdrType.DOLBY_VISION -> stringResource(R.string.media_dolby_vision_badge)
+    HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
+    HdrType.NONE -> stringResource(R.string.media_sdr)
+}
+
+/** Duration plus the MediaStore bucket, which is the only provenance we hold. */
+@Composable
+private fun detailMeta(item: MediaItem): String {
+    val duration = Format.durationHuman(item.durationMs)
+    val bucket = item.bucket?.takeIf { it.isNotBlank() } ?: return duration
+    return stringResource(R.string.quality_playing_value, duration, bucket)
 }

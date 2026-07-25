@@ -1,46 +1,76 @@
 package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.model.HdrType
+import com.flick.sender.model.MediaItem
+import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
-import com.flick.sender.ui.components.LiveDot
+import com.flick.sender.ui.theme.FlickCinematicTheme
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.PillShape
 
-/** S10 — the quality sheet. Gauges, not a metrics wall; only this phone's facts. */
+/** Alternating fact-row tint. A one-off wash, deliberately not a palette role. */
+private val FactRowTint = Color.White.copy(alpha = 0.05f)
+
+/** Seconds of reserve the buffer gauge treats as a full bar. */
+private const val BufferFullSeconds = 12.0
+
+/**
+ * S10 — the quality sheet. Two gauges and four facts, all of them this phone's
+ * own measurements. Forced cinematic: signal reads as instrumentation, and the
+ * sheet must look the same whichever theme the library resolved to.
+ */
 @Composable
 fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
+    FlickCinematicTheme {
+        QualityContent(controller, onDismiss)
+    }
+}
+
+@Composable
+private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
     val signal = rememberSignalInfo()
-    val state by controller.playback.collectAsState()
+    // Kept as State: the session clock ticks ~10 Hz and only the buffer gauge reads it,
+    // so unwrapping it here would re-run the whole sheet ten times a second.
+    val playbackState = controller.playback.collectAsState()
     val item by controller.castingItem.collectAsState()
     val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
         val uri = item?.uri
@@ -54,128 +84,194 @@ fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
         else -> 8
     }
     val throughputMbps = signal.throughputBitsPerSec / 1_000_000.0
+    // TransferTelemetry only counts bytes this phone's server actually wrote, and it
+    // is reset per cast — zero means "nothing is being served", never "no bandwidth".
+    val serving = signal.serving
     val throughputFraction = (throughputMbps / neededMbps).coerceIn(0.0, 1.0).toFloat()
-    val bufferSeconds = state.bufferedMs / 1000.0
-    val bufferFraction = (bufferSeconds / 12.0).coerceIn(0.0, 1.0).toFloat()
+
+    val unknown = stringResource(R.string.media_unknown)
+    val signalColor = if (signal.healthy) colors.link else colors.caution
     val networkStatus = stringResource(R.string.a11y_network_status, signal.chipText())
 
-    BottomSheet(onDismiss = onDismiss) {
+    BottomSheet(
+        onDismiss = onDismiss,
+        contentPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 26.dp),
+    ) {
         SheetGrabber()
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.quality_title), style = FlickText.heading.copy(color = colors.onSurface))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+        Spacer(Modifier.height(4.dp))
+        Text(stringResource(R.string.quality_title), style = FlickText.headlineMedium.copy(color = colors.onSurface))
+        Spacer(Modifier.height(5.dp))
+        Text(
+            text = item?.name?.let { stringResource(R.string.quality_sub, it, signal.bandLabel()) }
+                ?: stringResource(R.string.quality_sub_idle),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+        )
+
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+            GaugeCard(
+                eyebrow = stringResource(R.string.quality_throughput),
+                value = if (serving) Format.megabits(signal.throughputBitsPerSec) else unknown,
+                known = serving,
+                fraction = if (serving) throughputFraction else 0f,
+                barColor = signalColor,
+            )
+            BufferGauge(playbackState = playbackState, casting = item != null)
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(FlickCorners.qualityCard))
+                .background(colors.fillCard),
+        ) {
+            FactRow(
+                label = stringResource(R.string.quality_fact_resolution),
+                value = item?.let { resolutionValue(it) } ?: unknown,
+                valueColor = if (item == null) colors.onSurfaceFaint else colors.onSurface,
+            )
+            FactRow(
+                label = stringResource(R.string.quality_fact_range),
+                value = if (item == null) unknown else hdrLabelFor(hdr),
+                valueColor = if (item == null) colors.onSurfaceFaint else colors.sparkBright,
+                tinted = true,
+            )
+            // The decoder is chosen by Media3 on the TV and no control frame carries
+            // it back, so this row has no live source and must not invent one.
+            FactRow(
+                label = stringResource(R.string.quality_fact_decoder),
+                value = unknown,
+                valueColor = colors.onSurfaceFaint,
+                valueStyle = FlickText.monoSmall,
+            )
+            FactRow(
+                label = stringResource(R.string.quality_fact_wifi),
+                value = signal.linkLabel(),
+                valueColor = if (signal.hasLink) signalColor else colors.onSurfaceFaint,
+                tinted = true,
                 modifier = Modifier.semantics { contentDescription = networkStatus },
-            ) {
-                LiveDot(colors.live, size = 5.dp, modifier = Modifier.padding(end = 5.dp))
-                Text(
-                    stringResource(if (signal.healthy) R.string.quality_healthy else R.string.quality_watch),
-                    style = FlickText.caption.copy(color = if (signal.healthy) colors.live else colors.caution),
-                )
-            }
+            )
         }
 
-        Spacer(Modifier.height(16.dp))
-        GaugeSection(
-            label = stringResource(R.string.quality_throughput),
-            value = stringResource(
-                R.string.quality_needs,
-                Format.megabits(signal.throughputBitsPerSec),
-                neededMbps,
-            ),
-            fraction = throughputFraction,
-            color = if (signal.healthy) colors.live else colors.caution,
-        )
-
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(18.dp))
         Text(
-            stringResource(R.string.quality_buffer),
-            style = FlickText.mono.copy(color = colors.onSurfaceDim, fontWeight = FontWeight.SemiBold),
+            text = stringResource(R.string.quality_done),
+            style = FlickText.titleSmall.copy(color = colors.onInverseSurface),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(PillShape)
+                .background(colors.inverseSurface)
+                .clickable(role = Role.Button, onClick = onDismiss)
+                .heightIn(min = 48.dp)
+                .padding(vertical = 17.dp),
         )
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.5.dp)) {
-            val filled = (bufferFraction * 10).toInt()
-            repeat(10) { i ->
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(14.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(if (i < filled) colors.live else colors.onSurface.copy(alpha = 0.12f)),
-                )
-            }
-        }
-        Text(
-            stringResource(R.string.quality_reserve, bufferSeconds),
-            style = FlickText.mono.copy(color = colors.onSurface, fontWeight = FontWeight.SemiBold),
-            modifier = Modifier.padding(top = 6.dp),
-        )
-
-        Spacer(Modifier.height(14.dp))
-        Fact(
-            stringResource(R.string.quality_playing),
-            stringResource(
-                R.string.quality_playing_value,
-                item?.resolutionLabel ?: stringResource(R.string.media_unknown),
-                hdrLabelFor(hdr),
-            ),
-        )
-        Fact(
-            stringResource(R.string.quality_network),
-            stringResource(R.string.network_rssi, signal.bandLabel(), signal.rssiDbm),
-        )
-
-        Spacer(Modifier.height(12.dp))
-        Text(
-            stringResource(R.string.quality_direct),
-            style = FlickText.caption.copy(color = colors.onSurfaceFaint),
-        )
-        Spacer(Modifier.height(6.dp))
     }
 }
+
+/**
+ * The one gauge fed by the session clock, isolated so the ~10 Hz tick stops here. The
+ * TV reports an absolute buffered position, so the honest reserve is the difference
+ * ahead of the confirmed playhead — `bufferedMs` alone would climb with the film.
+ */
+@Composable
+private fun RowScope.BufferGauge(playbackState: State<PlaybackUiState>, casting: Boolean) {
+    val colors = LocalFlickColors.current
+    val state = playbackState.value
+    val hasReserve = casting && state.durationMs > 0L
+    val reserveSeconds = (state.bufferedMs - state.confirmedMs).coerceAtLeast(0L) / 1000.0
+    GaugeCard(
+        eyebrow = stringResource(R.string.quality_buffer),
+        value = if (hasReserve) {
+            stringResource(R.string.quality_buffer_value, reserveSeconds)
+        } else {
+            stringResource(R.string.media_unknown)
+        },
+        known = hasReserve,
+        fraction = if (hasReserve) {
+            (reserveSeconds / BufferFullSeconds).coerceIn(0.0, 1.0).toFloat()
+        } else {
+            0f
+        },
+        barColor = colors.link,
+    )
+}
+
+@Composable
+private fun RowScope.GaugeCard(
+    eyebrow: String,
+    value: String,
+    known: Boolean,
+    fraction: Float,
+    barColor: Color,
+) {
+    val colors = LocalFlickColors.current
+    Column(
+        Modifier
+            .weight(1f)
+            .clip(RoundedCornerShape(FlickCorners.qualityCard))
+            .background(colors.fillCard)
+            .padding(17.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(eyebrow, style = FlickText.monoEyebrow.copy(color = colors.onSurfaceFaint))
+        Text(
+            text = value,
+            style = FlickText.monoGauge.copy(color = if (known) colors.onSurface else colors.onSurfaceFaint),
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(PillShape)
+                .background(colors.fillTrack),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .height(8.dp)
+                    .clip(PillShape)
+                    .background(barColor),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FactRow(
+    label: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier,
+    tinted: Boolean = false,
+    valueStyle: TextStyle = FlickText.bodyMedium,
+) {
+    val colors = LocalFlickColors.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(if (tinted) FactRowTint else Color.Transparent)
+            .padding(horizontal = 17.dp, vertical = 15.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = FlickText.bodyMedium.copy(color = colors.onSurfaceFaint))
+        Text(value, style = valueStyle.copy(color = valueColor), textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun resolutionValue(item: MediaItem): String =
+    if (item.width > 0 && item.height > 0) {
+        stringResource(R.string.sheet_resolution_pixels, item.resolutionLabel, item.width, item.height)
+    } else {
+        item.resolutionLabel
+    }
 
 @Composable
 private fun hdrLabelFor(hdr: HdrType): String = when (hdr) {
     HdrType.DOLBY_VISION -> stringResource(R.string.media_hdr_dolby_vision)
     HdrType.HDR10 -> stringResource(R.string.media_hdr10)
     HdrType.NONE -> stringResource(R.string.media_sdr)
-}
-
-@Composable
-private fun GaugeSection(label: String, value: String, fraction: Float, color: androidx.compose.ui.graphics.Color) {
-    val colors = LocalFlickColors.current
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = FlickText.mono.copy(color = colors.onSurfaceDim, fontWeight = FontWeight.SemiBold))
-        Text(value, style = FlickText.mono.copy(color = colors.onSurface, fontWeight = FontWeight.SemiBold))
-    }
-    Spacer(Modifier.height(6.dp))
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(7.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(colors.onSurface.copy(alpha = 0.12f)),
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth(fraction)
-                .height(7.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(color),
-        )
-    }
-}
-
-@Composable
-private fun Fact(label: String, value: String) {
-    val colors = LocalFlickColors.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, style = FlickText.caption.copy(color = colors.onSurfaceDim))
-        Text(value, style = FlickText.caption.copy(color = colors.onSurface, fontWeight = FontWeight.SemiBold))
-    }
 }
