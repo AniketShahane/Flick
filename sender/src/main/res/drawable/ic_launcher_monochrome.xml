@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon (Android 13+) silhouette. The speed bars are omitted: in the full
+  mark only 1.65 units separate them from the triangle's stroke, a gap that reads
+  because the two are different colours. Flattened to one colour and rendered at
+  launcher size they close up into a smudge — the same reason FlickMark itself
+  drops the bars below 24dp. The triangle alone is re-centred on (54,54) here,
+  since it no longer has the bars balancing it on the left.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"
+        android:fillColor="@color/ic_launcher_monochrome"
+        android:strokeColor="@color/ic_launcher_monochrome"
+        android:strokeWidth="10.35"
+        android:strokeLineJoin="round" />
+
+</vector>

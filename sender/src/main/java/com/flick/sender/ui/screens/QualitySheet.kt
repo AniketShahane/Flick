@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +46,8 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 
 /** Alternating fact-row tint. A one-off wash, deliberately not a palette role. */
 private val FactRowTint = Color.White.copy(alpha = 0.05f)
@@ -155,15 +159,24 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
         }
 
         Spacer(Modifier.height(18.dp))
+        val doneInteraction = remember { MutableInteractionSource() }
         Text(
             text = stringResource(R.string.quality_done),
             style = FlickText.titleSmall.copy(color = colors.onInverseSurface),
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
+                .pressScale(doneInteraction)
                 .clip(PillShape)
                 .background(colors.inverseSurface)
-                .clickable(role = Role.Button, onClick = onDismiss)
+                .clickable(
+                    interactionSource = doneInteraction,
+                    // The pill is pale against the cinematic sheet; only the ink that
+                    // sits on it is visible as a ripple.
+                    indication = flickRipple(colors.onInverseSurface),
+                    role = Role.Button,
+                    onClick = onDismiss,
+                )
                 .heightIn(min = 48.dp)
                 .padding(vertical = 17.dp),
         )

@@ -6,6 +6,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -35,6 +37,8 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.util.FlickLog
 import java.util.Locale
 
@@ -123,15 +127,25 @@ private fun RowScope.DiagnosticsAction(
     contentColor: Color,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Text(
         text = label,
         style = FlickText.titleSmall.copy(color = if (enabled) contentColor else contentColor.copy(alpha = 0.45f)),
         textAlign = TextAlign.Center,
         modifier = Modifier
             .weight(1f)
+            .pressScale(interaction)
             .clip(PillShape)
             .background(if (enabled) containerColor else containerColor.copy(alpha = 0.30f))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                // The caller's content colour is by definition the one that reads on
+                // its container, in either palette.
+                indication = flickRipple(contentColor),
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
             .heightIn(min = 48.dp)
             .padding(vertical = 16.dp),
     )

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -124,6 +125,11 @@ fun PhoneScrubBar(
     // animateDpAsState so the swell plays entirely in the draw phase; recomposing
     // this subtree ~20x per gesture would drag the frame preview along with it.
     val swell = remember { Animatable(0f) }
+    // A spring, so a release that interrupts the grab retargets from the velocity the
+    // swell already carries instead of restarting on a fresh clock. Hoisted because
+    // reading the motion scheme is a composition read and the gesture scope is not
+    // composable; the playhead's own mapping from media time to x stays unsprung.
+    val swellSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastSpatialSpec<Float>())
     val ripple = remember { DetentRipple() }
 
     // If the bar is torn out from under a live drag (e.g. a mid-stream rebuffer swaps
@@ -170,9 +176,7 @@ fun PhoneScrubBar(
                         var detent = -1
                         endGate.start()
                         dragging = true
-                        scope.launch {
-                            swell.animateTo(1f, Motion.orSnap(reduceMotion, Motion.flickSettle<Float>()))
-                        }
+                        scope.launch { swell.animateTo(1f, swellSpec) }
                         try {
                             onScrubStart()
                             val first = (down.position.x / w()).coerceIn(0f, 1f)
@@ -200,9 +204,7 @@ fun PhoneScrubBar(
                         } finally {
                             dragging = false
                             ripple.clear(scope)
-                            scope.launch {
-                                swell.animateTo(0f, Motion.orSnap(reduceMotion, Motion.flickSettle<Float>()))
-                            }
+                            scope.launch { swell.animateTo(0f, swellSpec) }
                             endGate.finish(currentOnScrubEnd)
                         }
                     }

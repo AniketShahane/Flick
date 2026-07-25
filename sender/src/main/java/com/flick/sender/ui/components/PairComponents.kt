@@ -1,6 +1,5 @@
 package com.flick.sender.ui.components
 
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,7 +46,10 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Primary
 import com.flick.sender.ui.theme.PrimaryShadow
 import com.flick.sender.ui.theme.Spark
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
 /**
  * A discovered-TV row (design §5.1.4) in one of three states: the featured TV is a
@@ -91,6 +93,8 @@ fun DeviceRow(
         primary -> colors.onPrimary
         else -> colors.onPrimaryFixed
     }
+    // The press has to read on the row's own fill, which inverts with the featured state.
+    val pressTint = if (primary) colors.onPrimary else colors.primary
 
     val interaction = remember { MutableInteractionSource() }
     Row(
@@ -108,7 +112,9 @@ fun DeviceRow(
                     Modifier
                 },
             )
-            .clip(shape)
+            // Replaces the row's clip: at the resting radius the two are identical, and
+            // a clip laid over this one could only ever shrink what it already encloses.
+            .pressMorph(interaction, restRadius = FlickCorners.deviceRow, pressedRadius = 22.dp)
             .background(container)
             .then(if (asleep) Modifier.border(2.dp, colors.outline, shape) else Modifier)
             .then(
@@ -118,7 +124,7 @@ fun DeviceRow(
                     Modifier
                         .clickable(
                             interactionSource = interaction,
-                            indication = LocalIndication.current,
+                            indication = flickRipple(pressTint),
                             onClick = onClick,
                         )
                         .semantics { role = Role.Button }
@@ -200,7 +206,7 @@ fun PairQrCard(onClick: () -> Unit, modifier: Modifier = Modifier) {
             .background(colors.inverseSurface)
             .clickable(
                 interactionSource = interaction,
-                indication = LocalIndication.current,
+                indication = flickRipple(colors.onInverseSurface),
                 onClick = onClick,
             )
             .semantics(mergeDescendants = true) {
@@ -285,9 +291,16 @@ fun PairCodeField(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
+    val haptics = rememberFlickTouchHaptics()
     BasicTextField(
         value = code,
-        onValueChange = { raw -> onCodeChange(raw.filter { it.isDigit() }.take(4)) },
+        onValueChange = { raw ->
+            val digits = raw.filter { it.isDigit() }.take(4)
+            // The keyboard still offers characters the code cannot hold and the cells
+            // drop them without showing anything, so the rejection is only felt.
+            if (digits.length < raw.length) haptics.reject()
+            onCodeChange(digits)
+        },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
         modifier = modifier,
         decorationBox = { innerTextField ->

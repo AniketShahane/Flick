@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Launcher-icon colours only. They restate Primary, Spark and CanvasLight from
+      ui/theme/Color.kt because a vector drawable cannot read a Kotlin token;
+      change them together or the icon drifts from the in-app FlickMark.
+    -->
+    <color name="ic_launcher_background">#FFF2F6FF</color>
+    <color name="ic_launcher_mark">#FF1240E8</color>
+    <color name="ic_launcher_spark">#FFFFB61E</color>
+    <!-- Themed icons: the launcher re-tints this layer, using only its alpha. -->
+    <color name="ic_launcher_monochrome">#FF000000</color>
+</resources>

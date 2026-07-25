@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -87,7 +88,9 @@ import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PrimaryShadow
+import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import java.util.concurrent.ConcurrentHashMap
 
 /** Room the floating nav needs at the foot of the scroll (design §5.4). */
@@ -279,7 +282,11 @@ private fun Header(
                     .pressScale(interaction)
                     .clip(PillShape)
                     .background(colors.primaryContainer)
-                    .clickable(interactionSource = interaction, indication = null, onClick = onMediaAction)
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = flickRipple(colors.primary),
+                        onClick = onMediaAction,
+                    )
                     .semantics { role = Role.Button }
                     .padding(horizontal = 15.dp, vertical = 15.dp),
             )
@@ -291,7 +298,11 @@ private fun Header(
                 .pressScale(tuneInteraction)
                 .clip(RoundedCornerShape(FlickCorners.tuneBtn))
                 .background(colors.inverseSurface)
-                .clickable(interactionSource = tuneInteraction, indication = null, onClick = onTune)
+                .clickable(
+                    interactionSource = tuneInteraction,
+                    indication = flickRipple(colors.onInverseSurface),
+                    onClick = onTune,
+                )
                 .semantics {
                     role = Role.Button
                     contentDescription = tuneLabel
@@ -335,9 +346,12 @@ private fun LinkPill(
                 container = colors.primary,
                 modifier = Modifier
                     .pressScale(interaction)
+                    // Clipped here too: Pill's own clip sits below this touch node, so
+                    // it cannot bound the ripple.
+                    .clip(PillShape)
                     .clickable(
                         interactionSource = interaction,
-                        indication = null,
+                        indication = flickRipple(colors.onPrimary),
                         onClick = { controller.restoreNowPlaying() },
                     )
                     // The merged description replaces the visible copy, so the state the
@@ -383,9 +397,12 @@ private fun LinkPill(
                 container = colors.primaryContainer,
                 modifier = Modifier
                     .pressScale(interaction)
+                    // Clipped here too: Pill's own clip sits below this touch node, so
+                    // it cannot bound the ripple.
+                    .clip(PillShape)
                     .clickable(
                         interactionSource = interaction,
-                        indication = null,
+                        indication = flickRipple(colors.primary),
                         onClick = { controller.openConnect() },
                     )
                     .semantics(mergeDescendants = true) {
@@ -474,20 +491,24 @@ private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter
 @Composable
 private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LocalFlickColors.current
+    val haptics = rememberFlickTouchHaptics()
     val interaction = remember { MutableInteractionSource() }
     Box(
         Modifier
             .heightIn(min = 48.dp)
             .pressScale(interaction)
-            // The touch node owns the shape as well: an unclipped default ripple would
-            // square off the pill and overflow the 48 dp target it sits inside.
             .clip(PillShape)
             .selectable(
                 selected = selected,
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Tab,
-                onClick = onClick,
+                onClick = {
+                    // The three chips are one exclusive axis, so re-tapping the current
+                    // one changes nothing and must stay silent.
+                    if (!selected) haptics.toggle(true)
+                    onClick()
+                },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -499,6 +520,15 @@ private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
             modifier = Modifier
                 .clip(PillShape)
                 .background(if (selected) colors.inverseSurface else colors.primaryContainer)
+                // The ripple is drawn on the chip rather than on the touch node above:
+                // the 48 dp target is taller than the pill, so a state layer sized to
+                // the target would halo it.
+                .indication(
+                    interactionSource = interaction,
+                    indication = flickRipple(
+                        if (selected) colors.onInverseSurface else colors.primary,
+                    ),
+                )
                 .padding(horizontal = 18.dp, vertical = 11.dp),
         )
     }
@@ -507,6 +537,7 @@ private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun BandAdvisory(onClick: () -> Unit) {
     val colors = LocalFlickColors.current
+    val interaction = remember { MutableInteractionSource() }
     val label = stringResource(R.string.a11y_library_band_advisory)
     val copy = buildAnnotatedString {
         withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) {
@@ -520,7 +551,11 @@ private fun BandAdvisory(onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(FlickCorners.warning))
             .background(colors.caution)
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = flickRipple(colors.onCaution),
+                onClick = onClick,
+            )
             .semantics(mergeDescendants = true) {
                 role = Role.Button
                 contentDescription = label

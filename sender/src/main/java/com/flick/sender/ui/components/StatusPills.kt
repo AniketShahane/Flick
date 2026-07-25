@@ -8,6 +8,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -33,6 +34,7 @@ import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 
@@ -138,6 +140,8 @@ fun SignalChip(
         modifier = modifier
             .heightIn(min = 48.dp)
             .pressScale(interaction)
+            // The pill inside is smaller than this 48 dp target, so the press is drawn
+            // there instead — a ripple bounded to the target would overhang the pill.
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -150,6 +154,7 @@ fun SignalChip(
             modifier = Modifier
                 .clip(PillShape)
                 .background(fill)
+                .indication(interaction, flickRipple(ink))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

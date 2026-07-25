@@ -2,6 +2,7 @@ package com.flick.sender.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +29,8 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 
 enum class AdvisoryTone { CAUTION, INFO }
 
@@ -53,6 +57,8 @@ fun AdvisoryCard(
     val container = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.inverseSurface
     val ink = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.onInverseSurface
     val glyph = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.spark
+    val primaryPress = remember { MutableInteractionSource() }
+    val secondaryPress = remember { MutableInteractionSource() }
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(FlickCorners.warning))
@@ -84,9 +90,14 @@ fun AdvisoryCard(
                     text = primaryLabel,
                     style = FlickText.labelMedium.copy(color = container),
                     modifier = Modifier
+                        .pressScale(primaryPress)
                         .clip(PillShape)
                         .background(ink)
-                        .clickable(onClick = onPrimary)
+                        .clickable(
+                            interactionSource = primaryPress,
+                            indication = flickRipple(container),
+                            onClick = onPrimary,
+                        )
                         .semantics { role = Role.Button }
                         .heightIn(min = 48.dp)
                         .padding(horizontal = 16.dp, vertical = 15.dp),
@@ -97,8 +108,13 @@ fun AdvisoryCard(
                         text = secondaryLabel,
                         style = FlickText.labelMedium.copy(color = ink.copy(alpha = 0.78f)),
                         modifier = Modifier
+                            .pressScale(secondaryPress)
                             .clip(PillShape)
-                            .clickable(onClick = onSecondary)
+                            .clickable(
+                                interactionSource = secondaryPress,
+                                indication = flickRipple(ink),
+                                onClick = onSecondary,
+                            )
                             .semantics { role = Role.Button }
                             .heightIn(min = 48.dp)
                             .padding(horizontal = 14.dp, vertical = 15.dp),

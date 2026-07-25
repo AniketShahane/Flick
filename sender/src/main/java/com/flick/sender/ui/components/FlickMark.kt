@@ -18,6 +18,10 @@ import com.flick.sender.ui.theme.Spark
  * The Flick brand mark — a blue play triangle leaving three amber speed bars.
  * Drawn on a 64-unit grid scaled to the modifier; the bars are dropped below 24 dp,
  * where they would collapse into noise, and the triangle alone carries the mark.
+ *
+ * res/drawable/ic_launcher_foreground.xml and ic_launcher_monochrome.xml restate
+ * this same 64-unit geometry by hand — a vector drawable cannot read these values,
+ * so any change here has to be mirrored there or the launcher icon drifts.
  */
 @Composable
 fun FlickMark(

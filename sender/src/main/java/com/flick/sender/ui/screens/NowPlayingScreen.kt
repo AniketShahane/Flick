@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -91,6 +92,8 @@ import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PosterShadow
 import com.flick.sender.ui.theme.Spark
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
 
@@ -231,6 +234,7 @@ private fun ColumnScope.TopRow(
     val signalText = if (compactWidth) live.bandLabel() else live.chipText()
     val signalHealthy = live.healthy
     val minimizeDescription = stringResource(R.string.a11y_minimize_now_playing)
+    val minimizeInteraction = remember { MutableInteractionSource() }
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -238,8 +242,17 @@ private fun ColumnScope.TopRow(
         Box(
             Modifier
                 .size(48.dp)
+                .pressScale(minimizeInteraction)
                 .semantics { contentDescription = minimizeDescription }
-                .clickable(role = Role.Button, onClick = onMinimize),
+                .clickable(
+                    interactionSource = minimizeInteraction,
+                    // The touch target is 48 dp but the fill is only 42 dp, so the
+                    // ripple is sized to the fill instead of the target — a bounded
+                    // one would wash 3 dp of bare backdrop on every tap.
+                    indication = flickRipple(colors.onSurface, bounded = false, radius = 21.dp),
+                    role = Role.Button,
+                    onClick = onMinimize,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Box(
@@ -314,7 +327,6 @@ private fun ColumnScope.RemoteContent(
     )
     val meta = stringResource(R.string.np_meta, format, Format.bytes(item?.sizeBytes ?: -1L), tvName)
 
-    val stopCastingDescription = stringResource(R.string.a11y_stop_casting)
     val seekTargetDescription = stringResource(R.string.a11y_seek_target)
     val confirmedDescription = stringResource(R.string.a11y_tv_confirmed)
     val adjustSeekDescription = stringResource(R.string.a11y_adjust_seek)
@@ -406,14 +418,32 @@ private fun ColumnScope.RemoteContent(
 
     // The mock has no stop control on the remote, but this is the only in-app
     // affordance for the terminal stop; the notification action is the other one.
+    StopCastControl(onStop = { controller.stopCast() })
+}
+
+/**
+ * Isolated as its own scope: the press state a scale response reads would otherwise
+ * recompose the whole transport tree on every touch down and up.
+ */
+@Composable
+private fun ColumnScope.StopCastControl(onStop: () -> Unit) {
+    val colors = LocalFlickColors.current
+    val interaction = remember { MutableInteractionSource() }
+    val stopCastingDescription = stringResource(R.string.a11y_stop_casting)
     Box(
         modifier = Modifier
             .align(Alignment.CenterHorizontally)
             .padding(top = 6.dp)
+            .pressScale(interaction)
             .heightIn(min = 48.dp)
             .clip(PillShape)
             .semantics(mergeDescendants = true) { contentDescription = stopCastingDescription }
-            .clickable(role = Role.Button) { controller.stopCast() }
+            .clickable(
+                interactionSource = interaction,
+                indication = flickRipple(colors.onSurface),
+                role = Role.Button,
+                onClick = onStop,
+            )
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -664,15 +694,25 @@ private fun RowScope.Segment(
     val colors = LocalFlickColors.current
     val active = onClick != null
     val ink = if (active) colors.onInverseSurface else colors.onSurfaceDim.copy(alpha = 0.5f)
+    val interaction = remember { MutableInteractionSource() }
+    // The live segment is a pale pill on the cinematic backdrop, so its ripple takes
+    // the ink that reads on the pill, not the one that reads on the screen.
+    val indication = flickRipple(colors.onInverseSurface)
     Row(
         Modifier
             .weight(1f)
+            .then(if (active) Modifier.pressScale(interaction) else Modifier)
             .heightIn(min = 48.dp)
             .clip(PillShape)
             .background(if (active) colors.inverseSurface else Color.Transparent)
             .then(
                 if (onClick != null) {
-                    Modifier.clickable(role = Role.Button, onClick = onClick)
+                    Modifier.clickable(
+                        interactionSource = interaction,
+                        indication = indication,
+                        role = Role.Button,
+                        onClick = onClick,
+                    )
                 } else {
                     Modifier.semantics {
                         disabled()

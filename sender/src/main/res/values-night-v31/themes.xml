@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Night mode outranks the version qualifier in resource resolution, so on a
+      dark-mode API 31+ device values-night/themes.xml would win outright and the
+      splash attributes in values-v31 would never be read. This bucket is that
+      intersection: the night style repeated verbatim plus the two splash
+      attributes, so the cold-start frame shows the Flick mark on both palettes.
+
+      The splash background is the cinematic canvas rather than
+      @color/ic_launcher_background: the pale launcher plate would flash white
+      before a near-black app, which is the same reason values-night overrides
+      windowBackground at all.
+    -->
+    <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#050C1D</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowSplashScreenBackground">#050C1D</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+    </style>
+</resources>

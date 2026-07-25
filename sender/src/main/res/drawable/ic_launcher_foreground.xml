@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Flick mark from ui/components/FlickMark.kt, re-centred for the adaptive
+  icon. On its own 64-unit grid the mark is not centred: including the 4.5-unit
+  stroke overhang its visual box is x 4..60.5, y 10.5..53.5. Every coordinate
+  below is that grid scaled 1.1x and shifted so the box centres on (54,54), which
+  keeps the farthest point 31.2 from centre — inside the 66dp safe circle.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+      The speed bars are 5.5 tall with a 2.75 corner radius, i.e. exact stadiums,
+      so each one is its own centreline stroked with a round cap rather than a
+      rounded-rect outline.
+    -->
+    <path
+        android:pathData="M31.175,46.3 L39.975,46.3"
+        android:strokeColor="@color/ic_launcher_spark"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M25.675,56.2 L32.275,56.2"
+        android:strokeColor="@color/ic_launcher_spark"
+        android:strokeAlpha="0.75"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M31.175,66.1 L39.975,66.1"
+        android:strokeColor="@color/ic_launcher_spark"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round" />
+
+    <!--
+      Fill plus a matching round-join stroke, as in FlickMark: the stroke rides
+      half its width outside the path and is what rounds the silhouette. Drop it
+      and the triangle reads sharp and thin next to the in-app mark.
+    -->
+    <path
+        android:pathData="M49.325,35.3 L80.125,54 L49.325,72.7 Z"
+        android:fillColor="@color/ic_launcher_mark"
+        android:strokeColor="@color/ic_launcher_mark"
+        android:strokeWidth="9.9"
+        android:strokeLineJoin="round" />
+
+</vector>

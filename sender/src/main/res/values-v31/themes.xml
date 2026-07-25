@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      API 31+ replaces the cold-start window with the system splash screen, so
+      android:windowBackground alone no longer owns that frame. These two
+      attributes do not exist below API 31, hence the -v31 bucket; nothing there
+      needs a fallback because the older path already draws windowBackground.
+      Every attribute values/themes.xml sets is repeated verbatim: a qualified
+      bucket replaces the style, it does not merge with it.
+
+      Night mode outranks the version qualifier, so this bucket only reaches a
+      light-mode device; values-night-v31 carries the dark counterpart.
+    -->
+    <style name="Theme.FlickSender" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F2F6FF</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+    </style>
+</resources>

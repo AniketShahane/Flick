@@ -3,6 +3,7 @@ package com.flick.sender.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +45,8 @@ import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PrimaryShadow
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 
 /**
  * S12 — error faces. Diagnosis over apology: name the device, name the fault,
@@ -119,6 +123,8 @@ fun ErrorScreen(
     }
 
     val statusDescription = stringResource(R.string.a11y_network_status, pillText)
+    val primaryInteraction = remember { MutableInteractionSource() }
+    val secondaryInteraction = remember { MutableInteractionSource() }
     Box(
         Modifier
             .fillMaxSize()
@@ -154,6 +160,7 @@ fun ErrorScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .pressScale(primaryInteraction)
                     .shadow(
                         elevation = 14.dp,
                         shape = PillShape,
@@ -163,7 +170,12 @@ fun ErrorScreen(
                     )
                     .clip(PillShape)
                     .background(colors.primary)
-                    .clickable(role = Role.Button, onClick = onPrimary)
+                    .clickable(
+                        interactionSource = primaryInteraction,
+                        indication = flickRipple(colors.onPrimary),
+                        role = Role.Button,
+                        onClick = onPrimary,
+                    )
                     .heightIn(min = 48.dp)
                     .padding(vertical = 19.dp),
             )
@@ -176,7 +188,11 @@ fun ErrorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(PillShape)
-                        .clickable(role = Role.Button) { controller.openConnect() }
+                        .clickable(
+                            interactionSource = secondaryInteraction,
+                            indication = flickRipple(colors.primary),
+                            role = Role.Button,
+                        ) { controller.openConnect() }
                         .heightIn(min = 48.dp)
                         .padding(vertical = 15.dp),
                 )

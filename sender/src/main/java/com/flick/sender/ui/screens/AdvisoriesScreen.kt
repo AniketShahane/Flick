@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
@@ -27,6 +29,8 @@ import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 
 /** S11 — advisories. Tinted, actionable cards; casting is never blocked. */
 @Composable
@@ -104,6 +108,7 @@ fun AdvisoriesScreen(
         )
 
         Spacer(Modifier.height(6.dp))
+        val diagnosticsInteraction = remember { MutableInteractionSource() }
         Text(
             stringResource(R.string.advisory_diagnostics_row),
             style = FlickText.labelMedium.copy(
@@ -112,9 +117,17 @@ fun AdvisoriesScreen(
             ),
             modifier = Modifier
                 .fillMaxWidth()
+                .pressScale(diagnosticsInteraction)
                 .clip(PillShape)
                 .semantics { contentDescription = diagnosticsDescription }
-                .clickable(role = Role.Button, onClick = onOpenDiagnostics)
+                .clickable(
+                    interactionSource = diagnosticsInteraction,
+                    // This sheet follows the system palette rather than forcing the
+                    // cinematic one, so the ripple takes the role that inverts with it.
+                    indication = flickRipple(colors.onSurface),
+                    role = Role.Button,
+                    onClick = onOpenDiagnostics,
+                )
                 .heightIn(min = 48.dp)
                 .padding(vertical = 15.dp),
             textAlign = TextAlign.Center,

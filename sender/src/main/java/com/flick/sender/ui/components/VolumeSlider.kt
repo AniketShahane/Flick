@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -31,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import kotlin.math.roundToInt
 
 /**
  * Continuous TV volume. A 13dp track with a bright fill and the amber blade thumb;
@@ -49,6 +52,10 @@ fun VolumeSlider(
     adjustableActionLabel: String? = null,
 ) {
     val colors = LocalFlickColors.current
+    val haptics = rememberFlickTouchHaptics()
+    // The gesture handler is keyed on Unit, so the level it started from has to be
+    // read through a state holder rather than captured at that composition.
+    val currentValue = rememberUpdatedState(value)
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = FlickIcons.Volume,
@@ -74,7 +81,18 @@ fun VolumeSlider(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val w = { size.width.toFloat().coerceAtLeast(1f) }
-                        onValueChange((down.position.x / w()).coerceIn(0f, 1f))
+                        // Seeded from the level before the gesture: a tap on the thumb
+                        // must stay silent, one that jumps the level must tick once.
+                        var step = stepOf(currentValue.value)
+                        val report = { fraction: Float ->
+                            val next = stepOf(fraction)
+                            if (next != step) {
+                                step = next
+                                haptics.sliderStep()
+                            }
+                            onValueChange(fraction)
+                        }
+                        report((down.position.x / w()).coerceIn(0f, 1f))
                         down.consume()
                         while (true) {
                             val event = awaitPointerEvent()
@@ -85,7 +103,7 @@ fun VolumeSlider(
                                 change.consume()
                                 break
                             }
-                            onValueChange((change.position.x / w()).coerceIn(0f, 1f))
+                            report((change.position.x / w()).coerceIn(0f, 1f))
                             change.consume()
                         }
                     }
@@ -135,3 +153,11 @@ fun VolumeSlider(
 private val TrackHeight = 13.dp
 private val ThumbWidth = 6.dp
 private val ThumbHeight = 26.dp
+
+/**
+ * Detents the haptic ticks sit on. The level itself stays continuous — this only
+ * spaces the pulses, so a slow sweep of the track ratchets instead of buzzing.
+ */
+private const val HapticSteps = 20
+
+private fun stepOf(fraction: Float): Int = (fraction.coerceIn(0f, 1f) * HapticSteps).roundToInt()

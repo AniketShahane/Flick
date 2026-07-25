@@ -55,6 +55,7 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.delay
 
@@ -104,6 +105,9 @@ fun FlickApp(
     val showAdvisories by controller.showAdvisories.collectAsState()
     val showDiagnostics by controller.showDiagnostics.collectAsState()
     val reduceMotion = rememberReduceMotion()
+    // Nav haptics are decided here, not inside the nav bar: a Remote tap can be
+    // refused, and only the shell knows whether the tap moved or raised a toast.
+    val haptics = rememberFlickTouchHaptics()
 
     val toast = remember { ShellToastState() }
     val pickATv = stringResource(R.string.toast_pick_a_tv)
@@ -213,8 +217,14 @@ fun FlickApp(
                     // in-flow back behavior, which would strand Back on the launch route.
                     if (tab != selectedTab) {
                         when (tab) {
-                            NavTab.LIBRARY -> controller.openLibrary()
-                            NavTab.DEVICES -> controller.openConnect()
+                            NavTab.LIBRARY -> {
+                                haptics.tabChange()
+                                controller.openLibrary()
+                            }
+                            NavTab.DEVICES -> {
+                                haptics.tabChange()
+                                controller.openConnect()
+                            }
                             // Read at tap time so the shell never subscribes to cast state
                             // it does not render.
                             NavTab.REMOTE -> when (
@@ -226,9 +236,18 @@ fun FlickApp(
                                     ),
                                 )
                             ) {
-                                RemoteTapOutcome.NAVIGATE -> controller.restoreNowPlaying()
-                                RemoteTapOutcome.TOAST_PICK_A_TV -> toast.show(pickATv)
-                                RemoteTapOutcome.TOAST_PICK_A_VIDEO -> toast.show(pickAVideo)
+                                RemoteTapOutcome.NAVIGATE -> {
+                                    haptics.tabChange()
+                                    controller.restoreNowPlaying()
+                                }
+                                RemoteTapOutcome.TOAST_PICK_A_TV -> {
+                                    haptics.reject()
+                                    toast.show(pickATv)
+                                }
+                                RemoteTapOutcome.TOAST_PICK_A_VIDEO -> {
+                                    haptics.reject()
+                                    toast.show(pickAVideo)
+                                }
                             }
                         }
                     }

@@ -3,6 +3,7 @@ package com.flick.sender.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,12 +16,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -30,12 +32,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.ui.screens.NavTab
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickGlass
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
@@ -88,7 +93,7 @@ private fun NavItem(
 ) {
     val colors = LocalFlickColors.current
     val reduceMotion = rememberReduceMotion()
-    val settle = Motion.orSnap(reduceMotion, Motion.flickSettle<Color>())
+    val settle = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.defaultEffectsSpec<Color>())
     val pill by animateColorAsState(
         targetValue = if (active) colors.primary else Color.Transparent,
         animationSpec = settle,
@@ -105,12 +110,25 @@ private fun NavItem(
         label = "navLabel",
     )
 
+    // No haptic here: a Remote tap can be refused, and only the shell knows whether
+    // the tap moved or raised a toast. FlickApp fires the pulse from onSelect.
+    val interaction = remember { MutableInteractionSource() }
+
     Column(
         modifier = Modifier
             .width(76.dp)
             .heightIn(min = 48.dp)
-            .clip(PillShape)
-            .clickable(role = Role.Tab, onClick = onClick)
+            // This item paints no fill of its own, so the clip is what bounds the
+            // ripple — and RoundedCornerShape scales adjacent radii down to fit, which
+            // renders the 34dp rest radius as 28dp on a 56dp-tall item. The pressed
+            // radius has to clear that clamp or the corners never actually travel.
+            .pressMorph(interaction, restRadius = FlickCorners.nav, pressedRadius = 20.dp)
+            .clickable(
+                interactionSource = interaction,
+                indication = flickRipple(colors.onSurface),
+                role = Role.Tab,
+                onClick = onClick,
+            )
             .semantics(mergeDescendants = true) { selected = active },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

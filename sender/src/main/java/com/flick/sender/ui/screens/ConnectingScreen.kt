@@ -20,8 +20,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -47,6 +51,7 @@ import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 private enum class StepState { DONE, ACTIVE, PENDING }
@@ -58,6 +63,22 @@ fun ConnectingScreen(controller: FlickController) {
     val tv by controller.connectedTv.collectAsState()
     val cancelDescription = stringResource(R.string.a11y_cancel_connecting)
     val connectingDescription = stringResource(R.string.a11y_pairing_status, stringResource(R.string.connecting_status))
+
+    // Bound to the handshake's own terminal states, never to arriving here: the route
+    // only reaches this screen mid-handshake, so the seeded previous value keeps the
+    // first composition silent and every pulse follows a reported outcome.
+    val haptics = rememberFlickTouchHaptics()
+    var lastCastStart by remember { mutableStateOf(castStart) }
+    LaunchedEffect(castStart) {
+        val previous = lastCastStart
+        lastCastStart = castStart
+        if (previous == castStart) return@LaunchedEffect
+        when (castStart) {
+            is CastStartState.Active -> haptics.confirm()
+            is CastStartState.Failed -> haptics.reject()
+            else -> Unit
+        }
+    }
 
     val control = if (castStart is CastStartState.ConnectingControl) StepState.ACTIVE else StepState.DONE
     val prepare = when (castStart) { is CastStartState.StartingSource -> StepState.ACTIVE; is CastStartState.AwaitingAcceptance, is CastStartState.AwaitingFirstFrame, is CastStartState.Active -> StepState.DONE; else -> StepState.PENDING }

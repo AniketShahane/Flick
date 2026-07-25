@@ -2,6 +2,7 @@ package com.flick.sender.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +44,8 @@ import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.TileShadow
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
@@ -100,6 +103,9 @@ fun VideoTile(
     Column(
         modifier = modifier
             .pressScale(interaction)
+            // The whole tile is the target but the poster below draws the press: the
+            // caption sits outside any rounded shape, and clipping this column would
+            // cut the poster's deliberately unclipped shadow.
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .semantics { role = Role.Button },
         verticalArrangement = Arrangement.spacedBy(9.dp),
@@ -111,8 +117,12 @@ fun VideoTile(
                 // pinned dp would crop the still to a sliver on a wide column.
                 .aspectRatio(if (compact) CompactPosterRatio else PosterRatio)
                 .shadow(10.dp, shape, clip = false, ambientColor = TileShadow, spotColor = TileShadow)
-                .clip(shape)
-                .background(colors.surfaceTonal),
+                .pressMorph(interaction, restRadius = FlickCorners.tile, pressedRadius = 20.dp)
+                .background(colors.surfaceTonal)
+                // The amber media accent rather than the action blue: this surface is a
+                // decoded frame, not a palette surface, and only a light, high-chroma
+                // ripple survives both a blown-out still and a near-black one.
+                .indication(interaction, flickRipple(colors.spark)),
         ) {
             AsyncImage(
                 model = request,

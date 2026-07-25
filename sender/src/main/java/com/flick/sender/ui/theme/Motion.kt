@@ -1,39 +1,50 @@
 package com.flick.sender.ui.theme
 
 import android.animation.ValueAnimator
+import android.os.SystemClock
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.DurationBasedAnimationSpec
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Indication
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Dp
 
 /**
- * Product-specific motion intents. Generic Material components obtain their motion
- * from [androidx.compose.material3.MotionScheme.expressive] in [FlickTheme]; these
- * remain only for behavior that Material cannot own (the playhead, scrub reconcile,
- * the sheet rise, and the connecting traveling light). Compose applies the system
- * animator duration scale to these specs, so a zero scale snaps rather than leaving
- * a long-running animation — but looping animations must still be gated on
- * [rememberReduceMotion] because they never reach an end state.
+ * Motion and feedback for the surfaces Flick draws itself. Flick's controls are
+ * hand-drawn boxes rather than Material components, so nothing here is supplied by
+ * Material automatically — the press path reaches
+ * [androidx.compose.material3.MotionScheme] only because [pressScale] and
+ * [pressMorph] ask for it. Springs are used wherever a finger is involved, because
+ * a spring retargets from its current velocity while a tween restarts on a fresh
+ * clock. The tweens below survive only where there is no gesture to carry velocity
+ * from: looping or media-clocked motion. Compose applies the system animator
+ * duration scale to a finite spec, so a zero scale snaps rather than leaving a long
+ * animation running — but looping animations never reach an end state and must
+ * still be gated on [rememberReduceMotion].
  */
 object Motion {
 
     // --- Easing curves (cubic-bezier) ---
-    /** Default settle, ~overshoot — rows, CTA, track/thumb growth, seek confirm. */
-    val FlickSettle: Easing = CubicBezierEasing(0.2f, 1.5f, 0.4f, 1f)
-
-    /** Firmer overshoot for the play/pause FAB. */
-    val FabSettle: Easing = CubicBezierEasing(0.2f, 1.6f, 0.35f, 1f)
-
     /** Sheets and the toast rising into place. */
     val SheetRise: Easing = CubicBezierEasing(0.2f, 1.4f, 0.35f, 1f)
 
@@ -50,8 +61,6 @@ object Motion {
     val Steady: Easing = LinearEasing
 
     // --- Durations (ms) ---
-    const val FlickSettleMs = 320
-    const val FabSettleMs = 340
     const val SheetRiseMs = 400
     const val TravelMs = 1050
     const val PulseMs = 1600
@@ -84,13 +93,17 @@ object Motion {
     const val GlowMinAlpha = 0.45f
     const val GlowMaxAlpha = 0.95f
 
+    /**
+     * Consecutive slider-step ticks closer together than this are dropped. Below
+     * roughly this interval the actuator cannot separate two pulses and the run
+     * reads as one long buzz.
+     */
+    const val TickMinIntervalMs = 40L
+
     // --- Ready-made specs ---
-    fun <T> flickSettle(): DurationBasedAnimationSpec<T> =
-        tween(durationMillis = FlickSettleMs, easing = FlickSettle)
-
-    fun <T> fabSettle(): DurationBasedAnimationSpec<T> =
-        tween(durationMillis = FabSettleMs, easing = FabSettle)
-
+    // No press spec here on purpose: a press is a gesture, so it takes a
+    // motionScheme spring via pressScale/pressMorph. A tween cannot retarget from
+    // the velocity an interrupted press already carries.
     fun <T> sheetRise(): DurationBasedAnimationSpec<T> =
         tween(durationMillis = SheetRiseMs, easing = SheetRise)
 
@@ -123,13 +136,119 @@ internal fun Modifier.pressScale(
 ): Modifier {
     val pressed by interactionSource.collectIsPressedAsState()
     val reduceMotion = rememberReduceMotion()
+    val spec = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
     val scale = animateFloatAsState(
         targetValue = if (pressed) target else 1f,
-        animationSpec = Motion.orSnap(reduceMotion, Motion.flickSettle()),
+        animationSpec = Motion.orSnap(reduceMotion, spec),
         label = "press scale",
     )
     return this.graphicsLayer {
         scaleX = scale.value
         scaleY = scale.value
     }
+}
+
+/**
+ * Press corner morph. This is a clip, so it replaces the surface's own
+ * `Modifier.clip(RoundedCornerShape(restRadius))` rather than being added next to
+ * it — at [restRadius] the two are identical, and a clip laid over a background
+ * that already carries its own rounder shape would morph nothing. The radius is
+ * read inside the layer block, so the morph repaints without recomposing the
+ * caller.
+ */
+@Composable
+internal fun Modifier.pressMorph(
+    interactionSource: InteractionSource,
+    restRadius: Dp,
+    pressedRadius: Dp,
+): Modifier {
+    val pressed by interactionSource.collectIsPressedAsState()
+    val reduceMotion = rememberReduceMotion()
+    val spec = MaterialTheme.motionScheme.defaultSpatialSpec<Dp>()
+    val radius = animateDpAsState(
+        targetValue = if (pressed) pressedRadius else restRadius,
+        animationSpec = Motion.orSnap(reduceMotion, spec),
+        label = "press corner radius",
+    )
+    return this.graphicsLayer {
+        clip = true
+        shape = RoundedCornerShape(radius.value)
+    }
+}
+
+/**
+ * Material's ripple, remembered so a press does not allocate a fresh factory on
+ * every recomposition. Callers pass the theme role that reads on their own
+ * background; Material applies its own alpha to it.
+ */
+@Composable
+internal fun flickRipple(
+    color: Color,
+    bounded: Boolean = true,
+    radius: Dp = Dp.Unspecified,
+): Indication = remember(color, bounded, radius) {
+    ripple(bounded = bounded, radius = radius, color = color)
+}
+
+/**
+ * Haptics as named interactions rather than raw constants, so no call site can pick
+ * a pulse that does not match what the user did. Every entry point must be invoked
+ * from a gesture callback — never from a draw scope, a layer block or a
+ * recomposition side effect, and never for state restored from process death or
+ * changed programmatically. Reduce-motion does not gate haptics: the animator scale
+ * and the system haptic preference are unrelated settings, and the platform already
+ * honours the latter.
+ *
+ * This is the *touch* half only. `net.FlickHaptics` drives the platform vibrator
+ * from PlaybackSession's own cue flow, and it already covers play/pause, seek and
+ * the whole scrub gesture; anything it owns must not be cued from here as well, or
+ * one gesture reaches the actuator twice.
+ */
+@Stable
+internal class FlickTouchHaptics(private val haptics: HapticFeedback) {
+
+    private var lastTickUptimeMs = 0L
+
+    /** Chip and filter selection. Play/pause belongs to the session's own cue. */
+    fun toggle(on: Boolean) =
+        perform(if (on) HapticFeedbackType.ToggleOn else HapticFeedbackType.ToggleOff)
+
+    /**
+     * One volume step. Callers must already be firing on a step transition; the
+     * interval floor here is a backstop, not a substitute.
+     */
+    fun sliderStep() {
+        if (!tickAllowed()) return
+        perform(HapticFeedbackType.SegmentTick)
+    }
+
+    /** A cast or a pairing succeeded. */
+    fun confirm() = perform(HapticFeedbackType.Confirm)
+
+    /** A cast or a pairing failed, or the input was rejected. */
+    fun reject() = perform(HapticFeedbackType.Reject)
+
+    /** Bottom nav moved to a different tab. Silent on a re-tap of the current one. */
+    fun tabChange() = perform(HapticFeedbackType.ContextClick)
+
+    private fun tickAllowed(): Boolean {
+        // uptimeMillis is monotonic and unaffected by the wall clock; elapsed
+        // realtime would keep counting through the doze the drag cannot survive.
+        val now = SystemClock.uptimeMillis()
+        if (now - lastTickUptimeMs < Motion.TickMinIntervalMs) return false
+        lastTickUptimeMs = now
+        return true
+    }
+
+    private fun perform(type: HapticFeedbackType) = haptics.performHapticFeedback(type)
+}
+
+/**
+ * The holder carries the tick interval state, so it must survive recomposition; a
+ * fresh instance per frame would let every tick through.
+ */
+@Composable
+internal fun rememberFlickTouchHaptics(): FlickTouchHaptics {
+    val haptics = LocalHapticFeedback.current
+    return remember(haptics) { FlickTouchHaptics(haptics) }
 }

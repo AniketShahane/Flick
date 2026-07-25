@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,6 +58,8 @@ import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
 /** S1 — first-run connect & pair. Discovery leads; the code card is the escape hatch. */
 @Composable
@@ -71,6 +74,7 @@ fun ConnectScreen(controller: FlickController) {
     val manualLabel = stringResource(R.string.connect_manual)
     val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
     var manualOpen by remember { mutableStateOf(false) }
+    val haptics = rememberFlickTouchHaptics()
 
     // Map the typed pairing outcome to localized copy (never raw exception text).
     val pairErrorText: String? = when (pairError) {
@@ -92,6 +96,25 @@ fun ConnectScreen(controller: FlickController) {
         null -> null
     }
     val connecting = connection == ConnectionStatus.CONNECTING || connection == ConnectionStatus.PAIRING
+
+    // Both pulses come from a real outcome, never from arriving here: CONNECTED is
+    // published only once the receiver has accepted the code, and pairError only moves
+    // when an attempt ends. Seeding the previous value keeps the first composition —
+    // including a screen entered with a stale error already on it — silent.
+    var lastConnection by remember { mutableStateOf(connection) }
+    LaunchedEffect(connection) {
+        val previous = lastConnection
+        lastConnection = connection
+        if (connection == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED) {
+            haptics.confirm()
+        }
+    }
+    var lastPairError by remember { mutableStateOf(pairError) }
+    LaunchedEffect(pairError) {
+        val previous = lastPairError
+        lastPairError = pairError
+        if (pairError != null && previous != pairError) haptics.reject()
+    }
 
     LaunchedEffect(Unit) { controller.onStart() }
     // Every accepted QR is a new launch event. Keying the sheet by eventId discards
@@ -274,13 +297,18 @@ private fun FooterAction(
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val interaction = remember { MutableInteractionSource() }
     Text(
         text = text,
         style = FlickText.labelMedium.copy(color = colors.onSurfaceDim, textAlign = TextAlign.Center),
         modifier = Modifier
             .clip(PillShape)
             .semantics { contentDescription = accessibilityLabel }
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = flickRipple(colors.primary),
+                onClick = onClick,
+            )
             .heightIn(min = 48.dp)
             .padding(horizontal = 14.dp, vertical = 15.dp),
     )

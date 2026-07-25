@@ -1,13 +1,10 @@
 package com.flick.sender.ui.components
 
-import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -18,17 +15,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.State
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -48,6 +41,9 @@ import com.flick.sender.ui.theme.FabShadow
 import com.flick.sender.ui.theme.Ink
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressMorph
+import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
@@ -68,7 +64,7 @@ fun PlayPauseMorph(
         label = "morph",
     )
     Canvas(modifier) {
-        // Read in the draw scope: the morph is a 340ms shape tween, not a state change.
+        // Read in the draw scope, so the morph repaints without recomposing the caller.
         val f = morph.value
         val u = size.minDimension / 24f
         fun blend(ax: Float, ay: Float, bx: Float, by: Float) =
@@ -107,20 +103,19 @@ fun PrimaryPlayButton(
 ) {
     val shape = RoundedCornerShape(FlickCorners.fab)
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction, Motion.PressFab, Motion.fabSettle<Float>())
     Box(
         modifier = modifier
             .size(size)
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-            }
+            .pressScale(interaction, Motion.PressFab)
             .shadow(16.dp, shape, clip = false, ambientColor = FabShadow, spotColor = FabShadow)
-            .clip(shape)
+            .pressMorph(interaction, restRadius = FlickCorners.fab, pressedRadius = 20.dp)
             .background(FlickGradients.fab)
             .clickable(
                 interactionSource = interaction,
-                indication = LocalIndication.current,
+                // The amber fill never inverts, so the ripple takes the glyph's ink.
+                indication = flickRipple(Ink),
+                // No haptic here: PlaybackSession already pulses the vibrator when it
+                // sends the play/pause command, and the two would double every tap.
                 onClick = onClick,
             )
             .semantics(mergeDescendants = true) {
@@ -152,21 +147,18 @@ fun SeekButton(
 ) {
     val colors = LocalFlickColors.current
     val glyph: ImageVector = if (forward) FlickIcons.Fwd10 else FlickIcons.Back10
-    val shape = RoundedCornerShape(FlickCorners.seekBtn)
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction, Motion.PressSeek, Motion.flickSettle<Float>())
     Box(
         modifier = modifier
             .size(size)
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-            }
-            .clip(shape)
+            .pressScale(interaction, Motion.PressSeek)
+            .pressMorph(interaction, restRadius = FlickCorners.seekBtn, pressedRadius = 16.dp)
             .background(colors.fillControl)
             .clickable(
                 interactionSource = interaction,
-                indication = LocalIndication.current,
+                indication = flickRipple(colors.onSurface),
+                // No haptic here: PlaybackSession already pulses the vibrator when it
+                // sends the seek, and this is the control that gets hammered.
                 onClick = onClick,
             )
             .semantics(mergeDescendants = true) {
@@ -212,25 +204,6 @@ fun TransportCluster(
         )
         SeekButton(forward = true, onClick = onFwd10, tint = tint, accessibilityLabel = forward10Label)
     }
-}
-
-/**
- * Press response as a deferred value: only the press/release edge recomposes, the
- * spring itself is consumed inside a graphicsLayer.
- */
-@Composable
-private fun pressScale(
-    interaction: MutableInteractionSource,
-    pressed: Float,
-    spec: FiniteAnimationSpec<Float>,
-): State<Float> {
-    val reduceMotion = rememberReduceMotion()
-    val isPressed by interaction.collectIsPressedAsState()
-    return animateFloatAsState(
-        targetValue = if (isPressed) pressed else 1f,
-        animationSpec = Motion.orSnap(reduceMotion, spec),
-        label = "press",
-    )
 }
 
 private val FabSize = 76.dp

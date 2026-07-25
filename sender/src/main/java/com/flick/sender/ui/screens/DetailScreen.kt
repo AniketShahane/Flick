@@ -1,11 +1,9 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +29,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -61,12 +58,12 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PrimaryShadow
 import com.flick.sender.ui.theme.SheetShape
 import com.flick.sender.ui.theme.TileShadow
-import com.flick.sender.ui.theme.rememberReduceMotion
+import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.pressScale
 
 /**
  * S4 — detail / "cast this". A risen sheet over the video's own frame: honest
@@ -97,6 +94,7 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
     }
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
+    val playHereSource = remember { MutableInteractionSource() }
 
     Box(Modifier.fillMaxSize().background(colors.canvas)) {
         AsyncImage(
@@ -106,6 +104,9 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
         )
+        // The scrim and the sheet body below it are a dismiss target and a click
+        // consumer, not controls: a state layer on either would advertise a tap target
+        // that isn't one, so both stay unindicated.
         Box(
             Modifier
                 .fillMaxSize()
@@ -232,7 +233,11 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(PillShape)
-                    .clickable(role = Role.Button) {
+                    .clickable(
+                        interactionSource = playHereSource,
+                        indication = flickRipple(colors.primary),
+                        role = Role.Button,
+                    ) {
                         runCatching {
                             context.startActivity(
                                 Intent(Intent.ACTION_VIEW)
@@ -256,18 +261,11 @@ private fun FlickToTvButton(
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
-    val reduceMotion = rememberReduceMotion()
     val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) Motion.PressRow else 1f,
-        animationSpec = Motion.orSnap(reduceMotion, Motion.flickSettle()),
-        label = "ctaPress",
-    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .scale(pressScale)
+            .pressScale(source)
             .shadow(
                 elevation = 14.dp,
                 shape = PillShape,
@@ -277,7 +275,12 @@ private fun FlickToTvButton(
             )
             .clip(PillShape)
             .background(colors.primary)
-            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clickable(
+                interactionSource = source,
+                indication = flickRipple(colors.onPrimary),
+                role = Role.Button,
+                onClick = onClick,
+            )
             .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
             .padding(20.dp),
         horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
