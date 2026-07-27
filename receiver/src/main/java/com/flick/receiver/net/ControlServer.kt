@@ -398,24 +398,44 @@ class ControlServer(
                 val start = o.integer("startMs") ?: return reject("start")
                 val url = o.string("url")?.value
                 val title = o.string("title")?.value
-                if (!o.exactly(LOAD_FIELDS)) return reject("fields")
+                if (!loadFieldsAccepted(o.fields.keys)) return reject("fields")
                 if (!url(url, peer)) return reject("url")
                 if (!label(title, 200)) return reject("title")
                 if (!ms(duration)) return reject("duration")
                 if (!ms(start) || (duration > 0 && start > duration)) return reject("start")
+                val subtitle = if (SUB_URL_FIELD in o.fields) {
+                    val subUrl = o.string(SUB_URL_FIELD)?.value
+                    val subLabel = o.string(SUB_LABEL_FIELD)?.value
+                    val subLang = o.string(SUB_LANG_FIELD)?.value
+                    // subUrl is attacker-controlled and is fetched by the player,
+                    // so it goes through the media URL's pinning rules unweakened.
+                    if (!subtitleUrl(subUrl, peer)) return reject("subUrl")
+                    if (!label(subLabel, 200)) return reject("subLabel")
+                    if (SUB_LANG_FIELD in o.fields && !isSubtitleLanguageTag(subLang)) return reject("subLang")
+                    ExternalSubtitle(subUrl!!, subLabel!!, subLang)
+                } else {
+                    null
+                }
                 val outcome = synchronized(serverLock) {
                     if (active?.token !== connection.token || active?.generation != connection.generation) return reject("ownership")
                     when (ownership.adoptCast(connection.token, connection.generation, cast)) {
-                        ControlOwnership.CastAdoption.DUPLICATE -> onMainResult { commands.replayResult(cast) } ?: ControlCastResult.Accepted(cast)
+                        // A repeat for the live cast is how the phone attaches or
+                        // removes an external subtitle mid-watch. Replaying the
+                        // retained result unconditionally would discard the
+                        // validated frame and silently drop the selection.
+                        ControlOwnership.CastAdoption.DUPLICATE -> onMainResult {
+                            commands.onReloadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle)
+                                ?: commands.replayResult(cast)
+                        } ?: ControlCastResult.Accepted(cast)
                         ControlOwnership.CastAdoption.NEW -> {
                             pairing.closeSurface()
-                            onMainResult { commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start) }
+                            onMainResult { commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle) }
                                 ?: run { ownership.clearCast(connection.token, connection.generation, cast); return reject("main_timeout") }
                         }
                         ControlOwnership.CastAdoption.STALE_LEASE -> return reject("stale_lease")
                     }
                 }
-                FlickLog.i("cast", "loadMedia accept castIdFp=${FlickLog.fp(cast)} src=${FlickLog.endpoint(url)} durationMs=$duration startMs=$start")
+                FlickLog.i("cast", "loadMedia accept castIdFp=${FlickLog.fp(cast)} src=${FlickLog.endpoint(url)} durationMs=$duration startMs=$start extSub=${subtitle != null} extSubLang=${subtitle?.language ?: "none"}")
                 sendResult(outcome)
             }
             "play", "pause", "cancelLoad", "stop" -> {
@@ -570,6 +590,7 @@ class ControlServer(
     private fun label(value: String?, max: Int) = value != null && value.codePointCount(0, value.length) <= max && normalizeLabel(value, max) == value && value.isNotBlank()
     private fun ms(value: Long) = value in 0..MAX_MS
     private fun url(value: String?, peer: String) = value != null && value.all { it.code <= 0x7f } && MediaUrlValidator.isValid(value, peer)
+    private fun subtitleUrl(value: String?, peer: String) = value != null && value.all { it.code <= 0x7f } && MediaUrlValidator.isValidSubtitle(value, peer)
     private fun constant(a: String, b: String) = MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
     private fun randomId() = android.util.Base64.encodeToString(ByteArray(16).also(SecureRandom()::nextBytes), android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
 
@@ -593,12 +614,41 @@ class ControlServer(
         private val RESUME_INIT_FIELDS = setOf("t", "v", "tvId", "keyId", "clientNonce")
         private val RESUME_PROOF_FIELDS = setOf("t", "v", "tvId", "keyId", "clientNonce", "serverNonce", "proof")
         private val PING_FIELDS = setOf("t", "v", "id")
-        private val LOAD_FIELDS = setOf("t", "v", "castId", "url", "title", "durationMs", "startMs")
         private val CAST_FIELDS = setOf("t", "v", "castId")
         private val SKIP_FIELDS = setOf("t", "v", "castId", "deltaMs")
         private val VOLUME_FIELDS = setOf("t", "v", "castId", "level")
     }
 }
+
+internal const val SUB_URL_FIELD = "subUrl"
+internal const val SUB_LABEL_FIELD = "subLabel"
+internal const val SUB_LANG_FIELD = "subLang"
+
+private val LOAD_BASE_FIELDS = setOf("t", "v", "castId", "url", "title", "durationMs", "startMs")
+private val LOAD_ALL_FIELDS = LOAD_BASE_FIELDS + setOf(SUB_URL_FIELD, SUB_LABEL_FIELD, SUB_LANG_FIELD)
+
+/**
+ * The v2 `loadMedia` field set, optionally extended by the external-subtitle
+ * fields. A frame carrying no external subtitle must still be the exact base
+ * set, so an un-updated sender is byte-for-byte unaffected. The subtitle fields
+ * are only coherent together: a label or a language without a URL names nothing,
+ * and a URL without a label would leave the panel with an unnamed row.
+ */
+internal fun loadFieldsAccepted(keys: Set<String>): Boolean {
+    if (!keys.containsAll(LOAD_BASE_FIELDS) || !LOAD_ALL_FIELDS.containsAll(keys)) return false
+    val hasUrl = SUB_URL_FIELD in keys
+    return hasUrl == (SUB_LABEL_FIELD in keys) && (hasUrl || SUB_LANG_FIELD !in keys)
+}
+
+/**
+ * BCP-47 as far as a subtitle track needs it: language, optional script,
+ * optional region. Extensions and private-use subtags are refused rather than
+ * forwarded to Media3 unexamined.
+ */
+internal fun isSubtitleLanguageTag(value: String?): Boolean =
+    value != null && value.length <= 20 && value.matches(LANGUAGE_TAG)
+
+private val LANGUAGE_TAG = Regex("^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$")
 
 // The complete `denied` reason vocabulary. Only "code" and "expired" are derived
 // from what the user typed, so the frame stays non-enumerating: it is not an

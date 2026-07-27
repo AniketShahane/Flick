@@ -17,11 +17,15 @@ import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.flick.sender.net.ControlProtocolV2
+import com.flick.sender.util.FlickLog
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -41,6 +45,11 @@ class CastServerService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val resourceOwnership = GenerationResourceOwnership()
+
+    // The LAN IP the live socket is bound to, so a later subtitle retarget composes
+    // its URL against the same origin the video URL already uses.
+    @Volatile
+    private var servedHost: String? = null
 
     private val startGate = LatestStartGate()
     // Serializes lifecycle-wide effects (foreground notification and stopSelf) with
@@ -64,16 +73,28 @@ class CastServerService : Service() {
                 return START_NOT_STICKY
             }
 
+            ACTION_SET_SUBTITLE -> {
+                val castId = intent.getStringExtra(EXTRA_CAST_ID)
+                if (castId != null && ControlCastId.valid(castId)) {
+                    applySubtitle(castId, intent.getParcelableExtraCompat(EXTRA_SUBTITLE_URI))
+                }
+                return START_NOT_STICKY
+            }
+
             ACTION_START -> {
                 val uri = intent.data
                 val name = intent.getStringExtra(EXTRA_NAME)
                 val size = intent.getLongExtra(EXTRA_SIZE, -1L)
                 val castId = intent.getStringExtra(EXTRA_CAST_ID)
                 val bindHost = intent.getStringExtra(EXTRA_BIND_HOST)
+                val subtitleUri = intent.getParcelableExtraCompat(EXTRA_SUBTITLE_URI)
 
                 // Fresh 128-bit token per ACTION_START: re-picking a video rotates it,
                 // so a previously-shared URL stops working the moment the source changes.
                 val token = newSessionToken()
+                // The subtitle gets its own token from the same generator, so revoking
+                // or swapping it can never widen what the video token already grants.
+                val subtitle = subtitleUri?.let { MediaHttpServer.SubtitleSource(it, newSessionToken()) }
 
                 // A foreground service MUST post its notification promptly, so do
                 // it synchronously before any I/O.
@@ -102,7 +123,7 @@ class CastServerService : Service() {
                                 // loopback co-resident-app vector and lets the handler
                                 // pin the Host header to this address.
                                 resourceOwnership.claimServer(session)
-                                httpServer.start(uri, token, bindHost)
+                                httpServer.start(uri, token, subtitle, bindHost)
                                 if (!startGate.isLatest(session)) {
                                     closeResourcesOwnedByLocked(session)
                                     return@synchronized
@@ -110,7 +131,12 @@ class CastServerService : Service() {
                                 TransferTelemetry.reset()
                                 resourceOwnership.claimLocks(session)
                                 acquireLocks()
+                                servedHost = bindHost
                                 if (!startGate.runIfLatest(session) {
+                                        // Published BEFORE RUNNING: the coordinator waits on
+                                        // RUNNING, so the subtitle capability must already be
+                                        // visible by the time that wait returns.
+                                        SubtitleServingState.publish(castId, subtitleUrl(bindHost, subtitle))
                                         ServerStateHolder.setRunning(castId, name, size, bindHost, token)
                                     }
                                 ) {
@@ -143,6 +169,31 @@ class CastServerService : Service() {
         serviceScope.cancel()
         super.onDestroy()
     }
+
+    /**
+     * Attach, swap or revoke the sideloaded subtitle of the live cast. Only the
+     * generation that currently owns the socket may repoint it, so a late intent from
+     * a superseded cast can never re-arm a capability that teardown revoked.
+     */
+    private fun applySubtitle(castId: String, uri: Uri?) {
+        synchronized(teardownGuard) {
+            val session = startGate.current()
+            if (session == null || session.castId != castId) return
+            val host = servedHost ?: return
+            val subtitle = uri?.let { MediaHttpServer.SubtitleSource(it, newSessionToken()) }
+            val applied = synchronized(lockGuard) { httpServer.setSubtitle(subtitle) }
+            if (!applied) return
+            SubtitleServingState.publish(castId, subtitleUrl(host, subtitle))
+            // Length only, and never the file: the token itself is the capability.
+            FlickLog.i(
+                "bind",
+                if (subtitle == null) "subtitle revoked" else "subtitle armed tokenLen=${subtitle.token.length}",
+            )
+        }
+    }
+
+    private fun subtitleUrl(host: String, subtitle: MediaHttpServer.SubtitleSource?): String? =
+        subtitle?.let { "http://$host:$SERVER_PORT/s/${it.token}" }
 
     private fun stopCurrentCast(castId: String, startId: Int) {
         synchronized(teardownGuard) {
@@ -186,6 +237,10 @@ class CastServerService : Service() {
         }
         if (release.server) {
             httpServer.stop()
+            // Tearing down the socket is what revokes the subtitle token; drop the
+            // published URL in the same step so nothing can advertise a dead capability.
+            servedHost = null
+            SubtitleServingState.clear()
         }
     }
 
@@ -194,6 +249,8 @@ class CastServerService : Service() {
             resourceOwnership.releaseAll()
             releaseLocks()
             httpServer.stop()
+            servedHost = null
+            SubtitleServingState.clear()
         }
     }
 
@@ -325,10 +382,12 @@ class CastServerService : Service() {
 
         const val ACTION_START = "com.flick.sender.action.START"
         const val ACTION_STOP = "com.flick.sender.action.STOP"
+        const val ACTION_SET_SUBTITLE = "com.flick.sender.action.SET_SUBTITLE"
         private const val EXTRA_NAME = "com.flick.sender.extra.NAME"
         private const val EXTRA_SIZE = "com.flick.sender.extra.SIZE"
         private const val EXTRA_CAST_ID = "com.flick.sender.extra.CAST_ID"
         private const val EXTRA_BIND_HOST = "com.flick.sender.extra.BIND_HOST"
+        private const val EXTRA_SUBTITLE_URI = "com.flick.sender.extra.SUBTITLE_URI"
 
         private fun pendingFlags(): Int {
             var flags = PendingIntent.FLAG_UPDATE_CURRENT
@@ -339,7 +398,15 @@ class CastServerService : Service() {
         }
 
         /** Start (or re-target) the foreground media server for [uri]. */
-        fun start(context: Context, castId: String, uri: Uri, name: String?, size: Long, bindHost: String) {
+        fun start(
+            context: Context,
+            castId: String,
+            uri: Uri,
+            name: String?,
+            size: Long,
+            bindHost: String,
+            subtitleUri: Uri? = null,
+        ) {
             val intent = Intent(context, CastServerService::class.java).apply {
                 action = ACTION_START
                 data = uri
@@ -348,9 +415,31 @@ class CastServerService : Service() {
                 putExtra(EXTRA_SIZE, size)
                 putExtra(EXTRA_CAST_ID, castId)
                 putExtra(EXTRA_BIND_HOST, bindHost)
+                putExtra(EXTRA_SUBTITLE_URI, subtitleUri)
             }
             startForegroundServiceCompat(context, intent)
         }
+
+        /**
+         * Attach, swap or (with a null [subtitleUri]) revoke the sideloaded subtitle of
+         * the running cast. Delivered as a plain start command like [stop]; the caller
+         * must already know the service is serving [castId].
+         */
+        fun setSubtitle(context: Context, castId: String, subtitleUri: Uri?) {
+            val intent = Intent(context, CastServerService::class.java)
+                .setAction(ACTION_SET_SUBTITLE)
+                .putExtra(EXTRA_CAST_ID, castId)
+                .putExtra(EXTRA_SUBTITLE_URI, subtitleUri)
+            context.startService(intent)
+        }
+
+        @Suppress("DEPRECATION")
+        private fun Intent.getParcelableExtraCompat(key: String): Uri? =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getParcelableExtra(key, Uri::class.java)
+            } else {
+                getParcelableExtra(key) as? Uri
+            }
 
         /** Stop the media server and dismiss the foreground notification. */
         fun stop(context: Context, castId: String) {
@@ -367,3 +456,36 @@ class CastServerService : Service() {
 }
 
 private object ControlCastId { fun valid(value: String) = ControlProtocolV2.id(value) }
+
+/**
+ * Process-wide publication of the sideloaded-subtitle capability the media server is
+ * currently serving, bridging the service to the cast coordinator exactly as
+ * [ServerStateHolder] bridges the video half. It is separate from that state because
+ * a subtitle can be attached, swapped or revoked without disturbing the video session
+ * it rides on, and each of those mints or retires its own token.
+ */
+internal object SubtitleServingState {
+
+    /** [url] is null when the cast is serving no subtitle (never attached, or revoked). */
+    data class Served(val castId: String, val revision: Long, val url: String?)
+
+    private val _state = MutableStateFlow<Served?>(null)
+    val state: StateFlow<Served?> = _state.asStateFlow()
+
+    private var revision = 0L
+
+    /** Monotonic counter so a waiter can tell a fresh publication from the one it saw. */
+    @Synchronized
+    fun revision(): Long = revision
+
+    @Synchronized
+    fun publish(castId: String, url: String?) {
+        _state.value = Served(castId, ++revision, url)
+    }
+
+    @Synchronized
+    fun clear() {
+        ++revision
+        _state.value = null
+    }
+}

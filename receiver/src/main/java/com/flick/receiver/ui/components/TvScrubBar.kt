@@ -3,19 +3,29 @@ package com.flick.receiver.ui.components
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -28,8 +38,12 @@ import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.playheadBrush
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * Media-time delta that means the clock did NOT simply run: a seek landing. The
@@ -39,17 +53,68 @@ import kotlin.math.abs
 private const val RECONCILE_JUMP_MS = 1_000L
 
 /**
+ * How long the confirmed clock may stand still before the wave reads it as
+ * stopped — six missed ticks of the 10 Hz feed. The wave is a claim about the
+ * film, so it flattens on a stalled clock (paused, rebuffering, ended) whether
+ * or not the caller passed [TvScrubBar]'s own `playing` flag.
+ */
+private const val CLOCK_STALL_MS = 600L
+
+/** One swing every 16 dp, with 2 dp of throw either side of the track centre. */
+private val WaveLength = 16.dp
+private val WaveAmplitude = 2.dp
+
+/**
+ * Both ends of the played span settle back onto the centre line over this
+ * distance: the left end is pinned to the bar's origin, and the right end has to
+ * meet a knob that is drawn centred.
+ */
+private val WaveTaper = 9.dp
+
+/**
+ * The dead space between the playhead and the track ahead of it — the resting
+ * knob's own radius plus clearance, so the knob sits in a gap rather than on top
+ * of a line.
+ */
+private val TrackGap = 8.dp
+
+/**
+ * A crest crosses one wavelength in ~1.4 s — slower than the eye follows as
+ * scrolling, fast enough to read as alive at 3 m. Not the media rate: the wave
+ * says *running*, never *how fast*, because there is no speed to report.
+ */
+private const val WAVE_CYCLES_PER_SECOND = 0.7f
+private val WavePeriodNanos: Long = (1_000_000_000.0 / WAVE_CYCLES_PER_SECOND).toLong()
+
+private val TwoPi = (2.0 * PI).toFloat()
+
+/** A wavelength is sampled twelve times; under a 6 dp stroke the facets vanish. */
+private const val WAVE_SAMPLES_PER_WAVELENGTH = 12
+
+/**
  * The TV scrub bar (receiver-expressive-spec.md §5.3 row 2). One session clock
  * drawn with the target/confirmed contract:
- *  - 6 dp pill track;
- *  - **buffered range** in translucent white ([bufferedMs]);
- *  - **played** = the amber `#FFB61E → #FFD87A` gradient, filled to the target;
+ *  - 6 dp pill track, drawn **only ahead of the playhead** (see below);
+ *  - **buffered range** in translucent white ([bufferedMs]), also only ahead;
+ *  - **played** = the amber `#FFB61E → #FFD87A` gradient, filled to the target,
+ *    as a travelling wave while the film is running;
  *  - **knob ●** = a 12 dp white circle inside a 3 dp `Spark` @ 34 % halo, both
  *    swelling (12→16 dp, 18→26 dp) while [seeking];
  *  - **confirmed ○** = a hollow white ghost ring, drawn only while [seeking]
  *    (trailing the target — "sync is invisible when healthy").
  *
  * When not seeking, [targetMs] == [confirmedMs] and only the knob shows.
+ *
+ * **Draw order matters.** The inactive track starts [TrackGap] AHEAD of the
+ * playhead and is never drawn beneath the played span: a full-width flat track
+ * with the wave stroked over it shows a straight line through wherever the wave
+ * leaves centre, which is the artefact this bar exists not to have.
+ *
+ * The wave's swing is a reading, not an ornament: it rises while the film runs,
+ * is exactly flat while paused, seeking or under reduced motion, and its phase
+ * loop only exists while there is a swing to carry. [playing] is what the caller
+ * knows; the confirmed clock standing still for [CLOCK_STALL_MS] is what the bar
+ * can see for itself, and either one flattens it.
  *
  * The drawn playhead tracks the confirmed clock **exactly**: a 10 Hz tick moves it
  * a fraction of a pixel, so animating it would only leave the amber fill
@@ -65,6 +130,7 @@ fun TvScrubBar(
     modifier: Modifier = Modifier,
     targetMs: Long = confirmedMs,
     seeking: Boolean = false,
+    playing: Boolean = true,
 ) {
     val confirmedFrac = frac(confirmedMs, durationMs)
     val targetFrac = frac(targetMs, durationMs)
@@ -95,6 +161,78 @@ fun TvScrubBar(
                 playhead.snapTo(f)
             } else {
                 playhead.animateTo(f, FlickMotion.syncSpring())
+            }
+        }
+    }
+
+    // Whether the confirmed clock is actually moving. The first value only
+    // establishes a baseline — a bar composed once with a static position (a
+    // test, a stopped session) never claims the film is running, and therefore
+    // never starts a frame loop.
+    var clockRunning by remember { mutableStateOf(false) }
+    val liveConfirmed = rememberUpdatedState(confirmedMs)
+    LaunchedEffect(Unit) {
+        var previous: Long? = null
+        snapshotFlow { liveConfirmed.value }.collectLatest { ms ->
+            val advanced = previous != null && ms != previous
+            previous = ms
+            if (!advanced) return@collectLatest
+            clockRunning = true
+            // Cancelled by the next tick; only a clock that has genuinely stopped
+            // reaches the far side of this.
+            delay(CLOCK_STALL_MS)
+            clockRunning = false
+        }
+    }
+
+    val amplitude = remember { Animatable(0f) }
+    val phase = remember { mutableFloatStateOf(0f) }
+    val wavePath = remember { Path() }
+    val currentPlaying = rememberUpdatedState(playing)
+    val currentSeeking = rememberUpdatedState(seeking)
+    val currentReducedMotion = rememberUpdatedState(reducedMotion)
+    // Geometry grows on a spatial spring and flattens on effects: an amplitude
+    // that rings past zero inverts the wave, which is a claim the bar is not
+    // making. Read through holders so a rebuilt spec cannot restart the swell.
+    val amplitudeRise = rememberUpdatedState(FlickMotion.panelSpatial<Float>())
+    val amplitudeFall = rememberUpdatedState(FlickMotion.fastStateEffects<Float>())
+    LaunchedEffect(amplitude) {
+        snapshotFlow {
+            !currentReducedMotion.value &&
+                !currentSeeking.value &&
+                currentPlaying.value &&
+                clockRunning
+        }.collect { swinging ->
+            val target = if (swinging) 1f else 0f
+            when {
+                target == amplitude.value -> Unit
+                // A viewer who is steering wants a straight edge to aim at, and a
+                // viewer who asked for no motion wants none at all: neither waits
+                // out a spring.
+                target == 0f && (currentSeeking.value || currentReducedMotion.value) ->
+                    amplitude.snapTo(0f)
+                target > amplitude.value -> amplitude.animateTo(target, amplitudeRise.value)
+                else -> amplitude.animateTo(target, amplitudeFall.value)
+            }
+        }
+    }
+    LaunchedEffect(amplitude) {
+        // withInfiniteAnimationFrameNanos so the test clock intercepts the loop; a
+        // bare frame loop would keep waitForIdle from ever returning. collectLatest
+        // ends it the moment the bar goes flat, so a paused or reduced-motion
+        // session posts no frame callback at all.
+        snapshotFlow { amplitude.value > 0f }.collectLatest { moving ->
+            if (!moving) return@collectLatest
+            // The frame clock counts from boot and a Float cannot hold days of
+            // nanoseconds at frame resolution, so the phase is measured from this
+            // loop's own first frame rather than from the epoch.
+            var origin = 0L
+            while (true) {
+                withInfiniteAnimationFrameNanos { nanos ->
+                    if (origin == 0L) origin = nanos
+                    phase.floatValue =
+                        ((nanos - origin) % WavePeriodNanos) / WavePeriodNanos.toFloat()
+                }
             }
         }
     }
@@ -141,30 +279,58 @@ fun TvScrubBar(
         val haloR = lerp(9.dp.toPx(), 13.dp.toPx(), seekSwell)
         fun px(f: Float) = (size.width * f).coerceIn(0f, size.width)
 
-        drawRoundRect(
-            color = FlickColor.TrackBase,
-            topLeft = Offset(0f, cy - r),
-            size = Size(size.width, barH),
-            cornerRadius = CornerRadius(r, r),
-        )
-        if (bufFrac > 0f) {
-            drawRoundRect(
-                color = FlickColor.TrackBuffered,
-                topLeft = Offset(0f, cy - r),
-                size = Size(px(bufFrac), barH),
-                cornerRadius = CornerRadius(r, r),
-            )
-        }
         // Read in the draw phase, not at composition, so the running clock
         // invalidates only this canvas.
-        val fillW = px(playhead.value.coerceIn(0f, 1f))
-        if (fillW > 0f) {
+        val head = px(playhead.value.coerceIn(0f, 1f))
+
+        // Everything unplayed starts a gap ahead of the head and nothing is ever
+        // drawn beneath the played span — see the class doc. At head = 1 there is
+        // no track left to draw; at head = 0 the whole bar is track.
+        val aheadStart = (head + TrackGap.toPx()).coerceAtMost(size.width)
+        val aheadWidth = size.width - aheadStart
+        if (aheadWidth > 0.5f) {
             drawRoundRect(
-                brush = playedBrush,
-                topLeft = Offset(0f, cy - r),
-                size = Size(fillW, barH),
+                color = FlickColor.TrackBase,
+                topLeft = Offset(aheadStart, cy - r),
+                size = Size(aheadWidth, barH),
                 cornerRadius = CornerRadius(r, r),
             )
+            // A buffer that has not yet reached the playhead has nothing to show.
+            val bufferedWidth = px(bufFrac) - aheadStart
+            if (bufferedWidth > 0.5f) {
+                drawRoundRect(
+                    color = FlickColor.TrackBuffered,
+                    topLeft = Offset(aheadStart, cy - r),
+                    size = Size(bufferedWidth, barH),
+                    cornerRadius = CornerRadius(r, r),
+                )
+            }
+        }
+
+        if (head > 0f) {
+            val amp = amplitude.value * WaveAmplitude.toPx()
+            // Under one stroke width there is no span left to swing through, only
+            // the cap — so the first seconds of a file stay a flat nub.
+            if (amp <= 0.01f || head <= barH) {
+                drawRoundRect(
+                    brush = playedBrush,
+                    topLeft = Offset(0f, cy - r),
+                    size = Size(head, barH),
+                    cornerRadius = CornerRadius(r, r),
+                )
+            } else {
+                drawPlayedWave(
+                    path = wavePath,
+                    brush = playedBrush,
+                    width = head,
+                    cy = cy,
+                    stroke = barH,
+                    amplitude = amp,
+                    wavelength = WaveLength.toPx(),
+                    taper = WaveTaper.toPx(),
+                    phase = phase.floatValue,
+                )
+            }
         }
 
         // The gap between the confirmed position and the pending target is the
@@ -188,10 +354,55 @@ fun TvScrubBar(
             )
         }
 
-        val sx = fillW
-        drawCircle(FlickColor.FocusRingSoft, radius = haloR, center = Offset(sx, cy))
-        drawCircle(Color.White, radius = knobR, center = Offset(sx, cy))
+        drawCircle(FlickColor.FocusRingSoft, radius = haloR, center = Offset(head, cy))
+        drawCircle(Color.White, radius = knobR, center = Offset(head, cy))
     }
+}
+
+/**
+ * The played span as a travelling wave, stroked at the track's own height with
+ * round caps so it occupies exactly the span the flat fill would — the wave
+ * REPLACES the fill rather than riding on top of it.
+ *
+ * The swing tapers to zero within [taper] of either end: the left end is the
+ * bar's fixed origin and would visibly bob against the timecode beside it, and
+ * the right end has to arrive at the centred knob.
+ */
+private fun DrawScope.drawPlayedWave(
+    path: Path,
+    brush: Brush,
+    width: Float,
+    cy: Float,
+    stroke: Float,
+    amplitude: Float,
+    wavelength: Float,
+    taper: Float,
+    phase: Float,
+) {
+    val start = stroke / 2f
+    val end = (width - stroke / 2f).coerceAtLeast(start)
+    val step = (wavelength / WAVE_SAMPLES_PER_WAVELENGTH).coerceAtLeast(1f)
+    // Subtracting the phase carries the crests toward the head, the way play runs.
+    fun y(x: Float): Float {
+        val envelope = if (taper <= 0f) {
+            1f
+        } else {
+            min(1f, min(x - start, end - x) / taper)
+        }
+        return cy + amplitude * envelope * sin(TwoPi * (x / wavelength - phase))
+    }
+    path.rewind()
+    var x = start
+    path.moveTo(x, y(x))
+    while (x < end) {
+        x = (x + step).coerceAtMost(end)
+        path.lineTo(x, y(x))
+    }
+    drawPath(
+        path = path,
+        brush = brush,
+        style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
 }
 
 private fun frac(ms: Long, durationMs: Long): Float =

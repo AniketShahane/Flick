@@ -15,9 +15,9 @@ import androidx.compose.ui.unit.dp
  * Rounded. Glyphs the mock shows solid are authored as fills; the rest keep the
  * 1.8–2.0 stroke. Built as [ImageVector]s so callers tint them via
  * `Icon(tint = …)`; no icon-font or drawable dependency is involved. The brand
- * mark and the ±10s transport glyphs are Canvas composables in ui/components
- * (they carry text / streaks a vector path can't). back-10 / fwd-10 here are the
- * arc-only forms; the "10" is overlaid by the transport cluster.
+ * mark is a Canvas composable in ui/components (it carries streaks a vector path
+ * can't). back-10 / fwd-10 here are rings only; the "10" inside them is set in
+ * type by the transport cluster.
  */
 object FlickIcons {
     val PlayCircle: ImageVector = fillIcon("PlayCircle", evenOdd = true) {
@@ -25,17 +25,24 @@ object FlickIcons {
         moveTo(9.8f, 7.4f); lineTo(16.8f, 12f); lineTo(9.8f, 16.6f); close()
     }
 
-    /** Circular back arrow (the "10" is drawn on top by the caller). */
+    /**
+     * Replay ring: 300° of an r=8.3 circle on the grid's centre, opening into a 60° gap at
+     * the upper left. The head sits at twelve o'clock pointing the way the seek runs, its
+     * base straddling the arc's own end — a triangle whose incircle is narrower than the
+     * stroke, so it fills solid instead of outlining. The bore left inside is the caller's
+     * clearance for the "10".
+     */
     val Back10: ImageVector = strokeIcon("Back10") {
-        moveTo(12f, 4.4f)
-        curveTo(7.8f, 4.4f, 4.4f, 7.8f, 4.4f, 12f)
-        moveTo(12.9f, 1.4f); lineTo(7.8f, 4.4f); lineTo(12.9f, 7.4f); close()
+        moveTo(12f, 3.7f)
+        arc(8.3f, 4.81f, 7.85f, clockwise = true, major = true)
+        moveTo(9.6f, 3.7f); lineTo(11.84f, 5.39f); lineTo(11.84f, 2.01f); close()
     }
 
+    /** [Back10] mirrored about x = 12 — every point below is its twin's 24 − x. */
     val Fwd10: ImageVector = strokeIcon("Fwd10") {
-        moveTo(12f, 4.4f)
-        curveTo(16.2f, 4.4f, 19.6f, 7.8f, 19.6f, 12f)
-        moveTo(11.1f, 1.4f); lineTo(16.2f, 4.4f); lineTo(11.1f, 7.4f); close()
+        moveTo(12f, 3.7f)
+        arc(8.3f, 19.19f, 7.85f, clockwise = false, major = true)
+        moveTo(14.4f, 3.7f); lineTo(12.16f, 5.39f); lineTo(12.16f, 2.01f); close()
     }
 
     val Volume: ImageVector = strokeIcon("Volume") {
@@ -222,8 +229,8 @@ private fun strokeIcon(
     }.build()
 
 // --- path helpers -----------------------------------------------------------
-// Both wind clockwise in the y-down viewport, so NonZero unions them and EvenOdd
-// knocks them out of whatever they sit inside.
+// The two closed ones wind clockwise in the y-down viewport, so NonZero unions
+// them and EvenOdd knocks them out of whatever they sit inside.
 
 private fun PathBuilder.roundRect(
     left: Float,
@@ -252,4 +259,19 @@ private fun PathBuilder.circle(cx: Float, cy: Float, radius: Float) {
     curveTo(cx - k, cy + radius, cx - radius, cy + k, cx - radius, cy)
     curveTo(cx - radius, cy - k, cx - k, cy - radius, cx, cy - radius)
     close()
+}
+
+/**
+ * Open circular arc to (x, y) — SVG's elliptical arc with both radii equal. [clockwise] is
+ * the sweep as it reads on a y-down grid; [major] takes the long way round, the only way
+ * one command reaches past 180°.
+ */
+private fun PathBuilder.arc(
+    radius: Float,
+    x: Float,
+    y: Float,
+    clockwise: Boolean,
+    major: Boolean,
+) {
+    arcTo(radius, radius, 0f, major, clockwise, x, y)
 }

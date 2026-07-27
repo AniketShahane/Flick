@@ -85,6 +85,7 @@ cross-device acceptance evidence.
 phone (:sender)                                           TV (:receiver)
 content:// media ── CastServerService ── HTTP ranges ──> Media3 hardware decoder
        ^                   :8080 /v/<token>                    ^
+       |             (+ :8080 /s/<token> subtitle)             |
        |                  exact owned peer IP                   |
        └──── application CastCoordinator <── WebSocket v2 ──────┘
                                                     control server
@@ -100,7 +101,32 @@ The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/
 |---|---|
 | `GET /v/{token}` | Bound-host `Host` check, constant-time token check, identical `404` for absent/wrong session, MIME/length headers, full or single-range streaming, `206`/`416`, malformed-range fallback to full `200`, and at most four concurrent response bodies (`503` beyond the cap). |
 | `HEAD /v/{token}` | Same Host/token and range semantics, headers only, outside the body-transfer cap. |
+| `GET/HEAD /s/{token}` | The sideloaded external subtitle, under a token independent of the video's. Same bound-host `Host` check, same constant-time compare, same identical `404`. Whole-file `200` only — no `Range` support and no range parser. |
 | `GET /ping` | Unauthenticated `ok` liveness response; it exposes no media bytes. |
+
+### External subtitles
+
+Android has no way to enumerate sidecar `.srt` files: `READ_MEDIA_VIDEO` does not cover them, MediaStore does not index them, and `MANAGE_EXTERNAL_STORAGE` is Play-policy restricted and is not requested. Subtitles therefore arrive only from a user grant — a one-shot `ACTION_OPEN_DOCUMENT` pick, or a persisted `ACTION_OPEN_DOCUMENT_TREE` folder grant that the app then matches by filename.
+
+The subtitle `(uri, token)` pair lives **inside** the same atomically published immutable `ServedSession` as the video's, so a retarget can never be observed half-applied and a subtitle can never be observed paired with a different video. `MediaHttpServer.setSubtitle` mutates that session under the same lock as `start`/`stop` and lands as one atomic publish, so attaching, swapping or revoking a subtitle never interrupts the video stream. The subtitle token is minted by the same `SecureRandom` 128-bit URL-safe generator as the video token; a new selection mints a new one and revoking or tearing down the socket retires it, so a leaked `/s/{token}` stops resolving.
+
+`/s/{token}` is capped at 5 MiB and refuses anything larger — and anything whose size the provider will not report — with the same byte-identical `404`, so the route cannot be turned into a bulk file-exfiltration path. The ceiling is re-checked against the bytes actually produced, not just the declared size. Content type is keyed off the file's own extension (`.srt` → `application/x-subrip`, `.vtt`/`.webvtt` → `text/vtt`, everything else `text/plain`) because DocumentsProviders routinely declare `application/octet-stream` for both and Media3 selects its parser from what the sender sends.
+
+`loadMedia` gains three optional fields, present **only** when the user actually selected an external subtitle:
+
+```json
+{"t":"loadMedia","v":2,"castId":"<id>","url":"http://<phone-ip>:8080/v/<token>",
+ "title":"<title>","durationMs":0,"startMs":0,
+ "subUrl":"http://<phone-ip>:8080/s/<token>","subLabel":"<label>","subLang":"<bcp-47>"}
+```
+
+`subUrl` is always the same host and port as `url` — the sender checks the shared origin before emitting it and omits it otherwise. `subLabel` goes through the same `normalizedLabel(…, 200)` canonicalization as every other wire label. `subLang` is omitted entirely unless the tag is well-formed BCP-47; the sender never guesses one. With no subtitle selected the frame is **byte-identical** to what it has always been, which is what keeps an un-updated receiver playing ordinary media and keeps `v=2` honest. If the optional fields would push the frame past the frozen 16 KiB cap, the sender drops the fields, never the frame.
+
+The receiver validates `subUrl` through the same `MediaUrlValidator` rules as the media URL (same host, same port, no redirect, no scheme change) and fails the cast on a bad one rather than silently fetching or dropping it. It attaches the file as a real Media3 `SubtitleConfiguration`, so it surfaces as an ordinary text track that the existing `subtitleTracksFrom` mapping and the TV subtitles panel already handle. A subtitle that fails to load degrades to no subtitles and never fails the video.
+
+Selecting or clearing a subtitle mid-cast re-arms the capability and re-issues `loadMedia` for the **same** `castId` at the position the TV last confirmed. Control ownership classifies a repeat of the live cast as a duplicate, which is otherwise answered from the retained result; the receiver therefore compares the frame's validated subtitle triple against what the running session was prepared with and, only when it differs, re-prepares the same media at the frame's `startMs` with the new (or removed) `SubtitleConfiguration` instead of replaying. An identical repeat still replays, so an ordinary retransmit never costs a re-buffer, and a reload is only ever taken from the lease that already owns the cast. The swap therefore costs a re-buffer and nothing else, and the previous player keeps rendering until the new prepare replaces it. Only a generation that still owns the socket may repoint the capability, so a late intent from a superseded cast cannot re-arm a revoked one.
+
+A sideloaded subtitle belongs to the title it was picked for. A live cast owns the file it is serving, so browsing the library mid-cast cannot clear the selection; the sender instead re-checks that ownership when the next cast starts and drops a selection made for a different item, rather than attaching one film's cues to another under `SELECTION_FLAG_DEFAULT`.
 
 The service uses `WIFI_MODE_FULL_HIGH_PERF` and a six-hour-bounded partial wake lock while it owns the source. The foreground notification is private, contains generic direct-play status only, and carries a unique immutable Stop intent for its `castId`. Latest-start/resource ownership gates prevent delayed A startup/failure/stop from publishing, releasing, or stopping B. `START_NOT_STICKY` and unknown intents never reconstruct a cast.
 

@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -216,9 +217,14 @@ private val PauseQuads = floatArrayOf(
 
 /**
  * Play/pause that MORPHS rather than hard-swaps: one filled path whose vertices
- * travel between the triangle and the bars. Because the progress is a spring, a
- * viewer who toggles twice in half a second gets one retargeted flight instead of
- * two tweens fighting over the same glyph. Shows the pause bars while [playing].
+ * travel corner-for-corner between the triangle and the bars. Because the
+ * progress is a spring, a viewer who toggles twice in half a second gets one
+ * retargeted flight instead of two tweens fighting over the same glyph. Shows the
+ * pause bars while [playing].
+ *
+ * The progress is deliberately NOT clamped to 0..1: the spatial spring settles
+ * past its target and the quads are a plain interpolation, so the bars carry the
+ * same overshoot the key under them does rather than parking early.
  */
 @Composable
 fun PlayPauseGlyph(
@@ -233,11 +239,16 @@ fun PlayPauseGlyph(
         animationSpec = if (reducedMotion) snap() else FlickMotion.flickSettleSpatial(),
         label = "playPauseMorph",
     )
+    // This is the control the remote hammers, and the glyph is rebuilt on every
+    // frame of the morph: the path is a buffer for the life of the button, and it
+    // is rewound rather than reset so it keeps the storage it already sized.
     val path = remember { Path() }
     Canvas(modifier = modifier.size(size)) {
         val unit = this.size.minDimension / 24f
+        // Read in the draw scope, so the morph repaints without recomposing the
+        // transport row that owns it.
         val p = morph.value
-        path.reset()
+        path.rewind()
         repeat(2) { quad ->
             val base = quad * 8
             repeat(4) { corner ->
@@ -479,17 +490,23 @@ fun VolumeCells(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             repeat(cells) { i ->
+                // A step lands as a fill that arrives rather than as a cut, and
+                // the colour is read in the DRAW phase: the volume keys repeat,
+                // and ten cells recomposing per frame sit over a live decoder.
+                val cellColor = animateColorAsState(
+                    targetValue = when {
+                        i < filled && engaged -> FlickColor.Spark
+                        i < filled -> FlickColor.SparkLight
+                        else -> FlickColor.TrackBase
+                    },
+                    animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+                    label = "volumeCellFill",
+                )
                 Box(
                     modifier = Modifier
                         .size(width = 5.dp, height = 16.dp)
                         .clip(RoundedCornerShape(2.dp))
-                        .background(
-                            when {
-                                i < filled && engaged -> FlickColor.Spark
-                                i < filled -> FlickColor.SparkLight
-                                else -> FlickColor.TrackBase
-                            },
-                        ),
+                        .drawBehind { drawRect(cellColor.value) },
                 )
             }
         }

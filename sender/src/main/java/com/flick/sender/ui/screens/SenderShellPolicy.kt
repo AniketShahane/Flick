@@ -2,14 +2,15 @@ package com.flick.sender.ui.screens
 
 import com.flick.sender.net.Route
 
-/** The three destinations the floating nav can select. */
-internal enum class NavTab { LIBRARY, REMOTE, DEVICES }
+/**
+ * The two destinations the floating nav can select. There is no Remote seat: the remote
+ * only exists while something is casting, and the dock that rides above this bar is the
+ * door to it.
+ */
+internal enum class NavTab { LIBRARY, DEVICES }
 
 /** A [Route] reduced to shell identity, dropping the payloads Detail and Failure carry. */
 internal enum class ShellDestination { CONNECT, LIBRARY, DETAIL, CONNECTING, NOW_PLAYING, FAILURE }
-
-/** What a Remote tap resolves to. The shell never navigates to a session that isn't live. */
-internal enum class RemoteTapOutcome { NAVIGATE, TOAST_PICK_A_TV, TOAST_PICK_A_VIDEO }
 
 /**
  * Pure policy for the floating navigation. The rules live on the [ShellDestination]
@@ -33,12 +34,39 @@ internal object SenderShellPolicy {
     fun navVisible(destination: ShellDestination): Boolean =
         destination == ShellDestination.LIBRARY || destination == ShellDestination.CONNECT
 
+    fun dockVisible(route: Route): Boolean = dockVisible(destinationOf(route))
+
+    /**
+     * The dock docks with the nav, not with a route — and with the Remote seat gone it
+     * is the only door to the remote, so it has to be reachable from every surface the
+     * nav floats over rather than from the library alone. Deliberately defined as
+     * [navVisible] so the two cannot drift apart.
+     */
+    fun dockVisible(destination: ShellDestination): Boolean = navVisible(destination)
+
+    /**
+     * The one route pair the dock's bounds travel across: the bar grows into the remote
+     * and the remote shrinks back into the bar. Symmetric by construction, so minimizing
+     * is the same geometry read backwards.
+     */
+    fun dockMorph(initial: ShellDestination, target: ShellDestination): Boolean =
+        (target == ShellDestination.NOW_PLAYING && dockVisible(initial)) ||
+            (initial == ShellDestination.NOW_PLAYING && dockVisible(target))
+
     fun selectedTab(route: Route): NavTab = selectedTab(destinationOf(route))
 
+    /**
+     * NOW_PLAYING answers LIBRARY, not a seat of its own: the nav is not drawn over the
+     * remote at all, and every way out of the remote — minimize, back, a stop — lands on
+     * the library. Its seat is therefore the one the nav has to be showing when it comes
+     * back, and holding it still is also what keeps the travelling pill from moving
+     * under the card that is swallowing it.
+     */
     fun selectedTab(destination: ShellDestination): NavTab = when (destination) {
-        ShellDestination.LIBRARY, ShellDestination.DETAIL -> NavTab.LIBRARY
-        ShellDestination.NOW_PLAYING -> NavTab.REMOTE
-        ShellDestination.CONNECT, ShellDestination.CONNECTING, ShellDestination.FAILURE -> NavTab.DEVICES
+        ShellDestination.LIBRARY, ShellDestination.DETAIL, ShellDestination.NOW_PLAYING ->
+            NavTab.LIBRARY
+        ShellDestination.CONNECT, ShellDestination.CONNECTING, ShellDestination.FAILURE ->
+            NavTab.DEVICES
     }
 
     fun darkBackdrop(route: Route): Boolean = darkBackdrop(destinationOf(route))
@@ -63,14 +91,4 @@ internal object SenderShellPolicy {
      */
     fun darkBackdrop(destination: ShellDestination, lightPalette: Boolean): Boolean =
         !lightPalette || darkBackdrop(destination)
-
-    /**
-     * [hasActiveSession] is `SenderNavigationPolicy.canRestoreNowPlaying`: `restoreNowPlaying()`
-     * silently no-ops without a committed cast, so the shell has to say why nothing moved.
-     */
-    fun remoteTapOutcome(hasConnectedTv: Boolean, hasActiveSession: Boolean): RemoteTapOutcome = when {
-        hasActiveSession -> RemoteTapOutcome.NAVIGATE
-        hasConnectedTv -> RemoteTapOutcome.TOAST_PICK_A_VIDEO
-        else -> RemoteTapOutcome.TOAST_PICK_A_TV
-    }
 }

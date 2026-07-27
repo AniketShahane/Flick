@@ -64,15 +64,20 @@ private const val IDLE_DRIFT_CENTRE = 0.06f
 private const val IDLE_DRIFT_RADIUS = 0.08f
 
 /**
- * Idle's entrance: four children, each led by a sixth of the run — ~80 ms on the
+ * Idle's entrance: three children, each led by a sixth of the run — ~80 ms on the
  * entrance spring, the gap at which two corner rows read as arriving in order
  * rather than together.
+ *
+ * The brand mark is deliberately NOT among them. It is the one element idle, pair
+ * and the playback chrome all carry, so it is what the shell exchanges these
+ * surfaces around: it holds still at full size while the screen assembles itself
+ * about it, which is the only way a screen-owned entrance can read as something
+ * carried across rather than something that arrived with the screen.
  */
 private const val IdleStageLead = 0.16f
-private const val IdleStageCount = 4
+private const val IdleStageCount = 3
 
-/** The mark arrives from just under full size; the clock rises into place. */
-private const val IdleMarkEnterScale = 0.9f
+/** The clock rises into place under the held mark. */
 private val IdleClockRise = 10.dp
 
 private fun idleStageProgress(progress: Float, index: Int): Float {
@@ -85,14 +90,10 @@ private fun Modifier.idleStage(
     progress: () -> Float,
     index: Int,
     rise: Dp = 0.dp,
-    fromScale: Float = 1f,
 ): Modifier = graphicsLayer {
     val stage = idleStageProgress(progress(), index)
     alpha = stage
     translationY = (1f - stage) * rise.toPx()
-    val scale = fromScale + (1f - fromScale) * stage
-    scaleX = scale
-    scaleY = scale
 }
 
 /**
@@ -172,18 +173,15 @@ fun IdleScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            BrandMark(
-                size = 58.dp,
-                tint = FlickColor.PrimaryOnDark,
-                modifier = Modifier.idleStage(stage, index = 0, fromScale = IdleMarkEnterScale),
-            )
+            // The constant. Held, never staged — see [IdleStageCount].
+            BrandMark(size = 58.dp, tint = FlickColor.PrimaryOnDark)
             Text(
                 text = clock,
                 style = FlickType.monoTabular(sizeSp = 44, weight = FontWeight.SemiBold),
                 color = FlickColor.OnSurface,
                 modifier = Modifier
                     .padding(top = FlickSpace.Lg)
-                    .idleStage(stage, index = 1, rise = IdleClockRise),
+                    .idleStage(stage, index = 0, rise = IdleClockRise),
             )
         }
 
@@ -193,7 +191,7 @@ fun IdleScreen(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(bottom = FlickDimens.FocusRingReserve)
-                .idleStage(stage, index = 2),
+                .idleStage(stage, index = 1),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -220,7 +218,7 @@ fun IdleScreen(
                     end = FlickDimens.FocusRingReserve,
                     bottom = FlickDimens.FocusRingReserve,
                 )
-                .idleStage(stage, index = 3),
+                .idleStage(stage, index = 2),
             horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md),
         ) {
             FlickTvButton(

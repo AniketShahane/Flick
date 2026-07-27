@@ -1,12 +1,14 @@
 package com.flick.sender.net
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import com.flick.sender.CastServerService
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
 import com.flick.sender.SourceServerTerminalKind
+import com.flick.sender.SubtitleServingState
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
 import com.flick.sender.media.MediaLibraryLoadGate
@@ -36,6 +38,13 @@ enum class PairErrorKind {
 }
 /** [host]/[port] are the QR's untrusted prefill hint — never dialed without a typed code. */
 data class PendingPairLaunch(val eventId: Long, val host: String? = null, val port: Int? = null)
+/**
+ * A sideloaded subtitle the user picked, either by a one-shot SAF document pick or by
+ * a filename match inside a folder they granted. [displayName] is already normalized
+ * to the label that goes on the wire; [language] is a validated BCP-47 tag, or null
+ * when it is genuinely unknown so the field is omitted rather than guessed.
+ */
+data class SelectedSubtitle(val uri: Uri, val displayName: String, val language: String?)
 sealed interface CastStartState { data object Idle : CastStartState; data class ConnectingControl(val castId: String) : CastStartState; data class StartingSource(val castId: String) : CastStartState; data class AwaitingAcceptance(val castId: String) : CastStartState; data class AwaitingFirstFrame(val castId: String) : CastStartState; data class Active(val castId: String) : CastStartState; data class Failed(val castId: String, val code: String) : CastStartState }
 
 /** Application-scoped owner of pairing, control, service state and cast generations. */
@@ -50,6 +59,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var pairingJob: Job? = null
     private var castJob: Job? = null
     private var libraryJob: Job? = null
+    private var subtitleJob: Job? = null
+    private var subtitleOwnerUri: Uri? = null
     private val pairingGate = PairingAttemptGate()
     private val pairCodeReset = PairCodeReset()
     private val castGate = CastGenerationGate()
@@ -80,6 +91,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _castingItem = MutableStateFlow<MediaItem?>(null); val castingItem = _castingItem.asStateFlow()
     private val _castStart = MutableStateFlow<CastStartState>(CastStartState.Idle); val castStart = _castStart.asStateFlow()
     private val _castFailure = MutableStateFlow<CastFailure?>(null); val castFailure = _castFailure.asStateFlow()
+    private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val playback = session.state; val pulses = session.pulses
 
     init {
@@ -122,7 +134,88 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
     fun openLibrary() { _route.value = Route.Library }
-    fun openDetail(item: MediaItem) { _route.value = Route.Detail(item) }
+    fun openDetail(item: MediaItem) {
+        // A sideloaded subtitle belongs to the title it was picked for. Browsing to a
+        // different one drops it, but only while nothing is casting: a live cast owns
+        // the served subtitle and must not lose it because the user opened Library.
+        if (currentCastId == null && subtitleOwnerUri != item.uri) {
+            subtitleOwnerUri = item.uri
+            _selectedSubtitle.value = null
+        }
+        _route.value = Route.Detail(item)
+    }
+
+    /**
+     * Adopt [uri] as the external subtitle for the next (or current) cast. While a
+     * cast is Active this re-arms the `/s/{token}` capability and re-issues the load
+     * so the TV attaches the track; the load resumes at the position the TV last
+     * confirmed, so the swap costs a re-buffer and nothing else.
+     */
+    fun selectSubtitle(uri: Uri, displayName: String, language: String?) {
+        val selection = SelectedSubtitle(
+            uri,
+            ControlProtocolV2.normalizedLabel(displayName, ControlProtocolV2.SUBTITLE_LABEL_MAX)
+                ?: appContext.getString(R.string.subtitle_label_generic),
+            ControlProtocolV2.languageTag(language),
+        )
+        // The sheet names the casting item as what it is matching against, so that is
+        // the title this pick belongs to; openDetail cannot bind it while a cast owns
+        // the selection.
+        _castingItem.value?.uri?.let { subtitleOwnerUri = it }
+        _selectedSubtitle.value = selection
+        // Neither the URI nor the file name is ever logged: a subtitle path names the
+        // film and the user's storage layout.
+        FlickLog.i("cast", "subtitle selected lang=${selection.language ?: "unknown"}")
+        retargetSubtitle(selection)
+    }
+
+    /** Drop the external subtitle and revoke its token so the old `/s/{token}` 404s. */
+    fun clearSubtitle() {
+        if (_selectedSubtitle.value == null) return
+        _selectedSubtitle.value = null
+        FlickLog.i("cast", "subtitle cleared")
+        retargetSubtitle(null)
+    }
+
+    private fun retargetSubtitle(selection: SelectedSubtitle?) {
+        val castId = currentCastId ?: return
+        val item = _castingItem.value ?: return
+        // Only a cast that already reached Active has a load to re-issue; a startup
+        // still in flight picks the selection up from startCast instead.
+        if (_castStart.value !is CastStartState.Active) return
+        subtitleJob?.cancel()
+        subtitleJob = scope.launch {
+            val before = SubtitleServingState.revision()
+            CastServerService.setSubtitle(appContext, castId, selection?.uri)
+            val served = withTimeoutOrNull(SUBTITLE_RETARGET_MS) {
+                SubtitleServingState.state.first { it != null && it.castId == castId && it.revision > before }
+            }
+            if (currentCastId != castId || _castStart.value !is CastStartState.Active) return@launch
+            val server = ServerStateHolder.state.value
+            val videoUrl = server.videoUrl?.takeIf { server.castId == castId } ?: return@launch
+            // A retarget that never landed leaves the load with no subtitle rather than
+            // a URL that would 404 on the TV; the video is never at risk either way.
+            val subUrl = subtitleUrlFor(videoUrl, served?.url)
+            val title = ControlProtocolV2.normalizedLabel(item.name, 200)
+                ?: appContext.getString(R.string.media_title_generic)
+            // MediaStore's duration and the container's can disagree by a frame, so near
+            // the end of a film the TV-confirmed position can exceed the value that goes
+            // on the wire as durationMs. The receiver answers startMs > durationMs by
+            // closing the control socket, which would cost the user the whole cast.
+            val resumeMs = session.state.value.confirmedMs.coerceAtLeast(0L)
+                .let { if (item.durationMs > 0L) it.coerceAtMost(item.durationMs) else it }
+            control.armLoadSubtitle(castId, subUrl, selection?.displayName, selection?.language)
+            session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)
+        }
+    }
+
+    /** The subtitle URL is only ever emitted when it shares the media URL's origin. */
+    private fun subtitleUrlFor(videoUrl: String, subUrl: String?): String? {
+        if (subUrl == null) return null
+        if (ControlProtocolV2.sameHttpOrigin(videoUrl, subUrl)) return subUrl
+        FlickLog.w("cast", "subtitle dropped reason=origin")
+        return null
+    }
     fun back() {
         when (SenderNavigationPolicy.backDisposition(_route.value, _connectFromLibrary.value)) {
             BackDisposition.SYSTEM -> Unit
@@ -385,6 +478,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
         _castFailure.value = null
+        // openDetail cannot drop a selection while a cast is live — that cast owns the
+        // file it is serving — so a film browsed to mid-cast reaches here still carrying
+        // the previous film's subtitle. Casting it must not inherit those cues, which
+        // the receiver would auto-enable under SELECTION_FLAG_DEFAULT.
+        val subtitle = _selectedSubtitle.value?.takeIf { subtitleOwnerUri == item.uri }
+        if (subtitle == null) _selectedSubtitle.value = null
+        subtitleOwnerUri = item.uri
         _castingItem.value = item; _route.value = Route.Connecting; publishCastStart(CastStartState.ConnectingControl(castId))
         castJob = scope.launch {
             var readyCommit = false
@@ -394,17 +494,24 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (item.uri.scheme != "content" || item.sizeBytes <= 0L) throw CastStartupFailure("source_unavailable")
                 publishCastStart(CastStartState.StartingSource(castId))
                 ServerStateHolder.beginStarting(castId)
-                CastServerService.start(appContext, castId, item.uri, item.name, item.sizeBytes, endpoint.peerIp)
+                CastServerService.start(appContext, castId, item.uri, item.name, item.sizeBytes, endpoint.peerIp, subtitle?.uri)
                 val server = withTimeoutOrNull(9_000) { ServerStateHolder.state.first { it.castId == castId && (it.status == ServerStatus.RUNNING || it.status == ServerStatus.ERROR) } }
                     ?: throw CastStartupFailure("startup_timeout")
                 val videoUrl = server.videoUrl
                 if (server.status != ServerStatus.RUNNING || videoUrl == null) throw CastStartupFailure("media_bind_failed")
+                // The subtitle capability is published before RUNNING, so it is already
+                // visible on the state the wait above returned.
+                val subUrl = subtitleUrlFor(
+                    videoUrl,
+                    SubtitleServingState.state.value?.takeIf { it.castId == castId }?.url,
+                )
                 // endpoint() strips the path: the /v/{token} segment IS the capability.
-                FlickLog.i("cast", "source ready ${FlickLog.endpoint(videoUrl)}")
+                FlickLog.i("cast", "source ready ${FlickLog.endpoint(videoUrl)} subtitle=${subUrl != null}")
                 accepted = CompletableDeferred(); ready = CompletableDeferred(); publishCastStart(CastStartState.AwaitingAcceptance(castId))
                 loadSentCastId = castId
                 val title = ControlProtocolV2.normalizedLabel(item.name, 200)
                     ?: appContext.getString(R.string.media_title_generic)
+                control.armLoadSubtitle(castId, subUrl, subtitle?.displayName, subtitle?.language)
                 session.loadMedia(castId, videoUrl, title, item.durationMs, 0L)
                 withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
@@ -424,7 +531,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
         CastServerService.stop(appContext, castId)
-        if (currentCastId == castId) { currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) publishCastStart(CastStartState.Idle) }
+        // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
+        // retarget or disarm the subtitle its load is about to carry.
+        if (currentCastId == castId) { subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) publishCastStart(CastStartState.Idle) }
     }
     /** Cast ids are fingerprinted, never printed: they address a live media session. */
     private fun publishCastStart(state: CastStartState) {
@@ -527,6 +636,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         const val MAX_RESUME_CANDIDATES = 4
         const val MAX_PAIR_REBIND_CANDIDATES = 3
         const val PAIR_REBIND_BUDGET_MS = 4_000L
+        const val SUBTITLE_RETARGET_MS = 3_000L
         /** Denials that describe the TV's momentary state, not the stored credential. */
         val TRANSIENT_DENIALS = setOf("surface", "locked", "busy", "storage")
     }

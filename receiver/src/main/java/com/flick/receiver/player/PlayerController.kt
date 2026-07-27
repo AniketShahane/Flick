@@ -2,6 +2,7 @@ package com.flick.receiver.player
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -29,6 +30,8 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -36,8 +39,10 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionResult
+import com.flick.receiver.net.ExternalSubtitle
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.WifiTelemetry
+import java.io.IOException
 
 /**
  * Owns the ExoPlayer lifecycle and all playback instrumentation for the
@@ -106,6 +111,20 @@ class PlayerController(context: Context) {
     private var currentUrl: String? = null
     private var pendingPlayWhenReady: Boolean = false
     private var savedPositionMs: Long = 0L
+
+    // --- Sideloaded subtitle state (main thread only) -------------------------
+
+    /** The external subtitle merged into the current media item; null when none. */
+    private var currentSubtitle: ExternalSubtitle? = null
+
+    /** Media id of the current session, so a rebuilt item keeps its first-frame identity. */
+    private var currentMediaId: String? = null
+
+    /** A load against [currentSubtitle]'s URL has failed at least once. */
+    private var subtitleLoadFailed: Boolean = false
+
+    /** The subtitle has already been dropped once for this session; never drop twice. */
+    private var subtitleDropped: Boolean = false
 
     // --- Bounded auto-recovery state (all touched on the main thread only) ------
     private val recoveryHandler = Handler(Looper.getMainLooper())
@@ -234,6 +253,10 @@ class PlayerController(context: Context) {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // A text file must never cost the user the film. Checked before every
+            // other branch so a failed sideloaded subtitle cannot reach the
+            // startup callback, the recovery budget, or the diagnosis UI.
+            if (dropFailedExternalSubtitle()) return
             // Startup is a separate, short transaction. It must not inherit the
             // long steady-state recovery policy or hide format/decoder failures.
             startupCallbacks?.let { callbacks ->
@@ -256,6 +279,31 @@ class PlayerController(context: Context) {
             recordPlaybackError(error)
             playbackFailureListener?.invoke(error)
         }
+    }
+
+    /**
+     * Once playback is running Media3 already disables a text renderer whose
+     * stream errored and keeps the video going. It does not do that while the
+     * video period is still preparing: there the merged subtitle source's fatal
+     * load error propagates as an ordinary prepare failure and would end the
+     * cast. This is the one-shot net for that window — re-prepare the identical
+     * media, same media id, same position, minus the subtitle.
+     */
+    private fun dropFailedExternalSubtitle(): Boolean {
+        if (currentSubtitle == null || subtitleDropped || !subtitleLoadFailed) return false
+        val exo = player ?: return false
+        val url = currentUrl ?: return false
+        subtitleDropped = true
+        subtitleLoadFailed = false
+        currentSubtitle = null
+        val resumePositionMs = exo.currentPosition.coerceAtLeast(0L)
+        val resumePlayWhenReady = exo.playWhenReady
+        FlickLog.w("subtitle", "external load failed; continuing without external subtitle")
+        exo.setMediaItem(mediaItemFor(url, currentMediaId, subtitle = null))
+        if (resumePositionMs > 0L) exo.seekTo(resumePositionMs)
+        exo.prepare()
+        exo.playWhenReady = resumePlayWhenReady
+        return true
     }
 
     private fun recordPlaybackError(error: PlaybackException) {
@@ -336,6 +384,28 @@ class PlayerController(context: Context) {
             format.sampleMimeType?.let { audioMimeType = it }
             if (format.channelCount > 0) audioChannelCount = format.channelCount
             format.codecs?.takeIf { it.isNotBlank() }?.let { audioCodecs = it }
+        }
+
+        /**
+         * The only place Media3 names the URI behind a failed load, which is how
+         * a subtitle failure is told apart from a media failure. Recording the
+         * fact is all that happens here: Media3 recovers from most of these on
+         * its own, and re-preparing eagerly would stall a film that is fine.
+         */
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean,
+        ) {
+            if (wasCanceled) return
+            val subtitleUrl = currentSubtitle?.url ?: return
+            if (loadEventInfo.dataSpec.uri.toString() == subtitleUrl ||
+                loadEventInfo.uri.toString() == subtitleUrl
+            ) {
+                subtitleLoadFailed = true
+            }
         }
 
         override fun onVideoDecoderInitialized(
@@ -520,6 +590,38 @@ class PlayerController(context: Context) {
             }
     }
 
+    /**
+     * The one place a media item is built. An external subtitle is attached as a
+     * real sideloaded text track, which `DefaultMediaSourceFactory` merges with
+     * the video source; nothing on the video path changes. A null [mediaId]
+     * leaves Media3's default, which the first-frame gate can never match — the
+     * restore path deliberately keeps that property.
+     */
+    private fun mediaItemFor(url: String, mediaId: String?, subtitle: ExternalSubtitle?): MediaItem {
+        val builder = MediaItem.Builder().setUri(url)
+        if (mediaId != null) builder.setMediaId(mediaId)
+        if (subtitle != null) {
+            builder.setSubtitleConfigurations(
+                listOf(
+                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitle.url))
+                        .setMimeType(sideloadedSubtitleMimeType(subtitle.label))
+                        .setLanguage(subtitle.language)
+                        .setLabel(subtitle.label)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build(),
+                ),
+            )
+        }
+        return builder.build()
+    }
+
+    private fun resetSubtitleState(subtitle: ExternalSubtitle?, mediaId: String?) {
+        currentSubtitle = subtitle
+        currentMediaId = mediaId
+        subtitleLoadFailed = false
+        subtitleDropped = false
+    }
+
     // --- Lifecycle -----------------------------------------------------------
 
     /**
@@ -555,7 +657,7 @@ class PlayerController(context: Context) {
         val url = currentUrl
         if (url != null) {
             bindMediaSession(exo)
-            exo.setMediaItem(MediaItem.fromUri(url))
+            exo.setMediaItem(mediaItemFor(url, mediaId = null, subtitle = currentSubtitle))
             exo.prepare()
             if (savedPositionMs > 0L) exo.seekTo(savedPositionMs)
             exo.playWhenReady = pendingPlayWhenReady
@@ -613,11 +715,12 @@ class PlayerController(context: Context) {
         probeLatencyMs = 0L
         instrumentation.reset()
         resetAudioFormat()
+        resetSubtitleState(subtitle = null, mediaId = null)
         val exo = player ?: createPlayer().also { player = it }
         // stop() releases the terminal session but intentionally keeps this
         // foreground player instance reusable. Rebind before any new playback.
         bindMediaSession(exo)
-        exo.setMediaItem(MediaItem.fromUri(url))
+        exo.setMediaItem(mediaItemFor(url, mediaId = null, subtitle = null))
         exo.prepare()
         exo.playWhenReady = true
     }
@@ -627,6 +730,7 @@ class PlayerController(context: Context) {
         url: String,
         startMs: Long,
         mediaId: String,
+        subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
         onError: (PlaybackException) -> Unit,
     ) {
@@ -639,6 +743,7 @@ class PlayerController(context: Context) {
         recoveryGateCount = 0
         instrumentation.reset()
         resetAudioFormat()
+        resetSubtitleState(subtitle, mediaId)
         // A startup adoption always gets a fresh listener/renderer instance.
         // Switch the platform session to B before releasing A, then publish B
         // to Compose. This prevents a physical media key targeting released A.
@@ -651,7 +756,7 @@ class PlayerController(context: Context) {
             it.removeAnalyticsListener(analyticsListener)
             it.release()
         }
-        exo.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(mediaId).build())
+        exo.setMediaItem(mediaItemFor(url, mediaId, subtitle))
         if (startMs > 0) exo.seekTo(startMs)
         exo.prepare()
         exo.playWhenReady = true
@@ -681,6 +786,7 @@ class PlayerController(context: Context) {
         // because that path never calls stop() (only onStop keeps currentUrl set).
         currentUrl = null
         savedPositionMs = 0L
+        resetSubtitleState(subtitle = null, mediaId = null)
         player?.let { exo ->
             exo.playWhenReady = false
             exo.stop()
@@ -930,5 +1036,25 @@ class PlayerController(context: Context) {
 
         // Re-arm the recovery budget after this long uninterrupted in STATE_READY.
         const val RECOVERY_RESET_STABLE_MS = 30_000L
+    }
+}
+
+/**
+ * The subtitle route is `/s/{token}`, so the URL carries no extension and the
+ * sender's label is the only evidence of the format. Guessing wrong is
+ * survivable — the parser fails, Media3 drops the text track and the film keeps
+ * playing — so SubRip is the default for anything the extension does not name.
+ * The sender only ever offers the four extensions mapped here.
+ */
+internal fun sideloadedSubtitleMimeType(label: String?): String {
+    val name = label?.trimEnd().orEmpty()
+    val dot = name.lastIndexOf('.')
+    if (dot <= 0 || dot == name.length - 1) return MimeTypes.APPLICATION_SUBRIP
+    return when (name.substring(dot + 1).lowercase()) {
+        "vtt", "webvtt" -> MimeTypes.TEXT_VTT
+        // SubStation Alpha needs its own parser; handing an ASS payload to SubRip
+        // yields a track that draws nothing at all.
+        "ass", "ssa" -> MimeTypes.TEXT_SSA
+        else -> MimeTypes.APPLICATION_SUBRIP
     }
 }

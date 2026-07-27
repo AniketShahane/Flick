@@ -10,13 +10,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +72,9 @@ fun BottomSheet(
     // darkens before the surface arrives on it rather than the two moving as one slab.
     val scrim = rememberScrimFade()
     val scrimColor = colors.scrim
+    // UNION, never sum: a raised IME's inset already spans the navigation bar, so
+    // adding the two would reserve a second bar of dead space under the keyboard.
+    val safeBottom = WindowInsets.ime.union(WindowInsets.navigationBars)
     // Pairing and diagnostics sheets own Back while visible: a route launch must first
     // dismiss or cancel the in-flight UI rather than closing the Activity underneath it.
     BackHandler(onBack = onDismiss)
@@ -92,9 +98,14 @@ fun BottomSheet(
                     paneTitle = sheetTitle
                     isTraversalGroup = true
                 }
+                // Outside the scroll, so the inset shrinks the scrolling VIEWPORT
+                // instead of riding inside it: the viewport's bottom edge is then the
+                // safe edge in every state, and no scroll offset — including a stale
+                // one left behind by a collapsing keyboard — can put the submit button
+                // under the bar. It stays inside the background above, so the surface
+                // still reaches the bottom screen edge with no scrim gap under it.
+                .windowInsetsPadding(safeBottom)
                 .verticalScroll(rememberScrollState())
-                .imePadding()
-                .navigationBarsPadding()
                 .padding(contentPadding),
             content = content,
         )

@@ -62,6 +62,12 @@ class ControlClient(private val scope: CoroutineScope) {
     private var reader: Job? = null
     private var endpoint: AuthenticatedEndpoint? = null
 
+    /** Optional external-subtitle fields, published as one value for [send]'s thread. */
+    private data class LoadSubtitle(val castId: String, val url: String, val label: String?, val language: String?)
+
+    @Volatile
+    private var loadSubtitle: LoadSubtitle? = null
+
     suspend fun pair(host: String, port: Int, device: String, code: String): Result {
         if (!PairLaunch.isCanonicalIpv4(host) || port !in 1..65535 || !ControlProtocolV2.code(code)) return Result.ProtocolError()
         _connection.value = ConnectionStatus.CONNECTING
@@ -178,10 +184,46 @@ class ControlClient(private val scope: CoroutineScope) {
 
     fun send(command: JSONObject) {
         val active = session ?: return
-        val encoded = command.toString()
-        if (encoded.toByteArray(Charsets.UTF_8).size > ControlProtocolV2.MAX_FRAME_BYTES) return
+        val augmented = withLoadSubtitle(command)
+        var encoded = augmented.toString()
+        if (!withinFrameCap(encoded)) {
+            // An external subtitle must never cost the video its load: drop the
+            // optional fields rather than the frame.
+            if (augmented === command) return
+            encoded = command.toString()
+            if (!withinFrameCap(encoded)) return
+        }
         scope.launch { runCatching { active.send(Frame.Text(encoded)) } }
     }
+
+    /**
+     * Arm the optional external-subtitle fields the next `loadMedia` for [castId]
+     * carries; a null [url] disarms. Nothing armed means the outgoing frame is
+     * returned untouched, so the bytes an un-updated receiver sees for ordinary
+     * playback are unchanged and v=2 stays an honest version.
+     */
+    fun armLoadSubtitle(castId: String, url: String?, label: String?, language: String?) {
+        loadSubtitle = url?.let { LoadSubtitle(castId, it, label, language) }
+    }
+
+    fun disarmLoadSubtitle() {
+        loadSubtitle = null
+    }
+
+    private fun withLoadSubtitle(command: JSONObject): JSONObject {
+        val armed = loadSubtitle ?: return command
+        // Keyed to the cast it was armed for: a stale arm can never ride a later load.
+        if (command.optString("t") != "loadMedia" || command.optString("castId") != armed.castId) return command
+        val fields = ControlProtocolV2.subtitleFields(armed.url, armed.label, armed.language)
+        if (fields.isEmpty()) return command
+        val out = JSONObject()
+        command.keys().forEach { out.put(it, command.get(it)) }
+        fields.forEach { out.put(it.first, it.second) }
+        return out
+    }
+
+    private fun withinFrameCap(encoded: String): Boolean =
+        encoded.toByteArray(Charsets.UTF_8).size <= ControlProtocolV2.MAX_FRAME_BYTES
 
     fun close() { _connection.value = ConnectionStatus.DISCONNECTED; closeInternal() }
     /** Cancels only an untrusted negotiation; never tears down an authenticated remote. */

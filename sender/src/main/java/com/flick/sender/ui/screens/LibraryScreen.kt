@@ -9,6 +9,8 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,6 +20,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +46,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -50,36 +54,41 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorProducer
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.LookaheadScope
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
@@ -88,6 +97,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.flick.sender.R
@@ -104,8 +114,11 @@ import com.flick.sender.ui.Format
 import com.flick.sender.ui.components.FlickMark
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.LiveDot
+import com.flick.sender.ui.components.NowPlayingDockClearance
+import com.flick.sender.ui.components.RevealOrigin
 import com.flick.sender.ui.components.VideoTile
 import com.flick.sender.ui.components.rememberVideoImageLoader
+import com.flick.sender.ui.components.revealOrigin
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
@@ -119,36 +132,22 @@ import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Room the floating nav needs at the foot of the scroll (design §5.4). */
 private val NavClearance = 116.dp
-
-/**
- * One snapshot cell per media id. A `SnapshotStateMap` records every read against the
- * map as a whole, so a single probe result would invalidate the screen and every
- * visible tile; a per-id cell keeps a resolved dynamic range local to the one tile
- * that asked for it. Whichever side resolves a file first publishes it here, so the
- * chip sweep mostly hits MediaProbe's own memo cache.
- */
-@Stable
-private class HdrCells {
-    // Concurrent because the chip sweep runs in a coroutine while the grid composes.
-    private val cells = ConcurrentHashMap<Long, MutableState<HdrType?>>()
-    fun cell(id: Long): MutableState<HdrType?> = cells.computeIfAbsent(id) { mutableStateOf(null) }
-}
 
 /** S3 — the library. A gallery, not a file browser: real MediaStore videos. */
 @Composable
 fun LibraryScreen(
     controller: FlickController,
     onRequestVideoPermission: () -> Unit,
+    revealOrigin: RevealOrigin,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val colors = LocalFlickColors.current
-    val context = LocalContext.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
     val items by controller.mediaItems.collectAsState()
@@ -164,30 +163,26 @@ fun LibraryScreen(
     val compactTiles = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
 
-    var filter by remember { mutableStateOf(LibFilter.ALL) }
-    val hdrCells = remember { HdrCells() }
-    var scanningDv by remember { mutableStateOf(false) }
+    // The dock docks above the nav while a cast is live, so the last row of the grid
+    // has to clear both of them, not just the nav.
+    val bottomClearance = NavClearance + if (castingItem != null) NowPlayingDockClearance else 0.dp
 
-    // Dolby Vision is not in MediaStore — it needs a container parse per file, so the
-    // sweep only runs while that chip is selected, and sequentially: MediaProbe's
-    // dispatcher is two wide and shared with Coil's frame decoders.
-    LaunchedEffect(filter, items) {
-        if (filter != LibFilter.DOLBY_VISION) {
-            scanningDv = false
-            return@LaunchedEffect
-        }
-        scanningDv = true
-        items.forEach { item ->
-            val cell = hdrCells.cell(item.id)
-            if (cell.value == null) cell.value = MediaProbe.detectHdr(context, item.uri)
-        }
-        scanningDv = false
+    var filter by remember { mutableStateOf(LibFilter.ALL) }
+
+    // The grid's answer to a chip tap. The epoch retriggers the wave; the window closes
+    // it so a tile the lazy grid composes minutes later is not treated as arriving.
+    // Neither moves on a re-tap of the live chip: an exclusive axis reflows nothing.
+    var reflowEpoch by remember { mutableIntStateOf(0) }
+    var reflowArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(reflowEpoch) {
+        if (reflowEpoch == 0) return@LaunchedEffect
+        delay(ReflowWindowMs)
+        reflowArmed = false
     }
 
     // The entrance plays once, on the first paint after MediaStore resolves — never on
-    // a filter switch and never on the Dolby Vision sweep, which writes long after the
-    // grid is on screen. The window closes it so scrolling back to the top cannot
-    // replay it on tiles the lazy grid recomposes.
+    // a filter switch, which has a wave of its own. The window closes it so scrolling
+    // back to the top cannot replay it on tiles the lazy grid recomposes.
     var staggerArmed by remember { mutableStateOf(false) }
     var staggerSpent by remember { mutableStateOf(false) }
     LaunchedEffect(loading, items.isEmpty(), reduceMotion) {
@@ -204,22 +199,21 @@ fun LibraryScreen(
             connectedTv = connectedTv,
             castingItem = castingItem,
             signal = signal,
+            bottomClearance = bottomClearance,
             onChoose = onRequestVideoPermission,
         )
         return
     }
 
-    // Derived so the Dolby Vision sweep only invalidates the grid when the visible set
-    // actually changes, and so the other two axes never subscribe to a probe at all.
-    val filtered by remember(items, filter, hdrCells) {
-        derivedStateOf(structuralEqualityPolicy()) {
-            LibraryFilterPolicy.apply(
-                items = items,
-                filter = filter,
-                resolutionLabel = { it.resolutionLabel },
-                isDolbyVision = { hdrCells.cell(it.id).value == HdrType.DOLBY_VISION },
-            )
-        }
+    // Both quality chips read a value MediaStore already reported, so the visible set
+    // is a plain function of the library and the chip — no probe, nothing to subscribe
+    // to, and no work at all on the frame a tile arrives.
+    val filtered = remember(items, filter) {
+        LibraryFilterPolicy.apply(
+            items = items,
+            filter = filter,
+            resolutionLabel = { it.resolutionLabel },
+        )
     }
 
     LazyVerticalGrid(
@@ -231,13 +225,14 @@ fun LibraryScreen(
             .background(colors.canvas)
             .statusBarsPadding()
             .navigationBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = NavClearance),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
         horizontalArrangement = Arrangement.spacedBy(13.dp),
         verticalArrangement = Arrangement.spacedBy(13.dp),
     ) {
         fullWidth {
             Header(
                 mediaAction = mediaAction,
+                revealOrigin = revealOrigin,
                 onMediaAction = {
                     when (mediaAction) {
                         MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
@@ -260,24 +255,36 @@ fun LibraryScreen(
             FilterChips(
                 filter = filter,
                 totalCount = items.size,
-                onSelect = { filter = it },
+                onSelect = { chosen ->
+                    filter = chosen
+                    // Armed from the tap rather than from the effect that closes it:
+                    // the wave has to be in place for the first composition the new
+                    // set is measured in, or the tiles paint once at rest and only
+                    // then dip.
+                    reflowArmed = !reduceMotion
+                    reflowEpoch++
+                },
             )
         }
         if (on24GHz) {
-            fullWidth { BandAdvisory(onClick = { controller.toggleAdvisories(true) }) }
+            fullWidth {
+                BandAdvisory(
+                    revealOrigin = revealOrigin,
+                    onClick = { controller.toggleAdvisories(true) },
+                )
+            }
         }
         when {
             loading -> fullWidth { Note(stringResource(R.string.library_loading)) }
-            filter == LibFilter.DOLBY_VISION && scanningDv && filtered.isEmpty() ->
-                fullWidth { Note(stringResource(R.string.library_scanning_dv)) }
-            filtered.isEmpty() -> fullWidth { FilterEmpty(filter) }
+            // "All" cannot be empty while the library is not: only a quality chip can
+            // filter every file away.
+            filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
         }
         itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
             LibraryTile(
                 item = item,
                 imageLoader = imageLoader,
                 compact = compactTiles,
-                cell = hdrCells.cell(item.id),
                 onClick = { controller.openDetail(item) },
                 sharedScope = sharedScope,
                 animatedScope = animatedScope,
@@ -289,7 +296,8 @@ fun LibraryScreen(
                         placementSpec = motionScheme.defaultSpatialSpec(),
                         fadeOutSpec = motionScheme.fastEffectsSpec(),
                     )
-                    .staggeredEntrance(index = index, armed = staggerArmed),
+                    .staggeredEntrance(index = index, armed = staggerArmed)
+                    .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
             )
         }
     }
@@ -298,21 +306,72 @@ fun LibraryScreen(
 /**
  * The grid's first tiles arrive in sequence rather than all at once. A graphicsLayer
  * transform only: the lazy grid's own placement must never see moving bounds.
+ *
+ * [armed] is the window the grid holds open for the whole sequence, and it closes on a
+ * timer. A tile that has already joined keeps its layer until its OWN spring is home —
+ * the window decides which tiles are part of the entrance, not which of them are allowed
+ * to finish it, and a tile composed late or delayed by a janked frame would otherwise be
+ * dropped at whatever value the timer found it on.
  */
 @Composable
 private fun Modifier.staggeredEntrance(index: Int, armed: Boolean): Modifier {
-    if (!armed) return this
     val spec = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
     val progress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+    var rising by remember { mutableStateOf(false) }
+    // Keyed on the arming edge and on this tile's own flight, never on the window closing
+    // alone: re-keying it while the spring is running would cancel it mid-dip.
+    LaunchedEffect(armed || rising) {
+        if (!armed) return@LaunchedEffect
+        rising = true
         delay(index.coerceAtMost(StaggerCapIndex) * StaggerStepMs)
         progress.animateTo(1f, spec)
+        rising = false
     }
+    if (!armed && !rising) return this
     return graphicsLayer {
         val p = progress.value
         // Clamped: the spatial spring overshoots by design and opacity must not.
         alpha = p.coerceIn(0f, 1f)
         translationY = (1f - p) * StaggerRiseDp.toPx()
+    }
+}
+
+/**
+ * The grid answering the chip that was just tapped: the tiles re-deal in sequence
+ * instead of the new set simply existing, so the reflow reads as the consequence of
+ * the tap rather than as an unrelated event. [epoch] retriggers it, [armed] closes the
+ * window — a tile the lazy grid composes after that has not just arrived, it was
+ * scrolled to. A graphicsLayer transform only, like the entrance: the lazy grid's own
+ * placement animation is already moving the tiles that survived the switch, and it
+ * must never see bounds this changes too. Like the entrance, a tile that has joined the
+ * wave keeps its layer until its own spring is home: the window closes for the grid, not
+ * for a tile that is still mid-dip when the timer runs out.
+ */
+@Composable
+private fun Modifier.reflowWave(index: Int, epoch: Int, armed: Boolean): Modifier {
+    val spec = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
+    // Reset by the key, not from the effect: the dip has to be on a surviving tile in the
+    // very composition the new set is measured in, or it paints once at rest first.
+    val progress = remember(epoch) { Animatable(if (armed) 0f else 1f) }
+    var dipping by remember { mutableStateOf(false) }
+    LaunchedEffect(epoch) {
+        if (!armed) {
+            dipping = false
+            return@LaunchedEffect
+        }
+        dipping = true
+        delay(index.coerceAtMost(ReflowCapIndex) * ReflowStepMs)
+        progress.animateTo(1f, spec)
+        dipping = false
+    }
+    if (!armed && !dipping) return this
+    return graphicsLayer {
+        val p = progress.value
+        alpha = (ReflowFromAlpha + (1f - ReflowFromAlpha) * p).coerceIn(0f, 1f)
+        // Unclamped on purpose: the spring's overshoot is the tile landing.
+        val s = ReflowFromScale + (1f - ReflowFromScale) * p
+        scaleX = s
+        scaleY = s
     }
 }
 
@@ -326,6 +385,7 @@ private fun LazyGridScope.fullWidth(
 @Composable
 private fun Header(
     mediaAction: MediaLibraryAction,
+    revealOrigin: RevealOrigin,
     onMediaAction: () -> Unit,
     onTune: () -> Unit,
 ) {
@@ -377,6 +437,9 @@ private fun Header(
             ),
             modifier = Modifier
                 .size(48.dp)
+                // The advisories sheet is born here, in the top-right corner it was
+                // asked for from.
+                .revealOrigin(revealOrigin)
                 .semantics { contentDescription = tuneLabel },
         ) {
             Icon(
@@ -602,66 +665,251 @@ private fun Pill(
     )
 }
 
+/**
+ * The library's quality axis, and the app's most-tapped control.
+ *
+ * Selection is ONE fill that travels between the seats rather than chips that
+ * cross-fade — the chip left behind and the chip arrived at are the same object
+ * moving, which is the language the bottom nav already speaks. That is why the pills
+ * are drawn here and not by the chips: the arriving fill has to pass over the seat it
+ * is heading for, and a chip that painted its own opaque pill would hide it.
+ *
+ * Every tap answers, including a re-tap of the chip that is already selected. The kick is
+ * therefore driven from the tap itself: an exclusive axis leaves the selection untouched
+ * on a re-tap, so selection cannot be what the feedback reads.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter) -> Unit) {
-    FlowRow(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // Only "All" carries a count: a Dolby Vision tally would need the whole library
-        // probed before the chip could render, and a 4K count would imply that precision.
-        Chip(stringResource(R.string.library_filter_all, totalCount), filter == LibFilter.ALL) {
-            onSelect(LibFilter.ALL)
-        }
-        Chip(stringResource(R.string.library_filter_dolby_vision), filter == LibFilter.DOLBY_VISION) {
-            onSelect(LibFilter.DOLBY_VISION)
-        }
-        Chip(stringResource(R.string.library_filter_4k), filter == LibFilter.FOUR_K) {
-            onSelect(LibFilter.FOUR_K)
-        }
-    }
-}
-
-@Composable
-private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
-    ToggleButton(
-        checked = selected,
-        onCheckedChange = {
-            // The three chips are one exclusive axis, so re-tapping the current one
-            // changes nothing and must stay silent.
-            if (!selected) {
-                haptics.toggle(true)
-                onClick()
+    val reduceMotion = rememberReduceMotion()
+    val motionScheme = MaterialTheme.motionScheme
+    val travel = motionScheme.defaultSpatialSpec<Rect>()
+    val kick = motionScheme.fastSpatialSpec<Float>()
+    val settle = motionScheme.defaultSpatialSpec<Float>()
+
+    // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
+    // from writing snapshot state the same layout pass reads, and the epoch only moves
+    // when a seat genuinely changes (first placement, rotation, font scale).
+    val seats = remember { mutableMapOf<LibFilter, Rect>() }
+    var seatEpoch by remember { mutableIntStateOf(0) }
+    val host = remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val reportSeat: (LibFilter, Rect) -> Unit = { chip, rect ->
+        if (seats[chip] != rect) {
+            seats[chip] = rect
+            seatEpoch++
+        }
+    }
+
+    val fill = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
+    LaunchedEffect(filter, seatEpoch, reduceMotion) {
+        val destination = seats[filter] ?: return@LaunchedEffect
+        if (fill.value == destination) return@LaunchedEffect
+        // Rect.Zero is "nothing measured yet", so the first placement lands instead of
+        // flying in from the corner of the row.
+        if (reduceMotion || fill.value == Rect.Zero) {
+            fill.snapTo(destination)
+        } else {
+            fill.animateTo(destination, travel)
+        }
+    }
+
+    // The kick: out to full stretch, then a spring back that overshoots through rest.
+    // One animation per chip rather than one shared value the next tap re-points: at the
+    // rhythm this row is actually tapped at, the chip just left is still settling, and it
+    // has to spring home from where it had got to instead of being dropped there. Written
+    // from the tap and read only from draw scopes, so a deformation never costs a
+    // recomposition.
+    val pops = remember { LibFilter.entries.associateWith { Animatable(0f) } }
+    // Launched off the composition's own scope, not from an effect keyed on the tap: a
+    // second tap must not cancel the spring the first one is still running.
+    val scope = rememberCoroutineScope()
+
+    val tap: (LibFilter) -> Unit = { chip ->
+        if (!reduceMotion) {
+            scope.launch {
+                val struck = pops.getValue(chip)
+                struck.animateTo(1f, kick)
+                struck.animateTo(0f, settle)
             }
-        },
-        shapes = ToggleButtonDefaults.shapes(
-            shape = PillMorphShape,
-            pressedShape = PressedPillShape,
-            checkedShape = PillMorphShape,
-        ),
-        colors = ToggleButtonDefaults.toggleButtonColors(
-            containerColor = colors.primaryContainer,
-            contentColor = colors.onPrimaryContainer,
-            checkedContainerColor = colors.inverseSurface,
-            checkedContentColor = colors.onInverseSurface,
-        ),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 11.dp),
-        // Applied on the outer node so it wins the collapse: the three chips are one
-        // exclusive axis and TalkBack must not announce three independent toggles.
-        modifier = Modifier
-            .heightIn(min = 48.dp)
-            .semantics { role = Role.Tab },
+            pops.forEach { (other, pop) ->
+                if (other != chip && (pop.isRunning || pop.value != 0f)) {
+                    scope.launch { pop.animateTo(0f, settle) }
+                }
+            }
+        }
+        // One exclusive axis: re-tapping the live chip selects nothing, so nothing may
+        // reach the actuator. The kick above is the whole answer to that tap.
+        if (chip != filter) {
+            haptics.toggle(true)
+            onSelect(chip)
+        }
+    }
+
+    val restFill = colors.primaryContainer
+    val liveFill = colors.inverseSurface
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { host.value = it }
+            // One draw node for the whole axis: the resting pills, then the travelling
+            // fill on top of them. Every value here is read in the draw phase, so
+            // hammering a chip repaints this row without recomposing the grid below it.
+            .drawBehind {
+                // The epoch is this node's subscription to a seat moving; the map
+                // itself is deliberately not snapshot state. Zero is "not placed yet".
+                if (seatEpoch == 0) return@drawBehind
+                LibFilter.entries.forEach { chip ->
+                    val seat = seats[chip] ?: return@forEach
+                    drawChipPill(seat, restFill, pops.getValue(chip).value)
+                }
+                // The travelling fill deforms with the seat it is sitting in, which is
+                // the chip the selection just moved to.
+                drawChipPill(fill.value, liveFill, pops.getValue(filter).value)
+            },
     ) {
-        Text(text = text, style = FlickText.labelMedium)
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Only "All" carries a count: a per-bucket tally would claim a precision
+            // MediaStore's pixel dimensions do not have, and it is the count of the
+            // whole library that tells the user what the other chips are hiding.
+            Chip(
+                text = stringResource(R.string.library_filter_all, totalCount),
+                active = filter == LibFilter.ALL,
+                host = host,
+                onSeat = { reportSeat(LibFilter.ALL, it) },
+                squash = { pops.getValue(LibFilter.ALL).value },
+                onTap = { tap(LibFilter.ALL) },
+            )
+            Chip(
+                text = stringResource(R.string.library_filter_4k),
+                active = filter == LibFilter.FOUR_K,
+                host = host,
+                onSeat = { reportSeat(LibFilter.FOUR_K, it) },
+                squash = { pops.getValue(LibFilter.FOUR_K).value },
+                onTap = { tap(LibFilter.FOUR_K) },
+            )
+            Chip(
+                text = stringResource(R.string.library_filter_1080p),
+                active = filter == LibFilter.FULL_HD,
+                host = host,
+                onSeat = { reportSeat(LibFilter.FULL_HD, it) },
+                squash = { pops.getValue(LibFilter.FULL_HD).value },
+                onTap = { tap(LibFilter.FULL_HD) },
+            )
+        }
+    }
+}
+
+/**
+ * One chip pill, drawn by the row rather than by the chip. [squash] is the tap kick:
+ * 0 at rest, 1 at full stretch, negative on the spring's counter-pose. Wider and
+ * shorter about the seat's own centre, which is where the label's layer transform
+ * pivots too, so the two deform as one object.
+ */
+private fun DrawScope.drawChipPill(seat: Rect, color: Color, squash: Float) {
+    if (seat.isEmpty) return
+    scale(chipStretchX(squash), chipSquashY(squash), pivot = seat.center) {
+        drawRoundRect(
+            color = color,
+            topLeft = seat.topLeft,
+            size = seat.size,
+            cornerRadius = CornerRadius(seat.height / 2f),
+        )
+    }
+}
+
+private fun chipStretchX(squash: Float): Float = 1f + squash * ChipPopStretch
+
+private fun chipSquashY(squash: Float): Float = 1f - squash * ChipPopSquash
+
+/**
+ * Label, press wash and seat report. The chip owns no fill of its own — [onSeat]
+ * publishes the bounds the row paints one for, measured off a node that sits above the
+ * kick's layer so a deforming chip can never republish its own seat.
+ */
+@Composable
+private fun Chip(
+    text: String,
+    active: Boolean,
+    host: State<LayoutCoordinates?>,
+    onSeat: (Rect) -> Unit,
+    squash: () -> Float,
+    onTap: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    val reduceMotion = rememberReduceMotion()
+    val motionScheme = MaterialTheme.motionScheme
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+
+    // The label rides the travelling fill, so its ink must not resolve before the fill
+    // has arrived under it — a slower effects spec, never a spatial one.
+    val ink = animateColorAsState(
+        targetValue = if (active) colors.onInverseSurface else colors.onPrimaryContainer,
+        animationSpec = Motion.orSnap(reduceMotion, motionScheme.slowEffectsSpec<Color>()),
+        label = "chip ink",
+    )
+    // Material's ripple dilutes whatever ink it is handed, and on this palette that
+    // lands on a pill as a grey blob. The chip answers a touch with the brand tint that
+    // reads against its own fill instead: the pale blue on the selected chip's dark
+    // pill, the saturated one on the pale rest pill.
+    val wash = animateFloatAsState(
+        targetValue = if (pressed) ChipPressWashAlpha else 0f,
+        animationSpec = Motion.orSnap(reduceMotion, motionScheme.fastEffectsSpec<Float>()),
+        label = "chip press wash",
+    )
+    val washColor = if (active) colors.primaryFixed else colors.primary
+    val label = remember(ink) { ColorProducer { ink.value } }
+
+    Box(
+        modifier = Modifier
+            .onGloballyPositioned { coordinates ->
+                host.value?.let { onSeat(it.localBoundingBoxOf(coordinates, clipBounds = false)) }
+            }
+            .heightIn(min = 48.dp)
+            .graphicsLayer {
+                // Read in the layer block, so the kick repaints one chip rather than
+                // recomposing the row it sits in.
+                val p = squash()
+                scaleX = chipStretchX(p)
+                scaleY = chipSquashY(p)
+            }
+            .drawBehind {
+                val alpha = wash.value
+                if (alpha > 0f) {
+                    drawRoundRect(
+                        color = washColor,
+                        cornerRadius = CornerRadius(size.height / 2f),
+                        alpha = alpha,
+                    )
+                }
+            }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Tab,
+                onClick = onTap,
+            )
+            // Merged on the outer node so it wins the collapse: the chips are one
+            // exclusive axis and TalkBack must not announce three independent toggles.
+            .semantics(mergeDescendants = true) { selected = active }
+            .padding(horizontal = 18.dp, vertical = 11.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        // The ink is handed over as a producer rather than as a style, so the tint
+        // animation resolves at draw time and never recomposes the label.
+        BasicText(text = text, style = FlickText.labelMedium, color = label)
     }
 }
 
 @Composable
-private fun BandAdvisory(onClick: () -> Unit) {
+private fun BandAdvisory(revealOrigin: RevealOrigin, onClick: () -> Unit) {
     val colors = LocalFlickColors.current
     val interaction = remember { MutableInteractionSource() }
     val label = stringResource(R.string.a11y_library_band_advisory)
@@ -675,6 +923,7 @@ private fun BandAdvisory(onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
+            .revealOrigin(revealOrigin)
             .clip(RoundedCornerShape(FlickCorners.warning))
             .background(colors.caution)
             .clickable(
@@ -714,9 +963,11 @@ private fun FilterEmpty(filter: LibFilter) {
     val colors = LocalFlickColors.current
     Column(Modifier.fillMaxWidth().padding(vertical = 26.dp)) {
         Text(
+            // Only a quality chip can empty a library that is not itself empty, so
+            // "All" never reaches here.
             text = stringResource(
-                if (filter == LibFilter.DOLBY_VISION) {
-                    R.string.library_empty_filter_dv
+                if (filter == LibFilter.FULL_HD) {
+                    R.string.library_empty_filter_1080p
                 } else {
                     R.string.library_empty_filter_4k
                 },
@@ -736,22 +987,17 @@ private fun LibraryTile(
     item: MediaItem,
     imageLoader: ImageLoader,
     compact: Boolean,
-    cell: MutableState<HdrType?>,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val context = LocalContext.current
-    val known = cell.value
-    val hdr by produceState(initialValue = known ?: HdrType.NONE, item.uri, known) {
-        if (known != null) {
-            value = known
-        } else {
-            val probed = MediaProbe.detectHdr(context, item.uri)
-            value = probed
-            cell.value = probed
-        }
+    // The badge is the only thing on this screen that still needs a dynamic range, and
+    // it needs it per tile. MediaProbe memoizes by uri, so a tile recomposed on scroll
+    // costs a map lookup rather than a second container parse.
+    val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
+        value = MediaProbe.detectHdr(context, item.uri)
     }
     VideoTile(
         item = item,
@@ -771,6 +1017,7 @@ private fun EmptyState(
     connectedTv: PairedTv?,
     castingItem: MediaItem?,
     signal: State<SignalInfo>,
+    bottomClearance: Dp,
     onChoose: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -780,7 +1027,7 @@ private fun EmptyState(
             .background(colors.canvas)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(start = 20.dp, end = 20.dp, bottom = NavClearance),
+            .padding(start = 20.dp, end = 20.dp, bottom = bottomClearance),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -848,3 +1095,22 @@ private val StaggerRiseDp = 18.dp
 // Long enough for the capped sequence plus its settle. After this the grid is a grid:
 // a tile the lazy list recomposes on scroll has not just arrived.
 private const val StaggerWindowMs = 1_200L
+
+// The reflow the grid answers a chip tap with. Tighter and shallower than the entrance
+// on purpose — it is a rearrangement the user just asked for, not an arrival, and the
+// tiles that survived the switch are already sliding under it.
+private const val ReflowStepMs = 20L
+private const val ReflowCapIndex = 8
+private const val ReflowFromAlpha = 0.35f
+private const val ReflowFromScale = 0.94f
+private const val ReflowWindowMs = 700L
+
+// The chip kick. The stretch is wider than the squash is short so the pill reads as
+// pulled rather than merely scaled, and the spring's overshoot through zero supplies
+// the counter-pose without a second animation.
+private const val ChipPopStretch = 0.10f
+private const val ChipPopSquash = 0.08f
+
+// Press wash on one chip. Sits just above the pill it has to read against, and low
+// enough that the label never loses contrast against either fill.
+private const val ChipPressWashAlpha = 0.18f

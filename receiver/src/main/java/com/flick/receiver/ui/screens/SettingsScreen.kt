@@ -53,6 +53,9 @@ import com.flick.receiver.R
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
+import com.flick.receiver.ui.components.TvOriginReveal
+import com.flick.receiver.ui.components.rememberTvRevealOrigin
+import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
@@ -203,6 +206,13 @@ fun SettingsScreen(
         if (reducedMotion) entrance.snapTo(1f) else entrance.animateTo(1f, entranceSpec)
     }
     val stage = { entrance.value }
+    // The diagnostics log is summoned by one row and appears directly under it,
+    // so it is born there. The latch is held at screen level rather than inside
+    // the list item: a LazyColumn disposes an item that scrolls out of view, and
+    // a latch living there would replay the reveal every time it came back.
+    val diagnosticsOrigin = rememberTvRevealOrigin()
+    var diagnosticsRevealed by remember { mutableStateOf(false) }
+    LaunchedEffect(diagnosticsVisible) { diagnosticsRevealed = diagnosticsVisible }
     LaunchedEffect(Unit) { runCatching { renameFocus.requestFocus() } }
     LaunchedEffect(layoutEpoch, clearPlacedEpoch, donePlacedEpoch, clearFocused, doneFocused) {
         when {
@@ -346,7 +356,10 @@ fun SettingsScreen(
                     stateDescription = stringResource(
                         if (diagnosticsVisible) R.string.settings_metrics_on else R.string.settings_metrics_off,
                     ),
+                    // Ahead of the entrance layer, so the centre it records is the
+                    // row's resting one rather than a point on its way up.
                     modifier = Modifier
+                        .tvRevealSource(diagnosticsOrigin)
                         .fillMaxWidth()
                         .settingsStage(stage, index = 4)
                         .testTag("settings-diagnostics-row"),
@@ -363,6 +376,18 @@ fun SettingsScreen(
 
             if (diagnosticsVisible) {
                 item(key = SettingsDiagnosticEntriesKey) {
+                    // The log's own fill wipes out of the Diagnostics row above it —
+                    // this screen's hero moment, and the only reveal on it. It is a
+                    // draw-phase effect: the Clear row below owns a
+                    // BringIntoViewRequester, and that machinery must never measure
+                    // a row whose position is still moving. Nothing inside here is
+                    // focusable, so no focus target moves either.
+                    TvOriginReveal(
+                        visible = diagnosticsRevealed,
+                        origin = diagnosticsOrigin,
+                        color = FlickColor.SurfaceRaisedAlt,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -402,6 +427,7 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                    }
                     }
                 }
                 item(key = SettingsClearDiagnosticsKey) {

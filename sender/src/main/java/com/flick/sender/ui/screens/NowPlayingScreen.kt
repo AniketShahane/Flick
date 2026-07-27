@@ -44,8 +44,11 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -159,6 +162,10 @@ private fun RemoteScreen(
     ).dp
     val reduceMotion = rememberReduceMotion()
     val compactScrollState = rememberScrollState()
+    // Owned here rather than by the shell: the subtitles sheet belongs to the video on
+    // this screen, and the shell's overlay channel is the pairing/quality one.
+    var showSubtitles by rememberSaveable { mutableStateOf(false) }
+    val subtitleAttached = controller.selectedSubtitle.collectAsState().value != null
 
     val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
         val uri = item?.uri
@@ -237,10 +244,16 @@ private fun RemoteScreen(
                     showStats = showStats,
                     compactLayout = compactLayout,
                     pulse = { pulse.value },
+                    subtitleAttached = subtitleAttached,
+                    onSubtitles = { showSubtitles = true },
                     sharedScope = sharedScope,
                     animatedScope = animatedScope,
                 )
             }
+        }
+
+        if (showSubtitles) {
+            SubtitlesSheet(controller = controller, onDismiss = { showSubtitles = false })
         }
     }
 }
@@ -353,6 +366,8 @@ private fun ColumnScope.RemoteContent(
     showStats: Boolean,
     compactLayout: Boolean,
     pulse: () -> Float,
+    subtitleAttached: Boolean,
+    onSubtitles: () -> Unit,
     sharedScope: SharedTransitionScope?,
     animatedScope: AnimatedVisibilityScope?,
 ) {
@@ -483,7 +498,11 @@ private fun ColumnScope.RemoteContent(
     VolumeRow(playbackState) { controller.setVolume(it) }
 
     Spacer(Modifier.height(clusterGap))
-    SegmentedRow(onSignal = { controller.toggleQualitySheet(true) })
+    SegmentedRow(
+        subtitleAttached = subtitleAttached,
+        onSubtitles = onSubtitles,
+        onSignal = { controller.toggleQualitySheet(true) },
+    )
 
     // The mock has no stop control on the remote, but this is the only in-app
     // affordance for the terminal stop; the notification action is the other one.
@@ -716,11 +735,16 @@ private fun ReserveValue(playbackState: State<PlaybackUiState>) {
 }
 
 /**
- * Subtitle and audio-track selection carry no state and no command in the control
- * protocol, so those two segments are shown disabled rather than wired to a no-op.
+ * Subtitles select an EXTERNAL file the phone serves alongside the video, so that
+ * segment carries state and a command. Audio-track selection still has neither in the
+ * control protocol, so it stays disabled rather than wired to a no-op.
  */
 @Composable
-private fun ColumnScope.SegmentedRow(onSignal: () -> Unit) {
+private fun ColumnScope.SegmentedRow(
+    subtitleAttached: Boolean,
+    onSubtitles: () -> Unit,
+    onSignal: () -> Unit,
+) {
     val colors = LocalFlickColors.current
     val unavailable = stringResource(R.string.np_segment_unavailable)
     Row(
@@ -735,7 +759,8 @@ private fun ColumnScope.SegmentedRow(onSignal: () -> Unit) {
             icon = FlickIcons.Captions,
             label = stringResource(R.string.np_segment_subs),
             description = stringResource(R.string.a11y_np_subs),
-            unavailableLabel = unavailable,
+            stateLabel = stringResource(R.string.a11y_subs_attached).takeIf { subtitleAttached },
+            onClick = onSubtitles,
         )
         Segment(
             icon = FlickIcons.AudioTrack,
@@ -758,6 +783,7 @@ private fun RowScope.Segment(
     label: String,
     description: String,
     unavailableLabel: String? = null,
+    stateLabel: String? = null,
     onClick: (() -> Unit)? = null,
 ) {
     val colors = LocalFlickColors.current
@@ -789,7 +815,10 @@ private fun RowScope.Segment(
                     }
                 },
             )
-            .semantics(mergeDescendants = true) { contentDescription = description },
+            .semantics(mergeDescendants = true) {
+                contentDescription = description
+                if (onClick != null) stateLabel?.let { stateDescription = it }
+            },
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {

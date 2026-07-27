@@ -49,16 +49,21 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.flick.sender.PairLaunchEventIds
 import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.components.DeviceRow
 import com.flick.sender.ui.components.FlickPrimaryButton
+import com.flick.sender.ui.components.FlickSubtleButton
+import com.flick.sender.ui.components.NowPlayingDockClearance
 import com.flick.sender.ui.components.PairCodeField
 import com.flick.sender.ui.components.PairQrCard
+import com.flick.sender.ui.components.QrScannerPanel
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
@@ -78,9 +83,11 @@ fun ConnectScreen(controller: FlickController) {
     val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
     val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
+    val castingItem by controller.castingItem.collectAsState()
     val manualLabel = stringResource(R.string.connect_manual)
     val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
     var manualOpen by remember { mutableStateOf(false) }
+    var scanOpen by remember { mutableStateOf(false) }
     val haptics = rememberFlickTouchHaptics()
 
     // Map the typed pairing outcome to localized copy (never raw exception text).
@@ -127,14 +134,27 @@ fun ConnectScreen(controller: FlickController) {
     // Every accepted QR is a new launch event. Keying the sheet by eventId discards
     // prior host/port/code text before any pairing socket can open.
     LaunchedEffect(pendingPairLaunch?.eventId) {
-        if (pendingPairLaunch != null) manualOpen = true
+        if (pendingPairLaunch != null) {
+            scanOpen = false
+            manualOpen = true
+        }
     }
-    LaunchedEffect(pairError) { if (pairError == PairErrorKind.INVALID_QR) manualOpen = false }
+    LaunchedEffect(pairError) {
+        if (pairError == PairErrorKind.INVALID_QR) {
+            scanOpen = false
+            manualOpen = false
+        }
+    }
 
     // The blue row is the recommendation: whichever TV the code sheet is open for,
     // otherwise the first one advertising itself awake (discovery sorts READY first).
     val featuredHost = pairTarget?.host
         ?: devices.firstOrNull { it.state == TvAvailability.READY }?.host
+
+    // The dock floats over this surface too, above the nav, so the foot of the scroll has
+    // to clear both of them while a cast is live — otherwise the last device row and the
+    // footer actions sit under a bar that answers taps meant for them.
+    val bottomClearance = 116.dp + if (castingItem != null) NowPlayingDockClearance else 0.dp
 
     Column(
         Modifier
@@ -143,7 +163,7 @@ fun ConnectScreen(controller: FlickController) {
             .statusBarsPadding()
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 116.dp),
+            .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = bottomClearance),
         verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -182,7 +202,8 @@ fun ConnectScreen(controller: FlickController) {
         }
 
         PairQrCard(
-            onClick = {
+            onScan = { scanOpen = true },
+            onEnterCode = {
                 val single = devices.singleOrNull { it.tvId != null }
                 if (single != null) controller.selectDevice(single) else manualOpen = true
             },
@@ -242,6 +263,58 @@ fun ConnectScreen(controller: FlickController) {
                 },
             )
         }
+    } else if (scanOpen) {
+        ScanSheet(
+            onPayload = { raw ->
+                // The scanner is only a second way to obtain the launch string: it goes
+                // through the deep link's parser and the same controller entry point,
+                // under a freshly minted event id. The endpoint it carries stays an
+                // untrusted prefill that the code typed off the TV has to authorize.
+                scanOpen = false
+                controller.acceptPairLaunch(
+                    IncomingPairEvent(PairLaunchEventIds.next(), PairLaunch.parse(raw)),
+                )
+            },
+            onEnterCode = {
+                scanOpen = false
+                manualOpen = true
+            },
+            onDismiss = { scanOpen = false },
+        )
+    }
+}
+
+/**
+ * The camera route into pairing. It ends where the QR deep link ends — at the manual
+ * sheet with the address filled in and the code still to type.
+ */
+@Composable
+private fun ScanSheet(
+    onPayload: (String) -> Unit,
+    onEnterCode: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    BottomSheet(onDismiss = onDismiss) {
+        SheetGrabber()
+        Text(
+            stringResource(R.string.scan_heading),
+            style = FlickText.titleLarge.copy(color = colors.onSurface),
+        )
+        Text(
+            stringResource(R.string.scan_sub),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            modifier = Modifier.padding(top = 6.dp, bottom = 16.dp),
+        )
+        QrScannerPanel(onPayload = onPayload)
+        Spacer(Modifier.height(14.dp))
+        // Reachable in every scanner state, including the ones with no camera to offer.
+        FlickSubtleButton(
+            text = stringResource(R.string.scan_manual_instead),
+            onClick = onEnterCode,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
     }
 }
 

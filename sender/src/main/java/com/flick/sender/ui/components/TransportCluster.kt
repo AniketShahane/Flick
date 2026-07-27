@@ -9,7 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -173,7 +172,7 @@ fun PrimaryPlayButton(
     }
 }
 
-/** ±10s skip — the arc glyph with the seek amount overlaid (the vector can't carry text). */
+/** ±10s skip — the replay ring with the seek amount set inside its bore (a vector can't carry text). */
 @Composable
 fun SeekButton(
     forward: Boolean,
@@ -204,11 +203,12 @@ fun SeekButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(imageVector = glyph, contentDescription = null, tint = tint, modifier = Modifier.size(size * 0.5f))
+        // The ring is centred on its own 24dp grid and the numerals are set at the size
+        // its bore clears, so both take the key's centre with no nudge between them.
+        Icon(imageVector = glyph, contentDescription = null, tint = tint, modifier = Modifier.size(size * SeekGlyph))
         Text(
             text = stringResource(R.string.np_seek_seconds),
-            style = FlickText.monoBadge.copy(color = tint),
-            modifier = Modifier.offset(y = size * 0.10f),
+            style = FlickText.monoSmall.copy(color = tint),
         )
     }
 }
@@ -334,3 +334,6 @@ private fun DrawScope.drawFabBloom(outer: MorphSilhouette, inner: MorphSilhouett
 
 private val FabSize = 76.dp
 private val SeekSize = 60.dp
+
+/** Glyph box as a share of the key: any smaller and the ring's bore crowds the "10". */
+private const val SeekGlyph = 0.58f

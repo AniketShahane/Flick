@@ -20,6 +20,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondOutputStream
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -27,6 +28,8 @@ import io.ktor.server.routing.head
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.OutputStream
@@ -42,6 +45,9 @@ import kotlin.coroutines.cancellation.CancellationException
  *                         streamed straight off the content:// file descriptor.
  *                         {token} must match the current per-session token or the
  *                         request is answered 404 (never revealing why).
+ *   GET/HEAD /s/{token} — the sideloaded subtitle file, whole-file 200 only, under
+ *                         its OWN token and a hard size cap. Same Host pin, same
+ *                         constant-time compare, same identical 404.
  *   GET      /ping      — 200 "ok" health check (unauthenticated: exposes no bytes).
  *
  * The whole point of the spike is zero-stall direct play: we NEVER copy the file
@@ -68,6 +74,11 @@ class MediaHttpServer(context: Context) {
     // clients can't starve an earlier waiter. Process-wide: one server at a time.
     private val transferPermits = Semaphore(MAX_CONCURRENT_TRANSFERS, true)
 
+    // Subtitles get their own pool: their source is an arbitrary DocumentsProvider whose
+    // read can block far longer than a local file, and that must not consume a permit the
+    // video body needs.
+    private val subtitlePermits = Semaphore(MAX_CONCURRENT_SUBTITLE_READS, true)
+
     /**
      * The (uri, token) pair currently served, published as ONE immutable object via a
      * single atomic reference. They were two separate @Volatile fields, which let a
@@ -75,8 +86,15 @@ class MediaHttpServer(context: Context) {
      * paired with the not-yet-overwritten tokenA) — a TOCTOU that could stream video B
      * under the stale token. Each request captures this reference once, so uri and
      * token are always the matched pair the session actually published.
+     *
+     * The sideloaded subtitle rides INSIDE the same object for the same reason: its
+     * own (uri, token) pair must never be observable against a different video, and
+     * swapping or revoking it must never be observable half-applied either.
      */
-    private data class ServedSession(val uri: Uri, val token: String)
+    private data class ServedSession(val uri: Uri, val token: String, val subtitle: SubtitleSource?)
+
+    /** The sideloaded subtitle currently served, under a token independent of the video's. */
+    data class SubtitleSource(val uri: Uri, val token: String)
 
     private val servedSession = AtomicMediaSession<ServedSession>()
 
@@ -88,16 +106,17 @@ class MediaHttpServer(context: Context) {
     val isRunning: Boolean get() = synchronized(lock) { server != null }
 
     /**
-     * Start serving [uri] under [token], bound to [bindHost] (the phone's LAN IP).
-     * If the server is already up on the same host, just swaps the served URI +
-     * token (no restart). If the host changed (LAN IP moved), the engine is torn
-     * down and rebound. Throws if the socket cannot be bound.
+     * Start serving [uri] under [token] (plus the optional [subtitle] under its own
+     * independent token), bound to [bindHost] (the phone's LAN IP). If the server is
+     * already up on the same host, just swaps the served session (no restart). If the
+     * host changed (LAN IP moved), the engine is torn down and rebound. Throws if the
+     * socket cannot be bound.
      */
-    fun start(uri: Uri, token: String, bindHost: String) {
+    fun start(uri: Uri, token: String, subtitle: SubtitleSource?, bindHost: String) {
         synchronized(lock) {
             // Publish the new session target atomically before (re)binding so no request
             // can observe a live socket with a stale token/URI (or a mismatched pair).
-            servedSession.publish(ServedSession(uri, token))
+            servedSession.publish(ServedSession(uri, token, subtitle))
 
             val running = server
             if (running != null && boundHost == bindHost) return
@@ -128,6 +147,23 @@ class MediaHttpServer(context: Context) {
             server = engine
             // Length only — the token itself is the media capability.
             FlickLog.i("bind", "media server $bindHost:$SERVER_PORT tokenLen=${token.length}")
+        }
+    }
+
+    /**
+     * Attach, swap or (with a null [subtitle]) revoke the sideloaded subtitle of the
+     * live session, leaving the video's URI and token untouched so playback is not
+     * interrupted. Every mutation of the served session happens under [lock] and lands
+     * as one atomic publish, so a request thread still only ever sees a matched set.
+     * Returns false when nothing is being served — a subtitle can never be armed
+     * against no video.
+     */
+    fun setSubtitle(subtitle: SubtitleSource?): Boolean {
+        synchronized(lock) {
+            if (server == null) return false
+            val current = servedSession.snapshot() ?: return false
+            servedSession.publish(current.copy(subtitle = subtitle))
+            return true
         }
     }
 
@@ -166,6 +202,111 @@ class MediaHttpServer(context: Context) {
             // can never shadow the real path segment we authenticate against.
             get("/v/{token}") { handleVideo(call, call.pathParameters["token"]) }
             head("/v/{token}") { handleVideo(call, call.pathParameters["token"]) }
+            get("/s/{token}") { handleSubtitle(call, call.pathParameters["token"]) }
+            head("/s/{token}") { handleSubtitle(call, call.pathParameters["token"]) }
+        }
+    }
+
+    /**
+     * Serves the sideloaded subtitle as a whole-file 200. Deliberately has no Range
+     * machinery: a subtitle is kilobytes, Media3 reads it in one shot, and an
+     * unranged route is one fewer parser between the LAN and a file descriptor.
+     */
+    private suspend fun handleSubtitle(call: ApplicationCall, pathToken: String?) {
+        TransferTelemetry.markRequest()
+
+        // Same anti-DNS-rebinding pin as the video route: the real TV addresses us by
+        // the bound LAN IP literal, so anything carrying a DNS name is rejected.
+        val boundIp = boundHost
+        if (boundIp == null ||
+            !call.request.host().trim().equals(boundIp, ignoreCase = true)
+        ) {
+            FlickLog.w("http", "reject reason=host_pin status=403")
+            call.respondText("Forbidden", status = HttpStatusCode.Forbidden)
+            return
+        }
+
+        // Independent token, captured from the same single session snapshot as the
+        // video's so the pair can never be observed mid-retarget. Constant-time
+        // compare, and every miss answers the byte-identical 404 the video route
+        // answers, so a probe cannot learn whether a subtitle is even attached.
+        val subtitle = servedSession.snapshot()?.subtitle
+        if (subtitle == null || pathToken == null ||
+            !MessageDigest.isEqual(pathToken.toByteArray(), subtitle.token.toByteArray())
+        ) {
+            FlickLog.w("http", "reject reason=bad_token status=404")
+            call.respondText("Not found", status = HttpStatusCode.NotFound)
+            return
+        }
+
+        // Hard cap, enforced before a byte is opened. A file whose size the provider
+        // will not report is refused for the same reason an oversized one is: this
+        // route must never become a bulk-file egress path.
+        val size = MediaMeta.resolveSize(resolver, subtitle.uri)
+        if (size < 0L || size > MAX_SUBTITLE_BYTES) {
+            FlickLog.w("http", "reject reason=subtitle_size status=404")
+            call.respondText("Not found", status = HttpStatusCode.NotFound)
+            return
+        }
+
+        val contentType = subtitleContentType(
+            runCatching { MediaMeta.resolveName(resolver, subtitle.uri) }.getOrNull(),
+        )
+        if (call.request.httpMethod == HttpMethod.Head) {
+            call.respond(HeadResponse(HttpStatusCode.OK, contentType, size))
+            return
+        }
+
+        // A separate pool from the video permits on purpose: a SAF pick can be backed by
+        // a cloud DocumentsProvider whose read blocks for minutes, and a subtitle must
+        // never be able to starve the stream this server exists to serve.
+        if (!subtitlePermits.tryAcquire()) {
+            FlickLog.w("http", "reject reason=busy status=503")
+            call.respondText("Server busy", status = HttpStatusCode.ServiceUnavailable)
+            return
+        }
+        val body = try {
+            // The blocking read cannot be interrupted, so the timeout bounds the permit
+            // rather than the thread: the TV gives up long before a stalled provider does.
+            withTimeoutOrNull(SUBTITLE_READ_TIMEOUT_MS) { readSubtitle(subtitle.uri) }
+        } finally {
+            subtitlePermits.release()
+        }
+        if (body == null) {
+            FlickLog.w("http", "reject reason=subtitle_read status=404")
+            call.respondText("Not found", status = HttpStatusCode.NotFound)
+            return
+        }
+        call.respondBytes(body, contentType, HttpStatusCode.OK)
+    }
+
+    /**
+     * Reads the whole subtitle into memory, refusing anything past the cap. The
+     * declared size is only a hint, so the ceiling is re-checked against the bytes
+     * actually produced — a provider that under-reports cannot widen the route.
+     */
+    private suspend fun readSubtitle(uri: Uri): ByteArray? = withContext<ByteArray?>(Dispatchers.IO) {
+        try {
+            resolver.openInputStream(uri).use { input ->
+                if (input == null) return@withContext null
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(SUBTITLE_BUFFER_SIZE)
+                var total = 0L
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    total += read
+                    if (total > MAX_SUBTITLE_BYTES) return@withContext null
+                    out.write(buffer, 0, read)
+                }
+                out.toByteArray()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Revoked grant, deleted file, unreadable provider: never take the server down.
+            FlickLog.w("http", "subtitle read failed ${e.javaClass.simpleName}")
+            null
         }
     }
 
@@ -349,13 +490,28 @@ class MediaHttpServer(context: Context) {
 
     companion object {
         private const val BUFFER_SIZE = 256 * 1024
+        private const val SUBTITLE_BUFFER_SIZE = 16 * 1024
+        private const val MAX_SUBTITLE_BYTES = SubtitlePolicy.MAX_BYTES
 
         // One TV plays one stream; a small pool absorbs its parallel range probes
         // while capping what a LAN flood can open at once.
         private const val MAX_CONCURRENT_TRANSFERS = 4
+        private const val MAX_CONCURRENT_SUBTITLE_READS = 2
+
+        // Shorter than the engine's idle timeout, so a stalled provider frees the permit
+        // before the TV's own read gives up on the connection.
+        private const val SUBTITLE_READ_TIMEOUT_MS = 20_000L
         private const val IDLE_TIMEOUT_SECONDS = 30
 
         private val FALLBACK_TYPE = ContentType("video", "mp4")
+        private val SUBTITLE_FALLBACK_TYPE = ContentType("text", "plain")
+
+        private fun subtitleContentType(displayName: String?): ContentType =
+            try {
+                ContentType.parse(SubtitlePolicy.mimeFor(displayName))
+            } catch (_: Exception) {
+                SUBTITLE_FALLBACK_TYPE
+            }
 
         private fun safeContentType(mime: String?): ContentType {
             if (mime.isNullOrBlank()) return FALLBACK_TYPE
@@ -437,6 +593,44 @@ class MediaHttpServer(context: Context) {
             // Well-formed but out of range (incl. empty/unknown file) -> 416.
             if (total <= 0L || start >= total) return RangeResult.Unsatisfiable
             return RangeResult.Partial(start, end)
+        }
+    }
+}
+
+/**
+ * Pure serving policy for the sideloaded-subtitle route, kept out of the server
+ * class so both the cap and the type mapping are testable on a plain JVM.
+ */
+internal object SubtitlePolicy {
+
+    /**
+     * A subtitle is kilobytes. The cap is what stops `/s/{token}` from being turned
+     * into a bulk file-exfiltration path once a token leaks.
+     */
+    const val MAX_BYTES: Long = 5L * 1024L * 1024L
+
+    private const val SUBRIP = "application/x-subrip"
+    private const val WEBVTT = "text/vtt"
+    private const val SSA = "text/x-ssa"
+    private const val PLAIN = "text/plain"
+
+    /**
+     * Content type keyed off the file's own extension, never the provider's declared
+     * MIME: DocumentsProviders routinely report `application/octet-stream` for both
+     * formats, and Media3 picks its parser from what we send.
+     */
+    fun mimeFor(displayName: String?): String {
+        val name = displayName?.trim().orEmpty()
+        val dot = name.lastIndexOf('.')
+        // A leading dot is a hidden file, not an extension, and a trailing one names nothing.
+        if (dot <= 0 || dot == name.length - 1) return PLAIN
+        return when (name.substring(dot + 1).lowercase()) {
+            "srt" -> SUBRIP
+            "vtt", "webvtt" -> WEBVTT
+            // SubStation Alpha has its own Media3 parser; declaring it as SubRip would
+            // hand an ASS payload to the wrong one and render nothing.
+            "ass", "ssa" -> SSA
+            else -> PLAIN
         }
     }
 }

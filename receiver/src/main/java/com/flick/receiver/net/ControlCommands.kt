@@ -1,8 +1,45 @@
 package com.flick.receiver.net
 
+/**
+ * A sideloaded subtitle the sender is serving alongside the media, already
+ * validated against the same pinning rules as the media URL. Absent means the
+ * cast carries no external subtitle at all — the container's own text tracks
+ * are the only ones offered.
+ */
+data class ExternalSubtitle(
+    val url: String,
+    val label: String,
+    /** BCP-47; null when the sender could not determine one. */
+    val language: String?,
+)
+
 interface ControlCommands {
     /** Returns the retained outcome synchronously, before the server acknowledges a cast. */
-    fun onLoadMedia(controlLeaseGeneration: Long, castId: String, url: String, title: String, durationMs: Long, startMs: Long): ControlCastResult
+    fun onLoadMedia(
+        controlLeaseGeneration: Long,
+        castId: String,
+        url: String,
+        title: String,
+        durationMs: Long,
+        startMs: Long,
+        subtitle: ExternalSubtitle?,
+    ): ControlCastResult
+    /**
+     * A repeated `loadMedia` for the cast that is already running. Returns a new
+     * outcome only when the frame asks for something the running session cannot
+     * express without re-preparing — today, a different external subtitle.
+     * Returning null means nothing actionable changed and the retained result is
+     * still the honest answer, so an ordinary retransmit never costs a re-buffer.
+     */
+    fun onReloadMedia(
+        controlLeaseGeneration: Long,
+        castId: String,
+        url: String,
+        title: String,
+        durationMs: Long,
+        startMs: Long,
+        subtitle: ExternalSubtitle?,
+    ): ControlCastResult?
     fun replayResult(castId: String): ControlCastResult?
     /** Called only for the currently-owned control generation. */
     fun onControlLost(generation: Long)

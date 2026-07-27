@@ -37,10 +37,21 @@ import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.screens.FlickApp
 import com.flick.sender.ui.theme.FlickTheme
 import com.flick.sender.util.FlickLog
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * One counter for the whole process. The QR deep link and the in-app scanner both mint
+ * launch events, and a repeated id would let a stale sheet's dismiss or submit act on a
+ * newer launch. Never returns 0 — the controller reads 0 as "typed by hand".
+ */
+object PairLaunchEventIds {
+    private val counter = AtomicLong(0L)
+
+    fun next(): Long = counter.incrementAndGet()
+}
 
 class MainActivity : ComponentActivity() {
     private val pairEvents = kotlinx.coroutines.flow.MutableStateFlow<IncomingPairEvent?>(null)
-    private var nextPairEventId = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,7 +92,7 @@ class MainActivity : ComponentActivity() {
         // Scheme and host only. A v3 payload is not secret, but logging raw URIs is
         // a habit that eventually leaks one.
         if (raw != null) FlickLog.i("pair", "launch intent scheme=${raw.scheme} host=${raw.host}")
-        if (parsed != null) pairEvents.value = IncomingPairEvent(++nextPairEventId, parsed)
+        if (parsed != null) pairEvents.value = IncomingPairEvent(PairLaunchEventIds.next(), parsed)
     }
 }
 

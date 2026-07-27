@@ -79,8 +79,12 @@ import com.flick.receiver.ui.components.GlassPillContainer
 import com.flick.receiver.ui.components.SpecChip
 import com.flick.receiver.ui.components.TelemetryReveal
 import com.flick.receiver.ui.components.TransportCluster
+import com.flick.receiver.ui.components.TvOriginReveal
+import com.flick.receiver.ui.components.TvRevealOrigin
 import com.flick.receiver.ui.components.TvScrubBar
 import com.flick.receiver.ui.components.VolumeCells
+import com.flick.receiver.ui.components.rememberTvRevealOrigin
+import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
@@ -656,6 +660,11 @@ private fun AnimatedVisibilityScope.BottomChrome(
         if (interactive) runCatching { playFocusRequester.requestFocus() }
     }
     val reducedMotion = LocalReducedMotion.current
+    // Where each side panel is summoned from. The card publishes its own centre
+    // while it holds focus, and a D-pad OK can only reach a card that does — so
+    // the recorded point is always the control the viewer actually pressed.
+    val subtitlesOrigin = rememberTvRevealOrigin()
+    val metricsOrigin = rememberTvRevealOrigin()
     // Keep the last panel composed through its exit animation. The external state
     // can already be None (and focus restored to its launcher) without leaving a
     // focusable, semantically-live panel over the film.
@@ -746,24 +755,46 @@ private fun AnimatedVisibilityScope.BottomChrome(
                             .align(if (fromRight) Alignment.BottomEnd else Alignment.BottomStart)
                             .animateBounds(panelScope, boundsTransform = PanelTravel),
                     ) {
-                        when (renderedPanel) {
-                            PlaybackPanel.Subtitles -> SubtitlesPanel(
-                                tracks = subtitleTracks,
-                                size = subtitleSize,
-                                onSelectTrack = onSelectSubtitleTrack,
-                                onSelectSize = onSelectSubtitleSize,
-                                onDismiss = { onOpenPanel(PlaybackPanel.None) },
-                                entryKey = panelEntryKey,
-                            )
+                        // The panel's glass is born at the card that summoned it —
+                        // this screen's one hero moment, and the only reveal on it.
+                        //
+                        // `key` restarts the wipe once per open, including a reopen
+                        // that arrives while the previous exit is still retained.
+                        // Inside that key the latch only ever goes false → true, so
+                        // the surface stays fully drawn while the chrome above runs
+                        // the dismissal: the exit is the parent's, in both halves.
+                        key(panelEntryKey) {
+                            var revealed by remember { mutableStateOf(false) }
+                            LaunchedEffect(Unit) { revealed = true }
+                            TvOriginReveal(
+                                visible = revealed,
+                                origin = if (renderedPanel == PlaybackPanel.Metrics) {
+                                    metricsOrigin
+                                } else {
+                                    subtitlesOrigin
+                                },
+                                color = FlickColor.GlassPanel,
+                            ) {
+                                when (renderedPanel) {
+                                    PlaybackPanel.Subtitles -> SubtitlesPanel(
+                                        tracks = subtitleTracks,
+                                        size = subtitleSize,
+                                        onSelectTrack = onSelectSubtitleTrack,
+                                        onSelectSize = onSelectSubtitleSize,
+                                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                                        entryKey = panelEntryKey,
+                                    )
 
-                            PlaybackPanel.Metrics -> StreamMetricsPanel(
-                                diagnostics = diagnostics,
-                                throughput = throughput,
-                                onDismiss = { onOpenPanel(PlaybackPanel.None) },
-                                entryKey = panelEntryKey,
-                            )
+                                    PlaybackPanel.Metrics -> StreamMetricsPanel(
+                                        diagnostics = diagnostics,
+                                        throughput = throughput,
+                                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                                        entryKey = panelEntryKey,
+                                    )
 
-                            PlaybackPanel.None -> Unit
+                                    PlaybackPanel.None -> Unit
+                                }
+                            }
                         }
                     }
                 }
@@ -794,6 +825,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
                     bufferedMs = bufferedMs,
                     targetMs = targetMs,
                     seeking = seeking,
+                    playing = playing,
                 )
                 TransportControlRow(
                     playing = playing,
@@ -816,6 +848,8 @@ private fun AnimatedVisibilityScope.BottomChrome(
                     metricsCardFocusRequester = metricsCardFocusRequester,
                     volumeFocusRequester = volumeFocusRequester,
                     endSessionFocusRequester = endSessionFocusRequester,
+                    subtitlesRevealOrigin = subtitlesOrigin,
+                    metricsRevealOrigin = metricsOrigin,
                     interactive = interactive,
                 )
             }
@@ -900,6 +934,7 @@ private fun TransportScrubRow(
     bufferedMs: Long,
     targetMs: Long,
     seeking: Boolean,
+    playing: Boolean,
 ) {
     // While seeking the flanking timecodes read the target the user is steering
     // to; the bar itself keeps drawing the confirmed ghost behind it.
@@ -924,6 +959,10 @@ private fun TransportScrubRow(
             bufferedMs = bufferedMs,
             targetMs = targetMs,
             seeking = seeking,
+            // Without this the bar's only gate is its 600 ms clock-stall detector,
+            // which counts a seek landing while paused as the film running — so the
+            // wave swells over a frozen frame.
+            playing = playing,
             modifier = Modifier.weight(1f),
         )
         Text(
@@ -972,6 +1011,8 @@ private fun TransportControlRow(
     metricsCardFocusRequester: FocusRequester,
     volumeFocusRequester: FocusRequester,
     endSessionFocusRequester: FocusRequester?,
+    subtitlesRevealOrigin: TvRevealOrigin,
+    metricsRevealOrigin: TvRevealOrigin,
     interactive: Boolean,
 ) {
     FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
@@ -994,14 +1035,19 @@ private fun TransportControlRow(
                         else PlaybackPanel.Subtitles,
                     )
                 },
-                modifier = Modifier.focusProperties {
-                    up = when {
-                        openPanel == PlaybackPanel.Subtitles -> FocusRequester.Default
-                        endSessionFocusRequester != null -> endSessionFocusRequester
-                        else -> FocusRequester.Default
-                    }
-                    down = playFocusRequester
-                },
+                // Applied at exactly one level, outside the button's own focus
+                // target, so the centre it records is the card's layout centre
+                // rather than a point inside the focus lift.
+                modifier = Modifier
+                    .tvRevealSource(subtitlesRevealOrigin)
+                    .focusProperties {
+                        up = when {
+                            openPanel == PlaybackPanel.Subtitles -> FocusRequester.Default
+                            endSessionFocusRequester != null -> endSessionFocusRequester
+                            else -> FocusRequester.Default
+                        }
+                        down = playFocusRequester
+                    },
             )
         }
 
@@ -1058,13 +1104,15 @@ private fun TransportControlRow(
                         else PlaybackPanel.Metrics,
                     )
                 },
-                modifier = Modifier.focusProperties {
-                    up = if (openPanel == PlaybackPanel.Metrics) {
-                        FocusRequester.Default
-                    } else {
-                        volumeFocusRequester
-                    }
-                },
+                modifier = Modifier
+                    .tvRevealSource(metricsRevealOrigin)
+                    .focusProperties {
+                        up = if (openPanel == PlaybackPanel.Metrics) {
+                            FocusRequester.Default
+                        } else {
+                            volumeFocusRequester
+                        }
+                    },
             )
         }
     }

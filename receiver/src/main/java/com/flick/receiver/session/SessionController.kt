@@ -8,6 +8,7 @@ import androidx.media3.common.PlaybackException
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.net.ControlCastResult
 import com.flick.receiver.net.ControlCommands
+import com.flick.receiver.net.ExternalSubtitle
 import com.flick.receiver.net.PreflightProbe
 import com.flick.receiver.net.ProbeResult
 import com.flick.receiver.player.PlaybackFailureClassifier
@@ -60,6 +61,7 @@ class SessionController(
     private var startupRetries = 0
     private var startupDeadlineElapsedMs = 0L
     private var startupUrl: String? = null
+    private var startupSubtitle: ExternalSubtitle? = null
     private var startupPositionMs = 0L
     private var retainedResult: ControlCastResult? = null
     private var terminal: ((String, CastFailureCode, Boolean, Int?, Boolean) -> Unit)? = null
@@ -85,8 +87,49 @@ class SessionController(
         title: String,
         durationMs: Long,
         startMs: Long,
+        subtitle: ExternalSubtitle?,
     ): ControlCastResult {
         replayResult(castId)?.let { return it }
+        return beginLoad(controlLeaseGeneration, castId, url, title, durationMs, startMs, subtitle)
+    }
+
+    /**
+     * The phone re-issues `loadMedia` for the SAME castId when the user attaches or
+     * removes an external subtitle mid-watch, because the served file, not the cast,
+     * is what changed. Control ownership classifies that as a duplicate, so without
+     * this the frame would be answered from the retained result and the selection
+     * would never reach the player. Only a changed subtitle re-prepares: an ordinary
+     * retransmit still replays and costs the user nothing.
+     */
+    override fun onReloadMedia(
+        controlLeaseGeneration: Long,
+        castId: String,
+        url: String,
+        title: String,
+        durationMs: Long,
+        startMs: Long,
+        subtitle: ExternalSubtitle?,
+    ): ControlCastResult? {
+        if (castId != this.castId || controlLeaseGeneration != this.controlLeaseGeneration) return null
+        if (subtitle == startupSubtitle) return null
+        FlickLog.i("cast", "reload reason=subtitle castIdFp=${FlickLog.fp(castId)} extSub=${subtitle != null}")
+        return beginLoad(controlLeaseGeneration, castId, url, title, durationMs, startMs, subtitle)
+    }
+
+    /**
+     * The load transaction itself. The old player keeps rendering until
+     * [startPlayer] replaces it, so a reload never blanks the TV any earlier than
+     * the new prepare demands.
+     */
+    private fun beginLoad(
+        controlLeaseGeneration: Long,
+        castId: String,
+        url: String,
+        title: String,
+        durationMs: Long,
+        startMs: Long,
+        subtitle: ExternalSubtitle?,
+    ): ControlCastResult {
         invalidate(clearRetained = true)
         val accepted = ControlCastResult.Accepted(castId)
         retainedResult = accepted
@@ -96,6 +139,7 @@ class SessionController(
         seekTargetMs = startMs
         stage = MediaStage.Checking(castId, controlLeaseGeneration)
         startupUrl = url
+        startupSubtitle = subtitle
         startupPositionMs = startMs
         startupRetries = 0
         startupDeadlineElapsedMs = SystemClock.elapsedRealtime() + STARTUP_DEADLINE_MS
@@ -158,6 +202,7 @@ class SessionController(
             url = url,
             startMs = startupPositionMs,
             mediaId = mediaIdFor(castId, generation),
+            subtitle = startupSubtitle,
             onFirstFrame = firstFrame@{
                 if (!gate.isCurrent(castId, generation)) return@firstFrame
                 startupDeadlineJob?.cancel()
@@ -293,6 +338,7 @@ class SessionController(
         startupRetries = 0
         startupDeadlineElapsedMs = 0L
         startupUrl = null
+        startupSubtitle = null
         startupPositionMs = 0L
     }
 

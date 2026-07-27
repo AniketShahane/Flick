@@ -120,13 +120,19 @@ private val PairBodyMaxWidth = 500.dp
 private const val PairScrollFontScale = 1.15f
 
 /**
- * The staged entrance: six children in reading order, each led by a tenth of the
+ * The staged entrance: five children in reading order, each led by a tenth of the
  * run. On the column's spatial spring that is ~45 ms — long enough for the eye to
  * follow the order, short enough that the screen is settled before anyone could
  * act on it.
+ *
+ * The lockup at the top of the column is deliberately NOT among them. It is the
+ * one element pair, idle and the playback chrome all carry, so it is what the
+ * shell exchanges these surfaces around: it holds still while the column
+ * assembles beneath it, which is the only way a screen-owned entrance can read as
+ * something carried across rather than something that arrived with the screen.
  */
 private const val PairStageLead = 0.1f
-private const val PairStageCount = 6
+private const val PairStageCount = 5
 
 /** How far a staged child rises into place. */
 private val PairStageRise = 12.dp
@@ -270,19 +276,19 @@ fun PairScreen(
                 FlickWordmark(
                     // A persistent header lockup, not a headline: it identifies the
                     // room, and the pairing headline under it carries the message.
+                    // The constant — held, never staged; see [PairStageCount].
                     markSize = 30.dp,
                     textSizeSp = 18,
                     eyebrow = stringResource(
                         R.string.receiver_eyebrow,
                         tvName.uppercase(Locale.getDefault()),
                     ),
-                    modifier = Modifier.pairStage(stage, index = 0),
                 )
                 Text(
                     text = stringResource(R.string.pair_title),
                     style = FlickType.display(sizeSp = 40),
                     color = Color.White,
-                    modifier = Modifier.pairStage(stage, index = 1),
+                    modifier = Modifier.pairStage(stage, index = 0),
                 )
                 Text(
                     text = highlightedInstructions(),
@@ -290,7 +296,7 @@ fun PairScreen(
                     color = FlickColor.OnSurfaceDim,
                     modifier = Modifier
                         .widthIn(max = PairBodyMaxWidth)
-                        .pairStage(stage, index = 2),
+                        .pairStage(stage, index = 1),
                 )
 
                 // `transitionSpec` is not a composable lambda, so the scheme specs
@@ -316,10 +322,10 @@ fun PairScreen(
                                 spacedCode = spacedCode,
                                 locked = locked,
                                 codeExpiresAtElapsedMs = codeExpiresAtElapsedMs,
-                                modifier = Modifier.pairStage(stage, index = 3),
+                                modifier = Modifier.pairStage(stage, index = 2),
                             )
                             Row(
-                                modifier = Modifier.pairStage(stage, index = 4),
+                                modifier = Modifier.pairStage(stage, index = 3),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
@@ -332,14 +338,14 @@ fun PairScreen(
                             }
                         }
                     } else {
-                        WaitingForNetworkCard(modifier = Modifier.pairStage(stage, index = 3))
+                        WaitingForNetworkCard(modifier = Modifier.pairStage(stage, index = 2))
                     }
                 }
 
                 // The two actions are one beacon group, so the ring slides across
                 // rather than jumping. The host carries the stage layer, so the
                 // ring fades and rises with the row it belongs to.
-                FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 4)) {
+                FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 3)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md)) {
                         // Gated off while the enlarged-code overlay is up so they are
                         // not focusable behind the scrim (clickable(enabled=false)
@@ -379,7 +385,7 @@ fun PairScreen(
                     bindUptimeSec = bindUptimeSec,
                     rebindCount = rebindCount,
                     lastTeardown = lastTeardown,
-                    modifier = Modifier.pairStageScaled(stage, index = 5),
+                    modifier = Modifier.pairStageScaled(stage, index = 4),
                 )
             }
         }

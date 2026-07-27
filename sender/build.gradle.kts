@@ -83,6 +83,14 @@ dependencies {
     implementation("io.ktor:ktor-client-core:3.1.3")
     implementation("io.ktor:ktor-client-cio:3.1.3")
     implementation("io.ktor:ktor-client-websockets:3.1.3")
+    // In-app pairing scanner: CameraX preview + frame analysis, decoded by the same
+    // ZXing version the receiver uses to GENERATE the QR, so one library covers both.
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.zxing:core:3.5.3")
+
     // Filmic video-frame stills for the gallery + the scrub preview loader.
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-video:2.7.0")

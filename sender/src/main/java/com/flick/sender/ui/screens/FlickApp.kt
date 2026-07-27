@@ -10,6 +10,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -21,17 +23,15 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.Stable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,65 +40,52 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.isTraversalGroup
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
-import com.flick.sender.R
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
 import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.ui.components.FlickBottomNav
-import com.flick.sender.ui.theme.FlickCorners
-import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.components.NowPlayingDock
+import com.flick.sender.ui.components.RevealOrigin
+import com.flick.sender.ui.components.RevealTarget
+import com.flick.sender.ui.components.originRevealMask
+import com.flick.sender.ui.components.remoteCardBounds
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.delay
 
-private enum class Overlay { QUALITY, ADVISORIES, DIAGNOSTICS }
-
-/** The shell's only transient surface: one message at a time, self-dismissing. */
-@Stable
-private class ShellToastState {
-    var message by mutableStateOf("")
-        private set
-    var visible by mutableStateOf(false)
-        private set
-
-    /** Bumped on every raise so a repeat tap restarts the dwell instead of extending it. */
-    var serial by mutableStateOf(0L)
-        private set
-
-    fun show(text: String) {
-        message = text
-        visible = true
-        serial++
-    }
-
-    fun dismiss() {
-        visible = false
-    }
+/** The floating surfaces, each paired with the origin channel that may summon it. */
+private enum class Overlay(val summonedAs: RevealTarget) {
+    QUALITY(RevealTarget.QUALITY),
+    ADVISORIES(RevealTarget.ADVISORIES),
+    DIAGNOSTICS(RevealTarget.DIAGNOSTICS),
 }
 
 /**
- * Nav host for the phone. Every route pair takes one of five deliberate arms (see
+ * What the chrome was showing before the current route. Deliberately not snapshot state:
+ * both fields are read only on the frame a piece of chrome changes visibility, and
+ * observing them would recompose the whole shell a second time on every route change.
+ */
+private class ShellHistory(var destination: ShellDestination, var seat: NavTab)
+
+/**
+ * Nav host for the phone. Every route pair takes one of six deliberate arms (see
  * [routeMotion]); the quality sheet (S10) and advisories (S11) float as overlays over
  * whatever is beneath. There's no nav library — a single [Route] StateFlow drives
  * everything (thumb-first, one column).
  *
- * The whole tree sits in one `SharedTransitionLayout` because a video's decoded frame
- * has to survive four route changes as a single surface: tile -> detail backdrop, then
- * connecting -> the remote's poster.
+ * The whole tree sits in one `SharedTransitionLayout` because two surfaces have to
+ * survive a route change as a single object: a video's decoded frame (tile -> detail
+ * backdrop, connecting -> the remote's poster), and the now-playing dock, whose own
+ * bounds are what the remote grows out of and shrinks back into.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -114,17 +101,53 @@ fun FlickApp(
     val layoutDirection = LocalLayoutDirection.current
     val route by controller.route.collectAsState()
     val connectFromLibrary by controller.connectFromLibrary.collectAsState()
+    // The shell subscribes to the cast record because it renders a decision on it: with
+    // no dock there is nothing for the remote's card to grow out of, and the route pair
+    // has to fall back to a transition of its own.
+    val castingItem by controller.castingItem.collectAsState()
     val showQuality by controller.showQualitySheet.collectAsState()
     val showAdvisories by controller.showAdvisories.collectAsState()
     val showDiagnostics by controller.showDiagnostics.collectAsState()
     val reduceMotion = rememberReduceMotion()
-    // Nav haptics are decided here, not inside the nav bar: a Remote tap can be
-    // refused, and only the shell knows whether the tap moved or raised a toast.
+    // Nav haptics are decided here, not inside the nav bar: only the shell knows whether
+    // a tap moved the app or landed on the seat it was already on.
     val haptics = rememberFlickTouchHaptics()
 
-    val toast = remember { ShellToastState() }
-    val pickATv = stringResource(R.string.toast_pick_a_tv)
-    val pickAVideo = stringResource(R.string.toast_pick_a_video)
+    // The advisories sheet is the shell's one origin-born surface, so the channel is
+    // bound to it: the quality and diagnostics sheets can never inherit a control the
+    // library published, and are born at their own centre instead.
+    val revealOrigin = remember { RevealOrigin(RevealTarget.ADVISORIES) }
+
+    val destination = SenderShellPolicy.destinationOf(route)
+    val dockLive = castingItem != null
+    val navShown = SenderShellPolicy.navVisible(route)
+    val selectedTab = SenderShellPolicy.selectedTab(route)
+    val history = remember { ShellHistory(destination, selectedTab) }
+    // Everything the flight is started with, latched in the composition the route flips
+    // in and never read live afterwards: a cast the TV ends mid-flight would otherwise
+    // swap the specs a running transition began with — removing a fade half way through
+    // it, or handing the dock a slide it can only perform where nobody can see it. The
+    // pair, not the destination, is what decides whether the dock is morphing.
+    val flightDockLive = remember(route) { dockLive }
+    val flightMorph = remember(route) {
+        dockLive && SenderShellPolicy.dockMorph(history.destination, destination)
+    }
+    // Identity rather than the route itself: re-opening the remote while the minimize is
+    // still in the air is a new flight, even though it lands where the last one started.
+    val flight = remember(route) { Any() }
+    var flown by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(flight) {
+        if (flightMorph) delay(MorphFlightMs)
+        flown = flight
+    }
+    // Released once the geometry is out of the air, because after that a cast that ends
+    // has to be able to take the bar out with an exit of its own.
+    val morphing = flightMorph && flown !== flight
+    // The nav outlives the route that dismissed it, so it keeps the seat it was showing:
+    // re-seating the pill for a route the nav does not serve would travel it under the
+    // card that is swallowing it.
+    if (navShown) history.seat = selectedTab
+    SideEffect { history.destination = destination }
 
     // Controller overlay flows are intentionally independent because pairing and
     // playback own their own state. The shell projects them as one visual layer.
@@ -141,12 +164,24 @@ fun FlickApp(
         // to TalkBack until that modal is dismissed.
         Modifier.clearAndSetSemantics {}
     }
-    val selectedTab = SenderShellPolicy.selectedTab(route)
 
     // Owned by the shell, not by the screens: routes cross-dissolve, so two screens are
     // briefly composed at once and per-screen save/restore pairs would fight over the
     // window's single insets controller.
-    SystemBarAppearance(darkBackdrop = SenderShellPolicy.darkBackdrop(route, colors.isLight))
+    val backdropDark = SenderShellPolicy.darkBackdrop(route, colors.isLight)
+    // Under the dock's container transform the bars belong to the card rather than to the
+    // route, and the card does not reach either of them until it is nearly grown — so a
+    // flip INTO the remote waits for it instead of inverting the icons over a canvas that
+    // is still pale. Coming back the card releases both bars within a few frames, so that
+    // flip stays immediate.
+    var barsDark by remember { mutableStateOf(backdropDark) }
+    LaunchedEffect(backdropDark, morphing, reduceMotion) {
+        // Nothing travels when the platform's animators are off, so the card is already
+        // there and the bars have to change hands with it.
+        if (morphing && backdropDark && !reduceMotion) delay(MorphBarsMs)
+        barsDark = backdropDark
+    }
+    SystemBarAppearance(darkBackdrop = barsDark)
 
     // Connect is a dead-end for back only when it's the launch destination (no pairing
     // yet). When it was opened in-flow from Library (cast icon / flick with no TV),
@@ -180,12 +215,29 @@ fun FlickApp(
                     } else {
                         val from = SenderShellPolicy.destinationOf(initialState)
                         val to = SenderShellPolicy.destinationOf(targetState)
-                        when (routeMotion(from, to)) {
+                        when (routeMotion(from, to, flightDockLive)) {
                             // The frame carries the movement, so the chrome only has to get
                             // out of its way: any slower fade would ghost the hero.
                             RouteMotion.HERO ->
                                 fadeIn(motionScheme.fastEffectsSpec()) togetherWith
                                     fadeOut(motionScheme.fastEffectsSpec())
+
+                            // The dock's own bounds are the transition. Nothing here may
+                            // translate, scale or fade: the arriving remote is drawn only
+                            // inside the growing card, and the surface it is leaving is not
+                            // leaving at all — it is being covered, so it is HELD at full
+                            // opacity until the card owns the window and then dropped where
+                            // no one can see it go. A hold is the only way the shell can
+                            // keep a surface alive that has no animation of its own.
+                            RouteMotion.CONTAINER ->
+                                if (to == ShellDestination.NOW_PLAYING) {
+                                    EnterTransition.None togetherWith
+                                        fadeOut(snap(delayMillis = MorphHoldMs))
+                                } else {
+                                    // Coming back, the remote's own card keeps it composed
+                                    // for the whole flight.
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                }
 
                             RouteMotion.LAUNCH ->
                                 (
@@ -231,12 +283,37 @@ fun FlickApp(
                 },
                 label = "route",
             ) { r ->
-                Box(Modifier.fillMaxSize().then(routeSemantics)) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(routeSemantics)
+                        .then(
+                            // Declared on the container, never inside the remote: the
+                            // card has to be the whole window's worth of surface, and the
+                            // screen it wraps knows nothing about the bar it came from.
+                            if (r == Route.NowPlaying) {
+                                Modifier.remoteCardBounds(
+                                    sharedScope = sharedScope,
+                                    animatedScope = this@AnimatedContent,
+                                    // The remote is the surface being left exactly when
+                                    // the route it is handing over to has a dock to land
+                                    // in. A fault or a stop has none, and takes a
+                                    // transition of its own instead. Read off the latch,
+                                    // so a flight that has begun finishes the geometry it
+                                    // started even if the cast dies underneath it.
+                                    leaving = morphing && route != Route.NowPlaying,
+                                )
+                            } else {
+                                Modifier
+                            },
+                        ),
+                ) {
                     when (r) {
                         Route.Connect -> ConnectScreen(controller)
                         Route.Library -> LibraryScreen(
                             controller = controller,
                             onRequestVideoPermission = onRequestVideoPermission,
+                            revealOrigin = revealOrigin,
                             sharedScope = sharedScope,
                             animatedScope = this@AnimatedContent,
                         )
@@ -261,116 +338,118 @@ fun FlickApp(
                 }
             }
 
-            // The nav floats over the route, so it takes the same modal semantics treatment.
-            AnimatedVisibility(
-                visible = SenderShellPolicy.navVisible(route),
-                modifier = Modifier.align(Alignment.BottomCenter).then(routeSemantics),
-                enter = if (reduceMotion) {
-                    EnterTransition.None
-                } else {
-                    fadeIn(motionScheme.defaultEffectsSpec()) +
-                        slideInVertically(motionScheme.defaultSpatialSpec()) { it }
-                },
-                exit = if (reduceMotion) {
-                    ExitTransition.None
-                } else {
-                    fadeOut(motionScheme.fastEffectsSpec()) +
-                        slideOutVertically(motionScheme.defaultSpatialSpec()) { it }
-                },
-                label = "nav",
+            // The dock and the nav are one bottom stack: the dock has to rise off the
+            // nav's top edge, not off the window's. Both float over the route, so both
+            // take the same modal semantics treatment.
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+                    .then(routeSemantics),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                FlickBottomNav(
-                    selected = selectedTab,
-                    onSelect = { tab ->
-                        // Re-selecting the current tab is a no-op: openConnect() also arms the
-                        // in-flow back behavior, which would strand Back on the launch route.
-                        if (tab != selectedTab) {
-                            when (tab) {
-                                NavTab.LIBRARY -> {
-                                    haptics.tabChange()
-                                    controller.openLibrary()
-                                }
-                                NavTab.DEVICES -> {
-                                    haptics.tabChange()
-                                    controller.openConnect()
-                                }
-                                // Read at tap time so the shell never subscribes to cast state
-                                // it does not render.
-                                NavTab.REMOTE -> when (
-                                    SenderShellPolicy.remoteTapOutcome(
-                                        hasConnectedTv = controller.connectedTv.value != null,
-                                        hasActiveSession = SenderNavigationPolicy.canRestoreNowPlaying(
-                                            controller.castStart.value,
-                                            controller.castingItem.value != null,
-                                        ),
-                                    )
-                                ) {
-                                    RemoteTapOutcome.NAVIGATE -> {
-                                        haptics.tabChange()
-                                        controller.restoreNowPlaying()
-                                    }
-                                    RemoteTapOutcome.TOAST_PICK_A_TV -> {
-                                        haptics.reject()
-                                        toast.show(pickATv)
-                                    }
-                                    RemoteTapOutcome.TOAST_PICK_A_VIDEO -> {
-                                        haptics.reject()
-                                        toast.show(pickAVideo)
-                                    }
+                NowPlayingDock(
+                    controller = controller,
+                    // With no Remote seat the dock is the only door to the remote, so it
+                    // belongs on every surface the nav floats over.
+                    allowed = SenderShellPolicy.dockVisible(route),
+                    morphing = morphing,
+                    sharedScope = sharedScope,
+                    onOpen = { controller.restoreNowPlaying() },
+                )
+                AnimatedVisibility(
+                    visible = navShown,
+                    enter = when {
+                        // Coming back from the remote the nav is already under a card that
+                        // covers the window; it is revealed in place as that card shrinks,
+                        // and any rise of its own would be seen through the gap.
+                        reduceMotion || morphing -> EnterTransition.None
+                        else -> fadeIn(motionScheme.defaultEffectsSpec()) +
+                            slideInVertically(motionScheme.defaultSpatialSpec()) { it }
+                    },
+                    exit = when {
+                        reduceMotion -> ExitTransition.None
+                        // The nav does not leave when the dock above it becomes the card:
+                        // it is covered. So it holds its place, unchanged, and is removed
+                        // once the card owns the window.
+                        morphing -> fadeOut(snap(delayMillis = MorphHoldMs))
+                        else -> fadeOut(motionScheme.fastEffectsSpec()) +
+                            slideOutVertically(motionScheme.defaultSpatialSpec()) { it }
+                    },
+                    label = "nav",
+                ) {
+                    FlickBottomNav(
+                        selected = history.seat,
+                        onSelect = { tab ->
+                            // Re-selecting the current tab is a no-op: openConnect() also arms the
+                            // in-flow back behavior, which would strand Back on the launch route.
+                            if (tab != selectedTab) {
+                                haptics.tabChange()
+                                when (tab) {
+                                    NavTab.LIBRARY -> controller.openLibrary()
+                                    NavTab.DEVICES -> controller.openConnect()
                                 }
                             }
-                        }
-                    },
-                    modifier = Modifier.navigationBarsPadding().padding(16.dp),
-                )
+                        },
+                    )
+                }
             }
 
             AnimatedContent(
                 targetState = activeOverlay,
                 transitionSpec = {
-                    if (reduceMotion) {
+                    // No enter fade: the radial mask below IS the entrance, and a
+                    // simultaneous fade would only wash out the edge it travels on.
+                    val transform = if (reduceMotion) {
                         EnterTransition.None togetherWith ExitTransition.None
                     } else {
-                        fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
-                            fadeOut(motionScheme.fastEffectsSpec())
+                        EnterTransition.None togetherWith fadeOut(motionScheme.fastEffectsSpec())
                     }
+                    // Both states are full-screen, so the default size transform has
+                    // nothing to interpolate except the empty state's zero size — and
+                    // it grew the sheet out of the top-left corner doing it.
+                    transform using SizeTransform(clip = false)
                 },
                 label = "overlay",
             ) { overlay ->
-                when (overlay) {
-                    Overlay.QUALITY -> QualitySheet(
-                        controller = controller,
-                        onDismiss = { controller.toggleQualitySheet(false) },
-                    )
-                    Overlay.ADVISORIES -> AdvisoriesScreen(
-                        batteryExempt = batteryExempt,
-                        onOpenWifiSettings = onOpenWifiSettings,
-                        onRequestBatteryExemption = onRequestBatteryExemption,
-                        onOpenDiagnostics = {
-                            controller.toggleAdvisories(false)
-                            controller.toggleDiagnostics(true)
-                        },
-                        onDismiss = { controller.toggleAdvisories(false) },
-                    )
-                    Overlay.DIAGNOSTICS -> DiagnosticsSheet(
-                        onDismiss = { controller.toggleDiagnostics(false) },
-                    )
-                    null -> Unit
+                // Consumed in composition rather than from an effect: the disc has to
+                // be at radius zero on the overlay's very first frame. A sheet this
+                // channel does not serve consumes nothing and is born at its own centre.
+                val from = remember(overlay) { overlay?.let { revealOrigin.consume(it.summonedAs) } }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .originRevealMask(from = from, enabled = overlay != null),
+                ) {
+                    when (overlay) {
+                        Overlay.QUALITY -> QualitySheet(
+                            controller = controller,
+                            onDismiss = { controller.toggleQualitySheet(false) },
+                        )
+                        Overlay.ADVISORIES -> AdvisoriesScreen(
+                            batteryExempt = batteryExempt,
+                            onOpenWifiSettings = onOpenWifiSettings,
+                            onRequestBatteryExemption = onRequestBatteryExemption,
+                            onOpenDiagnostics = {
+                                controller.toggleAdvisories(false)
+                                controller.toggleDiagnostics(true)
+                            },
+                            onDismiss = { controller.toggleAdvisories(false) },
+                        )
+                        Overlay.DIAGNOSTICS -> DiagnosticsSheet(
+                            onDismiss = { controller.toggleDiagnostics(false) },
+                        )
+                        null -> Unit
+                    }
                 }
             }
-
-            // Reads of the toast live inside the host so raising one never recomposes a route.
-            ShellToast(
-                state = toast,
-                reduceMotion = reduceMotion,
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
         }
     }
 }
 
-/** The five arms of the route table. Every pair resolves to exactly one of them. */
-private enum class RouteMotion { HERO, LAUNCH, RETURN, LATERAL, QUIET }
+/** The six arms of the route table. Every pair resolves to exactly one of them. */
+private enum class RouteMotion { HERO, CONTAINER, LAUNCH, RETURN, LATERAL, QUIET }
 
 // The launch is the one transition that moves toward the TV rather than sideways: the
 // surface being left recedes, the surface arriving overshoots past the viewer.
@@ -378,11 +457,41 @@ private const val LaunchNear = 1.06f
 private const val LaunchFar = 0.92f
 
 /**
- * Which arm a route pair takes. HERO pairs carry a shared frame, so they drop every
- * translation and let the frame itself be the movement; the launch pair is the cast
- * commit; a fault is always presented still.
+ * How long the surface under the growing card is held before it is dropped. It has to
+ * outlast the card's own spring — the card is only guaranteed to own every pixel once
+ * that spring has settled — and it is a hold, not a fade: nothing about the held surface
+ * moves or dims while it is on screen.
  */
-private fun routeMotion(initial: ShellDestination, target: ShellDestination): RouteMotion = when {
+private const val MorphHoldMs = 600
+
+/**
+ * How long the specs a dock↔remote flight was started with are held. Longer than both the
+ * hold above and the card's own spring: releasing the latch while either is still running
+ * would swap a transition's specs mid-flight, which is the exact fault it exists to
+ * prevent.
+ */
+private const val MorphFlightMs = 900L
+
+/**
+ * When the growing card reaches the status and navigation bars. The card's top edge is
+ * what travels — the bottom one barely moves — so both bars change hands within a few
+ * frames of each other, near the end of the spring rather than at its midpoint.
+ */
+private const val MorphBarsMs = 180L
+
+/**
+ * Which arm a route pair takes. CONTAINER is the dock growing into the remote and back,
+ * and it outranks everything because the dock's bounds already carry that movement;
+ * HERO pairs carry a shared frame, so they drop every translation and let the frame
+ * itself be the movement; the launch pair is the cast commit; a fault is always presented
+ * still. [dockLive] gates CONTAINER because with no cast there is no bar to grow out of.
+ */
+private fun routeMotion(
+    initial: ShellDestination,
+    target: ShellDestination,
+    dockLive: Boolean,
+): RouteMotion = when {
+    dockLive && SenderShellPolicy.dockMorph(initial, target) -> RouteMotion.CONTAINER
     initial == ShellDestination.LIBRARY && target == ShellDestination.DETAIL -> RouteMotion.HERO
     initial == ShellDestination.DETAIL && target == ShellDestination.LIBRARY -> RouteMotion.HERO
     initial == ShellDestination.CONNECTING && target == ShellDestination.NOW_PLAYING -> RouteMotion.HERO
@@ -394,12 +503,18 @@ private fun routeMotion(initial: ShellDestination, target: ShellDestination): Ro
     else -> RouteMotion.QUIET
 }
 
-/** Left-to-right seat in the floating nav; -1 for the routes it does not represent. */
+/**
+ * Left-to-right seat in the floating nav; -1 for the routes it does not represent. The
+ * remote claims none: it is not a seat, it is the dock's own card filling the window.
+ */
 private fun navSeat(destination: ShellDestination): Int = when (destination) {
     ShellDestination.LIBRARY -> 0
-    ShellDestination.NOW_PLAYING -> 1
-    ShellDestination.CONNECT -> 2
-    ShellDestination.DETAIL, ShellDestination.CONNECTING, ShellDestination.FAILURE -> -1
+    ShellDestination.CONNECT -> 1
+    ShellDestination.DETAIL,
+    ShellDestination.CONNECTING,
+    ShellDestination.NOW_PLAYING,
+    ShellDestination.FAILURE,
+    -> -1
 }
 
 /**
@@ -453,48 +568,4 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
-}
-
-/** Rises 120 dp above the bottom edge so it clears the floating nav (design §5.7). */
-@Composable
-private fun ShellToast(
-    state: ShellToastState,
-    reduceMotion: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LocalFlickColors.current
-    val density = LocalDensity.current
-    val rise = remember(density) { with(density) { Motion.SheetRiseOffsetDp.dp.roundToPx() } }
-    LaunchedEffect(state.serial) {
-        if (state.visible) {
-            delay(Motion.ToastMs.toLong())
-            state.dismiss()
-        }
-    }
-    AnimatedVisibility(
-        visible = state.visible,
-        modifier = modifier.navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 120.dp),
-        enter = if (reduceMotion) {
-            EnterTransition.None
-        } else {
-            fadeIn(Motion.sheetRise()) +
-                slideInVertically(Motion.sheetRise()) { rise } +
-                scaleIn(Motion.sheetRise(), initialScale = Motion.SheetRiseScale)
-        },
-        exit = if (reduceMotion) ExitTransition.None else fadeOut(Motion.sheetRise()),
-        label = "toast",
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .background(colors.inverseSurface, RoundedCornerShape(FlickCorners.toast))
-                .padding(horizontal = 19.dp, vertical = 15.dp)
-                .semantics { liveRegion = LiveRegionMode.Polite },
-        ) {
-            Text(
-                text = state.message,
-                style = FlickText.bodyMedium.copy(color = colors.onInverseSurface),
-            )
-        }
-    }
 }

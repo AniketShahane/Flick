@@ -11,9 +11,19 @@ import javax.crypto.spec.SecretKeySpec
 object ControlProtocolV2 {
     const val VERSION = 2
     const val MAX_FRAME_BYTES = 16 * 1024
+
+    /** A sideloaded-subtitle label is display text; it gets the media title's budget. */
+    const val SUBTITLE_LABEL_MAX = 200
+
+    /** Matches the receiver's ceiling exactly; a longer value is not a tag it accepts. */
+    private const val LANGUAGE_TAG_MAX = 20
+
     val capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac")
     private val idPattern = Regex("[A-Za-z0-9_-]{22}")
     private val proofPattern = Regex("[A-Za-z0-9_-]{43}")
+    // Language, optional script, optional region — the receiver's `subLang` grammar
+    // byte for byte. A sender that emitted a wider tag would fail the whole cast.
+    private val languageTagPattern = Regex("[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?")
 
     fun id(value: String?) = value != null && idPattern.matches(value) && decodedLength(value) == 16
     fun key(value: String?) = value != null && proofPattern.matches(value) && decodedLength(value) == 32
@@ -41,6 +51,46 @@ object ControlProtocolV2 {
         if (compact.isEmpty()) return null
         val end = compact.offsetByCodePoints(0, compact.codePointCount(0, compact.length).coerceAtMost(maximum))
         return compact.substring(0, end)
+    }
+
+    /**
+     * The optional external-subtitle fields of a `loadMedia` frame, in wire order.
+     * Empty whenever no subtitle is attached — the frame then stays byte-identical to
+     * the v=2 frame an un-updated receiver already parses, which is what lets ordinary
+     * playback keep working without a protocol bump.
+     */
+    fun subtitleFields(url: String?, label: String?, language: String?): List<Pair<String, String>> {
+        if (url.isNullOrEmpty()) return emptyList()
+        // The receiver requires the label whenever the URL is present and rejects the
+        // whole frame otherwise, so a label that normalizes to nothing drops the
+        // attachment instead of costing the video its load.
+        val safeLabel = normalizedLabel(label, SUBTITLE_LABEL_MAX) ?: return emptyList()
+        val fields = ArrayList<Pair<String, String>>(3)
+        fields.add("subUrl" to url)
+        fields.add("subLabel" to safeLabel)
+        languageTag(language)?.let { fields.add("subLang" to it) }
+        return fields
+    }
+
+    /** A well-formed BCP-47 tag, or null so the caller omits `subLang` entirely. */
+    fun languageTag(value: String?): String? {
+        val trimmed = value?.trim() ?: return null
+        if (trimmed.length > LANGUAGE_TAG_MAX || !languageTagPattern.matches(trimmed)) return null
+        return trimmed
+    }
+
+    /**
+     * True when [subUrl] resolves to the same origin as the media [url]. The receiver
+     * revalidates this, but the sender must never put a subtitle URL on the wire that
+     * points anywhere except the media socket it just bound.
+     */
+    fun sameHttpOrigin(url: String, subUrl: String): Boolean {
+        val media = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+        val sub = runCatching { java.net.URI(subUrl) }.getOrNull() ?: return false
+        if (!"http".equals(media.scheme, ignoreCase = true) || media.host == null || media.port <= 0) return false
+        return media.scheme.equals(sub.scheme, ignoreCase = true) &&
+            media.host.equals(sub.host, ignoreCase = true) && media.port == sub.port &&
+            sub.userInfo == null && sub.query == null && sub.fragment == null
     }
 
     fun randomId(random: java.security.SecureRandom = java.security.SecureRandom()): String {

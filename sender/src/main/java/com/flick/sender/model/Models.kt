@@ -22,17 +22,19 @@ data class MediaItem(
 
 /**
  * MediaStore pixel dimensions → the resolution bucket the tile badges, the detail
- * chips and the library's 4K filter all match on. Extracted from [MediaItem] so the
- * filter's exact-string dependency on [FourKLabel] is testable without a `Uri`.
+ * chips and the library's two quality filters all match on. Extracted from [MediaItem]
+ * so the filters' exact-string dependency on [FourKLabel] and [FullHdLabel] is
+ * testable without a `Uri`.
  */
 fun resolutionLabelFor(width: Int, height: Int): String = when {
     height >= 2160 || width >= 3840 -> FourKLabel
-    height >= 1080 || width >= 1920 -> "1080p"
+    height >= 1080 || width >= 1920 -> FullHdLabel
     height >= 720 -> "HD"
     else -> "SD"
 }
 
 const val FourKLabel = "4K"
+const val FullHdLabel = "1080p"
 
 /** Best-effort HDR classification of a video track (design badges). */
 enum class HdrType { NONE, HDR10, DOLBY_VISION }

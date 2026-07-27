@@ -1,6 +1,8 @@
 package com.flick.receiver.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +54,7 @@ import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalReducedMotion
 
 /**
  * Panel width. The spec draws 370 dp, which is the design's 740 px ÷ 2. The panel
@@ -90,6 +93,44 @@ private val HistogramBarShape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.d
  */
 private val StatsColumnGap: Dp = FlickSpace.Sm
 private val StatsRowGap: Dp = FlickSpace.Xs
+
+/**
+ * The readout stagger — the throughput block, then the three stat rows.
+ *
+ * Four stages, not one per cell: nine leads would leave the last number most of a
+ * second behind the first, and a nine-step cascade read from 3 m looks like the
+ * panel struggling to fill itself rather than like an order of reading. The lead
+ * is clamped in [metricsStageProgress] so adding a fourth stat row lengthens the
+ * grid without lengthening the tail.
+ *
+ * This is the panel's CONTENTS resolving, not a second arrival: the playback
+ * chrome still owns the panel's own enter and exit (`animateEntrance = false`
+ * below), and this one-way latch settles at 1 and stays there, so the parent's
+ * fade always has a fully-drawn panel to take off screen.
+ */
+private const val MetricsStageLead = 0.14f
+private const val MetricsStageCount = 4
+
+/** Readouts arrive from just below their resting line. */
+private val MetricsStageRise: Dp = 8.dp
+
+private fun metricsStageProgress(progress: Float, index: Int): Float {
+    val lead = MetricsStageLead * index.coerceIn(0, MetricsStageCount - 1)
+    val span = 1f - MetricsStageLead * (MetricsStageCount - 1)
+    return ((progress - lead) / span).coerceIn(0f, 1f)
+}
+
+/**
+ * One readout's entrance. `graphicsLayer` only, and the driver is read inside the
+ * layer block so a stat never recomposes to arrive. Alpha takes the CLAMPED stage:
+ * the driver is a spatial spring and settles past 1, which geometry may do and an
+ * opacity may not.
+ */
+private fun Modifier.metricsStage(progress: () -> Float, index: Int): Modifier = graphicsLayer {
+    val stage = metricsStageProgress(progress(), index)
+    alpha = stage
+    translationY = (1f - stage) * MetricsStageRise.toPx()
+}
 
 /** A measured bar never collapses to nothing — the design floors it at 6 %. */
 private const val MIN_BAR_FRACTION = 0.06f
@@ -149,6 +190,23 @@ fun StreamMetricsPanel(
     // subtree holds focus.
     val closeFocus = remember { FocusRequester() }
     LaunchedEffect(entryKey) { runCatching { closeFocus.requestFocus() } }
+
+    // One driver for the whole readout stagger, restarted per open so a reopened
+    // panel fills in again rather than appearing already complete. Keyed on
+    // [entryKey] rather than on first composition so it holds whether or not the
+    // caller also rebuilds this subtree per open.
+    val reducedMotion = LocalReducedMotion.current
+    val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
+    val entrance = remember { Animatable(0f) }
+    LaunchedEffect(entryKey, reducedMotion) {
+        if (reducedMotion) {
+            entrance.snapTo(1f)
+        } else {
+            entrance.snapTo(0f)
+            entrance.animateTo(1f, entranceSpec)
+        }
+    }
+    val stage = { entrance.value }
 
     GlassPanel(
         modifier = modifier
@@ -224,8 +282,9 @@ fun StreamMetricsPanel(
                 throughput = throughput,
                 liveBitrateBps = diagnostics.bitrateEstimateBps,
                 unavailable = unavailable,
+                modifier = Modifier.metricsStage(stage, index = 0),
             )
-            StatsGrid(cells = statCells(diagnostics, unavailable))
+            StatsGrid(cells = statCells(diagnostics, unavailable), stage = stage)
         }
     }
 }
@@ -275,10 +334,11 @@ private fun ThroughputBlock(
     throughput: ThroughputSnapshot,
     liveBitrateBps: Long,
     unavailable: String,
+    modifier: Modifier = Modifier,
 ) {
     val latest = if (throughput.latestBps > 0L) throughput.latestBps else liveBitrateBps
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(
@@ -374,14 +434,19 @@ private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StatsGrid(cells: List<StatCell>) {
+private fun StatsGrid(cells: List<StatCell>, stage: () -> Float) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(StatsRowGap),
     ) {
-        cells.chunked(STATS_COLUMNS).forEach { row ->
+        // Staged a ROW at a time. The grid reads left-to-right then down, so the
+        // row is the unit the eye already follows; nine independently arriving
+        // cells would read as scatter.
+        cells.chunked(STATS_COLUMNS).forEachIndexed { index, row ->
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .metricsStage(stage, index = index + 1),
                 horizontalArrangement = Arrangement.spacedBy(StatsColumnGap),
             ) {
                 row.forEach { cell ->

@@ -41,39 +41,57 @@ class SenderShellPolicyTest {
         assertFalse(SenderShellPolicy.navVisible(failure))
     }
 
-    @Test fun detailSelectsLibraryAndTheCastFacesSelectDevices() {
+    @Test fun theNavHasExactlyTwoSeatsAndTheRemoteIsNotOneOfThem() {
+        assertEquals(listOf(NavTab.LIBRARY, NavTab.DEVICES), NavTab.entries.toList())
+    }
+
+    // Every surface over the library answers LIBRARY: back out of the detail sheet or
+    // the remote and the library is what the nav has to be showing again.
+    @Test fun detailAndTheRemoteSelectLibraryAndTheCastFacesSelectDevices() {
         assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(ShellDestination.LIBRARY))
         assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(ShellDestination.DETAIL))
-        assertEquals(NavTab.REMOTE, SenderShellPolicy.selectedTab(ShellDestination.NOW_PLAYING))
+        assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(ShellDestination.NOW_PLAYING))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.CONNECT))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.CONNECTING))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.FAILURE))
 
         assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(Route.Library))
-        assertEquals(NavTab.REMOTE, SenderShellPolicy.selectedTab(Route.NowPlaying))
+        assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(Route.NowPlaying))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(Route.Connect))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(Route.Connecting))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(failure))
     }
 
-    @Test fun remoteOnlyNavigatesForACommittedCastAndOtherwiseExplainsItself() {
-        assertEquals(
-            RemoteTapOutcome.NAVIGATE,
-            SenderShellPolicy.remoteTapOutcome(hasConnectedTv = true, hasActiveSession = true),
-        )
-        assertEquals(
-            RemoteTapOutcome.TOAST_PICK_A_VIDEO,
-            SenderShellPolicy.remoteTapOutcome(hasConnectedTv = true, hasActiveSession = false),
-        )
-        assertEquals(
-            RemoteTapOutcome.TOAST_PICK_A_TV,
-            SenderShellPolicy.remoteTapOutcome(hasConnectedTv = false, hasActiveSession = false),
-        )
-        // A live session outranks a dropped pairing record so the remote stays reachable.
-        assertEquals(
-            RemoteTapOutcome.NAVIGATE,
-            SenderShellPolicy.remoteTapOutcome(hasConnectedTv = false, hasActiveSession = true),
-        )
+    // The dock is the only door to the remote now, so it has to be on every surface the
+    // nav floats over — never on one it does not.
+    @Test fun theDockRidesExactlyWhereTheNavDoes() {
+        ShellDestination.entries.forEach { destination ->
+            assertEquals(
+                SenderShellPolicy.navVisible(destination),
+                SenderShellPolicy.dockVisible(destination),
+            )
+        }
+        assertTrue(SenderShellPolicy.dockVisible(Route.Library))
+        assertTrue(SenderShellPolicy.dockVisible(Route.Connect))
+        assertFalse(SenderShellPolicy.dockVisible(Route.NowPlaying))
+        assertFalse(SenderShellPolicy.dockVisible(Route.Connecting))
+        assertFalse(SenderShellPolicy.dockVisible(failure))
+    }
+
+    @Test fun theDockMorphsAcrossEveryPairThatJoinsItToTheRemoteAndNoOther() {
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.LIBRARY, ShellDestination.NOW_PLAYING))
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.CONNECT, ShellDestination.NOW_PLAYING))
+        // Symmetric: minimizing is the same geometry read backwards.
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.LIBRARY))
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.CONNECT))
+
+        // No dock on the other side, so nothing to grow out of or shrink back into.
+        assertFalse(SenderShellPolicy.dockMorph(ShellDestination.CONNECTING, ShellDestination.NOW_PLAYING))
+        assertFalse(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.FAILURE))
+        assertFalse(SenderShellPolicy.dockMorph(ShellDestination.DETAIL, ShellDestination.NOW_PLAYING))
+        // Neither end is the remote.
+        assertFalse(SenderShellPolicy.dockMorph(ShellDestination.LIBRARY, ShellDestination.CONNECT))
+        assertFalse(SenderShellPolicy.dockMorph(ShellDestination.LIBRARY, ShellDestination.DETAIL))
     }
 
     @Test fun onlyTheCinematicRoutesInvertTheSystemBarIcons() {

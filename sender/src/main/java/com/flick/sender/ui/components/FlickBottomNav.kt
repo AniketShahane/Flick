@@ -3,9 +3,11 @@ package com.flick.sender.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -44,15 +49,13 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.ui.screens.NavTab
-import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickGlass
-import com.flick.sender.ui.theme.flickRipple
-import com.flick.sender.ui.theme.pressMorph
+import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
 
@@ -61,9 +64,9 @@ import kotlin.math.roundToInt
  * than inset into it, so each screen it appears on reserves its own bottom padding.
  * The caller owns the 16 dp margins and the window insets.
  *
- * Selection is ONE fill that travels between the three seats rather than three fills
- * that cross-fade: the tab left behind and the tab arrived at are the same object
- * moving, which is the claim the route transition makes at the same moment.
+ * Selection is ONE fill that travels between the two seats rather than two fills that
+ * cross-fade: the tab left behind and the tab arrived at are the same object moving,
+ * which is the claim the route transition makes at the same moment.
  */
 @Composable
 internal fun FlickBottomNav(
@@ -95,7 +98,8 @@ internal fun FlickBottomNav(
         val destination = seats[selected] ?: return@LaunchedEffect
         if (indicator.value == destination) return@LaunchedEffect
         // Rect.Zero is "nothing measured yet", so the first placement lands instead of
-        // flying in from the corner of the bar.
+        // flying in from the corner of the bar — which is also the only guard the two
+        // seats have on the frame the bar is first measured.
         if (reduceMotion || indicator.value == Rect.Zero) {
             indicator.snapTo(destination)
         } else {
@@ -140,14 +144,6 @@ internal fun FlickBottomNav(
                 onClick = { onSelect(NavTab.LIBRARY) },
             )
             NavItem(
-                icon = FlickIcons.PlayCircle,
-                label = stringResource(R.string.nav_remote),
-                active = selected == NavTab.REMOTE,
-                host = host,
-                onSeat = { reportSeat(NavTab.REMOTE, it) },
-                onClick = { onSelect(NavTab.REMOTE) },
-            )
-            NavItem(
                 icon = FlickIcons.Cast,
                 label = stringResource(R.string.nav_devices),
                 active = selected == NavTab.DEVICES,
@@ -184,22 +180,44 @@ private fun NavItem(
         label = "navLabel",
     )
 
-    // No haptic here: a Remote tap can be refused, and only the shell knows whether
-    // the tap moved or raised a toast. FlickApp fires the pulse from onSelect.
+    // No haptic here: the shell decides whether a tap moved at all — a re-tap of the
+    // seat already carrying the fill is silent. FlickApp fires the pulse from onSelect.
     val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    // Material's ripple dilutes whatever ink it is handed, and on this palette
+    // onSurface is near-white — which lands on the glass as a grey blob. The seat
+    // answers a touch by pressing in under it instead, washed in the same brand tint
+    // the selection itself travels in. Never a neutral one, and never on the seat that
+    // already carries the fill: there the travelling pill is the wash.
+    val wash = animateFloatAsState(
+        targetValue = if (pressed && !active) NavPressWashAlpha else 0f,
+        animationSpec = Motion.orSnap(reduceMotion, motionScheme.fastEffectsSpec<Float>()),
+        label = "navPressWash",
+    )
+    val washColor = colors.primary
 
     Column(
         modifier = Modifier
             .width(76.dp)
             .heightIn(min = 48.dp)
-            // This item paints no fill of its own, so the clip is what bounds the
-            // ripple — and RoundedCornerShape scales adjacent radii down to fit, which
-            // renders the 34dp rest radius as 28dp on a 56dp-tall item. The pressed
-            // radius has to clear that clamp or the corners never actually travel.
-            .pressMorph(interaction, restRadius = FlickCorners.nav, pressedRadius = 20.dp)
+            .pressScale(interaction, target = NavPressScale)
+            .drawBehind {
+                // Read in the draw scope, so a press repaints one seat rather than
+                // recomposing the bar it sits in.
+                val alpha = wash.value
+                if (alpha > 0f) {
+                    drawRoundRect(
+                        color = washColor,
+                        topLeft = Offset.Zero,
+                        size = size,
+                        cornerRadius = CornerRadius(NavPressWashRadius.toPx()),
+                        alpha = alpha,
+                    )
+                }
+            }
             .clickable(
                 interactionSource = interaction,
-                indication = flickRipple(colors.onSurface),
+                indication = null,
                 role = Role.Tab,
                 onClick = onClick,
             )
@@ -231,3 +249,10 @@ private fun NavItem(
         )
     }
 }
+
+// Press response for one seat. The dip is deeper than the row scale because the seat
+// is small and carries no fill of its own to deform; the wash sits just above the
+// glass sheen it has to read against.
+private const val NavPressScale = 0.92f
+private const val NavPressWashAlpha = 0.16f
+private val NavPressWashRadius = 20.dp

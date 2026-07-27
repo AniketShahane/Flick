@@ -32,6 +32,13 @@
     <!-- Required for transport and scrub haptics; normal permission, no prompt. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Read the pairing QR shown on the TV. Requested only when the user opens the
+         scanner, and never required: the code can always be typed instead, so the app
+         must still install on a device with no camera at all. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
     <application
         android:name=".FlickApplication"
         android:allowBackup="true"

@@ -309,22 +309,32 @@ fun PhoneScrubBar(
                 val trackR = trackH / 2f
                 val w = size.width
 
-                drawRoundRect(
-                    color = colors.fillTrackAlt,
-                    topLeft = Offset(0f, cy - trackR),
-                    size = Size(w, trackH),
-                    cornerRadius = CornerRadius(trackR, trackR),
-                )
-                val bufferedW = bufferedFraction().coerceIn(0f, 1f) * w
-                if (bufferedW > 0f) {
+                val playedW = target * w
+                // The wave swings off the centre line, so a track drawn from 0 keeps
+                // showing through the played span as a straight line behind the squiggle.
+                // Track and buffer therefore start AHEAD of the head, parted from it by a
+                // gap — the way Material's wavy progress parts its wave from its
+                // remainder, round cap and all.
+                val trackStart = if (playedW > 0f) playedW + TrackGap.toPx() else 0f
+                if (trackStart < w) {
                     drawRoundRect(
-                        color = colors.fillBuffered,
-                        topLeft = Offset(0f, cy - trackR),
-                        size = Size(bufferedW, trackH),
+                        color = colors.fillTrackAlt,
+                        topLeft = Offset(trackStart, cy - trackR),
+                        size = Size(w - trackStart, trackH),
                         cornerRadius = CornerRadius(trackR, trackR),
                     )
                 }
-                val playedW = target * w
+                // Buffer behind the head is already played, so only its lead is news — and
+                // a buffer the drag has outrun draws nothing at all.
+                val bufferedW = bufferedFraction().coerceIn(0f, 1f) * w
+                if (bufferedW > trackStart) {
+                    drawRoundRect(
+                        color = colors.fillBuffered,
+                        topLeft = Offset(trackStart, cy - trackR),
+                        size = Size(bufferedW - trackStart, trackH),
+                        cornerRadius = CornerRadius(trackR, trackR),
+                    )
+                }
                 if (playedW > 0f) {
                     val amp = amplitude.value * WaveAmplitude.toPx()
                     // Under one stroke width there is no span left to swing through,
@@ -664,6 +674,10 @@ private const val SyncingAmplitude = 1.4f
 private val HitHeight = 48.dp
 private val TrackIdle = 13.dp
 private val TrackDrag = 22.dp
+
+/** Head-to-remainder gap. Wider than the grabbed thumb's half-width, or it hides under it. */
+private val TrackGap = 6.dp
+
 private val ThumbIdleW = 6.dp
 private val ThumbIdleH = 28.dp
 private val ThumbDragW = 10.dp

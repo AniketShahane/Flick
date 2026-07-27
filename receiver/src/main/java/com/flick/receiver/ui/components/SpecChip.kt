@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
@@ -15,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.TextStyle
@@ -37,6 +39,12 @@ private const val TELEMETRY_ENTER_SCALE = 0.9f
  *
  * Callers pass only chips built from real telemetry; a chip with nothing to say
  * is omitted, never filled with a placeholder.
+ *
+ * With [onClick] the chip becomes a focus target carrying the receiver's one
+ * focus vocabulary — the lift, the corner ease and the travelling amber ring of
+ * [FlickTvButton], never a neutral wash. Its own hairline is kept explicitly:
+ * the chip's default fill is transparent, which would otherwise pick up the
+ * doubled outline-only stroke.
  */
 @Composable
 fun SpecChip(
@@ -48,7 +56,36 @@ fun SpecChip(
     shape: Shape = FlickShape.Sm,
     style: TextStyle = FlickType.monoEyebrow(trackingEm = 0.12f),
     contentPadding: PaddingValues = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
+    onClick: (() -> Unit)? = null,
+    contentDescription: String? = null,
+    focusRequester: FocusRequester? = null,
 ) {
+    val label: @Composable () -> Unit = {
+        Text(
+            text = text,
+            color = color,
+            style = style,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    if (onClick != null) {
+        FlickTvButton(
+            onClick = onClick,
+            modifier = modifier,
+            contentDescription = contentDescription,
+            focusRequester = focusRequester,
+            shape = shape,
+            containerColor = containerColor,
+            borderColor = borderColor,
+            borderWidth = FlickDimens.Hairline,
+            contentPadding = contentPadding,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            label()
+        }
+        return
+    }
     Box(
         modifier = modifier
             .clip(shape)
@@ -57,13 +94,7 @@ fun SpecChip(
             .padding(contentPadding),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = color,
-            style = style,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        label()
     }
 }
 
