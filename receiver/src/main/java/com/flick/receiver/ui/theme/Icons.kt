@@ -19,12 +19,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * The Flick icon set: 24dp grid, 1.8px stroke, round caps/joins. Icons are drawn
- * white and tinted at the call site (via `Icon(tint = …)`), so the same vector
- * serves any accent.
+ * The Flick icon set: 24-unit grid, 1.8-unit stroke, round caps/joins. Icons are
+ * drawn white and tinted at the call site (via `Icon(tint = …)`), so the same
+ * vector serves any accent.
  *
- * [Replay10] / [Forward10] mix a stroked ring with a filled arrowhead — the
- * arrowhead has to read as solid at 26 dp, which a 1.8-unit outline cannot do.
+ * The 24 dp default size is the grid's coordinate space, not a render size —
+ * every call site sizes its `Icon` explicitly, so the TV re-scale happens there
+ * and the grid stays put. A glyph's stroke is therefore `renderedSize * 0.075`,
+ * which is what puts a floor under how small these can usefully be drawn.
+ *
+ * [Replay10] / [Forward10] mix a stroked ring with a filled arrowhead — at
+ * transport-glyph size a 1.8-unit outline cannot read as solid.
  */
 object FlickIcons {
 
@@ -179,7 +184,7 @@ object FlickIcons {
 @Composable
 fun BrandMark(
     modifier: Modifier = Modifier,
-    size: Dp = 44.dp,
+    size: Dp = 35.dp,
     tint: Color = FlickColor.PrimaryOnDark,
     streakTint: Color = FlickColor.Spark,
     withStreaks: Boolean = true,

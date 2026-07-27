@@ -1,9 +1,12 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,10 +23,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,6 +66,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 /** S1 — first-run connect & pair. Discovery leads; the code card is the escape hatch. */
 @Composable
@@ -289,6 +296,28 @@ private fun PairErrorCard(message: String) {
     }
 }
 
+/**
+ * The pairing attempt in flight. Un-contained: inside a sheet the shape morph is the
+ * whole signal and a filled container would shout over the code the user just typed.
+ * Nothing here is determinate — the handshake reports steps, never a fraction.
+ */
+@Composable
+private fun PairingIndicator() {
+    val colors = LocalFlickColors.current
+    if (rememberReduceMotion()) {
+        // A loop never reaches an end state, so reduce motion gets the resting
+        // silhouette rather than a frozen spin.
+        Box(
+            Modifier
+                .size(28.dp)
+                .clip(MaterialShapes.Cookie9Sided.toShape())
+                .background(colors.primary),
+        )
+    } else {
+        LoadingIndicator(modifier = Modifier.size(28.dp), color = colors.primary)
+    }
+}
+
 /** Quiet text action. Interactive copy has to clear 4.5:1, so it uses the dim ink. */
 @Composable
 private fun FooterAction(
@@ -361,7 +390,7 @@ private fun CodeSheet(
         Spacer(Modifier.height(18.dp))
         if (connecting) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator(color = colors.primary, modifier = Modifier.size(28.dp))
+                PairingIndicator()
             }
         } else {
             FlickPrimaryButton(
@@ -449,7 +478,7 @@ private fun ManualSheet(
         Spacer(Modifier.height(16.dp))
         if (connecting) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator(color = colors.primary, modifier = Modifier.size(28.dp))
+                PairingIndicator()
             }
         } else {
             FlickPrimaryButton(

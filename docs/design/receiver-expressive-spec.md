@@ -66,14 +66,14 @@ Apply these floors:
 
 | Class | Design px | Rule |
 |---|---|---|
-| Reading copy — titles, body, button labels, list rows, error text | any | ÷2, then **floor 24 sp** |
-| Mono micro-labels — eyebrows, telemetry, stat labels, chips (UPPERCASE, tracking ≥ 0.12 em) | 12–18 | **16 sp** flat |
-| Mono running numbers — timecodes, throughput readout | 28–46 | ÷2 exactly (14–23 sp), **floor 20 sp**, always `tnum` |
-| Display — headlines, now-playing title | 46–104 | ÷2 exactly |
+| Reading copy — titles, body, button labels, list rows, error text | any | Use the implemented 18 / **16 default** / 15 sp reading hierarchy; `FlickType.body()` clamps only at 14 sp |
+| Mono micro-labels — eyebrows, telemetry, stat labels, chips (UPPERCASE, tracking ≥ 0.12 em) | 12–18 | **14 sp** floor, always tabular |
+| Mono running numbers — timecodes, throughput readout | 28–46 | **14 sp** floor, always `tnum`; playback timecode currently uses 16 sp |
+| Display — headlines, now-playing title | 46–104 | Use `FlickTvTypography`'s 40 / 31 / 27 / 22 / 20 sp display steps |
 
-Nothing renders below **16 sp**. Uppercase tracked mono at 16 sp is the same
-treatment the existing `MetricsOverlay` dev HUD already uses and reads cleanly at
-10 ft; lowercase reading copy never goes below 24 sp.
+Nothing renders below **14 sp**. This is a hierarchy-preserving floor, not a target
+size: default body copy is 16 sp, and upper-case mono is kept open with its positive
+tracking rather than being enlarged into its neighbouring role.
 
 ### 1b. Overscan clamp (deliberate deviation)
 
@@ -83,8 +83,9 @@ would be clipped by overscan on real panels.
 
 > All outer chrome — top bar, bottom transport panel, END SESSION pill, pairing
 > columns, side panels — anchors to `rememberTvSafeAreaPadding()` (5 % ⇒ 48 dp
-> horizontal / 27 dp vertical at 960 × 540 dp). Interior padding and gaps keep
-> their ÷2 design values.
+> horizontal / 27 dp vertical at 960 × 540 dp). Because the focus ring is painted
+> outside its control, the outermost focusable also keeps `FlickDimens.FocusRingReserve`
+> (**10 dp**) inside that safe area. Interior padding and gaps keep their ÷2 design values.
 
 ---
 
@@ -177,7 +178,7 @@ TV; this is the entire language:
 
 | State | Treatment |
 |---|---|
-| **Focused** | **detached amber ring**: 2.5 dp `Spark` border, offset **5.5 dp outside** the element bounds, corner radius = element radius + 5.5 dp. Plus scale **1.06** on `FlickMotion.focusPop()`. No cyan anywhere. |
+| **Focused** | **detached amber ring**: 2 dp `Spark` border, offset **4.5 dp outside** the element bounds, corner radius = element radius + 4.5 dp. Plus scale **1.06** on `FlickMotion.focusSpatial()`. No cyan anywhere. |
 | **Focused, on an amber fill** (the play button) | ring is **white `#FFFFFF`** — amber-on-amber would vanish |
 | **Selected, not focused** | `Spark` @ 18 % fill, `SparkLight` @ 50 % border, **no ring** |
 | **Unfocused** | `rgba(148,190,255,.14)` = `0x24 94BEFF` fill, `#BEDCFF` @ 34 % border |
@@ -187,6 +188,25 @@ The ring is a *detached* ring (design: `inset:-11px; border:5px solid`), not an
 inline border — implement it as a sibling `Box` drawn outside the content bounds
 so it never resizes the element. Honour `rememberReducedMotion()`: skip the scale
 animation, keep the ring.
+
+### 3a. The traveling ring — one object per focus group
+
+`FocusBeaconHost` installs ONE ring for the group inside it; members mark
+themselves with `Modifier.focusBeacon(shape)` and suppress their own. It is
+strictly opt-in: with no host above it a member draws its own ring exactly as
+before, which is what makes the beacon safe to scope per group rather than per
+screen — a ring that flies between unrelated regions reads as a bug.
+
+Hosts ship on the four coherent groups: the **playback transport row**, the
+**subtitles panel**, the **Settings column**, and the **pair action row**.
+
+The stream-metrics panel deliberately has none: its close button is its only
+focus target, so a host there would be a ring with nowhere to travel. Top chrome
+is the same case (END SESSION alone). Both keep the local ring.
+
+Travel is capped — a jump longer than 320 dp fades out and blooms back in at the
+destination instead of flying across dead screen — and the travel spring damps at
+`TV_FOCUS_DAMPING`, so the painted extent stays inside `FocusRingReserve`.
 
 ---
 
@@ -204,9 +224,10 @@ would render the platform default silently, with no error.
 
 Letter-spacing at ten feet is *looser* than the phone's, never tighter — tight tracking
 closes counters at 3 m. Display sits at `-0.02em`, body and labels at `+0.005em`, mono
-eyebrows `+0.14em` to `+0.2em` (wide, uppercase). No weight below 500 and no size below
-16 sp anywhere; body copy starts at 24 sp. `FlickType`'s helpers clamp to those floors,
-so a call site cannot pass its way under them.
+eyebrows `+0.14em` to `+0.2em` (wide, uppercase). No weight falls below 500 and no
+size falls below 14 sp; `FlickType.body()` defaults to 16 sp and the shipped body
+steps are 18 / 16 / 15 sp. `FlickType`'s helpers clamp to the 14sp floor, so a call
+site cannot pass its way under it.
 
 Update `FlickTvTypography` role sizes to the §1a scale.
 
@@ -216,36 +237,36 @@ Update `FlickTvTypography` role sizes to the §1a scale.
 
 ### 5.1 Pair screen (`PairScreen.kt`)
 
-Two columns inside the safe area: content `1fr` / QR column `310 dp`, gap `40 dp`.
+Two columns inside the safe area: content `1fr` / QR column **272 dp**, gap **40 dp**.
 
-**Left column** (gap 20 dp):
-1. **Lockup** — `BrandMark` 38 dp + column: "Flick" Bricolage 800 / 23 sp /
-   `-0.045em`, and eyebrow `RECEIVER · <TV NAME>` mono 16 sp / `+0.2em` /
+**Left column** (gap **10 dp**):
+1. **Lockup** — `BrandMark` **30 dp** + column: "Flick" Bricolage 800 / **18 sp** /
+   `-0.02em`, and eyebrow `RECEIVER · <TV NAME>` mono **14 sp** / `+0.2em` /
    `OnSurfaceMuted`. (Design's hardcoded "1.4" is replaced by nothing — do not
    invent a version string; use the real TV name.)
-2. **Headline** — `pair_title`, Bricolage 800, **52 sp**, line-height 0.88,
-   `-0.05em`, `#FFFFFF`.
-3. **Body** — `pair_instructions`, 24 sp / 600 / `OnSurfaceDim`, max width 410 dp,
+2. **Headline** — `pair_title`, Bricolage 800, **40 sp**, `-0.02em`, `#FFFFFF`.
+3. **Body** — `pair_instructions`, **18 sp** / 600 / `OnSurfaceDim`, max width **500 dp**,
    with the word "Flick" in `SparkBright`.
-4. **Manual-entry card** — `Surface` fill, 20 dp radius, 21 dp padding,
-   `GlassBorder` hairline. Eyebrow `OR ADD THIS TV BY HAND` mono 16 sp. Then a row:
+4. **Manual-entry card** — `Surface` fill, 20 dp radius, **16 dp horizontal / 10 dp vertical**
+   padding, `GlassBorder` hairline. Eyebrow `OR ADD THIS TV BY HAND` mono **14 sp**. Then a row:
    `IP address` / vertical 1 dp divider / `Port` / divider / `Pairing code`.
-   Values in mono 22 sp `tnum`; the pairing code in `Spark`, its label in
+   Endpoint values are mono **18 sp** `tnum`; the pairing code is **20 sp** in `Spark`, its label in
    `SparkBright`. Below, a timer row: clock glyph + "one sender at a time"
    (**drop the design's fake "rotates in 4:52" countdown unless
    `PairingManager` actually exposes a remaining-TTL value; if it does, show it**).
 5. **Status row** — pulsing `Live` dot 7 dp + "Listening · no account, nothing
-   uploaded" 24 sp `#C9D8F7`. When `networkReady` is false, show the existing
+   uploaded" **16 sp** `OnSurfaceSoft`. When `networkReady` is false, show the existing
    `pair_waiting_network_*` copy instead.
 6. Focusables: `Rename TV` and `Show code bigger`, styled per §3. One of them
    takes initial focus. **Do not add the design's "SIMULATE A PHONE CONNECTING"
    button — it is a prototype affordance, not a product feature.**
 
-**Right column**: white card, 26 dp radius, 23 dp padding, containing `QrCode`.
+**Right column**: a **248 dp** white `QrCode` card centred in the 272 dp column, with
+an 18 dp quiet zone and a 26 dp radius.
 Recolour the QR: modules `#0A1533`; the two upper finder eyes' inner squares
 `#1240E8`, the lower-left eye's inner square `#FFB61E`; centre overlay = white
 rounded square (16 dp radius) holding `BrandMark` tinted `Primary`. Below the
-card, a wifi glyph + `flick://<host>:<port>` mono 16 sp `OnSurfaceMuted`.
+card, a 14 dp wifi glyph + `flick://<host>:<port>` mono **14 sp** `OnSurfaceMuted`.
 
 > The eye recolouring requires drawing the three finder patterns explicitly over
 > the ZXing matrix. Keep error correction at `M` and keep the payload byte-identical
@@ -255,7 +276,8 @@ card, a wifi glyph + `flick://<host>:<port>` mono 16 sp `OnSurfaceMuted`.
 
 Full-bleed `Canvas` @ 82 % over the (covered) player surface. Centred card:
 450 dp wide, `GlassPanel` fill, 26 dp radius, 32 dp padding, `GlassBorder`
-hairline, entering on `FlickMotion.flickSettle()` with a 23 dp rise.
+hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
+(`FlickMotion.TvRiseCard`).
 
 Contents: a 48 dp amber spinner ring (3.5 dp stroke, `Spark` on `Spark` @ 22 %,
 continuous rotation — **skip the rotation under `rememberReducedMotion()`**),
@@ -266,36 +288,36 @@ then `connecting_title` Bricolage 800 / 27 sp, then `connecting_detail` 24 sp
 ### 5.3 Playback (`PlaybackScreen.kt`)
 
 **Top chrome** (visible with `chromeVisible`, inside safe area):
-- Left: glass pill (`Glass`, pill radius, 7 dp/15 dp padding, `GlassBorder`) —
-  `BrandMark` 17 dp + `now_playing_from` 24 sp.
+- Left: glass pill (`Glass`, pill radius, 7/6/12/6 dp start/top/end/bottom padding,
+  `GlassBorder`) — `BrandMark` **14 dp** + `now_playing_from` **16 sp**.
 - Right: net-health pill — dot tinted `Live`/`Caution` by RSSI + band, then
-  `<band> · <rssi> dBm` mono 16 sp `OnChrome`; then a clock pill showing the real
-  device time, mono 16 sp. Both `Glass`.
+  `<band> · <rssi> dBm` mono **14 sp**; then a clock pill showing the real device
+  time, mono **14 sp**. Both `Glass`.
 - `END SESSION` outlined pill sits below the left pill, `OnSurfaceDim`, 2 dp
   `rgba(255,255,255,.18)` border — focusable.
 
 **Bottom transport panel** (inside safe area, anchored bottom):
-`GlassChrome` fill, **26 dp radius**, padding 22 dp top / 26 dp sides / 20 dp
-bottom, `GlassBorderCool` 1 dp border, the §2d inner top hairline, entering on
-`flickSettle` with a 21 dp rise. Three rows, 17 dp gap:
+`GlassChrome` fill, **26 dp radius**, **21 dp horizontal / 18 dp vertical** padding,
+`GlassBorderCool` 1 dp border, the §2d inner top hairline, entering on
+`flickSettle` with a 21 dp rise. Three rows, **16 dp** gap:
 
-1. **Header row** — left: eyebrow `NOW PLAYING · DIRECT FILE` mono 16 sp `SparkBright`,
-   then title Bricolage 800 **34 sp** `-0.045em` `#FFFFFF` (ellipsize, single line).
-   Right: spec chips, 1 dp `rgba(255,255,255,.2)` border, 8 dp radius, mono 16 sp
+1. **Header row** — left: eyebrow `NOW PLAYING · DIRECT FILE` mono **14 sp** `SparkBright`,
+   then title Bricolage 800 **27 sp** `-0.02em` `#FFFFFF` (ellipsize, single line).
+   Right: spec chips, 1 dp `rgba(255,255,255,.2)` border, 8 dp radius, mono **14 sp**
    `OnChrome`. Chips come from **real telemetry only** (§7): resolution + HDR
    class, audio codec + channel count, video codec. **Drop the design's
    "18.4 GB" chip — file size is not available to the receiver.**
-2. **Scrub row** — position mono 20 sp `tnum` `#FFFFFF` (fixed 75 dp width) /
-   `TvScrubBar` / remaining `−mm:ss` mono 20 sp `tnum` `OnSurfaceDim` (75 dp,
-   right-aligned). Track 8 dp tall, pill; buffered fill `0x42FFFFFF`; played fill
-   the §2d amber gradient; knob 15 dp white circle with a 3.5 dp `Spark` @ 34 %
+2. **Scrub row** — position mono **16 sp** `tnum` `#FFFFFF` (minimum **60 dp** width) /
+   `TvScrubBar` / remaining `−mm:ss` mono **16 sp** `tnum` `OnSurfaceDim` (60 dp,
+   right-aligned). Track **6 dp** tall, pill; buffered fill `0x42FFFFFF`; played fill
+   the §2d amber gradient; knob **12 dp** white circle with an **18 dp** `Spark` @ 34 %
    halo. Ghost/target playhead behaviour and the existing `confirmed …` /
    `target … · snap on release` semantics are **preserved as-is**.
 3. **Control row** — `[Subtitles card]  ⟨ back10 · play · fwd10 ⟩  [Stream metrics card]`,
-   space-between. Back/forward: 52 dp square, 17 dp radius, `rgba(148,190,255,.16)`
-   fill, `#BEDCFF` @ 34 % border, 26 dp glyph `#FFFFFF`. Play: **66 dp**, 22 dp
-   radius, `Spark` fill, 35 dp glyph `OnSpark`, amber drop shadow. Side cards:
-   13 dp radius, glyph 19 dp + two-line label (title 24 sp / state mono 16 sp);
+   space-between. Back/forward: **48 dp** square, 17 dp radius, `rgba(148,190,255,.16)`
+   fill, `#BEDCFF` @ 34 % border, **24 dp** glyph `#FFFFFF`. Play: **56 dp**, 22 dp
+   radius, `Spark` fill, **28 dp** glyph `OnSpark`, amber drop shadow. Side cards:
+   13 dp radius, glyph **16 dp** + two-line label (title **16 sp** / state mono **14 sp**);
    when their panel is open they invert to a `Spark` fill with `OnSpark` ink.
 
 **Volume** — the design omits volume, but the app has it and `TransportAndVolumeInteractionTest`
@@ -304,10 +326,10 @@ between the transport cluster and the metrics card, or as a fourth focusable in
 the same row. It keeps its `Volume` `contentDescription`.
 
 **Overlays** (unchanged behaviour, restyled):
-- Seek burst: 38 % width side wash, radial `Spark` @ 16 %, 60 dp glyph +
-  `±10s` Bricolage 800 22 sp, on `tvBurst` (0.72 s scale-and-fade).
-- Paused chip: at 28 % height, `Glass` pill, 23 dp `Spark` pause glyph + "Paused"
-  Bricolage 800 17 sp.
+- Seek burst: 38 % width side wash, radial `Spark` @ 16 %, **48 dp** glyph +
+  `±10s` Bricolage 800 **20 sp**, on `tvBurst` (0.72 s scale-and-fade).
+- Paused chip: at 28 % height, `Glass` pill, **20 dp** `Spark` pause glyph + "Paused"
+  Bricolage 800 **20 sp**.
 - Buffering: keep the existing calm treatment, restyled to the new tokens.
 - Quality flourish (`QualityInfo`): restyle to the new glass; keep the 4.5 s
   auto-dismiss.
@@ -328,14 +350,14 @@ entry.
 
 ### 5.4 Subtitles panel (new — `ui/screens/SubtitlesPanel.kt`)
 
-Left-anchored above the transport panel, 310 dp wide, `GlassPanel`, 20 dp radius,
-16/17 dp padding, entering on `flickSettle` with a rise.
+Left-anchored above the transport panel, **292 dp** wide, `GlassPanel`, 20 dp radius,
+**17 dp horizontal / 13 dp vertical** padding, entering on `flickSettle` with a rise.
 
-- Header: "Subtitles" Bricolage 800 27 sp + a focusable close button (23 dp square,
-  8 dp radius).
+- Header: "Subtitles" Bricolage 800 **22 sp** + a focusable close button (**19 dp** square,
+  12 dp glyph).
 - Track list from **real Media3 tracks** (§7): each row = check glyph
   (`check_circle` when selected, `radio_button_unchecked` otherwise, tinted
-  `Spark`/`OnSurfaceFaint`) + label + a mono 16 sp meta chip showing the real
+  `Spark`/`OnSurfaceFaint`) + label **16 sp** + a mono **14 sp** meta chip showing the real
   format (e.g. `SRT · EMBEDDED`, `PGS · IMAGE`) derived from the track's sample
   MIME. Selected row: `Spark` @ 18 % fill, `SparkLight` text. An explicit **Off**
   row is first.
@@ -347,20 +369,32 @@ Every row is D-pad focusable per §3. `Back` closes the panel.
 
 ### 5.5 Stream metrics panel (new — `ui/screens/StreamMetricsPanel.kt`)
 
-Right-anchored above the transport panel, 370 dp wide, `GlassPanel`, 20 dp radius.
+Right-anchored above the transport panel, **488 dp** wide, `GlassPanel`, 20 dp radius,
+with **17 dp horizontal / 11 dp vertical** padding.
 
-- Header: "Stream metrics" Bricolage 800 27 sp + a health pill (`HEALTHY · DIRECT PLAY`
-  in `Live`, or `DEGRADED · RECOVERING` in `Caution`, chosen from the real
-  `DiagnosticsSnapshot.status`) + a focusable close button.
-- **Throughput histogram**: `THROUGHPUT · LAST 40 s` eyebrow + the live value in
-  mono 14 sp `Spark`; 40 bars, 2.5 dp gap, 37 dp tall, 2 dp top radius, height
+- Header: "Stream metrics" Bricolage 800 **22 sp** + a health pill (`HEALTHY · DIRECT PLAY`
+  in `Live`, or `DEGRADED · RECOVERING` in `Caution`) derived from present-tense
+  diagnostics: `errorMessage`, `playbackStarted`, `currentlyRebuffering`, `isPlaying`, and
+  `bufferedAheadMs`. Show no pill before playback starts; mark degraded for an error, active
+  rebuffering, or an actively playing stream with no buffer ahead. Otherwise mark healthy.
+  Do **not** use `DiagnosticsSnapshot.status`, which can be stale. The close button remains
+  focusable.
+- **Throughput histogram**: `THROUGHPUT · LAST 40 s` eyebrow mono **14 sp** + the live value in
+  mono **16 sp** `Spark`; 40 bars, 2.5 dp gap, **28 dp** tall, 2 dp top radius, height
   proportional to the rolling peak. Bars below 50 % of peak tint `Caution`, else
   `Spark` @ 85 %. Fed by the new `ThroughputHistory` ring buffer (§7).
-- **Stats grid**: 3 × 3, label mono 16 sp `OnPanelLabel` over value 24 sp. Use only
+- **Stats grid**: 3 × 3, label mono **14 sp** `OnPanelLabel` over value mono **16 sp**. Use only
   real fields: resolution, codec (from `videoMimeType`), frame rate, bitrate,
   buffer ahead, probe latency, dropped frames, decoder name, transport
   (`TCP · <wifiBand>`). Warn-coloured (`Caution`) when degraded; dropped-frames
   zero shows `Live`.
+
+The Mb/s readout **snaps** between samples. It is a measurement, and a
+measurement that travels between values is a fabricated one — and a roll keyed on
+a ~1 Hz sample is an animation running continuously over a live decoder. Only the
+bounded histogram gauge animates, on `stateEffects()`, so a bar can never
+overshoot into a throughput the receiver never measured; an empty slot means "not
+measured" and never grows up out of the floor.
 
 This panel is the *tasteful* read; the existing dense `MetricsOverlay` dev HUD
 stays as the separate opt-in Settings toggle (design brief Part 3 item 10).
@@ -370,27 +404,82 @@ stays as the separate opt-in Settings toggle (design brief Part 3 item 10).
 Not drawn in the design file — **re-skin to the new tokens, keep structure and
 behaviour**. Specifically: new palette, Bricolage/Geist/Geist Mono, amber
 focus rings, glass panels, safe-area anchoring, and the §1a type floors. Keep
-every string listed in §0 and keep the existing focus requesters and back
-handling. Idle gains the design's ambient blue radial wash + a pulsing `Live`
+every string listed in §0 and preserve back handling. Idle gains the design's ambient blue radial wash + a pulsing `Live`
 dot; Error keeps its amber (not-serving) vs crimson (unreachable) split.
+
+**Error is still.** Its whole entrance is a single alpha fade on `stateEffects()`
+— no rise, no spring, and the status light on the phone glyph is held rather than
+breathing. A card that springs into place under a diagnosed fault reads as an app
+being playful about a failure, and the two diagnoses are already separated by
+accent, copy and action labels. It is also the surface `ErrorScreenFocusTest` and
+two `TvSafeAreaContainmentTest` cases mount and wait for idle on.
+
+Settings begins D-pad focus on **Device name**, its first actionable row. Its
+fixed title and the currently focused control, including the detached ring,
+stay inside the viewport reserve; preceding non-focused rows and diagnostic
+logs remain ordinary scroll context.
 
 ---
 
 ## 6. Motion
 
-Keep `FlickMotion`'s curve/duration tokens. Map the design's animations onto them:
+TV motion is **settling**: things arrive and come to rest with weight. The specs come
+from `MaterialTheme.motionScheme`, reached by wrapping `FlickTvTheme`'s content in
+material3's `MaterialExpressiveTheme` *outside* `androidx.tv.material3.MaterialTheme`, so
+tv-material's locals still win for everything actually drawn. **No call site outside
+`Motion.kt` writes a `spring(...)` or a duration** — see `design-tokens.md` §6 for the
+shared vocabulary and the sender/receiver damping bias.
 
-| Design | Token |
+| Design / use | Token |
 |---|---|
-| `tvRise` (panel entrance, 0.38–0.5 s) | `flickSettle()` + slide-up |
-| `tvBurst` (seek flash, 0.72 s) | scale 0.7→1→1.14 with fade, `flickSettle` easing |
-| `tvPulse` (live dot, 1.9 s) | existing infinite pulse in `StatusPill` |
-| `tvSpin` (handshake ring, 1 s linear) | `LinearEasing` infinite rotation |
+| `tvRise` (panel entrance) | `panelSpatial()` + a `graphicsLayer` rise of `FlickMotion.TvRise` (21 dp) |
+| chrome / panel exit | `focusSpatial()` over half the entrance travel, alpha on `fastStateEffects()` — `glassPanelExit()` defines it once |
+| `tvBurst` (seek flash, 0.72 s) | scale 0.7→1→1.14 with fade, `flickSettle` easing (the keyframes are the design) |
+| seek-step impulse | snap to 1 → `flickSettleSpatial()` back to 0, one kick per accepted protocol step |
+| `tvPulse` (live dot, 1.9 s) | infinite pulse in `LiveDot`, bound to real state only |
+| `tvSpin` (handshake ring, 1 s linear) | `LinearEasing` infinite rotation; the arc length breathes 35°→110°→35° across one turn off the same phase |
 | chrome fade | `chromeFadeIn()` / `chromeFadeOut()` |
-| focus ring/scale | `focusPop()` |
+| focus ring / scale / beacon travel | `focusSpatial()` |
+| colour, alpha, selection fill | `stateEffects()` |
+| seek reconcile | `syncSpring()` — now a real spring, so a held D-pad seek retargets instead of stuttering |
+| D-pad centre/Enter press confirmation | `pressConfirm()` — 90 ms `ChromeFade`; scale 0.98 when unfocused or 1.02 while focused, with pressed fill feedback |
+
+`chromeFadeOut`'s 500 ms is now **indicative**: it still governs the scrim, which
+deliberately lags the chrome out, but the chrome's own exit is a spring and has no fixed
+duration.
+
+`focusPop`'s curve is retired — focus is a spring so that a held D-pad retargets it
+mid-flight.
+
+### 6.1 The performance fence (playback stack)
+
+The TV is decoding 4K Dolby Vision while this UI composes. Inside `:receiver`:
+
+- no `Modifier.blur` / `RenderEffect`, anywhere;
+- no infinite or ambient animation while the decoder runs — ambience belongs to Idle,
+  where the player surface is `Hidden`, and the idle wash drift is the **one** deliberate
+  ambient loop in the system;
+- per-frame values are read inside `drawBehind` / `graphicsLayer` lambdas, never in
+  composition;
+- chrome motion is `graphicsLayer` transforms, never layout offsets — the full-screen dim
+  plus the two scrims are the entire animated-layer budget over the video;
+- `sparkShadow` elevation and colour are never animated.
+
+At most **one** `rememberInfiniteTransition` per screen, and none on a surface an
+instrumentation test mounts and waits for idle on.
+
+The playback screen's single one is the **buffering arc**, and it is a deliberate
+exception to the "no infinite animation while the decoder runs" line: it exists
+only while `PlaybackPhase.Buffering` — real state, not ambience — and a frozen
+ring during a rebuffer reads as a hung app on the one app whose entire claim is
+that it does not stall. It pays the fence in full instead: the phase is a
+`State<Float>` read inside `drawBehind`, so a rebuffer repaints one 40 dp arc and
+recomposes nothing. No instrumentation test mounts the buffering phase.
 
 Every infinite/ambient animation must be skipped when `rememberReducedMotion()`
-is true — the static end-state still reads correctly.
+is true — the static end-state still reads correctly. Finite springs snap on their own at
+a zero animator scale; anything looping or hand-driven (the idle drift, the staged
+entrances, the pairing-code roll) carries an explicit `LocalReducedMotion` gate.
 
 ---
 
@@ -454,7 +543,8 @@ Keep everything vector and self-contained; no raster assets.
 - `:receiver:assembleDebug` and `:receiver:testDebugUnitTest` pass.
 - Existing `androidTest` sources still compile and their asserted strings survive.
 - No `FlickColor` reference to a removed token anywhere in the tree.
-- No text below 16 sp; no reading copy below 24 sp.
+- No text below 14 sp; retain the 18 / 16 / 15 sp reading hierarchy, with 16 sp as
+  the default body size.
 - Every interactive element reachable by D-pad, with the amber focus ring visible.
 - All outer chrome inside `rememberTvSafeAreaPadding()`.
 - No fabricated telemetry.

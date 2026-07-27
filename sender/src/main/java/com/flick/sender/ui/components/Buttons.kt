@@ -1,11 +1,11 @@
 package com.flick.sender.ui.components
 
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonShapes
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -15,9 +15,19 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.PillMorphShape
+import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.PrimaryShadow
-import com.flick.sender.ui.theme.pressScale
+
+/**
+ * A press changes the silhouette, not the size: the pill squares off under the finger
+ * and rounds back out on release. That is Material's own pressed-shape morph, so it
+ * runs on the scheme's spring and needs no scale of ours on top of it — two answers to
+ * one touch read as a bug.
+ */
+@Composable
+private fun rememberPillShapes(): ButtonShapes =
+    remember { ButtonShapes(shape = PillMorphShape, pressedShape = PressedPillShape) }
 
 /** Full-width brand-blue action: the pairing sheets' Connect/Pair and the empty-state CTA. */
 @Composable
@@ -28,12 +38,10 @@ fun FlickPrimaryButton(
     enabled: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
-    val interaction = remember { MutableInteractionSource() }
     Button(
         onClick = onClick,
+        shapes = rememberPillShapes(),
         enabled = enabled,
-        shape = PillShape,
-        interactionSource = interaction,
         colors = ButtonDefaults.buttonColors(
             containerColor = colors.primary,
             contentColor = colors.onPrimary,
@@ -44,13 +52,14 @@ fun FlickPrimaryButton(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .pressScale(interaction)
             // Only the enabled pill is lifted; a disabled one must not read as tappable.
+            // The lift stays on the resting shape: an elevation shadow is cast from a
+            // static outline and cannot follow the press morph.
             .then(
                 if (enabled) {
                     Modifier.shadow(
                         elevation = 14.dp,
-                        shape = PillShape,
+                        shape = PillMorphShape,
                         clip = false,
                         ambientColor = PrimaryShadow,
                         spotColor = PrimaryShadow,
@@ -72,15 +81,13 @@ fun FlickSubtleButton(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
-    val interaction = remember { MutableInteractionSource() }
     TextButton(
         onClick = onClick,
-        shape = PillShape,
-        interactionSource = interaction,
+        shapes = rememberPillShapes(),
         // labelLarge is 14.5sp bold, the size onSurfaceFaint needs to clear the
         // contrast floor on the pale canvas (design §7).
         colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceFaint),
-        modifier = modifier.heightIn(min = 48.dp).pressScale(interaction),
+        modifier = modifier.heightIn(min = 48.dp),
     ) {
         Text(text, style = FlickText.labelLarge)
     }

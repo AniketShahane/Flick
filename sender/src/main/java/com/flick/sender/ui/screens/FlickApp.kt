@@ -8,10 +8,14 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -35,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -44,6 +49,7 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
 import com.flick.sender.R
 import com.flick.sender.net.FlickController
@@ -85,10 +91,16 @@ private class ShellToastState {
 }
 
 /**
- * Nav host for the phone. Screens cross-dissolve; the quality sheet (S10) and
- * advisories (S11) float as overlays over whatever is beneath. There's no nav
- * library — a single [Route] StateFlow drives everything (thumb-first, one column).
+ * Nav host for the phone. Every route pair takes one of five deliberate arms (see
+ * [routeMotion]); the quality sheet (S10) and advisories (S11) float as overlays over
+ * whatever is beneath. There's no nav library — a single [Route] StateFlow drives
+ * everything (thumb-first, one column).
+ *
+ * The whole tree sits in one `SharedTransitionLayout` because a video's decoded frame
+ * has to survive four route changes as a single surface: tile -> detail backdrop, then
+ * connecting -> the remote's poster.
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun FlickApp(
     controller: FlickController,
@@ -99,6 +111,7 @@ fun FlickApp(
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
+    val layoutDirection = LocalLayoutDirection.current
     val route by controller.route.collectAsState()
     val connectFromLibrary by controller.connectFromLibrary.collectAsState()
     val showQuality by controller.showQualitySheet.collectAsState()
@@ -156,148 +169,256 @@ fun FlickApp(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.surface)) {
-        AnimatedContent(
-            targetState = route,
-            transitionSpec = {
-                if (reduceMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    (
-                        fadeIn(motionScheme.defaultEffectsSpec()) +
-                            scaleIn(
-                                motionScheme.defaultSpatialSpec(),
-                                initialScale = 0.98f,
-                            )
-                        ) togetherWith (
-                        fadeOut(motionScheme.defaultEffectsSpec()) +
-                            scaleOut(
-                                motionScheme.defaultSpatialSpec(),
-                                targetScale = 0.98f,
-                            )
-                        )
-                }
-            },
-            label = "route",
-        ) { r ->
-            Box(Modifier.fillMaxSize().then(routeSemantics)) {
-                when (r) {
-                    Route.Connect -> ConnectScreen(controller)
-                    Route.Library -> LibraryScreen(controller, onRequestVideoPermission)
-                    is Route.Detail -> DetailScreen(controller, r.item)
-                    Route.Connecting -> ConnectingScreen(controller)
-                    Route.NowPlaying -> NowPlayingScreen(controller)
-                    is Route.Failure -> ErrorScreen(controller, r.kind, r.failure, onOpenWifiSettings)
-                }
-            }
-        }
+    SharedTransitionLayout {
+        val sharedScope = this
+        Box(Modifier.fillMaxSize().background(colors.surface)) {
+            AnimatedContent(
+                targetState = route,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        val from = SenderShellPolicy.destinationOf(initialState)
+                        val to = SenderShellPolicy.destinationOf(targetState)
+                        when (routeMotion(from, to)) {
+                            // The frame carries the movement, so the chrome only has to get
+                            // out of its way: any slower fade would ghost the hero.
+                            RouteMotion.HERO ->
+                                fadeIn(motionScheme.fastEffectsSpec()) togetherWith
+                                    fadeOut(motionScheme.fastEffectsSpec())
 
-        // The nav floats over the route, so it takes the same modal semantics treatment.
-        AnimatedVisibility(
-            visible = SenderShellPolicy.navVisible(route),
-            modifier = Modifier.align(Alignment.BottomCenter).then(routeSemantics),
-            enter = if (reduceMotion) {
-                EnterTransition.None
-            } else {
-                fadeIn(motionScheme.defaultEffectsSpec()) +
-                    slideInVertically(motionScheme.defaultSpatialSpec()) { it }
-            },
-            exit = if (reduceMotion) {
-                ExitTransition.None
-            } else {
-                fadeOut(motionScheme.fastEffectsSpec()) +
-                    slideOutVertically(motionScheme.defaultSpatialSpec()) { it }
-            },
-            label = "nav",
-        ) {
-            FlickBottomNav(
-                selected = selectedTab,
-                onSelect = { tab ->
-                    // Re-selecting the current tab is a no-op: openConnect() also arms the
-                    // in-flow back behavior, which would strand Back on the launch route.
-                    if (tab != selectedTab) {
-                        when (tab) {
-                            NavTab.LIBRARY -> {
-                                haptics.tabChange()
-                                controller.openLibrary()
-                            }
-                            NavTab.DEVICES -> {
-                                haptics.tabChange()
-                                controller.openConnect()
-                            }
-                            // Read at tap time so the shell never subscribes to cast state
-                            // it does not render.
-                            NavTab.REMOTE -> when (
-                                SenderShellPolicy.remoteTapOutcome(
-                                    hasConnectedTv = controller.connectedTv.value != null,
-                                    hasActiveSession = SenderNavigationPolicy.canRestoreNowPlaying(
-                                        controller.castStart.value,
-                                        controller.castingItem.value != null,
-                                    ),
+                            RouteMotion.LAUNCH ->
+                                (
+                                    fadeIn(motionScheme.defaultEffectsSpec()) +
+                                        scaleIn(motionScheme.defaultSpatialSpec(), initialScale = LaunchNear)
+                                    ) togetherWith (
+                                    fadeOut(motionScheme.fastEffectsSpec()) +
+                                        scaleOut(motionScheme.defaultSpatialSpec(), targetScale = LaunchFar)
+                                    )
+
+                            RouteMotion.RETURN ->
+                                (
+                                    fadeIn(motionScheme.defaultEffectsSpec()) +
+                                        scaleIn(motionScheme.defaultSpatialSpec(), initialScale = LaunchFar)
+                                    ) togetherWith (
+                                    fadeOut(motionScheme.fastEffectsSpec()) +
+                                        scaleOut(motionScheme.defaultSpatialSpec(), targetScale = LaunchNear)
+                                    )
+
+                            RouteMotion.LATERAL -> {
+                                val direction = physicalRouteDirection(
+                                    logicalDirection = lateralDirection(from, to),
+                                    layoutDirection = layoutDirection,
                                 )
-                            ) {
-                                RemoteTapOutcome.NAVIGATE -> {
-                                    haptics.tabChange()
-                                    controller.restoreNowPlaying()
-                                }
-                                RemoteTapOutcome.TOAST_PICK_A_TV -> {
-                                    haptics.reject()
-                                    toast.show(pickATv)
-                                }
-                                RemoteTapOutcome.TOAST_PICK_A_VIDEO -> {
-                                    haptics.reject()
-                                    toast.show(pickAVideo)
-                                }
+                                (
+                                    fadeIn(motionScheme.defaultEffectsSpec()) +
+                                        slideInHorizontally(motionScheme.defaultSpatialSpec()) { fullWidth ->
+                                            fullWidth * direction / 4
+                                        }
+                                    ) togetherWith (
+                                    fadeOut(motionScheme.defaultEffectsSpec()) +
+                                        slideOutHorizontally(motionScheme.defaultSpatialSpec()) { fullWidth ->
+                                            -fullWidth * direction / 6
+                                        }
+                                    )
                             }
+
+                            RouteMotion.QUIET ->
+                                fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
+                                    fadeOut(motionScheme.fastEffectsSpec())
                         }
                     }
                 },
-                modifier = Modifier.navigationBarsPadding().padding(16.dp),
+                label = "route",
+            ) { r ->
+                Box(Modifier.fillMaxSize().then(routeSemantics)) {
+                    when (r) {
+                        Route.Connect -> ConnectScreen(controller)
+                        Route.Library -> LibraryScreen(
+                            controller = controller,
+                            onRequestVideoPermission = onRequestVideoPermission,
+                            sharedScope = sharedScope,
+                            animatedScope = this@AnimatedContent,
+                        )
+                        is Route.Detail -> DetailScreen(
+                            controller = controller,
+                            item = r.item,
+                            sharedScope = sharedScope,
+                            animatedScope = this@AnimatedContent,
+                        )
+                        Route.Connecting -> ConnectingScreen(
+                            controller = controller,
+                            sharedScope = sharedScope,
+                            animatedScope = this@AnimatedContent,
+                        )
+                        Route.NowPlaying -> NowPlayingScreen(
+                            controller = controller,
+                            sharedScope = sharedScope,
+                            animatedScope = this@AnimatedContent,
+                        )
+                        is Route.Failure -> ErrorScreen(controller, r.kind, r.failure, onOpenWifiSettings)
+                    }
+                }
+            }
+
+            // The nav floats over the route, so it takes the same modal semantics treatment.
+            AnimatedVisibility(
+                visible = SenderShellPolicy.navVisible(route),
+                modifier = Modifier.align(Alignment.BottomCenter).then(routeSemantics),
+                enter = if (reduceMotion) {
+                    EnterTransition.None
+                } else {
+                    fadeIn(motionScheme.defaultEffectsSpec()) +
+                        slideInVertically(motionScheme.defaultSpatialSpec()) { it }
+                },
+                exit = if (reduceMotion) {
+                    ExitTransition.None
+                } else {
+                    fadeOut(motionScheme.fastEffectsSpec()) +
+                        slideOutVertically(motionScheme.defaultSpatialSpec()) { it }
+                },
+                label = "nav",
+            ) {
+                FlickBottomNav(
+                    selected = selectedTab,
+                    onSelect = { tab ->
+                        // Re-selecting the current tab is a no-op: openConnect() also arms the
+                        // in-flow back behavior, which would strand Back on the launch route.
+                        if (tab != selectedTab) {
+                            when (tab) {
+                                NavTab.LIBRARY -> {
+                                    haptics.tabChange()
+                                    controller.openLibrary()
+                                }
+                                NavTab.DEVICES -> {
+                                    haptics.tabChange()
+                                    controller.openConnect()
+                                }
+                                // Read at tap time so the shell never subscribes to cast state
+                                // it does not render.
+                                NavTab.REMOTE -> when (
+                                    SenderShellPolicy.remoteTapOutcome(
+                                        hasConnectedTv = controller.connectedTv.value != null,
+                                        hasActiveSession = SenderNavigationPolicy.canRestoreNowPlaying(
+                                            controller.castStart.value,
+                                            controller.castingItem.value != null,
+                                        ),
+                                    )
+                                ) {
+                                    RemoteTapOutcome.NAVIGATE -> {
+                                        haptics.tabChange()
+                                        controller.restoreNowPlaying()
+                                    }
+                                    RemoteTapOutcome.TOAST_PICK_A_TV -> {
+                                        haptics.reject()
+                                        toast.show(pickATv)
+                                    }
+                                    RemoteTapOutcome.TOAST_PICK_A_VIDEO -> {
+                                        haptics.reject()
+                                        toast.show(pickAVideo)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.navigationBarsPadding().padding(16.dp),
+                )
+            }
+
+            AnimatedContent(
+                targetState = activeOverlay,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
+                            fadeOut(motionScheme.fastEffectsSpec())
+                    }
+                },
+                label = "overlay",
+            ) { overlay ->
+                when (overlay) {
+                    Overlay.QUALITY -> QualitySheet(
+                        controller = controller,
+                        onDismiss = { controller.toggleQualitySheet(false) },
+                    )
+                    Overlay.ADVISORIES -> AdvisoriesScreen(
+                        batteryExempt = batteryExempt,
+                        onOpenWifiSettings = onOpenWifiSettings,
+                        onRequestBatteryExemption = onRequestBatteryExemption,
+                        onOpenDiagnostics = {
+                            controller.toggleAdvisories(false)
+                            controller.toggleDiagnostics(true)
+                        },
+                        onDismiss = { controller.toggleAdvisories(false) },
+                    )
+                    Overlay.DIAGNOSTICS -> DiagnosticsSheet(
+                        onDismiss = { controller.toggleDiagnostics(false) },
+                    )
+                    null -> Unit
+                }
+            }
+
+            // Reads of the toast live inside the host so raising one never recomposes a route.
+            ShellToast(
+                state = toast,
+                reduceMotion = reduceMotion,
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
-
-        AnimatedContent(
-            targetState = activeOverlay,
-            transitionSpec = {
-                if (reduceMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
-                        fadeOut(motionScheme.fastEffectsSpec())
-                }
-            },
-            label = "overlay",
-        ) { overlay ->
-            when (overlay) {
-                Overlay.QUALITY -> QualitySheet(
-                    controller = controller,
-                    onDismiss = { controller.toggleQualitySheet(false) },
-                )
-                Overlay.ADVISORIES -> AdvisoriesScreen(
-                    batteryExempt = batteryExempt,
-                    onOpenWifiSettings = onOpenWifiSettings,
-                    onRequestBatteryExemption = onRequestBatteryExemption,
-                    onOpenDiagnostics = {
-                        controller.toggleAdvisories(false)
-                        controller.toggleDiagnostics(true)
-                    },
-                    onDismiss = { controller.toggleAdvisories(false) },
-                )
-                Overlay.DIAGNOSTICS -> DiagnosticsSheet(
-                    onDismiss = { controller.toggleDiagnostics(false) },
-                )
-                null -> Unit
-            }
-        }
-
-        // Reads of the toast live inside the host so raising one never recomposes a route.
-        ShellToast(
-            state = toast,
-            reduceMotion = reduceMotion,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
     }
 }
+
+/** The five arms of the route table. Every pair resolves to exactly one of them. */
+private enum class RouteMotion { HERO, LAUNCH, RETURN, LATERAL, QUIET }
+
+// The launch is the one transition that moves toward the TV rather than sideways: the
+// surface being left recedes, the surface arriving overshoots past the viewer.
+private const val LaunchNear = 1.06f
+private const val LaunchFar = 0.92f
+
+/**
+ * Which arm a route pair takes. HERO pairs carry a shared frame, so they drop every
+ * translation and let the frame itself be the movement; the launch pair is the cast
+ * commit; a fault is always presented still.
+ */
+private fun routeMotion(initial: ShellDestination, target: ShellDestination): RouteMotion = when {
+    initial == ShellDestination.LIBRARY && target == ShellDestination.DETAIL -> RouteMotion.HERO
+    initial == ShellDestination.DETAIL && target == ShellDestination.LIBRARY -> RouteMotion.HERO
+    initial == ShellDestination.CONNECTING && target == ShellDestination.NOW_PLAYING -> RouteMotion.HERO
+    initial == ShellDestination.DETAIL && target == ShellDestination.CONNECTING -> RouteMotion.LAUNCH
+    target == ShellDestination.FAILURE || initial == ShellDestination.FAILURE -> RouteMotion.QUIET
+    // Leaving a committed cast — minimize, stop, cancel — inverts the launch.
+    initial == ShellDestination.NOW_PLAYING || initial == ShellDestination.CONNECTING -> RouteMotion.RETURN
+    lateralDirection(initial, target) != 0 -> RouteMotion.LATERAL
+    else -> RouteMotion.QUIET
+}
+
+/** Left-to-right seat in the floating nav; -1 for the routes it does not represent. */
+private fun navSeat(destination: ShellDestination): Int = when (destination) {
+    ShellDestination.LIBRARY -> 0
+    ShellDestination.NOW_PLAYING -> 1
+    ShellDestination.CONNECT -> 2
+    ShellDestination.DETAIL, ShellDestination.CONNECTING, ShellDestination.FAILURE -> -1
+}
+
+/**
+ * Lateral travel only exists where the nav indicator also travels, so the screen and
+ * the indicator can never disagree about which way the app just moved.
+ */
+private fun lateralDirection(initial: ShellDestination, target: ShellDestination): Int {
+    val from = navSeat(initial)
+    val to = navSeat(target)
+    return when {
+        from < 0 || to < 0 || from == to -> 0
+        to > from -> 1
+        else -> -1
+    }
+}
+
+/** Maps logical forward/back navigation to physical offsets without changing route policy. */
+internal fun physicalRouteDirection(logicalDirection: Int, layoutDirection: LayoutDirection): Int =
+    if (layoutDirection == LayoutDirection.Rtl) -logicalDirection else logicalDirection
 
 /**
  * The window theme sets dark system-bar icons for the light screens; over a cinematic

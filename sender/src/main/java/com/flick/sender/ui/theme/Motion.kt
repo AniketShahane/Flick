@@ -45,7 +45,11 @@ import androidx.compose.ui.unit.Dp
 object Motion {
 
     // --- Easing curves (cubic-bezier) ---
-    /** Sheets and the toast rising into place. */
+    /**
+     * The toast rising into place. Sheets no longer use it — their rise is a gesture's
+     * consequence and takes the scheme's spatial spring; a toast arrives on its own and
+     * has nothing to retarget from.
+     */
     val SheetRise: Easing = CubicBezierEasing(0.2f, 1.4f, 0.35f, 1f)
 
     /** The link light crossing the connecting hairline. */
@@ -71,9 +75,10 @@ object Motion {
     const val ToastMs = 2200
 
     // --- Press scales ---
+    // Only surfaces Flick still draws itself. The transport keys sit in a ButtonGroup
+    // whose press response is a width squeeze, and scaling them as well would answer
+    // one touch twice.
     const val PressRow = 0.96f
-    const val PressFab = 0.92f
-    const val PressSeek = 0.90f
 
     // --- Sheet entry offsets ---
     const val SheetRiseOffsetDp = 30

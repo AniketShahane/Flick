@@ -13,10 +13,10 @@ import org.junit.Test
 class TransportSizingTest {
 
     @Test fun transportMatchesTheExpressiveMetrics() {
-        assertEquals(52.dp, SecondaryTransportTargetSize)
-        assertEquals(66.dp, PrimaryTransportTargetSize)
-        assertEquals(26.dp, TransportGlyphSize)
-        assertEquals(35.dp, PrimaryTransportGlyphSize)
+        assertEquals(48.dp, SecondaryTransportTargetSize)
+        assertEquals(56.dp, PrimaryTransportTargetSize)
+        assertEquals(24.dp, TransportGlyphSize)
+        assertEquals(28.dp, PrimaryTransportGlyphSize)
     }
 
     @Test fun everyTransportTargetClearsTheTvMinimum() {

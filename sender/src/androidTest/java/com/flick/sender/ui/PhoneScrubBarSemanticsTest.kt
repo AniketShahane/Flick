@@ -47,6 +47,9 @@ class PhoneScrubBarSemanticsTest {
                         values += fraction
                     },
                     onScrubEnd = { ends++ },
+                    // Exercise the compact-mode relocation path without changing the
+                    // one-start/one-end accessibility contract.
+                    reservePreviewSpace = true,
                     targetLabel = "Seek target",
                     confirmedLabel = "TV confirmed at 00:12",
                     stateLabel = "Following",

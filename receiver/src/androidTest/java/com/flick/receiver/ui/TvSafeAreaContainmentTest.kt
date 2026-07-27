@@ -2,13 +2,19 @@ package com.flick.receiver.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.unit.Density
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
@@ -52,7 +58,7 @@ class TvSafeAreaContainmentTest {
     /** Matches `rememberTvSafeAreaPadding` — 5 % of each axis. */
     private val safeFraction = 0.05f
 
-    private fun assertInsideSafeArea(label: String) {
+    private fun assertInsideSafeArea(label: String, allowScrolledContent: Boolean = false) {
         composeRule.waitForIdle()
         val root = composeRule.onRoot().fetchSemanticsNode()
         val rootBounds = root.boundsInRoot
@@ -67,13 +73,14 @@ class TvSafeAreaContainmentTest {
             // Backgrounds, gradient washes, scrims and the video surface itself are
             // SUPPOSED to bleed to the panel edge, so they are not candidates.
             val isContent = node.config.getOrNull(SemanticsProperties.Text) != null || node.isFocusTarget()
-            val laidOut = b.width > 0f && b.height > 0f
-            if (laidOut && isContent) {
-                if (b.bottom > rootBounds.bottom - insetY + 0.5f ||
+            if (isContent) {
+                if (b.width <= 0f || b.height <= 0f) {
+                    failures += "collapsed essential node: $b node=${node.describe()}"
+                } else if (!allowScrolledContent && (b.bottom > rootBounds.bottom - insetY + 0.5f ||
                     b.top < rootBounds.top + insetY - 0.5f ||
                     b.right > rootBounds.right - insetX + 0.5f ||
                     b.left < rootBounds.left + insetX - 0.5f
-                ) {
+                )) {
                     failures += "escapes safe area: $b (safe box inset ${insetX}x${insetY} " +
                         "of $rootBounds) node=${node.describe()}"
                 }
@@ -111,8 +118,8 @@ class TvSafeAreaContainmentTest {
                 PairScreen(
                     tvName = "Living Room TV",
                     code = "9742",
-                    qrPayload = "flick://192.168.0.2:47654",
-                    host = "192.168.0.2",
+                    qrPayload = "flick://192.0.2.2:47654",
+                    host = "192.0.2.2",
                     port = 47654,
                     networkReady = true,
                     bindUptimeSec = 42L,
@@ -132,8 +139,8 @@ class TvSafeAreaContainmentTest {
                 PairScreen(
                     tvName = "Living Room TV",
                     code = "—",
-                    qrPayload = "flick://192.168.0.2:47654",
-                    host = "192.168.0.2",
+                    qrPayload = "flick://192.0.2.2:47654",
+                    host = "192.0.2.2",
                     port = 47654,
                     networkReady = true,
                     onRename = {},
@@ -160,6 +167,50 @@ class TvSafeAreaContainmentTest {
             }
         }
         assertInsideSafeArea("PairScreen · no network")
+    }
+
+    @Test
+    fun enlarged_pair_code_keeps_text_and_done_inside_the_safe_area() {
+        composeRule.setContent {
+            FlickTvTheme {
+                PairScreen(
+                    tvName = "Living Room TV",
+                    code = "9742",
+                    qrPayload = "flick://192.0.2.2:47654",
+                    host = "192.0.2.2",
+                    port = 47654,
+                    networkReady = true,
+                    onRename = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("Show code bigger").performClick()
+        assertInsideSafeArea("PairScreen · enlarged code")
+    }
+
+    @Test
+    fun pair_actions_remain_reachable_at_large_font_scale() {
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 1.3f)) {
+                FlickTvTheme {
+                    PairScreen(
+                        tvName = "Living Room TV",
+                        code = "9742",
+                        qrPayload = "flick://192.0.2.2:47654",
+                        host = "192.0.2.2",
+                        port = 47654,
+                        networkReady = true,
+                        onRename = {},
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithText("Show code bigger").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Done").assertIsDisplayed()
+        // The scrolled background may extend past the viewport; essential nodes
+        // must still have real bounds, including at this accessibility scale.
+        assertInsideSafeArea("PairScreen · large font", allowScrolledContent = true)
     }
 
     // --- The other fixed-height surfaces ---------------------------------------

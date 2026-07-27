@@ -24,6 +24,7 @@ object FlickCorners {
     val tuneBtn = 17.dp
     val backBtn = 15.dp
     val previewThumb = 15.dp
+    val pressedPill = 13.dp
 }
 
 val FlickShapes = Shapes(
@@ -35,6 +36,18 @@ val FlickShapes = Shapes(
 )
 
 val PillShape = RoundedCornerShape(FlickCorners.full)
+
+/**
+ * Resting shape of a pill that morphs its own corners under the finger. Material
+ * interpolates the two shapes' corner sizes in pixels, and [FlickCorners.full] is a
+ * 999dp radius that the draw clamps to half the height — so interpolating from it
+ * sits at "still a pill" for almost the whole travel and then snaps. A percentage
+ * corner resolves to the real half-height, so the same morph reads evenly.
+ */
+val PillMorphShape = RoundedCornerShape(percent = 50)
+
+/** What a pill collapses to while pressed. */
+val PressedPillShape = RoundedCornerShape(FlickCorners.pressedPill)
 
 /** Bottom sheets round only their leading edge. */
 val SheetShape = RoundedCornerShape(topStart = FlickCorners.sheet, topEnd = FlickCorners.sheet)

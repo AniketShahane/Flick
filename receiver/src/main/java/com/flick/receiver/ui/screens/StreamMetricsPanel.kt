@@ -1,5 +1,7 @@
 package com.flick.receiver.ui.screens
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,12 +18,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -43,35 +48,34 @@ import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.LiveDot
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
 /**
- * Panel width. The spec draws 370 dp, which is the design's 740 px ÷ 2 — a number
- * taken before the §1a type floors tripled the relative size of this panel's mono
- * text, and the two cannot both hold. At the floors the widest row of real content
- * measures:
- *  - stats grid — `DROPPED FRAMES` is 14 chars of 16 sp mono at 0.12 em tracking
- *    ≈ 161 dp, so three equal columns plus two 10 dp gaps plus 2 × 17 dp padding
- *    need ≈ 538 dp;
- *  - header — "Stream metrics" at 27 sp (≈ 181 dp) + the `HEALTHY · DIRECT PLAY`
- *    pill at 16 sp mono (≈ 260 dp) + the 23 dp close button + 20 dp of gaps
- *    ≈ 484 dp of content.
+ * Panel width. The spec draws 370 dp, which is the design's 740 px ÷ 2. The panel
+ * cannot reach it: the width is set by the longest stat label, and that is a
+ * measurement, not a taste call. Geist Mono advances exactly 0.6 em per glyph and
+ * Compose adds `letterSpacing` after every glyph, so at the 14 sp label size:
+ *  - stats grid — `DROPPED FRAMES` is 14 × (0.6 + 0.12) × 14 sp = 141.1 dp, and
+ *    the three columns are equal weights, so the content box needs
+ *    3 × 141.1 + 2 × 10 dp of gap = 443.3 dp, plus 2 × 17 dp of panel padding;
+ *  - header — "Stream metrics" at 22 sp Bricolage ≈ 147 dp + the
+ *    `DEGRADED · RECOVERING` pill (21 × 0.68 × 14 sp + 18 dp padding + a 6 dp dot
+ *    + a 7 dp gap ≈ 231 dp) + the 19 dp close button + 20 dp of gaps ≈ 417 dp.
  *
- * 540 dp is therefore the narrowest width at which no measured telemetry
- * ellipsises; anything nearer the spec's 370 dp would have to cut type below the
- * §9 floors. Shortening `metrics_label_dropped` to `DROPPED` and the two
- * `metrics_health_*` strings to their first word would take the panel to ≈ 450 dp
- * — a strings change, and one §5.5 should record.
+ * 488 dp gives the grid a 144.7 dp column — 3.6 dp of margin on the binding
+ * label — and leaves the header 29 dp spare. Shortening `metrics_label_dropped`
+ * to `DROPPED` would take the panel to ≈ 390 dp; that is a strings change, and one
+ * §5.5 should record.
  */
-val StreamMetricsPanelWidth: Dp = 540.dp
+val StreamMetricsPanelWidth: Dp = 488.dp
 
 /**
- * Histogram bar column height. The design draws 74 px ÷ 2 = 37 dp. The slot above
- * the transport panel is `540 dp − 2 × 27 dp safe inset − the transport panel −
- * 10 dp` ≈ 247 dp, and at the §1a floors this panel's header, throughput block
- * and nine stat cells already claim ≈ 250 dp of it. The bars give up 9 dp rather
- * than the last stat row losing its values to the scroll clip.
+ * Histogram bar column height. The design draws 74 px ÷ 2 = 37 dp; 28 dp is that
+ * value minus the ~24 % every other non-text element in the panel gave up, so it
+ * stays in proportion with the type around it rather than dominating the block.
  */
 private val HistogramHeight: Dp = 28.dp
 
@@ -79,9 +83,13 @@ private val HistogramBarGap: Dp = 2.5.dp
 
 private val HistogramBarShape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp)
 
-/** Design 20 px / 16 px ÷ 2 — the gaps between and inside the stats grid. */
-private val StatsColumnGap: Dp = 10.dp
-private val StatsRowGap: Dp = 3.dp
+/**
+ * Gaps between and inside the stats grid. The design draws 20 px / 16 px ÷ 2; the
+ * row gap had been crushed to 3 dp to buy vertical room the smaller type no longer
+ * needs, so it goes back to a real gap.
+ */
+private val StatsColumnGap: Dp = FlickSpace.Sm
+private val StatsRowGap: Dp = FlickSpace.Xs
 
 /** A measured bar never collapses to nothing — the design floors it at 6 %. */
 private const val MIN_BAR_FRACTION = 0.06f
@@ -127,6 +135,8 @@ fun StreamMetricsPanel(
     diagnostics: DiagnosticsSnapshot,
     throughput: ThroughputSnapshot,
     onDismiss: () -> Unit,
+    /** Changes for every open, including a reopen while an exit is retained. */
+    entryKey: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val unavailable = stringResource(R.string.metrics_unavailable)
@@ -138,7 +148,7 @@ fun StreamMetricsPanel(
     // Back handling below is reachable — `onKeyEvent` only sees keys while the
     // subtree holds focus.
     val closeFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { closeFocus.requestFocus() } }
+    LaunchedEffect(entryKey) { runCatching { closeFocus.requestFocus() } }
 
     GlassPanel(
         modifier = modifier
@@ -154,21 +164,25 @@ fun StreamMetricsPanel(
         shape = FlickShape.Xl,
         tone = GlassPanelTone.Panel,
         contentPadding = PaddingValues(horizontal = 17.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+        // The playback chrome owns this panel's enter AND exit (spec B7). A second
+        // entrance latch here would compound the parent's edge drift with a rise
+        // and a fade of its own, and could never produce an exit at all.
+        animateEntrance = false,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
         ) {
             Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
             ) {
                 Text(
                     text = stringResource(R.string.metrics_panel_title),
-                    style = FlickType.display(sizeSp = 27),
+                    style = FlickType.display(sizeSp = 22),
                     color = Color.White,
                     modifier = Modifier.weight(1f, fill = false),
                     maxLines = 1,
@@ -204,7 +218,7 @@ fun StreamMetricsPanel(
                 .fillMaxWidth()
                 .weight(1f, fill = false)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
         ) {
             ThroughputBlock(
                 throughput = throughput,
@@ -243,7 +257,7 @@ private fun HealthPill(text: String, accent: Color, wash: Color, modifier: Modif
         LiveDot(color = accent, size = 6.dp)
         Text(
             text = text,
-            style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.08f),
+            style = FlickType.monoEyebrow(trackingEm = 0.08f),
             color = accent,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -274,20 +288,25 @@ private fun ThroughputBlock(
         ) {
             Text(
                 text = stringResource(R.string.metrics_throughput_eyebrow),
-                style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.14f).copy(lineHeight = 17.sp),
+                style = FlickType.monoEyebrow(trackingEm = 0.14f).copy(lineHeight = 15.sp),
                 color = FlickColor.OnPanelLabel,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // The reading SNAPS. It is a measurement, and a measurement that
+            // travels between values is a fabricated one — quite apart from
+            // running an animation once a sample, forever, over a live decoder.
+            // Only the bounded histogram gauge below animates, and on an effects
+            // spec so it can never draw a throughput that was never measured.
             Text(
                 text = if (latest > 0L) {
                     stringResource(R.string.metrics_value_mbps, formatMbps(latest))
                 } else {
                     unavailable
                 },
-                style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.SemiBold)
-                    .copy(lineHeight = 22.sp),
+                style = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.SemiBold)
+                    .copy(lineHeight = 18.sp),
                 color = FlickColor.Spark,
                 maxLines = 1,
             )
@@ -308,21 +327,50 @@ private fun ThroughputBlock(
                     // than drawing a zero-height bar that reads as a dropout.
                     Box(Modifier.weight(1f))
                 } else {
-                    val ratio = throughput.ratioAt(index)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(ratio.coerceAtLeast(MIN_BAR_FRACTION))
-                            .clip(HistogramBarShape)
-                            .background(
-                                if (ratio < LOW_BAR_THRESHOLD) FlickColor.HistogramBarLow
-                                else FlickColor.HistogramBar,
-                            ),
-                    )
+                    // Each slot animates to the value that has just marched into
+                    // it, so the whole row reads as sliding left one sample at a
+                    // time and new data enters from the right.
+                    HistogramBar(ratio = throughput.ratioAt(index), modifier = Modifier.weight(1f))
                 }
             }
         }
     }
+}
+
+/**
+ * One measured histogram slot.
+ *
+ * The height is a gauge fraction, so it takes the EFFECTS spec: a spatial spring
+ * would overshoot and draw, for a few frames, a throughput the receiver never
+ * measured. A slot's first real sample snaps — `animateFloatAsState` starts at its
+ * target — so an empty slot never grows up out of the floor.
+ */
+@Composable
+private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
+    val fraction by animateFloatAsState(
+        targetValue = ratio.coerceAtLeast(MIN_BAR_FRACTION),
+        animationSpec = FlickMotion.stateEffects(),
+        label = "histogramBar",
+    )
+    val tint by animateColorAsState(
+        targetValue = if (ratio < LOW_BAR_THRESHOLD) FlickColor.HistogramBarLow
+        else FlickColor.HistogramBar,
+        animationSpec = FlickMotion.stateEffects(),
+        label = "histogramBarTint",
+    )
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            // Scale rather than height: the Row is fixed at HistogramHeight and
+            // this panel sits over a live decoder, so a bar may never relayout.
+            // The 2 dp cap squashes by the same factor and stays sub-pixel.
+            .graphicsLayer {
+                scaleY = fraction
+                transformOrigin = TransformOrigin(0.5f, 1f)
+            }
+            .clip(HistogramBarShape)
+            .background(tint),
+    )
 }
 
 @Composable
@@ -349,17 +397,19 @@ private fun StatsGrid(cells: List<StatCell>) {
 @Composable
 private fun StatCellView(cell: StatCell, modifier: Modifier = Modifier) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // Label and value are one size apart, not one weight: 14 sp tracked mono
+        // over 16 sp tabular mono, so the number is what the eye lands on.
         Text(
             text = cell.label,
-            style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.12f).copy(lineHeight = 17.sp),
+            style = FlickType.monoEyebrow(trackingEm = 0.12f).copy(lineHeight = 15.sp),
             color = FlickColor.OnPanelLabel,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = cell.value,
-            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.SemiBold)
-                .copy(lineHeight = 22.sp),
+            style = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.SemiBold)
+                .copy(lineHeight = 18.sp),
             color = cell.tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

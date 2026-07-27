@@ -1,26 +1,44 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,15 +63,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import coil.request.videoFrameMillis
 import com.flick.sender.R
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
+import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.flickSharedFrame
+import com.flick.sender.ui.components.posterKey
+import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
+import com.flick.sender.ui.theme.CinemaDeep
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
@@ -64,18 +85,28 @@ import com.flick.sender.ui.theme.SheetShape
 import com.flick.sender.ui.theme.TileShadow
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
  * S4 — detail / "cast this". A risen sheet over the video's own frame: honest
  * badges, the direct-play promise, one blue CTA. Back and the scrim both route
  * through [FlickController.back], so the shell's own BackHandler stays the only
  * one on this route.
+ *
+ * The backdrop is not a new image — it is the tile the user just tapped, expanded.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DetailScreen(controller: FlickController, item: MediaItem) {
+fun DetailScreen(
+    controller: FlickController,
+    item: MediaItem,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
+) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
+    val castStart by controller.castStart.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val rise = rememberSheetRise()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
@@ -85,28 +116,34 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
 
-    val request = remember(item.uri) {
-        ImageRequest.Builder(context)
-            .data(item.uri)
-            .videoFrameMillis((item.durationMs / 3L).coerceAtLeast(1000L))
-            .crossfade(true)
-            .build()
-    }
+    val request = rememberVideoFrameRequest(item.uri, item.durationMs)
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }
 
-    Box(Modifier.fillMaxSize().background(colors.canvas)) {
+    // Cinematic rather than the pale canvas: this route already declares a dark
+    // backdrop to the system bars, and the frame arrives out of darkness.
+    Box(Modifier.fillMaxSize().background(CinemaDeep)) {
         AsyncImage(
             model = request,
             contentDescription = null,
             imageLoader = imageLoader,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
+            // In place rather than in the shared overlay: the sheet has to stay above
+            // the frame while both are arriving.
+            modifier = Modifier
+                .flickSharedFrame(
+                    sharedScope = sharedScope,
+                    animatedScope = animatedScope,
+                    key = posterKey(item.id),
+                    renderInOverlay = false,
+                )
+                .fillMaxSize(),
         )
         // The scrim and the sheet body below it are a dismiss target and a click
         // consumer, not controls: a state layer on either would advertise a tap target
-        // that isn't one, so both stay unindicated.
+        // that isn't one, so both stay unindicated. It is deliberately not part of the
+        // shared frame: a fixed scrim means the frame flies under one constant wash.
         Box(
             Modifier
                 .fillMaxSize()
@@ -119,11 +156,13 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .heightIn(max = 640.dp)
                 .sheetRiseTransform(rise)
                 .clip(SheetShape)
                 .background(colors.surface)
                 .clickable(interactionSource = sheetSource, indication = null, onClick = {})
                 .verticalScroll(rememberScrollState())
+                .imePadding()
                 .navigationBarsPadding()
                 .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp),
         ) {
@@ -168,14 +207,18 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
             }
 
             Spacer(Modifier.height(17.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            // Source-fact chips reflow on narrow or large-font windows instead of
+            // competing for one fixed row and clipping the resolution or file size.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
                 // Resolution, dynamic range and size are the only source facts the
                 // phone can read; codec and frame rate never leave MediaStore.
                 DetailChip(
                     text = resolutionText(item),
                     containerColor = colors.inverseSurface,
                     contentColor = colors.onInverseSurface,
-                    modifier = Modifier.weight(1f, fill = false),
                 )
                 DetailChip(
                     text = hdrChipLabel(hdr),
@@ -220,6 +263,7 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
                 text = connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
                     ?: stringResource(R.string.detail_cta_noconnect),
                 accessibilityLabel = castDescription,
+                committing = castStart.isCommitting(),
                 onClick = { controller.flickToTv(item) },
             )
 
@@ -253,14 +297,22 @@ fun DetailScreen(controller: FlickController, item: MediaItem) {
     }
 }
 
-/** The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected. */
+/**
+ * The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected.
+ *
+ * [committing] is read straight off `castStart`, never off a local boolean: a
+ * handshake that fails in its first hop has to clear this label with it.
+ */
 @Composable
 private fun FlickToTvButton(
     text: String,
     accessibilityLabel: String,
+    committing: Boolean,
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val motionScheme = MaterialTheme.motionScheme
+    val reduceMotion = rememberReduceMotion()
     val source = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
@@ -279,22 +331,79 @@ private fun FlickToTvButton(
                 interactionSource = source,
                 indication = flickRipple(colors.onPrimary),
                 role = Role.Button,
-                onClick = onClick,
+                // A second tap during the handshake would cancel and restart the cast
+                // the first tap already committed.
+                onClick = { if (!committing) onClick() },
             )
             .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
             .padding(20.dp),
         horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = FlickIcons.Cast,
-            contentDescription = null,
-            tint = colors.onPrimary,
-            modifier = Modifier.size(21.dp),
-        )
-        Text(text, style = FlickText.titleSmall.copy(color = colors.onPrimary))
+        AnimatedContent(
+            targetState = committing,
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    (
+                        fadeIn(motionScheme.defaultEffectsSpec()) +
+                            scaleIn(motionScheme.fastSpatialSpec(), initialScale = CtaSwapScale)
+                        ) togetherWith (
+                        fadeOut(motionScheme.fastEffectsSpec()) +
+                            scaleOut(motionScheme.fastSpatialSpec(), targetScale = CtaSwapScale)
+                        )
+                }
+            },
+            label = "cta",
+        ) { busy ->
+            if (busy) {
+                CommitIndicator()
+            } else {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = FlickIcons.Cast,
+                        contentDescription = null,
+                        tint = colors.onPrimary,
+                        modifier = Modifier.size(21.dp),
+                    )
+                    Text(text, style = FlickText.titleSmall.copy(color = colors.onPrimary))
+                }
+            }
+        }
     }
 }
+
+/**
+ * The commit is a handshake, not a measurement, so this indicator never carries a
+ * percentage — it only says the TV was asked.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun CommitIndicator() {
+    val colors = LocalFlickColors.current
+    if (rememberReduceMotion()) {
+        // A frozen spin reads as a hang, so the reduced form is a resting shape.
+        Box(
+            Modifier
+                .size(CommitRestSize)
+                .background(colors.onPrimary, MaterialShapes.Cookie4Sided.toShape()),
+        )
+    } else {
+        ContainedLoadingIndicator(
+            containerColor = colors.onPrimary.copy(alpha = CommitContainerAlpha),
+            indicatorColor = colors.onPrimary,
+        )
+    }
+}
+
+/** The swapped face arrives from under the finger rather than from nowhere. */
+private const val CtaSwapScale = 0.72f
+private const val CommitContainerAlpha = 0.18f
+private val CommitRestSize = 38.dp
 
 @Composable
 private fun DetailChip(
@@ -329,6 +438,19 @@ private fun hdrChipLabel(hdr: HdrType): String = when (hdr) {
     HdrType.DOLBY_VISION -> stringResource(R.string.media_dolby_vision_badge)
     HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
     HdrType.NONE -> stringResource(R.string.media_sdr)
+}
+
+/**
+ * Only the in-flight handshake states. An already-Active session must not strand this
+ * screen's CTA when the user walks back into a detail sheet mid-cast.
+ */
+private fun CastStartState.isCommitting(): Boolean = when (this) {
+    is CastStartState.ConnectingControl,
+    is CastStartState.StartingSource,
+    is CastStartState.AwaitingAcceptance,
+    is CastStartState.AwaitingFirstFrame,
+    -> true
+    CastStartState.Idle, is CastStartState.Active, is CastStartState.Failed -> false
 }
 
 /** Duration plus the MediaStore bucket, which is the only provenance we hold. */

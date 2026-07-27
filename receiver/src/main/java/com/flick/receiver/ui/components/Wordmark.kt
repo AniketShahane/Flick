@@ -14,6 +14,7 @@ import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
 /**
@@ -22,12 +23,15 @@ import com.flick.receiver.ui.theme.FlickType
  * carries the real device name — there is no version string to invent.
  *
  * The streaks are dropped below ~24 dp, where they stop resolving at 10 ft.
+ *
+ * Sized as a persistent header lockup rather than a headline: it identifies the
+ * screen, it does not lead it, so it sits below the display roles in the scale.
  */
 @Composable
 fun FlickWordmark(
     modifier: Modifier = Modifier,
-    markSize: Dp = 38.dp,
-    textSizeSp: Int = 23,
+    markSize: Dp = 30.dp,
+    textSizeSp: Int = 18,
     eyebrow: String? = null,
     tint: Color = FlickColor.OnSurface,
     markTint: Color = FlickColor.OnSurface,
@@ -35,10 +39,10 @@ fun FlickWordmark(
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
     ) {
         BrandMark(size = markSize, tint = markTint, withStreaks = markSize >= 24.dp)
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs)) {
             Text(
                 text = stringResource(R.string.brand_wordmark),
                 style = FlickType.display(sizeSp = textSizeSp),

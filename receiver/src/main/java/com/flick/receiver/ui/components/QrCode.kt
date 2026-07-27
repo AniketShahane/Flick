@@ -52,12 +52,17 @@ private const val FinderModules = 7
  * [centerOverlay] receives the mark size this component reserves for it. Error
  * correction stays at `M`: the plate covers under 5 % of the symbol area,
  * comfortably inside the ~15 % that level can lose, and the quiet zone is kept.
+ *
+ * [quietZonePadding] is an absolute inset and deliberately did NOT shrink with
+ * [size] in the TV re-scale. Held constant while the card shrinks it buys *more*
+ * modules of quiet zone, never fewer, so a smaller card cannot make the symbol
+ * harder to decode.
  */
 @Composable
 fun QrCode(
     payload: String,
     modifier: Modifier = Modifier,
-    size: Dp = 160.dp,
+    size: Dp = 128.dp,
     quietZonePadding: Dp = 12.dp,
     contentDescription: String? = null,
     moduleColor: Color = FlickColor.OnLight,

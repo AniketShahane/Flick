@@ -1,7 +1,13 @@
 package com.flick.receiver.ui.components
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -22,15 +28,17 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
+import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.glassChrome
 import com.flick.receiver.ui.theme.glassPanel
 import com.flick.receiver.ui.theme.panelTopHighlightBrush
-import com.flick.receiver.ui.theme.rememberReducedMotion
 
 /**
  * Which glass a [GlassPanel] is cut from (receiver-expressive-spec.md §2a):
@@ -44,11 +52,19 @@ enum class GlassPanelTone { Chrome, Panel, Solid }
 
 /**
  * The shared floating panel: glass fill, hairline border, the §2d inner top
- * highlight, and the design's `tvRise` entrance mapped onto
- * [FlickMotion.tvRise] with a [riseDistance] slide-up.
+ * highlight, and a [riseDistance] entrance.
+ *
+ * Two modes, and only two. By default the panel owns its own arrival: it rises on
+ * [FlickMotion.panelSpatial] and fades on [FlickMotion.stateEffects], once, the
+ * first time it composes. With `animateEntrance = false` it carries no transform
+ * layer of its own at all, because its parent is driving both halves through
+ * `AnimatedVisibilityScope.animateEnterExit` with [glassPanelEnter] /
+ * [glassPanelExit] — the only way a panel can also have an *exit*, which a
+ * one-way entrance latch could never give it.
  *
  * The panel deliberately does NOT clip its content — a focused child's detached
- * amber ring extends past its own bounds and must survive.
+ * amber ring extends past its own bounds and must survive. Neither mode may
+ * introduce a clip.
  *
  * [borderColor] overrides the tone's own hairline — spec §5.2 gives the handshake
  * card the white [FlickColor.GlassBorder] rather than the cool one the side
@@ -60,22 +76,17 @@ fun GlassPanel(
     shape: Shape = FlickShape.Hero,
     tone: GlassPanelTone = GlassPanelTone.Chrome,
     borderColor: Color? = null,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 26.dp, vertical = 22.dp),
-    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(17.dp),
+    contentPadding: PaddingValues = FlickDimens.PanelPadding,
+    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(FlickSpace.Md),
     horizontalAlignment: Alignment.Horizontal = Alignment.Start,
     riseDistance: Dp = FlickMotion.TvRise,
     animateEntrance: Boolean = true,
     showTopHighlight: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val reducedMotion = rememberReducedMotion()
-    var entered by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { entered = true }
-    val progress by animateFloatAsState(
-        targetValue = if (entered || !animateEntrance) 1f else 0f,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.tvRise(),
-        label = "glassPanelRise",
-    )
+    // Nothing is created in the parent-owned mode: two animations that no pixel
+    // reads still cost a frame callback each, and this panel sits over a decoder.
+    val entrance = if (animateEntrance) rememberGlassPanelEntrance(riseDistance) else Modifier
     // Hoisted out of the draw phase: this layer is invalidated by every chrome
     // tick underneath it, and the five-stop gradient would otherwise be rebuilt
     // on each redraw. It is a pure function of fractional stops, so one instance
@@ -84,17 +95,14 @@ fun GlassPanel(
 
     Column(
         modifier = modifier
-            .graphicsLayer {
-                alpha = progress
-                translationY = (1f - progress) * riseDistance.toPx()
-            }
+            .then(entrance)
             .glassTone(tone, shape, borderColor)
             .drawWithContent {
                 drawContent()
                 if (showTopHighlight) {
                     drawRect(
                         brush = topHighlight,
-                        size = Size(size.width, 1.dp.toPx()),
+                        size = Size(size.width, FlickDimens.Hairline.toPx()),
                     )
                 }
             }
@@ -105,6 +113,64 @@ fun GlassPanel(
     )
 }
 
+/**
+ * The self-owned entrance: a one-shot rise and fade, run once the first time the
+ * panel composes.
+ *
+ * Split deliberately: the rise is geometry and takes a spatial spring that may
+ * settle past its target, the fade is alpha and takes an effects spring that must
+ * not — an opacity animating past 1 is a rendering fault, not expression. Both are
+ * read inside the layer block, so the entrance never recomposes the panel.
+ */
+@Composable
+private fun rememberGlassPanelEntrance(riseDistance: Dp): Modifier {
+    val reducedMotion = LocalReducedMotion.current
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val fade = animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "glassPanelFade",
+    )
+    val rise = animateFloatAsState(
+        targetValue = if (entered) 0f else 1f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.panelSpatial(),
+        label = "glassPanelRise",
+    )
+    return Modifier.graphicsLayer {
+        alpha = fade.value
+        translationY = rise.value * riseDistance.toPx()
+    }
+}
+
+/**
+ * The panel entrance a parent owns when [GlassPanel] is told not to animate
+ * itself — the same rise and fade, expressed as an [EnterTransition] so it can be
+ * driven from `AnimatedVisibilityScope.animateEnterExit`.
+ */
+@Composable
+fun glassPanelEnter(riseDistance: Dp = FlickMotion.TvRise): EnterTransition {
+    val rise = with(LocalDensity.current) { riseDistance.roundToPx() }
+    return slideInVertically(FlickMotion.panelSpatial()) { rise } +
+        fadeIn(FlickMotion.stateEffects())
+}
+
+/**
+ * The exit vocabulary, defined once for every TV panel: sink half the distance
+ * you rose, and lead with the fade.
+ *
+ * A spring exit has no fixed duration, so "leaves in ~40 % of the time it
+ * arrived" is carried by the specs rather than by a number — the fade is the fast
+ * effects spring against the entrance's default one, and the sink is half the
+ * travel on the focus spring rather than the panel spring.
+ */
+@Composable
+fun glassPanelExit(riseDistance: Dp = FlickMotion.TvRise): ExitTransition {
+    val sink = with(LocalDensity.current) { (riseDistance * 0.5f).roundToPx() }
+    return slideOutVertically(FlickMotion.focusSpatial()) { sink } +
+        fadeOut(FlickMotion.fastStateEffects())
+}
+
 private fun Modifier.glassTone(
     tone: GlassPanelTone,
     shape: Shape,
@@ -112,10 +178,13 @@ private fun Modifier.glassTone(
 ): Modifier = when (tone) {
     GlassPanelTone.Chrome ->
         if (borderColor == null) glassChrome(shape)
-        else background(FlickColor.GlassChrome, shape).border(1.dp, borderColor, shape)
+        else background(FlickColor.GlassChrome, shape)
+            .border(FlickDimens.Hairline, borderColor, shape)
     GlassPanelTone.Panel ->
         if (borderColor == null) glassPanel(shape)
-        else background(FlickColor.GlassPanel, shape).border(1.dp, borderColor, shape)
+        else background(FlickColor.GlassPanel, shape)
+            .border(FlickDimens.Hairline, borderColor, shape)
     GlassPanelTone.Solid ->
-        background(FlickColor.Surface, shape).border(1.dp, borderColor ?: FlickColor.GlassBorder, shape)
+        background(FlickColor.Surface, shape)
+            .border(FlickDimens.Hairline, borderColor ?: FlickColor.GlassBorder, shape)
 }

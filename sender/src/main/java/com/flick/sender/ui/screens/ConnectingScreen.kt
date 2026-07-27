@@ -1,14 +1,20 @@
 package com.flick.sender.ui.screens
 
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +24,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,29 +38,34 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.flick.sender.R
+import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
+import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.StatusKind
 import com.flick.sender.ui.components.StatusPill
 import com.flick.sender.ui.components.TravelingLight
+import com.flick.sender.ui.components.flickSharedFrame
+import com.flick.sender.ui.components.rememberVideoFrameRequest
+import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickCinematicTheme
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.PosterShadow
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 
@@ -58,9 +73,14 @@ private enum class StepState { DONE, ACTIVE, PENDING }
 
 /** S5 — connecting. The handoff diagram holds the wait; one honest line names it. */
 @Composable
-fun ConnectingScreen(controller: FlickController) {
+fun ConnectingScreen(
+    controller: FlickController,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
+) {
     val castStart by controller.castStart.collectAsState()
     val tv by controller.connectedTv.collectAsState()
+    val item by controller.castingItem.collectAsState()
     val cancelDescription = stringResource(R.string.a11y_cancel_connecting)
     val connectingDescription = stringResource(R.string.a11y_pairing_status, stringResource(R.string.connecting_status))
 
@@ -96,19 +116,36 @@ fun ConnectingScreen(controller: FlickController) {
     val stage = steps.firstOrNull { it.second == StepState.ACTIVE }
         ?: steps.lastOrNull { it.second == StepState.DONE }
         ?: steps.first()
+    val doneSteps = steps.count { it.second == StepState.DONE }
 
     FlickCinematicTheme {
         val colors = LocalFlickColors.current
-        Box(Modifier.fillMaxSize().background(FlickGradients.connectingBackdrop)) {
+        val motionScheme = MaterialTheme.motionScheme
+        val reduceMotion = rememberReduceMotion()
+        BoxWithConstraints(Modifier.fillMaxSize().background(FlickGradients.connectingBackdrop)) {
+            // The column does not scroll, so a short window has to shed something to
+            // keep Cancel on screen. It sheds the decorative diagram and the wide gaps,
+            // never the frame: the frame is the surface the remote's poster flies from,
+            // and a landing with no departure is the moment lost.
+            val roomy = maxHeight >= RoomyColumnHeight
             Column(
                 Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
                     .padding(horizontal = 36.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(28.dp),
+                verticalArrangement = Arrangement.spacedBy(if (roomy) 24.dp else 13.dp),
             ) {
-                HandoffDiagram()
+                // The file itself, waiting on the wire. It is the same frame the remote
+                // lands on, so the handshake ends with the still travelling, not fading.
+                CastFrame(
+                    item = item,
+                    sharedScope = sharedScope,
+                    animatedScope = animatedScope,
+                    width = if (roomy) CastFrameWidth else CastFrameCompactWidth,
+                    height = if (roomy) CastFrameHeight else CastFrameCompactHeight,
+                )
+                if (roomy) HandoffDiagram()
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(9.dp),
@@ -119,13 +156,34 @@ fun ConnectingScreen(controller: FlickController) {
                         style = FlickText.headlineSmall.copy(color = colors.onSurface),
                         textAlign = TextAlign.Center,
                     )
-                    Text(
-                        text = stage.first,
-                        style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-                        textAlign = TextAlign.Center,
-                    )
+                    AnimatedContent(
+                        targetState = stage.first,
+                        transitionSpec = {
+                            if (reduceMotion) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                (
+                                    slideInVertically(motionScheme.fastSpatialSpec()) { it / 2 } +
+                                        fadeIn(motionScheme.fastEffectsSpec())
+                                    ) togetherWith (
+                                    slideOutVertically(motionScheme.fastSpatialSpec()) { -it / 2 } +
+                                        fadeOut(motionScheme.fastEffectsSpec())
+                                    )
+                            }
+                        },
+                        label = "stage",
+                    ) { line ->
+                        Text(
+                            text = line,
+                            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                            textAlign = TextAlign.Center,
+                            // Two lines are always reserved so a longer stage name never
+                            // walks the Cancel button down the screen mid-handshake.
+                            minLines = 2,
+                        )
+                    }
                 }
-                RingSpinner()
+                HandshakeIndicator(doneSteps = doneSteps)
                 FlickSubtleButton(
                     text = stringResource(R.string.connecting_cancel),
                     onClick = controller::cancelCast,
@@ -144,6 +202,65 @@ fun ConnectingScreen(controller: FlickController) {
             }
         }
     }
+}
+
+/** The still that will land on the remote, held at card size while the TV answers. */
+@Composable
+private fun CastFrame(
+    item: MediaItem?,
+    sharedScope: SharedTransitionScope?,
+    animatedScope: AnimatedVisibilityScope?,
+    width: Dp,
+    height: Dp,
+) {
+    val colors = LocalFlickColors.current
+    val imageLoader = rememberVideoImageLoader()
+    val request = rememberVideoFrameRequest(item?.uri, item?.durationMs ?: 0L)
+    val shape = RoundedCornerShape(FlickCorners.detailPoster)
+    Box(
+        Modifier
+            .size(width = width, height = height)
+            .shadow(20.dp, shape, clip = false, ambientColor = PosterShadow, spotColor = PosterShadow)
+            .clip(shape)
+            .background(colors.surfaceRaisedAlt),
+    ) {
+        if (request != null) {
+            AsyncImage(
+                model = request,
+                // Decorative here: the title below already names what is being sent.
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .flickSharedFrame(sharedScope, animatedScope, CastPosterKey)
+                    .fillMaxSize(),
+            )
+        }
+    }
+}
+
+/**
+ * Four discrete protocol steps, never interpolated time. The shape changes when a
+ * stage lands and at no other moment, which is also why nothing here may imply
+ * transcoding progress — there is none.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun HandshakeIndicator(doneSteps: Int) {
+    val colors = LocalFlickColors.current
+    val stages = remember {
+        listOf(
+            MaterialShapes.Circle,
+            MaterialShapes.Cookie4Sided,
+            MaterialShapes.Clover4Leaf,
+            MaterialShapes.Pill,
+        )
+    }
+    LoadingIndicator(
+        progress = { doneSteps / HandshakeSteps },
+        color = colors.sparkBright,
+        polygons = stages,
+    )
 }
 
 /** Phone → hairline → TV. Decorative: the copy below it carries the meaning. */
@@ -177,48 +294,18 @@ private fun DeviceOutline(width: Dp, height: Dp, corner: Dp) {
     )
 }
 
-/** Indeterminate by design: the receiver reports stages, never a percentage. */
-@Composable
-private fun RingSpinner() {
-    val colors = LocalFlickColors.current
-    val reduceMotion = rememberReduceMotion()
-    // Kept as State and read in the draw scope: unwrapped here it would rebuild this
-    // composable and its Canvas lambda on every frame of the handshake.
-    val angle = if (reduceMotion) {
-        null
-    } else {
-        val transition = rememberInfiniteTransition(label = "spinner")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(tween(Motion.SpinMs, easing = Motion.Steady)),
-            label = "spinnerAngle",
-        )
-    }
-    val track: Color = colors.fillTrackAlt
-    val head: Color = colors.sparkBright
-    Canvas(Modifier.size(36.dp)) {
-        val sweepStart = (angle?.value ?: 0f) - 90f
-        val stroke = 3.5.dp.toPx()
-        val inset = stroke / 2f
-        val arcSize = Size(size.width - stroke, size.height - stroke)
-        drawArc(
-            color = track,
-            startAngle = 0f,
-            sweepAngle = 360f,
-            useCenter = false,
-            topLeft = Offset(inset, inset),
-            size = arcSize,
-            style = Stroke(width = stroke),
-        )
-        drawArc(
-            color = head,
-            startAngle = sweepStart,
-            sweepAngle = 90f,
-            useCenter = false,
-            topLeft = Offset(inset, inset),
-            size = arcSize,
-            style = Stroke(width = stroke, cap = StrokeCap.Round),
-        )
-    }
-}
+// The card is deliberately small: it is the file in transit, not the presentation,
+// and the whole point is how far it travels when the TV reports its first frame.
+private val CastFrameWidth = 152.dp
+private val CastFrameHeight = 86.dp
+
+// The same 16:9 still at thumbnail scale, for windows that cannot afford the card at
+// full size. It still has to read as the file, so it does not shrink below this.
+private val CastFrameCompactWidth = 104.dp
+private val CastFrameCompactHeight = 59.dp
+
+// Card, diagram, copy, indicator and Cancel cost roughly 430 dp at full spacing, and
+// the status pill claims the bottom band; below this the centred column would start
+// clipping its own terminal control.
+private val RoomyColumnHeight = 520.dp
+private const val HandshakeSteps = 4f

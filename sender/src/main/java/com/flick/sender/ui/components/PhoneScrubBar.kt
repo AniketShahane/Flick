@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -27,18 +28,23 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +56,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -64,6 +73,7 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.flick.sender.R
@@ -79,9 +89,12 @@ import com.flick.sender.ui.theme.PosterShadow
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * The phone scrub bar — the hero instrument (spec §6).
@@ -91,6 +104,10 @@ import kotlin.math.roundToInt
  * echo marks [ghostFraction] (the last position the TV confirmed). A real decoded
  * frame rides above the thumb, and the time row underneath carries the shimmering
  * SYNCING… chip whenever the TV clock has gone stale.
+ *
+ * The played fill is a **wave**, and its swing is a reading rather than an ornament:
+ * it runs while the TV reports [playing], swings wider while its clock is stale, and
+ * is exactly flat while paused or under a finger.
  *
  * Every moving value arrives as a lambda and is consumed inside a draw or layout
  * scope: the session clock ticks ~10Hz and must never recompose this tree.
@@ -106,6 +123,8 @@ fun PhoneScrubBar(
     onScrub: (Float) -> Unit,
     onScrubEnd: () -> Unit,
     modifier: Modifier = Modifier,
+    playing: () -> Boolean = { false },
+    reservePreviewSpace: Boolean = false,
     bufferedFraction: () -> Float = { 0f },
     positionMs: () -> Long = { 0L },
     durationMs: () -> Long = { 0L },
@@ -117,6 +136,7 @@ fun PhoneScrubBar(
     val colors = LocalFlickColors.current
     val reduceMotion = rememberReduceMotion()
     val scope = rememberCoroutineScope()
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
     var dragging by remember { mutableStateOf(false) }
     var widthPx by remember { mutableIntStateOf(1) }
     val endGate = remember { ScrubEndGate() }
@@ -130,7 +150,63 @@ fun PhoneScrubBar(
     // reading the motion scheme is a composition read and the gesture scope is not
     // composable; the playhead's own mapping from media time to x stays unsprung.
     val swellSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastSpatialSpec<Float>())
+    val previewEffectSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastEffectsSpec<Float>())
+    val previewSpatialSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
+    // Material's wavy-progress amplitude specs are internal to material3, so the
+    // wave's swell reads the scheme directly: geometry grows on a spatial spring,
+    // and flattens on effects because an amplitude that rings past zero inverts the
+    // wave — a claim the bar is not making.
+    val amplitudeRise = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    val amplitudeFall = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
     val ripple = remember { DetentRipple() }
+
+    // The wave's swing and its travelling phase, both consumed in the draw scope.
+    val amplitude = remember { Animatable(0f) }
+    val phase = remember { mutableFloatStateOf(0f) }
+    val wavePath = remember { Path() }
+    val currentPlaying by rememberUpdatedState(playing)
+    val currentSyncing by rememberUpdatedState(syncing)
+    val currentReduceMotion by rememberUpdatedState(reduceMotion)
+    LaunchedEffect(amplitude) {
+        // playing() is read here rather than in composition: the caller's lambda reads
+        // the same state object the 10Hz clock lives in, and snapshotFlow emits only
+        // when the boolean itself changes. A flat bar is a claim about the TV, so a
+        // paused or grabbed bar must reach exactly 0 and not merely approach it.
+        snapshotFlow {
+            when {
+                currentReduceMotion || dragging || !currentPlaying() -> 0f
+                currentSyncing -> SyncingAmplitude
+                else -> 1f
+            }
+        }.collect { target ->
+            when {
+                target == amplitude.value -> Unit
+                // The finger wants a straight edge to aim at, immediately.
+                target == 0f && (dragging || currentReduceMotion) -> amplitude.snapTo(0f)
+                target > amplitude.value -> amplitude.animateTo(target, amplitudeRise)
+                else -> amplitude.animateTo(target, amplitudeFall)
+            }
+        }
+    }
+    LaunchedEffect(amplitude) {
+        // withInfiniteAnimationFrameNanos so the test clock intercepts the loop; a bare
+        // frame loop would keep waitForIdle from ever returning. collectLatest ends it
+        // the moment the bar goes flat, so a paused remote posts no frame callback.
+        snapshotFlow { amplitude.value > 0f }.collectLatest { moving ->
+            if (!moving) return@collectLatest
+            // The frame clock counts from boot and a Float cannot hold days of
+            // nanoseconds at frame resolution, so the phase is measured from this
+            // loop's own first frame rather than from the epoch.
+            var origin = 0L
+            while (true) {
+                withInfiniteAnimationFrameNanos { nanos ->
+                    if (origin == 0L) origin = nanos
+                    phase.floatValue =
+                        ((nanos - origin) % WavePeriodNanos) / WavePeriodNanos.toFloat()
+                }
+            }
+        }
+    }
 
     // If the bar is torn out from under a live drag (e.g. a mid-stream rebuffer swaps
     // the screen), the gesture coroutine is cancelled without reaching onScrubEnd —
@@ -141,7 +217,10 @@ fun PhoneScrubBar(
         onDispose { endGate.finish(currentOnScrubEnd) }
     }
 
-    Column(modifier) {
+    Column(modifier.bringIntoViewRequester(bringIntoViewRequester)) {
+        // A scroll container clips to its viewport. Compact remotes reserve this
+        // measured space so the preview's upward offset stays inside that viewport.
+        if (reservePreviewSpace) Spacer(Modifier.height(PreviewClearance))
         Box(
             Modifier
                 .fillMaxWidth()
@@ -160,6 +239,9 @@ fun PhoneScrubBar(
                         ?.let { stateDescription = it }
                     setProgress(adjustableActionLabel) { fraction ->
                         endGate.start()
+                        if (reservePreviewSpace) {
+                            scope.launch { bringIntoViewRequester.bringIntoView() }
+                        }
                         onScrubStart()
                         onScrub(fraction.coerceIn(0f, 1f))
                         endGate.finish(currentOnScrubEnd)
@@ -175,6 +257,12 @@ fun PhoneScrubBar(
                         // only the ripple, so the two must not both drive the vibrator.
                         var detent = -1
                         endGate.start()
+                        if (reservePreviewSpace) {
+                            // The requester is attached to the full component, including
+                            // the preview headroom, before this gesture starts the session
+                            // scrub. Normal remotes never request relocation.
+                            scope.launch { bringIntoViewRequester.bringIntoView() }
+                        }
                         dragging = true
                         scope.launch { swell.animateTo(1f, swellSpec) }
                         try {
@@ -238,12 +326,27 @@ fun PhoneScrubBar(
                 }
                 val playedW = target * w
                 if (playedW > 0f) {
-                    drawRoundRect(
-                        brush = FlickGradients.playhead,
-                        topLeft = Offset(0f, cy - trackR),
-                        size = Size(playedW, trackH),
-                        cornerRadius = CornerRadius(trackR, trackR),
-                    )
+                    val amp = amplitude.value * WaveAmplitude.toPx()
+                    // Under one stroke width there is no span left to swing through,
+                    // only the cap — so the first seconds of a file stay a flat nub.
+                    if (amp <= 0f || playedW < trackH) {
+                        drawRoundRect(
+                            brush = FlickGradients.playhead,
+                            topLeft = Offset(0f, cy - trackR),
+                            size = Size(playedW, trackH),
+                            cornerRadius = CornerRadius(trackR, trackR),
+                        )
+                    } else {
+                        drawPlayedWave(
+                            path = wavePath,
+                            width = playedW,
+                            cy = cy,
+                            stroke = trackH,
+                            amplitude = amp,
+                            wavelength = WaveLength.toPx(),
+                            phase = phase.floatValue,
+                        )
+                    }
                 }
 
                 // The echo paints OVER the amber fill and under the thumb, matching the
@@ -298,8 +401,16 @@ fun PhoneScrubBar(
             // would otherwise win overload resolution.
             androidx.compose.animation.AnimatedVisibility(
                 visible = dragging,
-                enter = if (reduceMotion) EnterTransition.None else fadeIn() + scaleIn(initialScale = 0.86f),
-                exit = if (reduceMotion) ExitTransition.None else fadeOut() + scaleOut(targetScale = 0.86f),
+                enter = if (reduceMotion) {
+                    EnterTransition.None
+                } else {
+                    fadeIn(previewEffectSpec) + scaleIn(previewSpatialSpec, initialScale = 0.86f)
+                },
+                exit = if (reduceMotion) {
+                    ExitTransition.None
+                } else {
+                    fadeOut(previewEffectSpec) + scaleOut(previewSpatialSpec, targetScale = 0.86f)
+                },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     // Tracks the thumb in the layout phase, clamped inside the bar, so
@@ -450,6 +561,40 @@ private fun PreviewTimecode(label: () -> String?) {
     )
 }
 
+/**
+ * The played fill as a travelling wave, stroked at the track's own height with round
+ * caps so it occupies exactly the span the flat fill would. A wavelength is sampled
+ * twelve times: under a 13–22dp stroke the facets are invisible, and sampling per pixel
+ * would rebuild several hundred points on every frame of a gesture.
+ */
+private fun DrawScope.drawPlayedWave(
+    path: Path,
+    width: Float,
+    cy: Float,
+    stroke: Float,
+    amplitude: Float,
+    wavelength: Float,
+    phase: Float,
+) {
+    val start = stroke / 2f
+    val end = (width - start).coerceAtLeast(start)
+    val step = (wavelength / 12f).coerceAtLeast(1f)
+    // Subtracting the phase carries the crests toward the head, the way play runs.
+    fun y(x: Float) = cy + amplitude * sin(TwoPi * (x / wavelength - phase))
+    path.rewind()
+    var x = start
+    path.moveTo(x, y(x))
+    do {
+        x = (x + step).coerceAtMost(end)
+        path.lineTo(x, y(x))
+    } while (x < end)
+    drawPath(
+        path = path,
+        brush = FlickGradients.playhead,
+        style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
+}
+
 /** Compose takes shadows as elevation, not as a blur radius — two soft passes stand in. */
 private fun DrawScope.drawThumbShadow(cx: Float, cy: Float, width: Float, height: Float) {
     val spread = 3.dp.toPx()
@@ -496,6 +641,26 @@ private const val DetentCount = 36
 /** The echo is noise below this much of the timeline; above it, it is information. */
 private const val GhostThreshold = 0.004f
 
+private val TwoPi = (2.0 * PI).toFloat()
+
+/**
+ * One swing every 22dp with 3dp of throw. Wide enough to read as motion at arm's
+ * length, shallow enough that the fill still reports which pixel the head is on.
+ */
+private val WaveLength = 22.dp
+private val WaveAmplitude = 3.dp
+
+/**
+ * A crest crosses one wavelength in ~1.4s — slower than the eye follows as scrolling,
+ * fast enough to read as alive. Not the media rate: the wave says *playing*, never
+ * *how fast*, because there is no speed to report.
+ */
+private const val WaveCyclesPerSecond = 0.7f
+private val WavePeriodNanos: Long = (1_000_000_000.0 / WaveCyclesPerSecond).toLong()
+
+/** A stale TV clock swings wider than a healthy one — the bar itself is the report. */
+private const val SyncingAmplitude = 1.4f
+
 private val HitHeight = 48.dp
 private val TrackIdle = 13.dp
 private val TrackDrag = 22.dp
@@ -510,6 +675,7 @@ private val RippleBase = 18.dp
 private val PreviewWidth = 116.dp
 private val PreviewHeight = 65.dp
 private val PreviewLift = (-96).dp
+private val PreviewClearance: Dp = 104.dp
 
 /** Keeps release, pointer cancellation, and composition disposal to one terminal callback. */
 private class ScrubEndGate {

@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -18,12 +19,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -62,13 +65,17 @@ fun BottomSheet(
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val rise = rememberSheetRise()
+    // The dim runs on an effects spring and the sheet on a spatial one, so the room
+    // darkens before the surface arrives on it rather than the two moving as one slab.
+    val scrim = rememberScrimFade()
+    val scrimColor = colors.scrim
     // Pairing and diagnostics sheets own Back while visible: a route launch must first
     // dismiss or cancel the in-flight UI rather than closing the Activity underneath it.
     BackHandler(onBack = onDismiss)
     Box(
         Modifier
             .fillMaxSize()
-            .background(colors.scrim)
+            .drawBehind { drawRect(color = scrimColor, alpha = scrim()) }
             .semantics { contentDescription = dismissDescription }
             .clickable(interactionSource = scrimSource, indication = null, onClick = onDismiss),
     ) {
@@ -115,13 +122,26 @@ fun SheetGrabber(color: Color = LocalFlickColors.current.outlineSoft) {
 /**
  * Drives the shared sheet entry. Returned as a lambda so the transform is read in
  * the draw phase and the sheet's content is never recomposed by the animation.
+ *
+ * The rise is geometry, so it takes the scheme's spatial spring and overshoots — the
+ * sheet is the consequence of a flick, and a flick lands with a little more travel
+ * than it was aimed with.
  */
 @Composable
-internal fun rememberSheetRise(): () -> Float {
+internal fun rememberSheetRise(): () -> Float =
+    rememberEntranceProgress(MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
+
+/** The scrim is alpha, so it takes an effects spring and must not overshoot. */
+@Composable
+private fun rememberScrimFade(): () -> Float =
+    rememberEntranceProgress(MaterialTheme.motionScheme.fastEffectsSpec<Float>())
+
+@Composable
+private fun rememberEntranceProgress(spec: FiniteAnimationSpec<Float>): () -> Float {
     val reduceMotion = rememberReduceMotion()
     val progress = remember { Animatable(0f) }
     LaunchedEffect(reduceMotion) {
-        if (reduceMotion) progress.snapTo(1f) else progress.animateTo(1f, Motion.sheetRise())
+        if (reduceMotion) progress.snapTo(1f) else progress.animateTo(1f, spec)
     }
     return remember(progress) { { progress.value } }
 }

@@ -2,14 +2,26 @@ package com.flick.receiver.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.animateBounds
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,7 +38,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,10 +49,12 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -55,22 +71,26 @@ import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.ui.components.FlickTvButton
+import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.GlassPill
 import com.flick.receiver.ui.components.GlassPillContainer
 import com.flick.receiver.ui.components.SpecChip
+import com.flick.receiver.ui.components.TelemetryReveal
 import com.flick.receiver.ui.components.TransportCluster
 import com.flick.receiver.ui.components.TvScrubBar
 import com.flick.receiver.ui.components.VolumeCells
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.bottomScrimBrush
-import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.ui.theme.seekBurstWash
 import com.flick.receiver.ui.theme.topScrimBrush
@@ -95,10 +115,45 @@ enum class PlaybackPanel { None, Subtitles, Metrics }
 
 // Hoisted once (pure functions of size/weight) so the ~10 Hz chrome doesn't
 // allocate a fresh TextStyle every tick while the playhead runs.
-private val TimecodeStyle = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.SemiBold)
+private val TimecodeStyle = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.SemiBold)
 
-/** Design 150 px ÷ 2; a minimum rather than a fixed width so h:mm:ss never clips. */
-private val TimecodeMinWidth = 75.dp
+/**
+ * Six characters of the 16 sp tabular advance (0.6 em). A floor, not a width:
+ * m:ss cannot make the bar jump, and h:mm:ss measures straight past it.
+ */
+private val TimecodeMinWidth = 60.dp
+
+/**
+ * Chrome leaves along half the path it arrived on, on the same faster spring
+ * `glassPanelExit` uses. A surface that retraces its whole entrance reads as being
+ * dragged off screen; half the travel, quicker, reads as dismissal — which is what
+ * it is. The translation is a `graphicsLayer` transform rather than the placement
+ * offset `glassPanelEnter`/`glassPanelExit` use, because this chrome sits over a
+ * live decoder and may not trigger a placement pass while it moves.
+ */
+private const val CHROME_EXIT_TRAVEL = 0.5f
+
+/**
+ * How far the side panel drifts in from its own edge, as a fraction of the chrome
+ * width. At 864 dp usable this is ~52 dp — enough for the eye to catch which side
+ * the panel belongs to, short enough that it never crosses the transport below it.
+ */
+private const val PANEL_ENTRY_DRIFT = 0.06f
+
+/**
+ * Subtitles ↔ Metrics is one panel changing anchor and width, not two panels
+ * swapping places. Damping 0.8 at the medium-low stiffness is the TV bias: enough
+ * settle to carry weight, too little overshoot to wobble at 55 inches. This is a
+ * `Rect` spec, which the scheme accessors cannot type without an explicit argument,
+ * so it is the one hand-written spring in this file.
+ */
+private val PanelTravel = BoundsTransform { _, _ ->
+    spring(
+        dampingRatio = 0.8f,
+        stiffness = Spring.StiffnessMediumLow,
+        visibilityThreshold = Rect.VisibilityThreshold,
+    )
+}
 
 /** The ±10 s burst occupies the design's 38 %-wide column on the seeked side. */
 private const val SEEK_BURST_WIDTH_FRACTION = 0.38f
@@ -114,12 +169,41 @@ private const val SEEK_BURST_EXIT_SCALE = 1.14f
  */
 private const val SEEK_BURST_EXIT_MS = 180
 
+/**
+ * Each accepted step lands as an impulse: the glyph column snaps to this scale and
+ * springs back. One step of the key, one visible kick — a held seek that emits four
+ * pulses kicks four times, so the burst reports the protocol rather than a mood.
+ */
+private const val SEEK_BURST_IMPULSE_SCALE = 1.06f
+
+/** How far the impulse throws the glyph column toward the seeked edge. */
+private val SeekBurstNudge = 4.dp
+
+/** Per-step rotation of the ring glyph — it turns the way the film is moving. */
+private const val SEEK_BURST_GLYPH_SPIN = 36f
+
+/**
+ * The wash reports the real speed level the key policy reached (1×/2×/3×), so a
+ * long hold is visibly more forceful than a tap without inventing a number.
+ */
+private fun seekWashIntensity(speedLevel: Int): Float = when (speedLevel.coerceIn(1, 3)) {
+    1 -> 0.62f
+    2 -> 0.82f
+    else -> 1f
+}
+
 /** Design's top / bottom playback scrim coverage (§2d). */
 private const val TOP_SCRIM_FRACTION = 0.26f
 private const val BOTTOM_SCRIM_FRACTION = 0.56f
 
 /** The paused chip's vertical anchor (§5.3). */
 private const val PAUSED_CHIP_TOP_FRACTION = 0.28f
+
+/**
+ * Where the buffering arc rests under reduced motion — off the vertical so the
+ * static ring still reads as a gauge rather than as a full circle with a nick.
+ */
+private const val BUFFER_RESTING_SWEEP = 315f
 
 /** Below this the net-health dot reads as pressure rather than headroom. */
 private const val WEAK_RSSI_DBM = -70
@@ -165,6 +249,7 @@ fun PlaybackScreen(
     subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     subtitleSize: SubtitleSize = SubtitleSize.Medium,
     openPanel: PlaybackPanel = PlaybackPanel.None,
+    onVolumeEngagementChanged: (Boolean) -> Unit = {},
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onSelectSubtitleTrack: (String?) -> Unit = {},
     onSelectSubtitleSize: (SubtitleSize) -> Unit = {},
@@ -201,41 +286,66 @@ fun PlaybackScreen(
         videoContent()
 
         // Dim while paused / seeking / buffering — the frame stays visible.
-        val dim = when {
+        val targetDim = when {
             phase == PlaybackPhase.Paused -> 0.34f
             seeking -> 0.30f
             phase == PlaybackPhase.Buffering -> 0.38f
             else -> 0f
         }
-        if (dim > 0f) {
-            Box(Modifier.fillMaxSize().background(FlickColor.CanvasPlayback.copy(alpha = dim)))
-        }
+        val reducedMotion = LocalReducedMotion.current
+        // The three layers over the film — one dim and two scrims — are composed
+        // unconditionally and their alphas are read in the DRAW phase. Branching
+        // on the animated value at composition time rebuilt the whole playback
+        // stack, and both gradients, once a frame while the decoder was running.
+        val dim = animateFloatAsState(
+            targetValue = targetDim,
+            animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.chromeFadeIn(),
+            label = "playbackStateDim",
+        )
+        // This is a UI-only layer above the decoded SurfaceView. The video is
+        // never placed inside a transition or graphics layer.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    val shade = dim.value
+                    if (shade > 0.01f) drawRect(FlickColor.CanvasPlayback, alpha = shade)
+                },
+        )
 
         // Scrims are part of the chrome, so they breathe with it rather than
-        // sitting permanently over the film.
-        val scrimAlpha by animateFloatAsState(
+        // sitting permanently over the film. They also LEAD it: the scrim runs the
+        // 200 ms fade token while the chrome above it is still travelling in on a
+        // settling spring, so the panel lands on a surface that is already dark —
+        // and on the way out the chrome is gone long before the film brightens.
+        val scrimAlpha = animateFloatAsState(
             targetValue = if (chromeVisible) 1f else 0f,
             animationSpec = if (chromeVisible) FlickMotion.chromeFadeIn() else FlickMotion.chromeFadeOut(),
             label = "scrimAlpha",
         )
-        if (scrimAlpha > 0.01f) {
-            Box(Modifier.fillMaxSize().graphicsLayer { alpha = scrimAlpha }) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .fillMaxHeight(TOP_SCRIM_FRACTION)
-                        .background(topScrimBrush()),
-                )
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .fillMaxHeight(BOTTOM_SCRIM_FRACTION)
-                        .background(bottomScrimBrush()),
-                )
-            }
-        }
+        // Pure functions of their stops, so one instance each serves every size.
+        val topScrim = remember { topScrimBrush() }
+        val bottomScrim = remember { bottomScrimBrush() }
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(TOP_SCRIM_FRACTION)
+                .drawBehind {
+                    val veil = scrimAlpha.value
+                    if (veil > 0.01f) drawRect(topScrim, alpha = veil)
+                },
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(BOTTOM_SCRIM_FRACTION)
+                .drawBehind {
+                    val veil = scrimAlpha.value
+                    if (veil > 0.01f) drawRect(bottomScrim, alpha = veil)
+                },
+        )
 
         // T7 buffering
         if (phase == PlaybackPhase.Buffering) {
@@ -275,20 +385,43 @@ fun PlaybackScreen(
 
         // T8 quality flourish (glides in on start, holds, fades). It sits below
         // the top-chrome pills so the two never stack on the same line.
-        if (quality != null) {
-            QualityCard(
-                info = quality,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(safeArea)
-                    .padding(top = 46.dp),
+        //
+        // `transitionSpec` is NOT a composable lambda, so the scheme specs are
+        // resolved here and captured. Every AnimatedContent in this module does
+        // the same.
+        val qualityTransform = if (reducedMotion) {
+            fadeIn(tween(durationMillis = 0)).togetherWith(fadeOut(tween(durationMillis = 0)))
+        } else {
+            (fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
+                initialScale = 0.96f,
+                animationSpec = FlickMotion.flickSettleSpatial(),
+            )).togetherWith(
+                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
+                    targetScale = 1.02f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                ),
             )
+        }
+        AnimatedContent(
+            targetState = quality,
+            transitionSpec = { qualityTransform },
+            contentKey = { it?.qualityLabel ?: "none" },
+            label = "qualityFlourish",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(safeArea)
+                // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
+                .padding(top = 42.dp),
+        ) { info ->
+            if (info != null) QualityCard(info = info)
         }
 
         AnimatedVisibility(
             visible = chromeVisible,
             enter = fadeIn(FlickMotion.chromeFadeIn()),
-            exit = fadeOut(FlickMotion.chromeFadeOut()),
+            // Alpha on the effects spec, not the 500 ms chrome fade: the chrome
+            // must be off the film before the scrim behind it lifts.
+            exit = fadeOut(FlickMotion.fastStateEffects()),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
             TopChrome(
@@ -305,7 +438,7 @@ fun PlaybackScreen(
         AnimatedVisibility(
             visible = chromeVisible,
             enter = fadeIn(FlickMotion.chromeFadeIn()),
-            exit = fadeOut(FlickMotion.chromeFadeOut()),
+            exit = fadeOut(FlickMotion.fastStateEffects()),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             BottomChrome(
@@ -323,6 +456,7 @@ fun PlaybackScreen(
                 subtitleTracks = subtitleTracks,
                 subtitleSize = subtitleSize,
                 openPanel = openPanel,
+                onVolumeEngagementChanged = onVolumeEngagementChanged,
                 onOpenPanel = onOpenPanel,
                 onSelectSubtitleTrack = onSelectSubtitleTrack,
                 onSelectSubtitleSize = onSelectSubtitleSize,
@@ -345,7 +479,7 @@ fun PlaybackScreen(
 // ── Top chrome (spec §5.3) ──────────────────────────────────────────────────
 
 @Composable
-private fun TopChrome(
+private fun AnimatedVisibilityScope.TopChrome(
     deviceLabel: String?,
     diagnostics: DiagnosticsSnapshot,
     safeArea: PaddingValues,
@@ -354,30 +488,51 @@ private fun TopChrome(
     endSessionFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
 ) {
+    // The top chrome arrives from beyond the panel edge and retreats halfway back
+    // the way it came. The travel is parent-owned so enter and exit are one
+    // vocabulary, and it is a graphicsLayer transform so nothing over the decoder
+    // is ever re-laid-out while it moves.
+    val slide by transition.animateFloat(
+        transitionSpec = {
+            if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
+            else FlickMotion.focusSpatial()
+        },
+        label = "topChromeSlide",
+    ) { state ->
+        when (state) {
+            EnterExitState.PreEnter -> 1f
+            EnterExitState.Visible -> 0f
+            EnterExitState.PostExit -> CHROME_EXIT_TRAVEL
+        }
+    }
     Row(
         modifier = Modifier
+            .graphicsLayer { translationY = -slide * size.height }
             // AnimatedVisibility retains this subtree for its fade-out; its
             // descendants leave the focus graph and the accessibility tree the
             // moment chrome hides.
             .focusProperties { canFocus = interactive }
             .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
             .fillMaxWidth()
-            .padding(safeArea),
+            .padding(safeArea)
+            // END SESSION is focusable at the outer left edge. Keep its detached
+            // ring inside the same overscan contract as full-width controls.
+            .padding(start = FlickDimens.FocusRingReserve),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
             horizontalAlignment = Alignment.Start,
         ) {
             GlassPill(
                 text = deviceLabel?.let { stringResource(R.string.now_playing_flicked_from, it) }
                     ?: stringResource(R.string.app_name),
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
                 color = FlickColor.OnSurface,
-                contentPadding = PaddingValues(start = 9.dp, top = 7.dp, end = 15.dp, bottom = 7.dp),
-                leading = { BrandMark(size = 17.dp, tint = FlickColor.OnSurface) },
+                contentPadding = PaddingValues(start = 7.dp, top = 6.dp, end = 12.dp, bottom = 6.dp),
+                leading = { BrandMark(size = FlickDimens.GlyphSmall, tint = FlickColor.OnSurface) },
             )
             if (onEndSession != null) {
                 FlickTvButton(
@@ -387,18 +542,18 @@ private fun TopChrome(
                     shape = FlickShape.Pill,
                     containerColor = Color.Transparent,
                     borderColor = FlickColor.OutlineSoft,
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    contentPadding = FlickDimens.ControlPadding,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
                     Icon(
                         imageVector = FlickIcons.LinkOff,
                         contentDescription = null,
                         tint = FlickColor.OnSurfaceDim,
-                        modifier = Modifier.size(19.dp),
+                        modifier = Modifier.size(FlickDimens.GlyphSmall),
                     )
                     Text(
                         text = stringResource(R.string.session_end_pill),
-                        style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.14f),
+                        style = FlickType.monoEyebrow(trackingEm = 0.14f),
                         color = FlickColor.OnSurfaceDim,
                         maxLines = 1,
                     )
@@ -406,20 +561,31 @@ private fun TopChrome(
             }
         }
         Row(
+            modifier = Modifier.animateContentSize(
+                animationSpec = FlickMotion.panelSpatial(),
+                alignment = Alignment.CenterEnd,
+            ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            // No band read means no pill — the receiver never guesses a radio.
+            // No band read means no pill — the receiver never guesses a radio. The
+            // pill resolves in the frame the band is first read; the dBm number
+            // inside it then SNAPS between values, because a tweened measurement is
+            // a fabricated measurement.
             val band = diagnostics.wifiBand
             if (band != null) {
-                GlassPill(
-                    text = if (diagnostics.wifiRssiDbm != 0) {
-                        stringResource(R.string.net_pill, band, diagnostics.wifiRssiDbm)
-                    } else {
-                        stringResource(R.string.net_pill_band_only, band)
-                    },
-                    dotColor = netHealthColor(band, diagnostics.wifiRssiDbm),
-                )
+                key(band) {
+                    TelemetryReveal {
+                        GlassPill(
+                            text = if (diagnostics.wifiRssiDbm != 0) {
+                                stringResource(R.string.net_pill, band, diagnostics.wifiRssiDbm)
+                            } else {
+                                stringResource(R.string.net_pill_band_only, band)
+                            },
+                            dotColor = netHealthColor(band, diagnostics.wifiRssiDbm),
+                        )
+                    }
+                }
             }
             GlassPill(text = rememberWallClock())
         }
@@ -453,7 +619,7 @@ private fun netHealthColor(band: String?, rssiDbm: Int): Color {
 // ── Bottom chrome: side panels + the transport panel (spec §5.3) ────────────
 
 @Composable
-private fun BottomChrome(
+private fun AnimatedVisibilityScope.BottomChrome(
     playing: Boolean,
     positionMs: Long,
     durationMs: Long,
@@ -468,6 +634,7 @@ private fun BottomChrome(
     subtitleTracks: List<SubtitleTrackInfo>,
     subtitleSize: SubtitleSize,
     openPanel: PlaybackPanel,
+    onVolumeEngagementChanged: (Boolean) -> Unit,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onSelectSubtitleTrack: (String?) -> Unit,
     onSelectSubtitleSize: (SubtitleSize) -> Unit,
@@ -488,93 +655,170 @@ private fun BottomChrome(
     LaunchedEffect(interactive) {
         if (interactive) runCatching { playFocusRequester.requestFocus() }
     }
-    Column(
-        modifier = Modifier
-            .focusProperties { canFocus = interactive }
-            .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
-            .fillMaxWidth()
-            .padding(safeArea),
-    ) {
+    val reducedMotion = LocalReducedMotion.current
+    // Keep the last panel composed through its exit animation. The external state
+    // can already be None (and focus restored to its launcher) without leaving a
+    // focusable, semantically-live panel over the film.
+    var renderedPanel by remember { mutableStateOf(PlaybackPanel.None) }
+    var panelEntryKey by remember { mutableStateOf(0) }
+    LaunchedEffect(openPanel) {
         if (openPanel != PlaybackPanel.None) {
-            // The panel row claims only what the transport panel leaves, so a
-            // long track list scrolls instead of pushing the transport off-screen.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f, fill = false)
-                    .padding(bottom = 10.dp),
-                verticalAlignment = Alignment.Bottom,
+            renderedPanel = openPanel
+            // The exit subtree is retained. Incrementing on every open gives a
+            // rapid close/reopen a fresh focus request instead of a stale panel.
+            panelEntryKey++
+        }
+    }
+
+    // The transport rises the design's `tvRise` distance and sinks half of it back
+    // out. Both are the parent's, so the panel below no longer runs an entrance
+    // latch of its own, and both are graphicsLayer transforms: nothing over the
+    // decoder is re-laid-out while the chrome moves.
+    val rise by transition.animateFloat(
+        transitionSpec = {
+            if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
+            else FlickMotion.focusSpatial()
+        },
+        label = "bottomChromeRise",
+    ) { state ->
+        when (state) {
+            EnterExitState.PreEnter -> 1f
+            EnterExitState.Visible -> 0f
+            EnterExitState.PostExit -> CHROME_EXIT_TRAVEL
+        }
+    }
+
+    LookaheadScope {
+        val panelScope = this
+        Column(
+            modifier = Modifier
+                .graphicsLayer { translationY = rise * FlickMotion.TvRise.toPx() }
+                .focusProperties { canFocus = interactive }
+                .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
+                .fillMaxWidth()
+                .padding(safeArea),
+        ) {
+            // The weight belongs on the AnimatedVisibility itself — it is the direct
+            // Column child, so this is what actually makes the transport measure
+            // first and leaves the panel only what the transport does not need. A
+            // ten-track subtitle list scrolls; it never crushes the transport.
+            AnimatedVisibility(
+                visible = openPanel != PlaybackPanel.None,
+                enter = if (reducedMotion) fadeIn(tween(durationMillis = 0)) else {
+                    fadeIn(FlickMotion.chromeFadeIn())
+                },
+                exit = if (reducedMotion) fadeOut(tween(durationMillis = 0)) else {
+                    fadeOut(FlickMotion.fastStateEffects())
+                },
+                modifier = Modifier.weight(1f, fill = false),
+                label = "playbackSidePanel",
             ) {
-                when (openPanel) {
-                    PlaybackPanel.Subtitles -> {
-                        SubtitlesPanel(
-                            tracks = subtitleTracks,
-                            size = subtitleSize,
-                            onSelectTrack = onSelectSubtitleTrack,
-                            onSelectSize = onSelectSubtitleSize,
-                            onDismiss = { onOpenPanel(PlaybackPanel.None) },
-                        )
-                        Spacer(Modifier.weight(1f))
-                    }
+                // Each panel enters from the edge it belongs to, so the side of the
+                // screen a card lives on is legible before it has finished arriving.
+                val fromRight = renderedPanel == PlaybackPanel.Metrics
+                val drift by transition.animateFloat(
+                    transitionSpec = {
+                        if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
+                        else FlickMotion.focusSpatial()
+                    },
+                    label = "panelDrift",
+                ) { state -> if (state == EnterExitState.Visible) 0f else 1f }
 
-                    PlaybackPanel.Metrics -> {
-                        Spacer(Modifier.weight(1f))
-                        StreamMetricsPanel(
-                            diagnostics = diagnostics,
-                            throughput = throughput,
-                            onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                Box(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            val edge = if (fromRight) 1f else -1f
+                            translationX = drift * size.width * PANEL_ENTRY_DRIFT * edge
+                        }
+                        .focusProperties { canFocus = openPanel != PlaybackPanel.None }
+                        .then(
+                            if (openPanel != PlaybackPanel.None) Modifier
+                            else Modifier.clearAndSetSemantics { },
                         )
-                    }
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp),
+                ) {
+                    // ONE panel container that travels: switching Subtitles →
+                    // Metrics glides it 488 dp across the screen and resizes it,
+                    // instead of cutting one card out and another in.
+                    Box(
+                        modifier = Modifier
+                            .align(if (fromRight) Alignment.BottomEnd else Alignment.BottomStart)
+                            .animateBounds(panelScope, boundsTransform = PanelTravel),
+                    ) {
+                        when (renderedPanel) {
+                            PlaybackPanel.Subtitles -> SubtitlesPanel(
+                                tracks = subtitleTracks,
+                                size = subtitleSize,
+                                onSelectTrack = onSelectSubtitleTrack,
+                                onSelectSize = onSelectSubtitleSize,
+                                onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                                entryKey = panelEntryKey,
+                            )
 
-                    PlaybackPanel.None -> Unit
+                            PlaybackPanel.Metrics -> StreamMetricsPanel(
+                                diagnostics = diagnostics,
+                                throughput = throughput,
+                                onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                                entryKey = panelEntryKey,
+                            )
+
+                            PlaybackPanel.None -> Unit
+                        }
+                    }
                 }
             }
-        }
 
-        GlassPanel(
-            modifier = Modifier.fillMaxWidth(),
-            shape = FlickShape.Hero,
-            tone = GlassPanelTone.Chrome,
-            // Spec §5.3: 22 dp top / 26 dp sides / 20 dp bottom, three rows 17 dp
-            // apart. The bottom differs from GlassPanel's symmetric default, so
-            // the padding stays explicit while the row gap is inherited.
-            contentPadding = PaddingValues(start = 26.dp, top = 22.dp, end = 26.dp, bottom = 20.dp),
-        ) {
-            TransportHeaderRow(
-                title = title,
-                seeking = seeking,
-                hdr = hdr,
-                diagnostics = diagnostics,
-            )
-            TransportScrubRow(
-                positionMs = positionMs,
-                durationMs = durationMs,
-                bufferedMs = bufferedMs,
-                targetMs = targetMs,
-                seeking = seeking,
-            )
-            TransportControlRow(
-                playing = playing,
-                volume = volume,
-                openPanel = openPanel,
-                selectedSubtitleLabel = selectedSubtitleLabel(subtitleTracks),
-                metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
-                    stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
-                } else {
-                    stringResource(R.string.metrics_unavailable)
-                },
-                onOpenPanel = onOpenPanel,
-                onBack10 = onBack10,
-                onPlayPause = onPlayPause,
-                onForward10 = onForward10,
-                onSetVolume = onSetVolume,
-                playFocusRequester = playFocusRequester,
-                subtitlesCardFocusRequester = subtitlesCardFocusRequester,
-                metricsCardFocusRequester = metricsCardFocusRequester,
-                volumeFocusRequester = volumeFocusRequester,
-                endSessionFocusRequester = endSessionFocusRequester,
-                interactive = interactive,
-            )
+            GlassPanel(
+                modifier = Modifier.fillMaxWidth(),
+                shape = FlickShape.Hero,
+                tone = GlassPanelTone.Chrome,
+                // The shared panel inset. Its 18 dp bottom is also what clears the
+                // play key's 18 dp spark shadow, which is painted outside the
+                // button's bounds and would otherwise fall past the panel edge.
+                contentPadding = FlickDimens.PanelPadding,
+                verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
+                // The chrome above owns enter AND exit now; a second entrance latch
+                // here would fight it and leave the panel behind on the way out.
+                animateEntrance = false,
+            ) {
+                TransportHeaderRow(
+                    title = title,
+                    seeking = seeking,
+                    hdr = hdr,
+                    diagnostics = diagnostics,
+                )
+                TransportScrubRow(
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    bufferedMs = bufferedMs,
+                    targetMs = targetMs,
+                    seeking = seeking,
+                )
+                TransportControlRow(
+                    playing = playing,
+                    volume = volume,
+                    openPanel = openPanel,
+                    onVolumeEngagementChanged = onVolumeEngagementChanged,
+                    selectedSubtitleLabel = selectedSubtitleLabel(subtitleTracks),
+                    metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
+                        stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
+                    } else {
+                        stringResource(R.string.metrics_unavailable)
+                    },
+                    onOpenPanel = onOpenPanel,
+                    onBack10 = onBack10,
+                    onPlayPause = onPlayPause,
+                    onForward10 = onForward10,
+                    onSetVolume = onSetVolume,
+                    playFocusRequester = playFocusRequester,
+                    subtitlesCardFocusRequester = subtitlesCardFocusRequester,
+                    metricsCardFocusRequester = metricsCardFocusRequester,
+                    volumeFocusRequester = volumeFocusRequester,
+                    endSessionFocusRequester = endSessionFocusRequester,
+                    interactive = interactive,
+                )
+            }
         }
     }
 }
@@ -601,14 +845,14 @@ private fun TransportHeaderRow(
                 } else {
                     stringResource(R.string.now_playing_eyebrow)
                 },
-                style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.2f),
+                style = FlickType.monoEyebrow(trackingEm = 0.2f),
                 color = if (seeking) FlickColor.Spark else FlickColor.SparkBright,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = title.orEmpty(),
-                style = FlickType.display(sizeSp = 34),
+                style = FlickType.display(sizeSp = 27),
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -620,16 +864,29 @@ private fun TransportHeaderRow(
             // title: the chips measure to their own content and the weighted
             // title column takes everything they do not need. Giving the group a
             // weight instead would reserve half the panel for two short chips.
+            //
+            // The row is sized by `animateContentSize` and anchored at its end, so
+            // each chip RESOLVES into place as its telemetry lands instead of the
+            // whole group appearing at once. `specChips` still omits anything the
+            // receiver has not measured — nothing here fills a gap.
             Row(
+                modifier = Modifier.animateContentSize(
+                    animationSpec = FlickMotion.panelSpatial(),
+                    alignment = Alignment.CenterEnd,
+                ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 chips.forEach { chip ->
-                    SpecChip(
-                        text = chip,
-                        style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.06f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
-                    )
+                    key(chip) {
+                        TelemetryReveal {
+                            SpecChip(
+                                text = chip,
+                                style = FlickType.monoEyebrow(trackingEm = 0.06f),
+                                contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -691,12 +948,18 @@ private fun TransportScrubRow(
  * Up/Down are wired explicitly across the row. Physical Left/Right are captured
  * by `TvRemoteKeyPolicy` as ±10 s seeks and never reach Compose during playback,
  * so the vertical axis is the only one available for traversal.
+ *
+ * The row is one beacon group: a single amber ring glides between the subtitles
+ * card, the three transport keys, volume and the metrics card rather than
+ * vanishing at one control and popping in at the next. This is the surface a
+ * viewer actually lives on, so it is the group the traveling ring has to land on.
  */
 @Composable
 private fun TransportControlRow(
     playing: Boolean,
     volume: Float,
     openPanel: PlaybackPanel,
+    onVolumeEngagementChanged: (Boolean) -> Unit,
     selectedSubtitleLabel: String?,
     metricsSubLabel: String,
     onOpenPanel: (PlaybackPanel) -> Unit,
@@ -711,6 +974,7 @@ private fun TransportControlRow(
     endSessionFocusRequester: FocusRequester?,
     interactive: Boolean,
 ) {
+    FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -766,6 +1030,7 @@ private fun TransportControlRow(
             level = volume,
             onChange = onSetVolume,
             enabled = interactive,
+            onEngagementChanged = onVolumeEngagementChanged,
             contentDescription = stringResource(R.string.volume),
             stateDescription = stringResource(
                 R.string.volume_state,
@@ -803,6 +1068,7 @@ private fun TransportControlRow(
             )
         }
     }
+    }
 }
 
 /**
@@ -821,6 +1087,23 @@ private fun PanelCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The invert dissolves rather than cuts. Ink takes the effects spec: colour
+    // that overshot its target would read as a flash, not as a state change.
+    val glyphTint by animateColorAsState(
+        targetValue = if (open) FlickColor.OnSpark else Color.White,
+        animationSpec = FlickMotion.stateEffects(),
+        label = "panelCardGlyph",
+    )
+    val titleInk by animateColorAsState(
+        targetValue = if (open) FlickColor.OnSpark else Color.White,
+        animationSpec = FlickMotion.stateEffects(),
+        label = "panelCardTitle",
+    )
+    val stateInk by animateColorAsState(
+        targetValue = if (open) FlickColor.OnSparkDim else FlickColor.OnSurfaceDim,
+        animationSpec = FlickMotion.stateEffects(),
+        label = "panelCardState",
+    )
     FlickTvButton(
         onClick = onClick,
         modifier = modifier,
@@ -831,27 +1114,27 @@ private fun PanelCard(
         ringColor = if (open) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
         containerColor = if (open) FlickColor.Spark else null,
         borderColor = if (open) Color.Transparent else null,
-        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 10.dp),
+        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
         Icon(
             imageVector = glyph,
             contentDescription = null,
-            tint = if (open) FlickColor.OnSpark else Color.White,
-            modifier = Modifier.size(19.dp),
+            tint = glyphTint,
+            modifier = Modifier.size(16.dp),
         )
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = title,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
-                color = if (open) FlickColor.OnSpark else Color.White,
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                color = titleInk,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = state,
-                style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.14f),
-                color = if (open) FlickColor.OnSparkDim else FlickColor.OnSurfaceDim,
+                style = FlickType.monoEyebrow(trackingEm = 0.14f),
+                color = stateInk,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -864,43 +1147,76 @@ private fun PanelCard(
 @Composable
 private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, held: Boolean) {
     val forward = deltaMs >= 0L
-    val reducedMotion = rememberReducedMotion()
+    val reducedMotion = LocalReducedMotion.current
     val sign = if (deltaMs < 0L) "−" else "+"
     val seconds = kotlin.math.abs(deltaMs / 1_000L)
+    val direction = if (forward) 1f else -1f
+
+    // One accepted step, one kick. The impulse is driven by the accumulated delta
+    // itself, so a held seek emitting four pulses kicks four times and a tap kicks
+    // once — the burst reports the protocol rather than running a decorative loop.
+    val impulseSpec: FiniteAnimationSpec<Float> = FlickMotion.flickSettleSpatial()
+    val impulse = remember { Animatable(0f) }
+    LaunchedEffect(deltaMs, reducedMotion) {
+        if (reducedMotion) {
+            impulse.snapTo(0f)
+            return@LaunchedEffect
+        }
+        impulse.snapTo(1f)
+        impulse.animateTo(0f, animationSpec = impulseSpec)
+    }
 
     Box(Modifier.fillMaxSize()) {
-        Column(
+        // The wash is its own layer so the impulse can move the glyph without
+        // sliding an edge-anchored gradient, and so the wash can carry the real
+        // 1x/2x/3x speed level as intensity.
+        Box(
             modifier = Modifier
                 .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
                 .fillMaxWidth(SEEK_BURST_WIDTH_FRACTION)
                 .fillMaxHeight()
+                .graphicsLayer { alpha = seekWashIntensity(speedLevel) }
                 .seekBurstWash(fromRight = forward),
+        )
+        Column(
+            modifier = Modifier
+                .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
+                .fillMaxWidth(SEEK_BURST_WIDTH_FRACTION)
+                .fillMaxHeight(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Column(
                 // Only the glyph and its label carry the scale; the wash behind
                 // them is edge-anchored and would slide if it scaled too.
-                modifier = if (reducedMotion) {
-                    Modifier
-                } else {
-                    Modifier.animateEnterExit(
-                        enter = scaleIn(
-                            animationSpec = tween(
-                                durationMillis = FlickMotion.TV_BURST_PEAK_MS,
-                                easing = FlickMotion.FlickSettle,
+                modifier = (
+                    if (reducedMotion) {
+                        Modifier
+                    } else {
+                        Modifier.animateEnterExit(
+                            enter = scaleIn(
+                                animationSpec = tween(
+                                    durationMillis = FlickMotion.TV_BURST_PEAK_MS,
+                                    easing = FlickMotion.FlickSettle,
+                                ),
+                                initialScale = SEEK_BURST_ENTER_SCALE,
                             ),
-                            initialScale = SEEK_BURST_ENTER_SCALE,
-                        ),
-                        exit = scaleOut(
-                            animationSpec = tween(
-                                durationMillis = SEEK_BURST_EXIT_MS,
-                                easing = FlickMotion.ChromeFade,
+                            exit = scaleOut(
+                                animationSpec = tween(
+                                    durationMillis = SEEK_BURST_EXIT_MS,
+                                    easing = FlickMotion.ChromeFade,
+                                ),
+                                targetScale = SEEK_BURST_EXIT_SCALE,
                             ),
-                            targetScale = SEEK_BURST_EXIT_SCALE,
-                        ),
-                        label = "seekBurstScale",
-                    )
+                            label = "seekBurstScale",
+                        )
+                    }
+                    ).graphicsLayer {
+                    val kick = impulse.value
+                    val swell = 1f + (SEEK_BURST_IMPULSE_SCALE - 1f) * kick
+                    scaleX = swell
+                    scaleY = swell
+                    translationX = kick * direction * SeekBurstNudge.toPx()
                 },
                 verticalArrangement = Arrangement.spacedBy(9.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -909,7 +1225,9 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
                     imageVector = if (forward) FlickIcons.Forward10 else FlickIcons.Replay10,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(60.dp),
+                    modifier = Modifier
+                        .graphicsLayer { rotationZ = impulse.value * direction * SEEK_BURST_GLYPH_SPIN }
+                        .size(48.dp),
                 )
                 Text(
                     text = if (held) {
@@ -922,7 +1240,7 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
                     } else {
                         stringResource(R.string.remote_seek_step, sign, seconds)
                     },
-                    style = FlickType.display(sizeSp = 24),
+                    style = FlickType.display(sizeSp = 20),
                     color = Color.White,
                     maxLines = 1,
                 )
@@ -935,39 +1253,51 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
 private fun PausedChip(modifier: Modifier = Modifier) {
     GlassPillContainer(
         modifier = modifier,
-        contentPadding = PaddingValues(start = 12.dp, top = 9.dp, end = 17.dp, bottom = 9.dp),
+        contentPadding = PaddingValues(start = 10.dp, top = 7.dp, end = 14.dp, bottom = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(11.dp),
     ) {
         Icon(
             imageVector = FlickIcons.Pause,
             contentDescription = null,
             tint = FlickColor.Spark,
-            modifier = Modifier.size(23.dp),
+            modifier = Modifier.size(FlickDimens.GlyphMedium),
         )
         Text(
             text = stringResource(R.string.paused_title),
-            style = FlickType.display(sizeSp = 24),
+            style = FlickType.display(sizeSp = 20),
             color = Color.White,
             maxLines = 1,
         )
     }
 }
 
+/**
+ * The buffering ring's phase, or null when the viewer asked for no motion — in
+ * which case the arc rests at [BUFFER_RESTING_SWEEP].
+ *
+ * The caller reads this INSIDE its draw lambda. A rebuffer is the moment the
+ * decoder has least headroom, so the arc is allowed to repaint per frame but not
+ * to recompose the overlay per frame.
+ */
 @Composable
-private fun BufferingOverlay(modifier: Modifier = Modifier) {
-    val reducedMotion = rememberReducedMotion()
-    val sweep = if (reducedMotion) {
-        315f
+private fun rememberBufferSweep(): State<Float>? {
+    val reducedMotion = LocalReducedMotion.current
+    return if (reducedMotion) {
+        null
     } else {
         val transition = rememberInfiniteTransition(label = "buffer")
-        val angle by transition.animateFloat(
+        transition.animateFloat(
             initialValue = 0f,
             targetValue = 360f,
             animationSpec = FlickMotion.tvSpin(),
             label = "bufferSweep",
         )
-        angle
     }
+}
+
+@Composable
+private fun BufferingOverlay(modifier: Modifier = Modifier) {
+    val sweep = rememberBufferSweep()
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -975,9 +1305,9 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
     ) {
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(40.dp)
                 .drawBehind {
-                    val stroke = Stroke(width = 3.5.dp.toPx())
+                    val stroke = Stroke(width = 3.dp.toPx())
                     drawArc(
                         color = FlickColor.Spark.copy(alpha = 0.22f),
                         startAngle = 0f,
@@ -987,7 +1317,7 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
                     )
                     drawArc(
                         color = FlickColor.Spark,
-                        startAngle = sweep,
+                        startAngle = sweep?.value ?: BUFFER_RESTING_SWEEP,
                         sweepAngle = 90f,
                         useCenter = false,
                         style = stroke,
@@ -996,13 +1326,13 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
         )
         Text(
             text = stringResource(R.string.buffering_title),
-            style = FlickType.display(sizeSp = 27),
+            style = FlickType.display(sizeSp = 22),
             color = Color.White,
             maxLines = 1,
         )
         Text(
             text = stringResource(R.string.buffering_detail),
-            style = FlickType.body(sizeSp = 24),
+            style = FlickType.body(sizeSp = 16),
             color = FlickColor.OnSurfaceDim,
             maxLines = 1,
         )
@@ -1015,9 +1345,12 @@ private fun QualityCard(info: QualityInfo, modifier: Modifier = Modifier) {
         modifier = modifier,
         shape = FlickShape.Xl,
         tone = GlassPanelTone.Panel,
-        contentPadding = PaddingValues(horizontal = 15.dp, vertical = 13.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
-        riseDistance = 12.dp,
+        // The `qualityFlourish` AnimatedContent above owns both halves of this
+        // card's arrival and its 4.5 s dismissal. A second entrance latch here
+        // would double the fade and, being one-way, strand the card on the exit.
+        animateEntrance = false,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1025,12 +1358,12 @@ private fun QualityCard(info: QualityInfo, modifier: Modifier = Modifier) {
         ) {
             Text(
                 text = info.qualityLabel,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Box(Modifier.size(7.dp).drawBehind { drawCircle(FlickColor.Live) })
+            Box(Modifier.size(6.dp).drawBehind { drawCircle(FlickColor.Live) })
         }
         QualityRow(stringResource(R.string.quality_decoder), info.decoder)
         QualityRow(stringResource(R.string.quality_throughput), info.throughput)
@@ -1041,7 +1374,7 @@ private fun QualityCard(info: QualityInfo, modifier: Modifier = Modifier) {
         ) {
             Text(
                 text = stringResource(R.string.quality_wifi),
-                style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.12f),
+                style = FlickType.monoEyebrow(trackingEm = 0.12f),
                 color = FlickColor.OnPanelLabel,
                 maxLines = 1,
             )
@@ -1074,14 +1407,14 @@ private fun QualityRow(label: String, value: String) {
     ) {
         Text(
             text = label,
-            style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.12f),
+            style = FlickType.monoEyebrow(trackingEm = 0.12f),
             color = FlickColor.OnPanelLabel,
             maxLines = 1,
         )
         Spacer(Modifier.size(18.dp))
         Text(
             text = value,
-            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.SemiBold),
+            style = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.SemiBold),
             color = FlickColor.OnSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

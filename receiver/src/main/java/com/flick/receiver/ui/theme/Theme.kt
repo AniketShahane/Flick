@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -45,11 +46,15 @@ fun FlickTvTheme(content: @Composable () -> Unit) {
         error = FlickColor.Trouble,
         onError = FlickColor.OnSurface,
     )
-    MaterialTheme(
-        colorScheme = colors,
-        typography = FlickTvTypography,
-        content = content,
-    )
+    // The system animation scale is observed once here, not once for every live
+    // dot, panel or button in the receiver composition.
+    CompositionLocalProvider(LocalReducedMotion provides rememberReducedMotion()) {
+        MaterialTheme(
+            colorScheme = colors,
+            typography = FlickTvTypography,
+            content = content,
+        )
+    }
 }
 
 /** The 5% overscan-safe inset (spec §1b): all chrome/text lives inside this. */

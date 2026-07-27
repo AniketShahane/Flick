@@ -1,5 +1,6 @@
 package com.flick.sender.ui.components
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -11,8 +12,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,16 +33,23 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import com.flick.sender.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
  * Continuous TV volume. A 13dp track with a bright fill and the amber blade thumb;
  * the trailing [percentLabel] is fixed-width so the digits never shift the track.
  * The visual band is short, but the gesture/semantics box stays a legal target.
+ *
+ * Track and blade swell under the finger, on the same spec and in the same direction
+ * as the scrub bar's grab — one remote must not speak two slider languages.
  */
 @Composable
 fun VolumeSlider(
@@ -53,6 +64,18 @@ fun VolumeSlider(
 ) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
+    val scope = rememberCoroutineScope()
+    // The swell lives in an Animatable rather than animateDpAsState so it plays
+    // entirely in the draw phase; the level itself writes at pointer rate and must
+    // not drag a recomposition along with it.
+    val swell = remember { Animatable(0f) }
+    // Hoisted because reading the motion scheme is a composition read and the gesture
+    // scope is not composable. A spring, so a release that interrupts the grab
+    // retargets from the velocity the swell already carries.
+    val swellSpec = Motion.orSnap(
+        rememberReduceMotion(),
+        MaterialTheme.motionScheme.fastSpatialSpec<Float>(),
+    )
     // The gesture handler is keyed on Unit, so the level it started from has to be
     // read through a state holder rather than captured at that composition.
     val currentValue = rememberUpdatedState(value)
@@ -92,26 +115,35 @@ fun VolumeSlider(
                             }
                             onValueChange(fraction)
                         }
-                        report((down.position.x / w()).coerceIn(0f, 1f))
-                        down.consume()
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id }
-                                ?: event.changes.firstOrNull()
-                            if (change == null) break
-                            if (!change.pressed) {
+                        scope.launch { swell.animateTo(1f, swellSpec) }
+                        try {
+                            report((down.position.x / w()).coerceIn(0f, 1f))
+                            down.consume()
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull()
+                                if (change == null) break
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                                report((change.position.x / w()).coerceIn(0f, 1f))
                                 change.consume()
-                                break
                             }
-                            report((change.position.x / w()).coerceIn(0f, 1f))
-                            change.consume()
+                        } finally {
+                            // Pointer cancellation kills this coroutine, so the shrink
+                            // is launched on the composition scope, not this one.
+                            scope.launch { swell.animateTo(0f, swellSpec) }
                         }
                     }
                 },
         ) {
             Canvas(Modifier.fillMaxSize()) {
+                // Read in the draw scope: a volume drag repaints and nothing above it.
+                val t = swell.value
                 val cy = size.height / 2f
-                val track = TrackHeight.toPx()
+                val track = lerp(TrackHeight.toPx(), TrackDragHeight.toPx(), t)
                 val r = track / 2f
                 drawRoundRect(
                     color = colors.fillTrack,
@@ -128,14 +160,16 @@ fun VolumeSlider(
                         cornerRadius = CornerRadius(r, r),
                     )
                 }
-                val bladeW = ThumbWidth.toPx()
-                val bladeH = ThumbHeight.toPx()
+                val bladeW = lerp(ThumbWidth.toPx(), ThumbDragWidth.toPx(), t)
+                val bladeH = lerp(ThumbHeight.toPx(), ThumbDragHeight.toPx(), t)
                 val bx = fillW.coerceIn(bladeW / 2f, (size.width - bladeW / 2f).coerceAtLeast(bladeW / 2f))
                 drawRoundRect(
                     color = colors.spark,
                     topLeft = Offset(bx - bladeW / 2f, cy - bladeH / 2f),
                     size = Size(bladeW, bladeH),
-                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
+                    // Half the blade's own width, so it stays a blade rather than
+                    // squaring off as it grows.
+                    cornerRadius = CornerRadius(bladeW / 2f, bladeW / 2f),
                 )
             }
         }
@@ -153,6 +187,12 @@ fun VolumeSlider(
 private val TrackHeight = 13.dp
 private val ThumbWidth = 6.dp
 private val ThumbHeight = 26.dp
+
+// Grabbed geometry. The blade tops out at 34dp inside a 48dp box, so the swell never
+// paints past the touch target it lives in.
+private val TrackDragHeight = 18.dp
+private val ThumbDragWidth = 9.dp
+private val ThumbDragHeight = 34.dp
 
 /**
  * Detents the haptic ticks sit on. The level itself stays continuous — this only

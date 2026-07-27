@@ -62,6 +62,10 @@ object FlickText {
         lineHeight = 42.sp,
         letterSpacing = (-0.045).em,
     )
+
+    /** Named so the Typography role and its emphasized twin read from one place. */
+    val displayMedium = displayLarge.copy(fontSize = 34.sp, lineHeight = 34.sp)
+
     val headlineLarge = TextStyle(
         fontFamily = Bricolage,
         fontWeight = FontWeight.ExtraBold,
@@ -154,6 +158,30 @@ object FlickText {
         letterSpacing = 0.em,
     )
 
+    // --- Emphasized: the weight step Material's expressive components ask for ---
+    //
+    // Material resolves emphasis by weight. Bricolage bundles nothing above ExtraBold,
+    // which display, headline and titleLarge already carry, so those roles buy their
+    // emphasis with tracking instead — 0.005em tighter packs the lockup without
+    // changing the measure. Geist bundles a third weight, so every Geist role and the
+    // two Bold Bricolage titles simply step up.
+
+    val displayLargeEmphasized = displayLarge.copy(letterSpacing = (-0.05).em)
+    val displayMediumEmphasized = displayMedium.copy(letterSpacing = (-0.05).em)
+    val displaySmallEmphasized = headlineLarge.copy(letterSpacing = (-0.045).em)
+    val headlineLargeEmphasized = headlineLarge.copy(letterSpacing = (-0.045).em)
+    val headlineMediumEmphasized = headlineMedium.copy(letterSpacing = (-0.045).em)
+    val headlineSmallEmphasized = headlineSmall.copy(letterSpacing = (-0.04).em)
+    val titleLargeEmphasized = titleLarge.copy(letterSpacing = (-0.04).em)
+    val titleMediumEmphasized = titleMedium.copy(fontWeight = FontWeight.ExtraBold)
+    val titleSmallEmphasized = titleSmall.copy(fontWeight = FontWeight.ExtraBold)
+    val bodyLargeEmphasized = bodyLarge.copy(fontWeight = FontWeight.ExtraBold)
+    val bodyMediumEmphasized = bodyMedium.copy(fontWeight = FontWeight.Bold)
+    val bodySmallEmphasized = bodySmall.copy(fontWeight = FontWeight.Bold)
+    val labelLargeEmphasized = labelLarge.copy(fontWeight = FontWeight.ExtraBold)
+    val labelMediumEmphasized = labelMedium.copy(fontWeight = FontWeight.ExtraBold)
+    val labelSmallEmphasized = labelSmall.copy(fontWeight = FontWeight.ExtraBold)
+
     // --- Geist Mono: every live number, always tabular ---
 
     /** Section eyebrow — caller supplies UPPERCASE copy. */
@@ -238,9 +266,14 @@ object FlickText {
     val monoLabel = monoEyebrow
 }
 
+/**
+ * The emphasized half is not optional decoration: Material's expressive components
+ * read those roles directly, and a Typography that leaves them unset falls back to
+ * the platform default face — the one thing the bundled-font rule above forbids.
+ */
 val FlickTypography = Typography(
     displayLarge = FlickText.displayLarge,
-    displayMedium = FlickText.displayLarge.copy(fontSize = 34.sp, lineHeight = 34.sp),
+    displayMedium = FlickText.displayMedium,
     displaySmall = FlickText.headlineLarge,
     headlineLarge = FlickText.headlineLarge,
     headlineMedium = FlickText.headlineMedium,
@@ -254,4 +287,19 @@ val FlickTypography = Typography(
     labelLarge = FlickText.labelLarge,
     labelMedium = FlickText.labelMedium,
     labelSmall = FlickText.labelSmall,
+    displayLargeEmphasized = FlickText.displayLargeEmphasized,
+    displayMediumEmphasized = FlickText.displayMediumEmphasized,
+    displaySmallEmphasized = FlickText.displaySmallEmphasized,
+    headlineLargeEmphasized = FlickText.headlineLargeEmphasized,
+    headlineMediumEmphasized = FlickText.headlineMediumEmphasized,
+    headlineSmallEmphasized = FlickText.headlineSmallEmphasized,
+    titleLargeEmphasized = FlickText.titleLargeEmphasized,
+    titleMediumEmphasized = FlickText.titleMediumEmphasized,
+    titleSmallEmphasized = FlickText.titleSmallEmphasized,
+    bodyLargeEmphasized = FlickText.bodyLargeEmphasized,
+    bodyMediumEmphasized = FlickText.bodyMediumEmphasized,
+    bodySmallEmphasized = FlickText.bodySmallEmphasized,
+    labelLargeEmphasized = FlickText.labelLargeEmphasized,
+    labelMediumEmphasized = FlickText.labelMediumEmphasized,
+    labelSmallEmphasized = FlickText.labelSmallEmphasized,
 )

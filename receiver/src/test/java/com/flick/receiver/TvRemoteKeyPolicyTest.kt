@@ -57,6 +57,27 @@ class TvRemoteKeyPolicyTest {
         }
     }
 
+    @Test fun engagedVolumeLeavesHorizontalDpadWithItsComposeControl() {
+        assertFalse(
+            receiverPlaybackGesturesEnabled(
+                playbackActive = true,
+                panelOpen = false,
+                volumeEngaged = true,
+            ),
+        )
+        val left = decide(button = TvRemoteButton.Left, playbackActive = false)
+        assertFalse(left.consume)
+        assertNull(left.command)
+
+        assertTrue(
+            receiverPlaybackGesturesEnabled(
+                playbackActive = true,
+                panelOpen = false,
+                volumeEngaged = false,
+            ),
+        )
+    }
+
     @Test fun heldSeekUsesGatedProgressiveAndBoundedPulses() {
         assertEquals(TvRemoteSeekPulse(10_000L, 1), tvRemoteSeekPulse(0))
         assertEquals(TvRemoteSeekPulse(10_000L, 1), tvRemoteSeekPulse(1))

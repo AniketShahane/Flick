@@ -1,5 +1,7 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -27,10 +29,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -63,8 +70,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import coil.request.videoFrameMillis
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
@@ -76,11 +81,14 @@ import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.PhoneScrubBar
 import com.flick.sender.ui.components.SignalChip
 import com.flick.sender.ui.components.TransportCluster
 import com.flick.sender.ui.components.VolumeSlider
+import com.flick.sender.ui.components.flickSharedFrame
+import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
@@ -99,15 +107,23 @@ import kotlin.math.roundToInt
 
 /** S6/S7/S8/S9 — the remote. Everything that matters is under the thumb. */
 @Composable
-fun NowPlayingScreen(controller: FlickController) {
+fun NowPlayingScreen(
+    controller: FlickController,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
+) {
     // Forced dark: the remote is cinematic regardless of the system theme.
     FlickCinematicTheme {
-        RemoteScreen(controller)
+        RemoteScreen(controller, sharedScope, animatedScope)
     }
 }
 
 @Composable
-private fun RemoteScreen(controller: FlickController) {
+private fun RemoteScreen(
+    controller: FlickController,
+    sharedScope: SharedTransitionScope?,
+    animatedScope: AnimatedVisibilityScope?,
+) {
     val context = LocalContext.current
     // Kept as State (not unwrapped) so the pointer-rate playhead reads can be deferred
     // into leaf composables / the draw phase instead of recomposing the whole hero
@@ -121,14 +137,28 @@ private fun RemoteScreen(controller: FlickController) {
     // every 2 s and must stop at the leaves that show it, not rebuild the whole remote
     // (including the scrub bar under a live drag).
     val signal = rememberSignalState()
-    val compactWidth = isCompactWidth(LocalConfiguration.current.screenWidthDp)
-    val screenHeight = LocalConfiguration.current.screenHeightDp
+    val configuration = LocalConfiguration.current
+    val compactWidth = isCompactWidth(configuration.screenWidthDp)
+    val screenHeight = configuration.screenHeightDp
+    // The ordinary remote stays one-handed. A short landscape window cannot honestly
+    // contain transport, volume and stop above the system bars, so it scrolls rather
+    // than cutting off terminal controls.
+    val compactLayout = needsCompactRemoteLayout(screenHeight, configuration.fontScale)
     val dense = screenHeight < DenseScreenDp
     val showStats = screenHeight >= StatStripFloorDp
     val gap = if (dense) 11.dp else 15.dp
     val clusterGap = if (dense) 16.dp else 24.dp
     val chrome = if (showStats) (if (dense) DenseChromeDp else FullChromeDp) else BareChromeDp
-    val posterHeight = (screenHeight - chrome).coerceIn(PosterMinDp, PosterMaxDp).dp
+    // The chrome figures are measured at font scale 1 and every control in them grows
+    // with the scale, so the poster gives the difference back instead of letting the
+    // control stack run past the bottom edge on the non-scrolling layout.
+    val chromeBudget = (chrome * configuration.fontScale).roundToInt()
+    val posterHeight = (screenHeight - chromeBudget).coerceIn(
+        if (compactLayout) CompactPosterMinDp else PosterMinDp,
+        if (compactLayout) CompactPosterMaxDp else PosterMaxDp,
+    ).dp
+    val reduceMotion = rememberReduceMotion()
+    val compactScrollState = rememberScrollState()
 
     val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
         val uri = item?.uri
@@ -138,15 +168,24 @@ private fun RemoteScreen(controller: FlickController) {
     // Spark pulse ring on ghost↔target reconcile. Read only inside the ring's drawBehind
     // (via the lambda) so a 500ms pulse animation never recomposes the transport tree.
     val pulse = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(reduceMotion) {
+        if (reduceMotion) pulse.snapTo(1f)
         controller.pulses.collect {
-            pulse.snapTo(0f)
-            pulse.animateTo(1f, tween(500))
+            if (reduceMotion) {
+                // State still reconciles; only the decorative ring is suppressed.
+                pulse.snapTo(1f)
+            } else {
+                pulse.snapTo(0f)
+                pulse.animateTo(1f, tween(500))
+            }
         }
     }
 
     val phase by remember { derivedStateOf { playbackState.value.phase } }
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
+    // Buffering stays a bounded, centered face. It must never enter the compact
+    // scroll container because its weighted body needs finite height constraints.
+    val showBuffering = phase == PlaybackPhase.BUFFERING && !scrubbing
 
     Box(
         Modifier
@@ -160,7 +199,16 @@ private fun RemoteScreen(controller: FlickController) {
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 22.dp),
+                .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 22.dp)
+                .then(
+                    if (usesCompactRemoteScroll(compactLayout, showBuffering)) {
+                        // Let the scrub bar retain every pointer while a drag is active;
+                        // scrolling resumes immediately after the terminal seek.
+                        Modifier.verticalScroll(compactScrollState, enabled = !scrubbing)
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
             TopRow(
                 serving = server.status == ServerStatus.RUNNING,
@@ -173,7 +221,7 @@ private fun RemoteScreen(controller: FlickController) {
             // Swap to the full buffering face only when NOT scrubbing: a scrub itself
             // drives the TV into STATE_BUFFERING (seek fill), and replacing the bar
             // mid-drag would strand the gesture (onScrubEnd never fires, scrubbing sticks).
-            if (phase == PlaybackPhase.BUFFERING && !scrubbing) {
+            if (showBuffering) {
                 BufferingContent(signal = signal)
             } else {
                 RemoteContent(
@@ -187,7 +235,10 @@ private fun RemoteScreen(controller: FlickController) {
                     gap = gap,
                     clusterGap = clusterGap,
                     showStats = showStats,
+                    compactLayout = compactLayout,
                     pulse = { pulse.value },
+                    sharedScope = sharedScope,
+                    animatedScope = animatedScope,
                 )
             }
         }
@@ -300,7 +351,10 @@ private fun ColumnScope.RemoteContent(
     gap: Dp,
     clusterGap: Dp,
     showStats: Boolean,
+    compactLayout: Boolean,
     pulse: () -> Float,
+    sharedScope: SharedTransitionScope?,
+    animatedScope: AnimatedVisibilityScope?,
 ) {
     val colors = LocalFlickColors.current
 
@@ -308,7 +362,6 @@ private fun ColumnScope.RemoteContent(
     // recomposes this scope; those reads happen via lambdas in the draw/layout phase.
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
     val playing by remember { derivedStateOf { playbackState.value.playing } }
-    val durationMs by remember { derivedStateOf { playbackState.value.durationMs } }
     val syncing by remember { derivedStateOf { playbackState.value.syncing } }
     val title by remember(item) {
         derivedStateOf { item?.name ?: playbackState.value.title ?: "" }
@@ -337,7 +390,13 @@ private fun ColumnScope.RemoteContent(
     val forwardDescription = stringResource(R.string.a11y_skip_forward)
 
     Spacer(Modifier.height(gap))
-    Poster(item = item, hdr = hdr, durationMs = durationMs, height = posterHeight)
+    Poster(
+        item = item,
+        hdr = hdr,
+        height = posterHeight,
+        sharedScope = sharedScope,
+        animatedScope = animatedScope,
+    )
 
     Spacer(Modifier.height(gap))
     Text(
@@ -359,7 +418,13 @@ private fun ColumnScope.RemoteContent(
         StatStrip(playbackState = playbackState, signal = signal)
     }
 
-    Spacer(Modifier.weight(1f))
+    if (compactLayout) {
+        // Weight has no bounded height inside the scroll container. A compact gap keeps
+        // the hierarchy legible while leaving every control reachable.
+        Spacer(Modifier.height(gap))
+    } else {
+        Spacer(Modifier.weight(1f))
+    }
 
     // --- transport region ---
     val preview = rememberScrubFrame(item?.uri, { playbackState.value.targetMs }, scrubbing)
@@ -378,8 +443,12 @@ private fun ColumnScope.RemoteContent(
         durationMs = { playbackState.value.durationMs },
         targetLabel = seekTargetDescription,
         confirmedLabel = confirmedDescription,
+        reservePreviewSpace = compactLayout,
         stateLabel = if (syncing) stringResource(R.string.syncing) else null,
         adjustableActionLabel = adjustSeekDescription,
+        // Read in the draw phase: the wave amplitude follows the TV's own play state,
+        // and a value read here would recompose the bar on every toggle.
+        playing = { playbackState.value.playing },
     )
 
     Spacer(Modifier.height(clusterGap))
@@ -470,27 +539,24 @@ private fun VolumeRow(playbackState: State<PlaybackUiState>, onVolume: (Float) -
     )
 }
 
-/** The real local frame, scrimmed, with only the badges the file actually earns. */
+/**
+ * The real local frame, scrimmed, with only the badges the file actually earns. This
+ * is where the still lands when the TV confirms its first frame, so the request is
+ * keyed off the file's own duration — the TV-reported clock would ask for a different
+ * frame and cost the landing its cache entry.
+ */
 @Composable
 private fun ColumnScope.Poster(
     item: MediaItem?,
     hdr: HdrType,
-    durationMs: Long,
     height: Dp,
+    sharedScope: SharedTransitionScope?,
+    animatedScope: AnimatedVisibilityScope?,
 ) {
     val colors = LocalFlickColors.current
-    val context = LocalContext.current
     val imageLoader = rememberVideoImageLoader()
     val shape = RoundedCornerShape(FlickCorners.poster)
-    val request = remember(item?.uri, durationMs) {
-        item?.uri?.let { uri ->
-            ImageRequest.Builder(context)
-                .data(uri)
-                .videoFrameMillis((durationMs / 3L).coerceAtLeast(1_000L))
-                .crossfade(true)
-                .build()
-        }
-    }
+    val request = rememberVideoFrameRequest(item?.uri, item?.durationMs ?: 0L)
     val hdrBadge = when (hdr) {
         HdrType.DOLBY_VISION -> stringResource(R.string.media_dolby_vision_badge)
         HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
@@ -510,7 +576,10 @@ private fun ColumnScope.Poster(
                 contentDescription = item?.name,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                // In the shared overlay: the flight starts outside this rounded clip.
+                modifier = Modifier
+                    .flickSharedFrame(sharedScope, animatedScope, CastPosterKey)
+                    .fillMaxSize(),
             )
         }
         Box(Modifier.fillMaxSize().background(FlickGradients.nowPosterScrim))
@@ -730,10 +799,22 @@ private fun RowScope.Segment(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
     val colors = LocalFlickColors.current
     val chip = signal.value.chipText()
+    val reduceMotion = rememberReduceMotion()
+    // The TV is filling its reserve; nothing here is transcoding, so the indicator
+    // carries no percentage and morphs rather than fills.
+    val bufferingShapes = remember {
+        listOf(
+            MaterialShapes.SoftBurst,
+            MaterialShapes.Cookie6Sided,
+            MaterialShapes.Flower,
+            MaterialShapes.Circle,
+        )
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -742,7 +823,21 @@ private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CircularProgressIndicator(color = colors.spark, strokeWidth = 5.dp, modifier = Modifier.size(56.dp))
+        if (reduceMotion) {
+            // A frozen morph reads as a hang, so the reduced form is a resting shape.
+            Box(
+                Modifier
+                    .size(BufferingIndicatorDp)
+                    .background(colors.spark, MaterialShapes.Cookie6Sided.toShape()),
+            )
+        } else {
+            ContainedLoadingIndicator(
+                modifier = Modifier.size(BufferingIndicatorDp),
+                containerColor = colors.fillCard,
+                indicatorColor = colors.spark,
+                polygons = bufferingShapes,
+            )
+        }
         Spacer(Modifier.height(20.dp))
         Text(
             stringResource(R.string.buffering_title),
@@ -771,13 +866,29 @@ private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
 private fun PlaybackUiState.bufferedFraction(): Float =
     if (durationMs > 0L) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
-// The remote has no scroll container (a vertical scroller would race the scrub
-// gesture), so the poster carries the height budget: it shrinks first, and the
-// stat strip drops out entirely before anything can be pushed off-screen.
+// The normal remote has no scroll container, so the poster carries the height budget.
+// Short windows switch to the compact scroll layout above before anything is clipped.
 private const val DenseScreenDp = 780
 private const val StatStripFloorDp = 700
+private const val CompactRemoteHeightDp = 620
 private const val FullChromeDp = 585
 private const val DenseChromeDp = 545
 private const val BareChromeDp = 500
 private const val PosterMinDp = 104
 private const val PosterMaxDp = 232
+private const val CompactPosterMinDp = 72
+private const val CompactPosterMaxDp = 160
+private val BufferingIndicatorDp = 56.dp
+
+/**
+ * The remote's fixed control stack costs [CompactRemoteHeightDp] at font scale 1, and
+ * every control in it grows with the scale — so the trigger is a budget, not a flag.
+ * A tall phone at 1.1x still has the room and must not be degraded to the scrolling
+ * layout for it.
+ */
+internal fun needsCompactRemoteLayout(screenHeightDp: Int, fontScale: Float): Boolean =
+    screenHeightDp < CompactRemoteHeightDp * fontScale
+
+/** The buffering face uses a weighted, centered body and therefore requires bounded height. */
+internal fun usesCompactRemoteScroll(compactLayout: Boolean, buffering: Boolean): Boolean =
+    compactLayout && !buffering

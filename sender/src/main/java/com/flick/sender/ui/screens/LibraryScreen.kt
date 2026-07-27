@@ -1,8 +1,22 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.animateBounds
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,13 +40,20 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.Stable
@@ -49,7 +70,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -86,12 +110,17 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
+import com.flick.sender.ui.theme.PillMorphShape
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.PrimaryShadow
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import com.flick.sender.ui.theme.rememberReduceMotion
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.delay
 
 /** Room the floating nav needs at the foot of the scroll (design §5.4). */
 private val NavClearance = 116.dp
@@ -115,9 +144,13 @@ private class HdrCells {
 fun LibraryScreen(
     controller: FlickController,
     onRequestVideoPermission: () -> Unit,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
+    val motionScheme = MaterialTheme.motionScheme
+    val reduceMotion = rememberReduceMotion()
     val items by controller.mediaItems.collectAsState()
     val loading by controller.libraryLoading.collectAsState()
     val mediaAccess by controller.mediaAccess.collectAsState()
@@ -149,6 +182,20 @@ fun LibraryScreen(
             if (cell.value == null) cell.value = MediaProbe.detectHdr(context, item.uri)
         }
         scanningDv = false
+    }
+
+    // The entrance plays once, on the first paint after MediaStore resolves — never on
+    // a filter switch and never on the Dolby Vision sweep, which writes long after the
+    // grid is on screen. The window closes it so scrolling back to the top cannot
+    // replay it on tiles the lazy grid recomposes.
+    var staggerArmed by remember { mutableStateOf(false) }
+    var staggerSpent by remember { mutableStateOf(false) }
+    LaunchedEffect(loading, items.isEmpty(), reduceMotion) {
+        if (staggerSpent || reduceMotion || loading || items.isEmpty()) return@LaunchedEffect
+        staggerSpent = true
+        staggerArmed = true
+        delay(StaggerWindowMs)
+        staggerArmed = false
     }
 
     if (mediaAccess == MediaAccess.NONE || (items.isEmpty() && !loading)) {
@@ -225,15 +272,47 @@ fun LibraryScreen(
                 fullWidth { Note(stringResource(R.string.library_scanning_dv)) }
             filtered.isEmpty() -> fullWidth { FilterEmpty(filter) }
         }
-        items(filtered, key = { it.id }) { item ->
+        itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
             LibraryTile(
                 item = item,
                 imageLoader = imageLoader,
                 compact = compactTiles,
                 cell = hdrCells.cell(item.id),
                 onClick = { controller.openDetail(item) },
+                sharedScope = sharedScope,
+                animatedScope = animatedScope,
+                // A filter switch reflows the surviving tiles instead of teleporting
+                // them; placement is geometry and takes the spatial spring.
+                modifier = Modifier
+                    .animateItem(
+                        fadeInSpec = motionScheme.defaultEffectsSpec(),
+                        placementSpec = motionScheme.defaultSpatialSpec(),
+                        fadeOutSpec = motionScheme.fastEffectsSpec(),
+                    )
+                    .staggeredEntrance(index = index, armed = staggerArmed),
             )
         }
+    }
+}
+
+/**
+ * The grid's first tiles arrive in sequence rather than all at once. A graphicsLayer
+ * transform only: the lazy grid's own placement must never see moving bounds.
+ */
+@Composable
+private fun Modifier.staggeredEntrance(index: Int, armed: Boolean): Modifier {
+    if (!armed) return this
+    val spec = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        delay(index.coerceAtMost(StaggerCapIndex) * StaggerStepMs)
+        progress.animateTo(1f, spec)
+    }
+    return graphicsLayer {
+        val p = progress.value
+        // Clamped: the spatial spring overshoots by design and opacity must not.
+        alpha = p.coerceIn(0f, 1f)
+        translationY = (1f - p) * StaggerRiseDp.toPx()
     }
 }
 
@@ -273,57 +352,63 @@ private fun Header(
                     R.string.library_refresh_videos
                 },
             )
-            val interaction = remember { MutableInteractionSource() }
-            Text(
-                text = label,
-                style = FlickText.labelMedium.copy(color = colors.onPrimaryContainer),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .pressScale(interaction)
-                    .clip(PillShape)
-                    .background(colors.primaryContainer)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = flickRipple(colors.primary),
-                        onClick = onMediaAction,
-                    )
-                    .semantics { role = Role.Button }
-                    .padding(horizontal = 15.dp, vertical = 15.dp),
-            )
+            FilledTonalButton(
+                onClick = onMediaAction,
+                shapes = ButtonDefaults.shapes(shape = PillMorphShape, pressedShape = PressedPillShape),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = colors.primaryContainer,
+                    contentColor = colors.onPrimaryContainer,
+                ),
+                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 15.dp),
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(text = label, style = FlickText.labelMedium)
+            }
         }
-        val tuneInteraction = remember { MutableInteractionSource() }
-        Box(
-            Modifier
+        FilledTonalIconButton(
+            onClick = onTune,
+            shapes = IconButtonDefaults.shapes(
+                shape = RoundedCornerShape(FlickCorners.tuneBtn),
+                pressedShape = PressedPillShape,
+            ),
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = colors.inverseSurface,
+                contentColor = colors.onInverseSurface,
+            ),
+            modifier = Modifier
                 .size(48.dp)
-                .pressScale(tuneInteraction)
-                .clip(RoundedCornerShape(FlickCorners.tuneBtn))
-                .background(colors.inverseSurface)
-                .clickable(
-                    interactionSource = tuneInteraction,
-                    indication = flickRipple(colors.onInverseSurface),
-                    onClick = onTune,
-                )
-                .semantics {
-                    role = Role.Button
-                    contentDescription = tuneLabel
-                },
-            contentAlignment = Alignment.Center,
+                .semantics { contentDescription = tuneLabel },
         ) {
             Icon(
                 FlickIcons.Tune,
                 contentDescription = null,
-                tint = colors.onInverseSurface,
                 modifier = Modifier.size(22.dp),
             )
         }
     }
 }
 
+/** Which of the pill's three honest states is showing. */
+private enum class LinkPillState { CASTING, PAIRED, UNPAIRED }
+
+/**
+ * Snapshotted so the face being replaced keeps the words it was showing while it
+ * leaves; [LinkPillState] is the transition key, so a phase change rewrites the line
+ * in place instead of restarting the swap.
+ */
+@Immutable
+private data class LinkPillModel(
+    val state: LinkPillState,
+    val line: String,
+    val playing: Boolean,
+)
+
 /**
  * One slot, three honest states: a cast in flight, paired but idle, nothing paired.
- * The wording follows the TV's own reported phase — `castingItem` stays set through
- * pause and end — and the throughput number only replaces the band once the server is
- * actually writing bytes.
+ * It is a single pill that changes face rather than three pills that replace each
+ * other. The wording follows the TV's own reported phase — `castingItem` stays set
+ * through pause and end — and the throughput number only replaces the band once the
+ * server is actually writing bytes.
  */
 @Composable
 private fun LinkPill(
@@ -333,93 +418,144 @@ private fun LinkPill(
     signal: State<SignalInfo>,
 ) {
     val colors = LocalFlickColors.current
-    when {
-        connectedTv != null && castingItem != null -> {
-            // Kept as State so the 10 Hz session clock stops at this pill instead of
-            // invalidating the grid behind it.
-            val playback = controller.playback.collectAsState()
-            val phase by remember(playback) { derivedStateOf { playback.value.phase } }
-            val status = stringResource(castPillLabel(phase), connectedTv.name)
-            val restoreLabel = stringResource(R.string.a11y_restore_now_playing, castingItem.name)
-            val interaction = remember { MutableInteractionSource() }
-            Pill(
-                container = colors.primary,
-                modifier = Modifier
-                    .pressScale(interaction)
-                    // Clipped here too: Pill's own clip sits below this touch node, so
-                    // it cannot bound the ripple.
-                    .clip(PillShape)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = flickRipple(colors.onPrimary),
-                        onClick = { controller.restoreNowPlaying() },
-                    )
-                    // The merged description replaces the visible copy, so the state the
-                    // dot animation carries is spoken separately.
-                    .semantics(mergeDescendants = true) {
-                        role = Role.Button
-                        contentDescription = restoreLabel
-                        stateDescription = status
-                    },
-            ) {
-                LiveDot(
-                    color = colors.sparkLight,
-                    size = 10.dp,
-                    pulsing = phase == PlaybackPhase.PLAYING,
-                )
-                Text(
-                    text = status,
-                    style = FlickText.labelMedium.copy(color = colors.onPrimary),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                PillTelemetry(signal)
-            }
-        }
+    val motionScheme = MaterialTheme.motionScheme
+    val reduceMotion = rememberReduceMotion()
+    val state = when {
+        connectedTv != null && castingItem != null -> LinkPillState.CASTING
+        connectedTv != null -> LinkPillState.PAIRED
+        else -> LinkPillState.UNPAIRED
+    }
 
-        connectedTv != null -> Pill(container = colors.primary) {
-            LiveDot(color = colors.sparkLight, size = 10.dp)
-            Text(
-                text = stringResource(R.string.library_ready_pill, connectedTv.name),
-                style = FlickText.labelMedium.copy(color = colors.onPrimary),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+    // Kept as State so the 10 Hz session clock stops at this pill instead of
+    // invalidating the grid behind it; only the phase itself reaches composition.
+    val phase = if (state == LinkPillState.CASTING) {
+        val playback = controller.playback.collectAsState()
+        val derived = remember(playback) { derivedStateOf { playback.value.phase } }
+        derived.value
+    } else {
+        PlaybackPhase.IDLE
+    }
+
+    val tvName = connectedTv?.name
+    val line = when {
+        tvName == null -> stringResource(R.string.empty_no_tv)
+        state == LinkPillState.CASTING -> stringResource(castPillLabel(phase), tvName)
+        else -> stringResource(R.string.library_ready_pill, tvName)
+    }
+    val model = LinkPillModel(state = state, line = line, playing = phase == PlaybackPhase.PLAYING)
+
+    val restoreLabel = castingItem?.let { stringResource(R.string.a11y_restore_now_playing, it.name) }
+    val connectLabel = stringResource(R.string.a11y_open_connect)
+    val description = when (state) {
+        LinkPillState.CASTING -> restoreLabel
+        LinkPillState.PAIRED -> null
+        LinkPillState.UNPAIRED -> connectLabel
+    }
+    val action: (() -> Unit)? = when (state) {
+        LinkPillState.CASTING -> ({ controller.restoreNowPlaying() })
+        LinkPillState.PAIRED -> null
+        LinkPillState.UNPAIRED -> ({ controller.openConnect() })
+    }
+
+    val unpaired = state == LinkPillState.UNPAIRED
+    val ink = if (unpaired) colors.onPrimaryContainer else colors.onPrimary
+    val container by animateColorAsState(
+        targetValue = if (unpaired) colors.primaryContainer else colors.primary,
+        // Colour never overshoots; only the pill's geometry is allowed to.
+        animationSpec = Motion.orSnap(reduceMotion, motionScheme.defaultEffectsSpec<Color>()),
+        label = "link pill container",
+    )
+    val interaction = remember { MutableInteractionSource() }
+    val pillSpatial = motionScheme.defaultSpatialSpec<Rect>()
+    val pillBounds = remember(reduceMotion, pillSpatial) {
+        BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else pillSpatial }
+    }
+
+    LookaheadScope {
+        Pill(
+            container = container,
+            modifier = Modifier
+                .animateBounds(this@LookaheadScope, boundsTransform = pillBounds)
+                .then(
+                    if (action != null) {
+                        Modifier
+                            .pressScale(interaction)
+                            // Clipped here too: Pill's own clip sits below this touch
+                            // node, so it cannot bound the ripple.
+                            .clip(PillShape)
+                            .clickable(
+                                interactionSource = interaction,
+                                indication = flickRipple(ink),
+                                onClick = action,
+                            )
+                    } else {
+                        Modifier
+                    },
+                )
+                .then(
+                    if (description != null) {
+                        // The merged description replaces the visible copy, so the state
+                        // the dot animation carries is spoken separately.
+                        Modifier.semantics(mergeDescendants = true) {
+                            role = Role.Button
+                            contentDescription = description
+                            if (state == LinkPillState.CASTING) stateDescription = model.line
+                        }
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
+            AnimatedContent(
+                targetState = model,
+                contentKey = { it.state },
+                transitionSpec = {
+                    if (reduceMotion) {
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        (
+                            fadeIn(motionScheme.defaultEffectsSpec()) +
+                                scaleIn(motionScheme.fastSpatialSpec(), initialScale = PillSwapScale)
+                            ) togetherWith (
+                            fadeOut(motionScheme.fastEffectsSpec()) +
+                                scaleOut(motionScheme.fastSpatialSpec(), targetScale = PillSwapScale)
+                            )
+                    }
+                },
                 modifier = Modifier.weight(1f),
-            )
-            PillTelemetry(signal)
-        }
-
-        else -> {
-            val connectLabel = stringResource(R.string.a11y_open_connect)
-            val interaction = remember { MutableInteractionSource() }
-            Pill(
-                container = colors.primaryContainer,
-                modifier = Modifier
-                    .pressScale(interaction)
-                    // Clipped here too: Pill's own clip sits below this touch node, so
-                    // it cannot bound the ripple.
-                    .clip(PillShape)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = flickRipple(colors.primary),
-                        onClick = { controller.openConnect() },
-                    )
-                    .semantics(mergeDescendants = true) {
-                        role = Role.Button
-                        contentDescription = connectLabel
-                    },
-            ) {
-                Icon(
-                    FlickIcons.Cast,
-                    contentDescription = null,
-                    tint = colors.onPrimaryContainer,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.empty_no_tv),
-                    style = FlickText.labelMedium.copy(color = colors.onPrimaryContainer),
-                )
+                label = "link pill face",
+            ) { face ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (face.state == LinkPillState.UNPAIRED) {
+                        Icon(
+                            FlickIcons.Cast,
+                            contentDescription = null,
+                            tint = colors.onPrimaryContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = face.line,
+                            style = FlickText.labelMedium.copy(color = colors.onPrimaryContainer),
+                        )
+                    } else {
+                        LiveDot(
+                            color = colors.sparkLight,
+                            size = 10.dp,
+                            pulsing = face.playing,
+                        )
+                        Text(
+                            text = face.line,
+                            style = FlickText.labelMedium.copy(color = colors.onPrimary),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        PillTelemetry(signal)
+                    }
+                }
             }
         }
     }
@@ -492,45 +628,35 @@ private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter
 private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
-    val interaction = remember { MutableInteractionSource() }
-    Box(
-        Modifier
+    ToggleButton(
+        checked = selected,
+        onCheckedChange = {
+            // The three chips are one exclusive axis, so re-tapping the current one
+            // changes nothing and must stay silent.
+            if (!selected) {
+                haptics.toggle(true)
+                onClick()
+            }
+        },
+        shapes = ToggleButtonDefaults.shapes(
+            shape = PillMorphShape,
+            pressedShape = PressedPillShape,
+            checkedShape = PillMorphShape,
+        ),
+        colors = ToggleButtonDefaults.toggleButtonColors(
+            containerColor = colors.primaryContainer,
+            contentColor = colors.onPrimaryContainer,
+            checkedContainerColor = colors.inverseSurface,
+            checkedContentColor = colors.onInverseSurface,
+        ),
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 11.dp),
+        // Applied on the outer node so it wins the collapse: the three chips are one
+        // exclusive axis and TalkBack must not announce three independent toggles.
+        modifier = Modifier
             .heightIn(min = 48.dp)
-            .pressScale(interaction)
-            .clip(PillShape)
-            .selectable(
-                selected = selected,
-                interactionSource = interaction,
-                indication = null,
-                role = Role.Tab,
-                onClick = {
-                    // The three chips are one exclusive axis, so re-tapping the current
-                    // one changes nothing and must stay silent.
-                    if (!selected) haptics.toggle(true)
-                    onClick()
-                },
-            ),
-        contentAlignment = Alignment.Center,
+            .semantics { role = Role.Tab },
     ) {
-        Text(
-            text = text,
-            style = FlickText.labelMedium.copy(
-                color = if (selected) colors.onInverseSurface else colors.onPrimaryContainer,
-            ),
-            modifier = Modifier
-                .clip(PillShape)
-                .background(if (selected) colors.inverseSurface else colors.primaryContainer)
-                // The ripple is drawn on the chip rather than on the touch node above:
-                // the 48 dp target is taller than the pill, so a state layer sized to
-                // the target would halo it.
-                .indication(
-                    interactionSource = interaction,
-                    indication = flickRipple(
-                        if (selected) colors.onInverseSurface else colors.primary,
-                    ),
-                )
-                .padding(horizontal = 18.dp, vertical = 11.dp),
-        )
+        Text(text = text, style = FlickText.labelMedium)
     }
 }
 
@@ -612,6 +738,9 @@ private fun LibraryTile(
     compact: Boolean,
     cell: MutableState<HdrType?>,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val context = LocalContext.current
     val known = cell.value
@@ -630,6 +759,9 @@ private fun LibraryTile(
         imageLoader = imageLoader,
         compact = compact,
         onClick = onClick,
+        modifier = modifier,
+        sharedScope = sharedScope,
+        animatedScope = animatedScope,
     )
 }
 
@@ -703,3 +835,16 @@ private fun EmptyState(
  * 360 dp phone still show two and a rotated one reflow to five.
  */
 private val TileMinWidth = 150.dp
+
+/** The face arriving grows into place rather than appearing at full size. */
+private const val PillSwapScale = 0.9f
+
+// Entrance stagger: one step per tile up to the twelfth, which is roughly two screens
+// on the widest column count — beyond that the sequence reads as loading, not arrival.
+private const val StaggerStepMs = 35L
+private const val StaggerCapIndex = 12
+private val StaggerRiseDp = 18.dp
+
+// Long enough for the capped sequence plus its settle. After this the grid is a grid:
+// a tile the lazy list recomposes on scroll has not just arrived.
+private const val StaggerWindowMs = 1_200L

@@ -12,11 +12,22 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.accessibility.CaptioningManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -43,14 +54,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.res.ResourcesCompat
@@ -100,7 +114,7 @@ import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.FlickType
-import com.flick.receiver.ui.theme.rememberReducedMotion
+import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
@@ -110,6 +124,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
+import kotlin.math.PI
+import kotlin.math.cos
 
 /** Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). */
 private val TV_NAME_PRESETS = listOf("Living Room TV", "Bedroom TV", "Den TV", "Office TV", "Flick TV")
@@ -121,6 +137,44 @@ private val TV_NAME_PRESETS = listOf("Living Room TV", "Bedroom TV", "Den TV", "
  */
 private const val RECONCILE_SAFETY_NET_MS = 10_000L
 
+/** Surfaces that do not contain the decoded video and may safely crossfade. */
+private enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
+
+/**
+ * A standby surface plus the values its screen must keep drawing while it leaves.
+ *
+ * `AnimatedContent` recomposes the OUTGOING subtree against live state, so a pair
+ * screen whose code has just been consumed would flip to its locked "—" halfway
+ * through the fade the viewer is still reading. Snapshotting the pair inputs into
+ * the transition state freezes the exiting screen on what it was showing.
+ */
+private data class StandbyState(
+    val surface: StandbySurface,
+    val code: String,
+    val codeExpiresAtElapsedMs: Long?,
+)
+
+/**
+ * Standby surfaces travel a sixth of the axis, not a whole screen: at ten feet a
+ * full-width slide reads as a jump cut, while a sixth is unmistakably directional
+ * and keeps both surfaces legible through the exchange.
+ */
+private const val STANDBY_TRAVEL_DIVISOR = 6
+
+/** The pairing confirmation punches in rather than sliding — it is an event, not a place. */
+private const val STANDBY_PUNCH_IN_SCALE = 0.92f
+private const val STANDBY_PUNCH_OUT_SCALE = 1.04f
+
+/**
+ * The Activity owns physical playback gestures, except while a visible child
+ * control has explicitly engaged its own horizontal adjustment mode.
+ */
+internal fun receiverPlaybackGesturesEnabled(
+    playbackActive: Boolean,
+    panelOpen: Boolean,
+    volumeEngaged: Boolean,
+): Boolean = playbackActive && !panelOpen && !volumeEngaged
+
 /** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
 private const val DIAGNOSTICS_VISIBLE = 14
 
@@ -129,9 +183,18 @@ private val HANDSHAKE_CARD_WIDTH = 450.dp
 private val HANDSHAKE_RING_SIZE = 48.dp
 private val HANDSHAKE_RING_STROKE = 3.5.dp
 
-/** The lit portion of the handshake ring, and where it rests when motion is off. */
+/** Where the handshake ring rests, arc and angle both, when motion is off. */
 private const val HANDSHAKE_RING_SWEEP = 90f
 private const val HANDSHAKE_RING_RESTING_ANGLE = 315f
+
+/**
+ * The indeterminate envelope: the lit arc breathes between these two lengths once
+ * per turn instead of holding a fixed sweep. A constant arc reads as a spinning
+ * object; a breathing one reads as work whose end is not yet known, which is
+ * exactly what a handshake is.
+ */
+private const val HANDSHAKE_RING_MIN_SWEEP = 35f
+private const val HANDSHAKE_RING_MAX_SWEEP = 110f
 
 /** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
 private val SUBTITLE_SIZES = SubtitleSize.values()
@@ -211,6 +274,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
+    // Volume's engage-to-adjust mode owns horizontal D-pad input. Keep that
+    // ownership at the Activity boundary so a physical seek cannot bypass it.
+    var volumeEngaged by remember { mutableStateOf(false) }
     var capturedRemoteButton by remember { mutableStateOf<TvRemoteButton?>(null) }
     var remoteSeekDeltaMs by remember { mutableStateOf<Long?>(null) }
     var remoteSeekSpeedLevel by remember { mutableStateOf(1) }
@@ -396,6 +462,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         throughput = ThroughputSnapshot.EMPTY
         subtitleTracks = emptyList()
         openPanel = PlaybackPanel.None
+        volumeEngaged = false
     }
 
     // The size choice multiplies the viewport-relative caption size the receiver
@@ -424,6 +491,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             remoteSeekHeld = false
             remoteSeekGestureActive = false
             remoteSeekVisible = false
+            volumeEngaged = false
         }
     }
 
@@ -440,6 +508,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             remoteSeekSpeedLevel = 1
         }
     }
+
+    // Hiding the chrome disposes the volume control, so a latched engagement would
+    // keep routing physical left/right to a widget that is no longer on screen and
+    // deaden seeking until the next reveal.
+    LaunchedEffect(chromeVisible) { if (!chromeVisible) volumeEngaged = false }
 
     // Chrome reveal + auto-hide (chromeFade). Re-armed on every poke / state change.
     // An open side panel suspends the countdown: hiding the chrome force-closes the
@@ -478,7 +551,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // the panel's own horizontal rows (the caption size cells) are only
         // reachable while the receiver declines the playback gesture. The policy
         // itself is untouched — this is the state we hand it.
-        val playbackGestures = active && openPanel == PlaybackPanel.None
+        val playbackGestures = receiverPlaybackGesturesEnabled(
+            playbackActive = active,
+            panelOpen = openPanel != PlaybackPanel.None,
+            volumeEngaged = volumeEngaged,
+        )
         val capturedBefore = capturedRemoteButton
         val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
         val decision = tvRemoteDecision(
@@ -554,6 +631,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // Keep diagnostics inside the same viewport-relative overscan contract as
         // the redesigned screen chrome at both 1080p and 4K.
         val safeArea = rememberTvSafeAreaPadding()
+        val reducedMotion = LocalReducedMotion.current
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -591,6 +669,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         subtitleTracks = subtitleTracks,
                         subtitleSize = subtitleSize,
                         openPanel = openPanel,
+                        onVolumeEngagementChanged = { volumeEngaged = it },
                         onOpenPanel = { openPanel = it },
                         onSelectSubtitleTrack = { id ->
                             controller.selectSubtitleTrack(id)
@@ -637,75 +716,122 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 )
 
                 MediaStage.None -> {
-                    // Rendered exclusively (never overlaid) so no hidden screen's
-                    // buttons stay focusable underneath — that let the D-pad reach
-                    // invisible controls and lost focus on dismiss.
-                    when {
-                        showSettings -> SettingsScreen(
-                            tvName = tvName,
-                            pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
-                                else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
-                            metricsEnabled = metricsEnabled,
-                            onRename = {
-                                val next = nextName(tvName)
-                                pairing.tvName = next
-                                tvName = next
-                                if (boundPort > 0) {
-                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
-                                }
-                            },
-                            onToggleMetrics = { metricsEnabled = !metricsEnabled },
-                            onForgetAll = {
-                                if (server.forgetAllPairings()) showSettings = false
-                            },
-                            onDone = { showSettings = false },
-                            diagnosticsVisible = showDiagnostics,
-                            // Keyed on the log revision so the list re-reads the
-                            // ring buffer whenever a line is appended.
-                            diagnostics = remember(logRevision, showDiagnostics) {
-                                if (showDiagnostics) FlickLog.recent().take(DIAGNOSTICS_VISIBLE) else emptyList()
-                            },
-                            onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
-                            onClearDiagnostics = { FlickLog.clear() },
-                        )
+                    val standbySurface = when {
+                        showSettings -> StandbySurface.Settings
+                        pairingSnapshot.surface is PairingSurface.Open ||
+                            pairingSnapshot.surface is PairingSurface.Locked ||
+                            pairingSnapshot.pairedCount == 0 -> StandbySurface.Pair
+                        pairingSnapshot.surface is PairingSurface.Success -> StandbySurface.PairSuccess
+                        else -> StandbySurface.Idle
+                    }
+                    val standbyState = StandbyState(
+                        surface = standbySurface,
+                        code = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: "—",
+                        codeExpiresAtElapsedMs =
+                            (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
+                    )
+                    // Only non-video standby surfaces animate. The outgoing subtree
+                    // is immediately removed from focus/semantics while it finishes
+                    // its exit, so D-pad input cannot reach stale controls.
+                    //
+                    // `contentKey` is the surface alone: a code rotation must update
+                    // the visible pair screen in place rather than cross-fade the
+                    // screen with itself.
+                    val standbyMotion = rememberStandbyMotion()
+                    AnimatedContent(
+                        targetState = standbyState,
+                        contentKey = { it.surface },
+                        transitionSpec = {
+                            if (reducedMotion) {
+                                fadeIn(tween(durationMillis = 0))
+                                    .togetherWith(fadeOut(tween(durationMillis = 0)))
+                            } else {
+                                standbyTransform(
+                                    from = initialState.surface,
+                                    to = targetState.surface,
+                                    motion = standbyMotion,
+                                )
+                            }
+                        },
+                        label = "standbySurface",
+                    ) { rendered ->
+                        val renderedSurface = rendered.surface
+                        val interactive = renderedSurface == standbySurface
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .focusProperties { canFocus = interactive }
+                                .then(
+                                    if (interactive) Modifier
+                                    else Modifier.clearAndSetSemantics { },
+                                ),
+                        ) {
+                            when (renderedSurface) {
+                                StandbySurface.Settings -> SettingsScreen(
+                                    tvName = tvName,
+                                    pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
+                                        else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
+                                    metricsEnabled = metricsEnabled,
+                                    onRename = {
+                                        val next = nextName(tvName)
+                                        pairing.tvName = next
+                                        tvName = next
+                                        if (boundPort > 0) {
+                                            nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
+                                        }
+                                    },
+                                    onToggleMetrics = { metricsEnabled = !metricsEnabled },
+                                    onForgetAll = {
+                                        if (server.forgetAllPairings()) showSettings = false
+                                    },
+                                    onDone = { showSettings = false },
+                                    diagnosticsVisible = showDiagnostics,
+                                    diagnostics = remember(logRevision, showDiagnostics) {
+                                        if (showDiagnostics) FlickLog.recent().take(DIAGNOSTICS_VISIBLE) else emptyList()
+                                    },
+                                    onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
+                                    onClearDiagnostics = { FlickLog.clear() },
+                                )
 
-                        pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked || pairingSnapshot.pairedCount == 0 -> PairScreen(
-                            tvName = tvName,
-                            code = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: "—",
-                            qrPayload = pairing.qrPayload(boundHost ?: "", boundPort),
-                            host = boundHost ?: "",
-                            port = boundPort,
-                            networkReady = boundHost != null && boundPort > 0,
-                            bindUptimeSec = bindUptimeSec,
-                            rebindCount = rebindCount,
-                            lastTeardown = lastTeardown,
-                            // The real rotation deadline PairingManager already
-                            // holds — never a synthesised countdown.
-                            codeExpiresAtElapsedMs =
-                                (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
-                            onRename = {
-                                val next = nextName(tvName)
-                                pairing.tvName = next
-                                tvName = next
-                                if (boundPort > 0) {
-                                    nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
-                                }
-                            },
-                        )
+                                StandbySurface.Pair -> PairScreen(
+                                    tvName = tvName,
+                                    code = rendered.code,
+                                    qrPayload = pairing.qrPayload(boundHost ?: "", boundPort),
+                                    host = boundHost ?: "",
+                                    port = boundPort,
+                                    networkReady = boundHost != null && boundPort > 0,
+                                    bindUptimeSec = bindUptimeSec,
+                                    rebindCount = rebindCount,
+                                    lastTeardown = lastTeardown,
+                                    codeExpiresAtElapsedMs = rendered.codeExpiresAtElapsedMs,
+                                    onRename = {
+                                        val next = nextName(tvName)
+                                        pairing.tvName = next
+                                        tvName = next
+                                        if (boundPort > 0) {
+                                            nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
+                                        }
+                                    },
+                                )
 
-                        pairingSnapshot.surface is PairingSurface.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                text = stringResource(R.string.pair_success),
-                                style = FlickType.display(sizeSp = 34),
-                                color = FlickColor.OnSurface,
-                            )
+                                StandbySurface.PairSuccess -> Box(
+                                    Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.pair_success),
+                                        style = FlickType.display(sizeSp = 34),
+                                        color = FlickColor.OnSurface,
+                                    )
+                                }
+
+                                StandbySurface.Idle -> IdleScreen(
+                                    pairedLabel = deviceLabel,
+                                    onPairAnother = { pairing.requestOpen() },
+                                    onOpenSettings = { showSettings = true },
+                                )
+                            }
                         }
-
-                        else -> IdleScreen(
-                            pairedLabel = deviceLabel,
-                            onPairAnother = { pairing.requestOpen() },
-                            onOpenSettings = { showSettings = true },
-                        )
                     }
                 }
             }
@@ -714,6 +840,89 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
     LaunchedEffect(pairingSnapshot.surface) {
         if (pairingSnapshot.surface is PairingSurface.Success) { delay(1_500); pairing.finishSuccess() }
+    }
+}
+
+/**
+ * The specs a standby transition needs, resolved once in composition.
+ *
+ * `AnimatedContent`'s `transitionSpec` is NOT a composable lambda, so the scheme
+ * accessors cannot be called inside it; they are read here and captured.
+ */
+private class StandbyMotion(
+    val travelIn: FiniteAnimationSpec<IntOffset>,
+    val travelOut: FiniteAnimationSpec<IntOffset>,
+    val punchIn: FiniteAnimationSpec<Float>,
+    val punchOut: FiniteAnimationSpec<Float>,
+    val fadeIn: FiniteAnimationSpec<Float>,
+    val fadeOut: FiniteAnimationSpec<Float>,
+)
+
+@Composable
+private fun rememberStandbyMotion(): StandbyMotion = StandbyMotion(
+    travelIn = FlickMotion.panelSpatial(),
+    travelOut = FlickMotion.flickSettleSpatial(),
+    punchIn = FlickMotion.panelSpatial(),
+    punchOut = FlickMotion.flickSettleSpatial(),
+    fadeIn = FlickMotion.chromeFadeIn(),
+    fadeOut = FlickMotion.chromeFadeOut(),
+)
+
+/**
+ * Standby transitions with a direction a viewer can read from the sofa.
+ *
+ * Settings is a drill-in and comes from the right; Pair and Idle are two states of
+ * one standby and exchange vertically; the pairing confirmation punches in, because
+ * it reports an event rather than presenting a place. Geometry takes the spatial
+ * springs; alpha keeps the chrome fade tokens, which never overshoot.
+ */
+private fun standbyTransform(
+    from: StandbySurface,
+    to: StandbySurface,
+    motion: StandbyMotion,
+): ContentTransform = when {
+    to == StandbySurface.Settings || from == StandbySurface.Settings -> {
+        val sign = if (to == StandbySurface.Settings) 1 else -1
+        (
+            fadeIn(motion.fadeIn) + slideInHorizontally(
+                animationSpec = motion.travelIn,
+                initialOffsetX = { sign * it / STANDBY_TRAVEL_DIVISOR },
+            )
+            ).togetherWith(
+            fadeOut(motion.fadeOut) + slideOutHorizontally(
+                animationSpec = motion.travelOut,
+                targetOffsetX = { -sign * it / STANDBY_TRAVEL_DIVISOR },
+            ),
+        )
+    }
+
+    to == StandbySurface.PairSuccess || from == StandbySurface.PairSuccess -> {
+        (
+            fadeIn(motion.fadeIn) + scaleIn(
+                initialScale = STANDBY_PUNCH_IN_SCALE,
+                animationSpec = motion.punchIn,
+            )
+            ).togetherWith(
+            fadeOut(motion.fadeOut) + scaleOut(
+                targetScale = STANDBY_PUNCH_OUT_SCALE,
+                animationSpec = motion.punchOut,
+            ),
+        )
+    }
+
+    else -> {
+        val sign = if (to == StandbySurface.Idle) 1 else -1
+        (
+            fadeIn(motion.fadeIn) + slideInVertically(
+                animationSpec = motion.travelIn,
+                initialOffsetY = { sign * it / STANDBY_TRAVEL_DIVISOR },
+            )
+            ).togetherWith(
+            fadeOut(motion.fadeOut) + slideOutVertically(
+                animationSpec = motion.travelOut,
+                targetOffsetY = { -sign * it / STANDBY_TRAVEL_DIVISOR },
+            ),
+        )
     }
 }
 
@@ -776,7 +985,8 @@ private fun ConnectingScreen(
  */
 @Composable
 private fun HandshakeRing(modifier: Modifier = Modifier) {
-    val startAngle: State<Float> = if (rememberReducedMotion()) {
+    val reducedMotion = LocalReducedMotion.current
+    val startAngle: State<Float> = if (reducedMotion) {
         remember { mutableStateOf(HANDSHAKE_RING_RESTING_ANGLE) }
     } else {
         rememberInfiniteTransition(label = "handshake").animateFloat(
@@ -791,6 +1001,7 @@ private fun HandshakeRing(modifier: Modifier = Modifier) {
             .size(HANDSHAKE_RING_SIZE)
             .drawBehind {
                 val stroke = Stroke(width = HANDSHAKE_RING_STROKE.toPx())
+                val angle = startAngle.value
                 drawArc(
                     color = FlickColor.Spark.copy(alpha = 0.22f),
                     startAngle = 0f,
@@ -800,13 +1011,27 @@ private fun HandshakeRing(modifier: Modifier = Modifier) {
                 )
                 drawArc(
                     color = FlickColor.Spark,
-                    startAngle = startAngle.value,
-                    sweepAngle = HANDSHAKE_RING_SWEEP,
+                    startAngle = angle,
+                    sweepAngle = if (reducedMotion) {
+                        HANDSHAKE_RING_SWEEP
+                    } else {
+                        handshakeArcSweep(angle)
+                    },
                     useCenter = false,
                     style = stroke,
                 )
             },
     )
+}
+
+/**
+ * Arc length as a function of the single rotation phase — one 35°→110°→35° breath
+ * per turn. Deriving it from the same phase keeps the ring on one animation
+ * instead of two that could drift apart.
+ */
+private fun handshakeArcSweep(angleDegrees: Float): Float {
+    val breath = (1f - cos(angleDegrees * (PI / 180f).toFloat())) * 0.5f
+    return HANDSHAKE_RING_MIN_SWEEP + (HANDSHAKE_RING_MAX_SWEEP - HANDSHAKE_RING_MIN_SWEEP) * breath
 }
 
 /**

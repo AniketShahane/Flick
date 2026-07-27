@@ -119,4 +119,25 @@ class TransportAndVolumeInteractionTest {
         }
         composeRule.runOnIdle { assertEquals(0.6f, observedVolume, 0.001f) }
     }
+
+    @Test
+    fun volume_reports_engagement_changes_to_the_activity_owner() {
+        val engagement = mutableListOf<Boolean>()
+        composeRule.setContent {
+            FlickTvTheme {
+                VolumeCells(
+                    level = 0.5f,
+                    onChange = {},
+                    contentDescription = "Volume",
+                    onEngagementChanged = { engagement += it },
+                )
+            }
+        }
+
+        val volume = composeRule.onNodeWithContentDescription("Volume")
+        volume.requestFocus().assertIsFocused().performClick()
+        composeRule.runOnIdle {
+            assertEquals(listOf(false, true), engagement)
+        }
+    }
 }

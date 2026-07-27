@@ -1,12 +1,15 @@
 package com.flick.receiver.ui.components
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.snap
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -15,10 +18,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +32,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -42,22 +48,50 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import androidx.tv.material3.Icon
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
-import com.flick.receiver.ui.theme.rememberReducedMotion
+import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.sparkShadow
 
-/** Back-10 / forward-10 square (spec §5.3 row 3). Above the 48 dp touch floor. */
-internal val SecondaryTransportTargetSize = 52.dp
+/** Result of a volume control key-down, kept pure so held-key behavior is testable. */
+internal enum class VolumeKeyAction { ToggleEngagement, ConsumeRepeat, Disengage, StepDown, StepUp, PassThrough }
+
+internal fun volumeKeyAction(
+    key: Key,
+    repeatCount: Int,
+    engaged: Boolean,
+    enabled: Boolean,
+): VolumeKeyAction = when {
+    !enabled -> VolumeKeyAction.PassThrough
+    key == Key.DirectionCenter || key == Key.Enter -> if (repeatCount == 0) {
+        VolumeKeyAction.ToggleEngagement
+    } else {
+        VolumeKeyAction.ConsumeRepeat
+    }
+    key == Key.Back && engaged -> VolumeKeyAction.Disengage
+    key == Key.DirectionLeft && engaged -> VolumeKeyAction.StepDown
+    key == Key.DirectionRight && engaged -> VolumeKeyAction.StepUp
+    else -> VolumeKeyAction.PassThrough
+}
+
+/**
+ * Back-10 / forward-10 square (spec §5.3 row 3). Sits ON the 48 dp TV minimum
+ * rather than below it: the re-size shrank the glyphs inside these keys, not the
+ * keys themselves, because they are aimed at with a D-pad and not a fingertip.
+ */
+internal val SecondaryTransportTargetSize = 48.dp
 
 /** The play button — the single largest affordance in the transport. */
-internal val PrimaryTransportTargetSize = 66.dp
+internal val PrimaryTransportTargetSize = 56.dp
 
-internal val TransportGlyphSize = 26.dp
-internal val PrimaryTransportGlyphSize = 35.dp
+/** Each glyph keeps at least half of its key to read in. */
+internal val TransportGlyphSize = 24.dp
+internal val PrimaryTransportGlyphSize = 28.dp
 
 /** Gap between the three transport buttons. */
 internal val TransportClusterGap = 16.dp
@@ -82,32 +116,64 @@ private fun TransportButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val reducedMotion = rememberReducedMotion()
+    val pressed by interaction.collectIsPressedAsState()
+    val reducedMotion = LocalReducedMotion.current
+    val hosted = beaconHosted()
     val ringVisible = focused && enabled
-    val scale by animateFloatAsState(
-        targetValue = if (ringVisible && !reducedMotion) FlickMotion.FOCUS_SCALE else 1f,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
-        label = "transportScale",
+    val ringColor = if (primary) FlickColor.FocusRingOnSpark else FlickColor.FocusRing
+    // Held as State and read inside the layer / draw lambdas below: these keys sit
+    // directly over the decoder, so a D-pad move may repaint them but may not
+    // recompose them once a frame.
+    val scale = animateFloatAsState(
+        targetValue = when {
+            reducedMotion -> 1f
+            pressed && ringVisible -> 1.02f
+            pressed -> FlickMotion.PRESS_SCALE
+            ringVisible -> FlickMotion.FOCUS_SCALE
+            else -> 1f
+        },
+        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        label = "transportFeedbackScale",
+    )
+    val ringPresence = animateFloatAsState(
+        targetValue = if (ringVisible) 1f else 0f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "transportRingPresence",
+    )
+    val fill by animateColorAsState(
+        targetValue = when {
+            primary -> FlickColor.Spark
+            pressed -> FlickColor.ControlFill
+            else -> FlickColor.ControlFillStrong
+        },
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "transportPressFill",
     )
     Box(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .focusProperties { canFocus = enabled }
             .size(side)
+            .focusBeacon(shape, ringColor)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                val lift = scale.value
+                scaleX = lift
+                scaleY = lift
                 alpha = if (enabled) 1f else 0.38f
             }
             .flickFocusRing(
-                visible = ringVisible,
+                visible = ringVisible && !hosted,
                 shape = shape,
-                ringColor = if (primary) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
+                ringColor = ringColor,
+                progress = { ringPresence.value },
             )
             .then(if (primary) Modifier.sparkShadow(shape = shape) else Modifier)
             .clip(shape)
-            .background(if (primary) FlickColor.Spark else FlickColor.ControlFillStrong)
-            .then(if (primary) Modifier else Modifier.border(1.dp, FlickColor.Outline, shape))
+            .background(fill)
+            .then(
+                if (primary) Modifier
+                else Modifier.border(FlickDimens.Hairline, FlickColor.Outline, shape),
+            )
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -129,9 +195,30 @@ private fun TransportButton(
 }
 
 /**
- * Play/pause that MORPHS rather than hard-swaps: a synchronized crossfade +
- * scale on [FlickMotion.FlickSettle]. Shows the pause bars while [playing], the
- * play triangle while paused.
+ * The play triangle and the pause bars as ONE outline, in [FlickIcons]' 24-unit
+ * grid so the glyph sits on the same optical centre as the other transport keys.
+ *
+ * Both states are two quads with matching vertex order, which is what lets a
+ * single path interpolate between them: the triangle is split down x = 14 into a
+ * left quad and a degenerate right one whose two right vertices meet at the tip.
+ * Quads are wound the same way, so the shared edge vanishes under non-zero fill.
+ */
+private val PlayQuads = floatArrayOf(
+    9f, 6f, 14f, 9f, 14f, 15f, 9f, 18f,
+    14f, 9f, 19f, 12f, 19f, 12f, 14f, 15f,
+)
+
+/** Bar extents chosen so the pause pair centres on 12 like the triangle's centroid. */
+private val PauseQuads = floatArrayOf(
+    7.6f, 5.8f, 11f, 5.8f, 11f, 18.2f, 7.6f, 18.2f,
+    13f, 5.8f, 16.4f, 5.8f, 16.4f, 18.2f, 13f, 18.2f,
+)
+
+/**
+ * Play/pause that MORPHS rather than hard-swaps: one filled path whose vertices
+ * travel between the triangle and the bars. Because the progress is a spring, a
+ * viewer who toggles twice in half a second gets one retargeted flight instead of
+ * two tweens fighting over the same glyph. Shows the pause bars while [playing].
  */
 @Composable
 fun PlayPauseGlyph(
@@ -140,29 +227,28 @@ fun PlayPauseGlyph(
     tint: Color,
     modifier: Modifier = Modifier,
 ) {
-    val reducedMotion = rememberReducedMotion()
-    val p by animateFloatAsState(
+    val reducedMotion = LocalReducedMotion.current
+    val morph = animateFloatAsState(
         targetValue = if (playing) 1f else 0f,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.flickSettle(),
+        animationSpec = if (reducedMotion) snap() else FlickMotion.flickSettleSpatial(),
         label = "playPauseMorph",
     )
-    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
-        Icon(
-            imageVector = FlickIcons.Play,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier
-                .size(size)
-                .graphicsLayer { alpha = 1f - p; scaleX = 1f - 0.2f * p; scaleY = 1f - 0.2f * p },
-        )
-        Icon(
-            imageVector = FlickIcons.Pause,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier
-                .size(size)
-                .graphicsLayer { alpha = p; scaleX = 0.8f + 0.2f * p; scaleY = 0.8f + 0.2f * p },
-        )
+    val path = remember { Path() }
+    Canvas(modifier = modifier.size(size)) {
+        val unit = this.size.minDimension / 24f
+        val p = morph.value
+        path.reset()
+        repeat(2) { quad ->
+            val base = quad * 8
+            repeat(4) { corner ->
+                val i = base + corner * 2
+                val x = lerp(PlayQuads[i], PauseQuads[i], p) * unit
+                val y = lerp(PlayQuads[i + 1], PauseQuads[i + 1], p) * unit
+                if (corner == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
+        }
+        drawPath(path, color = tint)
     }
 }
 
@@ -256,54 +342,110 @@ fun VolumeCells(
     contentDescription: String? = null,
     stateDescription: String? = null,
     enabled: Boolean = true,
+    onEngagementChanged: (Boolean) -> Unit = {},
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val reducedMotion = rememberReducedMotion()
+    val pressed by interaction.collectIsPressedAsState()
+    val reducedMotion = LocalReducedMotion.current
+    val hosted = beaconHosted()
     var engaged by remember { mutableStateOf(false) }
+    // Some Android-target Compose versions expose only the normalized key, not
+    // the platform repeat count. Keep repeat ownership locally instead.
+    var centerOrEnterHeld by remember { mutableStateOf(false) }
     // Never leave the control stuck in adjust mode after focus moves away.
-    LaunchedEffect(focused, enabled) { if (!focused || !enabled) engaged = false }
+    LaunchedEffect(focused, enabled) {
+        if (!focused || !enabled) {
+            engaged = false
+            centerOrEnterHeld = false
+        }
+    }
+    LaunchedEffect(engaged) { onEngagementChanged(engaged) }
+    // Leaving composition while engaged strands the owner's `volumeEngaged` latch
+    // true, which deadens the physical seek keys for the rest of the session. The
+    // effect above cannot cover it: the whole control is gone before it can run.
+    val latestEngagementChanged = rememberUpdatedState(onEngagementChanged)
+    DisposableEffect(Unit) {
+        onDispose { if (engaged) latestEngagementChanged.value(false) }
+    }
     val filled = (level.coerceIn(0f, 1f) * cells).toInt()
     val ringVisible = focused && enabled
     val shape = FlickShape.Lg
-    val scale by animateFloatAsState(
-        targetValue = if (ringVisible && !reducedMotion) FlickMotion.FOCUS_SCALE else 1f,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.focusPop(),
-        label = "volumeScale",
+    // Read inside the layer / draw lambdas below — see [TransportButton].
+    val scale = animateFloatAsState(
+        targetValue = when {
+            reducedMotion -> 1f
+            pressed && ringVisible -> 1.02f
+            pressed -> FlickMotion.PRESS_SCALE
+            ringVisible -> FlickMotion.FOCUS_SCALE
+            else -> 1f
+        },
+        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        label = "volumeFeedbackScale",
     )
-    val fill = if (engaged && enabled) FlickColor.SelectedFill else FlickColor.ControlFillStrong
-    val stroke = if (engaged && enabled) FlickColor.SelectedBorder else FlickColor.Outline
+    val ringPresence = animateFloatAsState(
+        targetValue = if (ringVisible) 1f else 0f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "volumeRingPresence",
+    )
+    val fill by animateColorAsState(
+        targetValue = when {
+            engaged && enabled -> FlickColor.SelectedFill
+            pressed -> FlickColor.ControlFill
+            else -> FlickColor.ControlFillStrong
+        },
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "volumeStateFill",
+    )
+    val stroke by animateColorAsState(
+        targetValue = if (engaged && enabled) FlickColor.SelectedBorder else FlickColor.Outline,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "volumeStateStroke",
+    )
 
     Row(
         modifier = modifier
             .defaultMinSize(minHeight = SecondaryTransportTargetSize)
             .focusProperties { canFocus = enabled }
+            .focusBeacon(shape)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                val lift = scale.value
+                scaleX = lift
+                scaleY = lift
                 alpha = if (enabled) 1f else 0.38f
             }
-            .flickFocusRing(visible = ringVisible, shape = shape)
+            .flickFocusRing(
+                visible = ringVisible && !hosted,
+                shape = shape,
+                progress = { ringPresence.value },
+            )
             .clip(shape)
             .background(fill)
-            .border(1.dp, stroke, shape)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .border(FlickDimens.Hairline, stroke, shape)
+            .padding(horizontal = 13.dp, vertical = 10.dp)
             .onKeyEvent { event ->
                 if (!enabled) return@onKeyEvent false
+                val centerOrEnter = event.key == Key.DirectionCenter || event.key == Key.Enter
+                if (event.type == KeyEventType.KeyUp && centerOrEnter) {
+                    val consumed = centerOrEnterHeld
+                    centerOrEnterHeld = false
+                    return@onKeyEvent consumed
+                }
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                when (event.key) {
-                    Key.DirectionCenter, Key.Enter -> {
-                        engaged = !engaged; true
+                val syntheticRepeatCount = if (centerOrEnter && centerOrEnterHeld) 1 else 0
+                when (volumeKeyAction(event.key, syntheticRepeatCount, engaged, enabled)) {
+                    VolumeKeyAction.ToggleEngagement -> {
+                        // Android repeats a held Center key. Consume repeats, but
+                        // only the initial press may change adjustment ownership.
+                        centerOrEnterHeld = true
+                        engaged = !engaged
+                        true
                     }
-                    Key.Back -> {
-                        // Only claim Back to exit adjust mode; otherwise let it bubble.
-                        if (engaged) { engaged = false; true } else false
-                    }
-                    Key.DirectionLeft ->
-                        if (engaged) { onChange((level - 0.1f).coerceIn(0f, 1f)); true } else false
-                    Key.DirectionRight ->
-                        if (engaged) { onChange((level + 0.1f).coerceIn(0f, 1f)); true } else false
-                    else -> false
+                    VolumeKeyAction.ConsumeRepeat -> true
+                    VolumeKeyAction.Disengage -> { engaged = false; true }
+                    VolumeKeyAction.StepDown -> { onChange((level - 0.1f).coerceIn(0f, 1f)); true }
+                    VolumeKeyAction.StepUp -> { onChange((level + 0.1f).coerceIn(0f, 1f)); true }
+                    VolumeKeyAction.PassThrough -> false
                 }
             }
             .clickable(
@@ -330,7 +472,7 @@ fun VolumeCells(
             imageVector = FlickIcons.Volume,
             contentDescription = null,
             tint = if (engaged) FlickColor.Spark else Color.White,
-            modifier = Modifier.size(24.dp),
+            modifier = Modifier.size(FlickDimens.GlyphMedium),
         )
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -339,7 +481,7 @@ fun VolumeCells(
             repeat(cells) { i ->
                 Box(
                     modifier = Modifier
-                        .size(width = 6.dp, height = 20.dp)
+                        .size(width = 5.dp, height = 16.dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(
                             when {

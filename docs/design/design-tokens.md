@@ -11,8 +11,9 @@ Compose theme or component types.
 Design thesis: **warm editorial direct-play.** The phone is a tactile, personal local-film
 remote: warm ivory paper, dark plum ink, cream containment, asymmetric media hierarchy,
 and a dominant lower-third scrubber. The TV is an uncluttered violet-black cinema canvas.
-Coral means user action and optimistic target; cyan means live LAN/sync and TV D-pad focus;
-green means serving; restrained gold means verified premium media. These jobs never swap.
+Coral means phone user action and optimistic target; cyan means live LAN/sync; the receiver's
+amber `Spark` ring means TV D-pad focus. Green means serving; restrained gold means verified
+premium media. These jobs never swap.
 
 ## Selected reference rules
 
@@ -68,7 +69,7 @@ green means serving; restrained gold means verified premium media. These jobs ne
 | **Spark** | `#FF6B57` | `linear(120°, #FF8D7D → #FF6250)` | action and **optimistic target**: play button, CTA, filled playhead/thumb |
 | `sparkLight` (tint) | `#FF8D7D` | — | warm target bloom and contained emphasis |
 | `sparkSoft` | `#FFD0C8` | — | target-supporting detail on dark only |
-| **Link** | `#41E5F2` | — | live LAN, sync shimmer/thread, pairing, and TV D-pad **focus only** |
+| **Link** | `#41E5F2` | — | live LAN, sync shimmer/thread, and pairing; receiver D-pad focus uses its amber `Spark` ring |
 
 ### 1.4 Semantic
 
@@ -101,7 +102,7 @@ so HDR video remains brightest.
 | page/cinema base | warm-ivory `background` / `surface` | violet-black `background` / retained player surface |
 | contained content | cream `surfaceContainer` / `surfaceContainerHigh` | raised `surface` / `surfaceVariant` |
 | primary action and target | Spark `primary`; Spark filled thumb/play control | Spark primary/selected treatment, never focus |
-| live LAN/sync | Link secondary/container detail and explicit text | Link focus border/glow, pairing and sync shimmer |
+| live LAN/sync | Link secondary/container detail and explicit text | Link pairing and sync shimmer; Spark is the focus ring |
 | serving health | `tertiary`/custom semantic role | custom semantic role, not a focus cue |
 | premium media | custom metadata badge only | custom metadata badge only |
 | failure/caution | Material error/custom advisory roles | TV error/custom advisory roles |
@@ -125,8 +126,9 @@ the platform default and the design would just look wrong, with no error):
 All three are SIL OFL 1.1; the licenses ship at `<module>/src/main/assets/licenses/`.
 
 The two scale tables below are the original design intent, not the shipped numbers. The
-implemented scale lives in `sender/.../ui/theme/Type.kt` and `receiver/.../ui/theme/Type.kt`;
-neither module goes below weight 500, and the TV floors are 24 sp body / 16 sp label.
+implemented receiver scale lives in `receiver/.../ui/theme/Type.kt`: `FlickType` helpers clamp
+their inputs at **14 sp**, `FlickType.body()` defaults to **16 sp**, and the shipped reading hierarchy
+uses 18 / 16 / 15 sp rather than a blanket 24 sp floor. No receiver weight is below 500.
 
 ### Phone scale (arm's length)
 | Role | size/line | weight | tracking |
@@ -137,16 +139,17 @@ neither module goes below weight 500, and the TV floors are 24 sp body / 16 sp l
 | Caption (metadata) | 12/16 | 500 | — |
 | Scrub timecode | 17 mono | 600 | tabular |
 
-### TV scale (ten feet) — **no text smaller than 24dp anywhere on TV**
+### TV scale (ten feet) — implemented receiver defaults
 | Role | ~size | weight | tracking |
 |---|---|---|---|
-| Full-screen/display title | 48dp | 700 | −1% |
-| Playback chrome title | 30dp, one line | 600 | −1% |
-| Section / dialog | 32dp | 600 | +1% |
-| Body | 24dp min | 500 | +1% |
-| Playback timecode | 28dp mono | 700 | tabular |
+| Full-screen/display title | 40sp (`displayLarge`) | 800 | −2% |
+| Playback chrome title | 27sp (`headlineLarge`), one line | 800 | −2% |
+| Section / dialog | 22sp (`headlineMedium`) | 800 | −2% |
+| Body | 18 / **16 default** / 15sp | 500–700 | +0.5% |
+| Mono labels / timecode | **14sp minimum**; playback timecode uses 16sp | 500–600 | tabular |
 
-10-ft rule: one weight step heavier, +1% tracking, high-contrast on scrim.
+10-ft rule: preserve the deliberately stepped hierarchy, at least Medium weight, and
+high-contrast on scrim; do not reintroduce the former 24sp blanket clamp.
 
 ---
 
@@ -163,9 +166,11 @@ neither module goes below weight 500, and the TV floors are 24 sp body / 16 sp l
 - Phone: single column, thumb-first. Primary transport and scrubber occupy the **bottom 34%**.
   Minimum touch target **48dp**; scrubber thumb hit area **56dp** even when its visible target is
   smaller.
-- TV: 12-column rhythm inside a **5% overscan-safe inset** (96×54px at 1920×1080). Video is
-  full-bleed; all chrome/text stays inside the safe area. TV containers stay low and wide rather
-  than copying the phone's asymmetric card geometry.
+- TV: 12-column rhythm inside `rememberTvSafeAreaPadding()`'s **5% overscan-safe inset**
+  (48×27dp at a 960×540dp canvas; viewport-relative at other sizes). Video is full-bleed; all
+  chrome/text stays inside that safe area, and an outermost focusable also keeps
+  `FlickDimens.FocusRingReserve` (**10dp**) inside it for the detached ring. TV containers stay
+  low and wide rather than copying the phone's asymmetric card geometry.
 
 ---
 
@@ -178,21 +183,23 @@ neither module goes below weight 500, and the TV floors are 24 sp body / 16 sp l
   restrained `rgba(27,21,38,.72)` chrome panel with 1px `rgba(255,255,255,.14)` border. API-gated
   blur is optional; legibility cannot depend on it.
 - Scrim is a soft transparent-to-`rgba(11,9,18,.82)` gradient, never a hard bar.
-- **TV focus (no hover):** `scale 1.08 + tonal lift + 2dp Link-cyan border + soft glow`
-  (`0 0 0 4px rgba(65,229,242,.24)`, `0 0 24px rgba(65,229,242,.38)`). **Selected** uses a Spark
-  tint without cyan glow, so selection and focus never blur. Disabled is 38% opacity. Every TV
-  state defines an explicit D-pad order and exactly one focused element. The reference's central
-  play/pause is focused only for playback chrome; other states select their own single initial
-  actionable target.
+- **TV focus (no hover):** `scale 1.06 + detached 2dp Spark-amber ring`, drawn **4.5dp outside**
+  the element so it never changes layout. A focused amber-filled control uses a white ring for
+  contrast. **Selected** uses a Spark tint without a ring, so selection and focus never blur.
+  Disabled is 38% opacity. Every TV state defines an explicit D-pad order and exactly one focused
+  element; the outermost control reserves 10dp for the painted ring and focus scale. The
+  reference's central play/pause is focused only for playback chrome; other states select their
+  own single initial actionable target.
 
 ---
 
 ## 5. Iconography
 
 24dp grid, **1.8px stroke**, round caps/joins. Filled counterparts only for play/pause at ≥48dp
-transport size. On TV, icons render 32–48dp at the same stroke ratio. Use the rounded Material
-`Replay10` / `Forward10` glyphs for TV seeking rather than drawing numerals into custom arrows;
-the phone may retain its compact tactile skip treatment. Set: `play, pause, previous, next, volume, cast,
+transport size. On TV, `TransportCluster` uses 24dp skip glyphs in 48dp targets and a 28dp
+play/pause glyph in its 56dp primary target. Use the rounded Material `Replay10` / `Forward10`
+glyphs for TV seeking rather than drawing numerals into custom arrows; the phone may retain its
+compact tactile skip treatment. Set: `play, pause, previous, next, volume, cast,
 qr-pair, wi-fi, hdr/dv, private(lock), settings, metrics`. The **brand mark** = rounded play
 triangle + 3 motion streaks (streaks drop below 24px; triangle alone survives to 16px).
 
@@ -200,23 +207,82 @@ triangle + 3 motion streaks (streaks drop below 24px; triangle alone survives to
 
 ## 6. Motion — "flick & settle"
 
-Implement each as a reusable Compose `Easing`/`AnimationSpec` in `ui/theme/Motion.kt`. Curves are
-cubic-bezier `(a,b,c,d)` → `CubicBezierEasing(a,b,c,d)`.
+Motion is **spring-first**. Both modules read one vocabulary from
+`MaterialTheme.motionScheme` (Material 3 Expressive): the phone through
+`MaterialExpressiveTheme` in `sender/ui/theme/Theme.kt`, the TV through the same
+`MaterialExpressiveTheme` wrapped *outside* `androidx.tv.material3.MaterialTheme` in
+`receiver/ui/theme/Theme.kt`. **No interactive motion hand-writes a duration or a
+`spring(...)` at a call site** — hand-picked durations are the classic tell of a
+non-Expressive implementation.
 
-| Token | Curve | Duration | Used for |
+Two axes, and the split is the whole rule:
+
+- **Spatial** (position, size, shape, bounds) — *may* overshoot; the overshoot is the point.
+- **Effects** (colour, alpha, selection fills) — critically damped, **never** overshoots.
+  A bouncing opacity is a rendering glitch, not expression.
+
+The scheme's own values (AOSP `ExpressiveMotionTokens`), given as damping / stiffness:
+
+| Spec | Expressive |
+|---|---|
+| spatial fast | 0.6 / 800 |
+| spatial default | 0.8 / 380 |
+| spatial slow | 0.8 / 200 |
+| effects fast | 1.0 / 3800 |
+| effects default | 1.0 / 1600 |
+| effects slow | 1.0 / 800 |
+
+### 6.1 The sender / receiver damping bias
+
+The phone is **ballistic** — the hand is the source of the energy, so geometry keeps the
+scheme's damping and is allowed to bounce. The TV is **settling** — a ten-foot screen is a
+destination, and an overshoot large enough to see across a room reads as instability. So
+`receiver/ui/theme/Motion.kt` clamps the damping *floor* of every spatial spec and never
+touches stiffness (stiffness is what carries the Expressive character):
+
+| Receiver token | Source spec | Damping floor | Used for |
 |---|---|---|---|
-| `flickSettle` | `(.22, 1.2, .36, 1)` (overshoot ~6%) | 320ms | launch, toss-to-cast, seek confirm, screen transitions, play/pause morph |
-| `playheadGlide` | linear | continuous | the bar tracking the running clock |
-| `syncSpring` | `(.3, 1.4, .4, 1)` (slight overshoot) | 180ms | ghost→target snap on release |
-| `crossDissolve` | ease-in-out | 400ms | poster ↔ playback |
-| `chromeFade` | ease | in 200 / out 500ms | TV controls in/out |
-| `focusPop` | `(.2, .9, .25, 1.1)` | 160ms | TV D-pad focus |
+| `focusSpatial()` | spatial fast | `TV_FOCUS_DAMPING` 0.85 | focus lift, press acknowledgement, beacon travel |
+| `flickSettleSpatial()` | spatial fast | `TV_SPATIAL_DAMPING` 0.8 | glyph morph, seek swell, chip reveal, chrome exits |
+| `panelSpatial()` | spatial default | `TV_SPATIAL_DAMPING` 0.8 | panel and chrome entrances, standby transitions |
+| `stateEffects()` | effects default | — (never clamped) | every colour, alpha and selection fill |
+| `fastStateEffects()` | effects fast | — | chrome and panel *exits*, which lead with the fade |
 
-**Cross-device rule:** one event → one motion. The **same** easing token + accent pulse fire on
-**both** surfaces simultaneously. A **traveling light** (cyan mote sliding along the link) appears
-at connect, at seek release, and whenever a cross-surface command lands. **Haptics are the phone's
-half of the motion:** tick detents while dragging (every 10s of film crossed), firm snap on
-release, single confirm pulse on play/pause, soft ripple on grip.
+0.85 on focus is not a taste call: `FlickDimens.FocusRingReserve` is derived from the
+`FOCUS_SCALE` lift with no overshoot budget in it, so the ring must not fly past the
+element it surrounds. At 0.85 the peak excursion is ~0.6 %, which the reserve absorbs.
+
+### 6.2 Curves that survive, and why
+
+`focusPop`'s and `syncSpring`'s *curve* values are **retired** — both are now springs,
+because both are interruptible: a focus move retargets mid-flight when the D-pad is held,
+and a seek reconcile retargets on every key repeat. A tween restarts on a fresh clock and
+visibly stutters. `FlickMotion.syncSpring()` is now
+`spring(0.72, StiffnessMediumLow, visibilityThreshold = 0.0005f)` — the threshold is in
+track fractions, so 0.0005 of an 800 dp bar is under half a pixel at density 2.
+
+These stay tweens, each because nothing can interrupt it:
+
+| Token | Curve | Duration | Why it is not a spring |
+|---|---|---|---|
+| `flickSettle` | `(.22, 1.2, .36, 1)` | 320 ms | legacy alias; geometry call sites now take `flickSettleSpatial()` |
+| `playheadGlide` | linear | continuous | driven by the media clock, not by a target |
+| `crossDissolve` | ease-in-out | 400 ms | poster ↔ playback, a pure dissolve |
+| `chromeFade` | ease | in 200 / out 500 ms | pure alpha; the out value is the scrim's lag, not the chrome's |
+| `tvSpin` / `tvPulse` | linear / ease-in-out | 1 s / 1.9 s | looping ambience |
+| `tvBurst` | keyframed | 720 ms | the keyframes *are* the design |
+| `pressConfirm` | `chromeFade` easing | 90 ms | below the threshold at which retargeting is visible |
+
+**Cross-device rule:** one event → one motion. The four real protocol events (cast
+committed, handshake advancing, first frame confirmed, play/pause toggled) each produce a
+*paired* motion — an outbound gesture on the phone, an inbound settle on the TV. **Haptics
+are the phone's half of the motion:** tick detents while dragging (every 10 s of film
+crossed), firm snap on release, single confirm pulse on play/pause, soft ripple on grip.
+
+**Restraint.** There is no ambient decoration anywhere except the TV idle screensaver,
+whose entire job is ambience. Every measured number SNAPS between values — a tweened
+measurement is a fabricated measurement — and a gauge *fraction* may animate on an effects
+spec only, because a spatial overshoot would draw a reading that was never taken.
 
 ---
 
@@ -232,8 +298,8 @@ release, single confirm pulse on play/pause, soft ripple on grip.
     when lagging. See §Hero. Do not use cyan as a second playhead color.
 - **Transport cluster:** back-10 / play-pause / fwd-10. Play/pause morphs (triangle ↔ bars via
   `flickSettle`)—never a hard swap. Phone primary play is a 56dp coral circle with warm lift.
-  TV uses 48dp skip targets and a 56dp primary target with glyphs at least 32dp; the primary
-  control takes the sole initial playback focus.
+  TV uses 48dp skip targets with 24dp glyphs and a 56dp primary target with a 28dp glyph; the
+  primary control takes the sole initial playback focus.
 - **Minimized playback:** phone Now Playing exposes a downward minimize action that never stops
   the cast. Library keeps a raised mini-player with thumbnail, state, title, and one-tap restore.
   Partial media access keeps a prominent **Add videos** action; full access exposes **Refresh**.

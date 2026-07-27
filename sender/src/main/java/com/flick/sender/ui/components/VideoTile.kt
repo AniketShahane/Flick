@@ -1,5 +1,11 @@
 package com.flick.sender.ui.components
 
+import android.net.Uri
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.indication
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -19,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -34,6 +42,7 @@ import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import coil.size.Precision
 import com.flick.sender.R
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
@@ -47,6 +56,7 @@ import com.flick.sender.ui.theme.TileShadow
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -73,10 +83,84 @@ fun rememberVideoImageLoader(): ImageLoader {
     }
 }
 
+// Coil validates a cached bitmap against the pixel size the request asks for, so an
+// unpinned tile decode is rejected by a full-bleed request and extracted again. That
+// re-decode is exactly the blank frame a shared-element flight cannot survive, so every
+// surface that shows a file's frame asks for these pixels and INEXACT accepts them.
+// 960 wide is the largest pin a full grid of 4K stills can hold at once.
+private const val FrameWidthPx = 960
+private const val FrameHeightPx = 540
+
+/** Shared-element key for a library item's still, matched by Library and Detail. */
+fun posterKey(itemId: Long): String = "poster-$itemId"
+
+/** Shared-element key for the frame that travels Connecting -> NowPlaying. */
+const val CastPosterKey = "cast-poster"
+
+/**
+ * The one request builder for local video stills. [crossfade] is a fade of the decode,
+ * not of a transition: it belongs on first-sight surfaces only, because a hero landing
+ * already carries its own motion.
+ */
+@Composable
+fun rememberVideoFrameRequest(
+    uri: Uri?,
+    durationMs: Long,
+    crossfade: Boolean = false,
+): ImageRequest? {
+    val context = LocalContext.current
+    return remember(uri, durationMs, crossfade) {
+        uri?.let {
+            ImageRequest.Builder(context)
+                .data(it)
+                // A third in: the head of a film is usually black or a title card.
+                .videoFrameMillis((durationMs / 3L).coerceAtLeast(1_000L))
+                .size(FrameWidthPx, FrameHeightPx)
+                .precision(Precision.INEXACT)
+                .crossfade(crossfade)
+                .build()
+        }
+    }
+}
+
+/**
+ * Marks a decoded frame as the surface that becomes the next screen. Both scopes null
+ * leaves the modifier inert, so anything composed outside the shell's
+ * `SharedTransitionLayout` renders exactly as it did before.
+ *
+ * [renderInOverlay] must stay true wherever the flight starts or ends inside a clip —
+ * a grid cell, a rounded poster — because the overlay copy is the only one that can
+ * leave it.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+fun Modifier.flickSharedFrame(
+    sharedScope: SharedTransitionScope?,
+    animatedScope: AnimatedVisibilityScope?,
+    key: String,
+    renderInOverlay: Boolean = true,
+): Modifier {
+    if (sharedScope == null || animatedScope == null) return this
+    val reduceMotion = rememberReduceMotion()
+    val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<Rect>()
+    val bounds = remember(reduceMotion, spatial) {
+        BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else spatial }
+    }
+    return with(sharedScope) {
+        this@flickSharedFrame.sharedElement(
+            sharedContentState = rememberSharedContentState(key),
+            animatedVisibilityScope = animatedScope,
+            boundsTransform = bounds,
+            renderInOverlayDuringTransition = renderInOverlay,
+        )
+    }
+}
+
 /**
  * Library tile (design §5.2.5): a real decoded frame under a bottom scrim, the
  * resolution + dynamic-range chip top-left, the duration bottom-right, then the
- * title and a size/length caption.
+ * title and a size/length caption. The frame itself is the hero — tapping the tile
+ * expands these pixels into DetailScreen's backdrop.
  */
 @Composable
 fun VideoTile(
@@ -86,19 +170,13 @@ fun VideoTile(
     onClick: () -> Unit,
     compact: Boolean = false,
     modifier: Modifier = Modifier,
+    sharedScope: SharedTransitionScope? = null,
+    animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val colors = LocalFlickColors.current
-    val context = LocalContext.current
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
-
-    val request = remember(item.uri, item.durationMs) {
-        ImageRequest.Builder(context)
-            .data(item.uri)
-            .videoFrameMillis((item.durationMs / 3L).coerceAtLeast(1000L))
-            .crossfade(true)
-            .build()
-    }
+    val request = rememberVideoFrameRequest(item.uri, item.durationMs, crossfade = true)
 
     Column(
         modifier = modifier
@@ -124,12 +202,16 @@ fun VideoTile(
                 // ripple survives both a blown-out still and a near-black one.
                 .indication(interaction, flickRipple(colors.spark)),
         ) {
+            // Only the frame travels. The badges below belong to the grid, so they stay
+            // out of the shared node and cross-fade with the route.
             AsyncImage(
                 model = request,
                 contentDescription = item.name,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .flickSharedFrame(sharedScope, animatedScope, posterKey(item.id))
+                    .fillMaxSize(),
             )
             Box(Modifier.fillMaxSize().background(FlickGradients.posterScrim))
             Text(

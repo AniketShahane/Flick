@@ -4,7 +4,6 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -42,7 +41,7 @@ class PairAndIdleFocusTest {
                     tvName = "Living Room TV",
                     code = "1234",
                     qrPayload = null,
-                    host = "192.168.1.12",
+                    host = "192.0.2.12",
                     port = 8472,
                     networkReady = true,
                     onRename = {},
@@ -54,11 +53,11 @@ class PairAndIdleFocusTest {
         showBigger.assertIsFocused().performClick()
 
         composeRule.onNodeWithText("Done").assertIsFocused()
-        showBigger.assertIsNotEnabled()
-        composeRule.onNodeWithText("Rename TV").assertIsNotEnabled()
+        composeRule.onNodeWithText("Show code bigger").assertDoesNotExist()
+        composeRule.onNodeWithText("Rename TV").assertDoesNotExist()
 
         composeRule.onNodeWithText("Done").performClick()
-        showBigger.assertIsEnabled().assertIsFocused()
+        composeRule.onNodeWithText("Show code bigger").assertIsEnabled().assertIsFocused()
     }
 
     @Test
@@ -72,7 +71,7 @@ class PairAndIdleFocusTest {
                     tvName = "Living Room TV",
                     code = "1234",
                     qrPayload = null,
-                    host = "192.168.1.12",
+                    host = "192.0.2.12",
                     port = 8472,
                     networkReady = true,
                     onRename = {},
@@ -83,12 +82,13 @@ class PairAndIdleFocusTest {
         val showBigger = composeRule.onNodeWithText("Show code bigger")
         showBigger.performClick()
         composeRule.onNodeWithText("Done").assertIsFocused()
+        composeRule.onNodeWithText("Show code bigger").assertDoesNotExist()
 
         composeRule.runOnIdle {
             backDispatcher.onBackPressed()
         }
 
         composeRule.onNodeWithText("Done").assertDoesNotExist()
-        showBigger.assertIsEnabled().assertIsFocused()
+        composeRule.onNodeWithText("Show code bigger").assertIsEnabled().assertIsFocused()
     }
 }

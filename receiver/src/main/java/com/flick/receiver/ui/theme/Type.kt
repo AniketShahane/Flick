@@ -27,20 +27,26 @@ import com.flick.receiver.R
  * instincts: nothing renders under [MIN_SIZE_SP], no weight falls under
  * [MIN_WEIGHT], and tracking is *looser* than a phone's, never tighter — tight
  * tracking that flatters type at arm's length closes the counters at 10 ft.
+ *
+ * The scale is sized against the panel it ships on, not against a phone's: at
+ * density 2.0 a 1080p TV is a **960 × 540 dp** canvas, so there is *less* height
+ * here than on a phone. Type that assumed room to spare overflowed it.
  */
 object FlickType {
 
     // ── Ten-foot floors ─────────────────────────────────────────────────────
     // The helpers clamp their arguments rather than trust them, so no screen can
-    // drop a style under the ten-foot floor by passing a phone-tight number. A
-    // caller may only ask for more than the floor; an argument at or below it is
-    // ignored, so call sites do not pass one.
+    // drop a style under the ten-foot floor by passing a phone-tight number. The
+    // floor is a floor and nothing more: it is low enough that every role in the
+    // scale clears it, so clamping can never pull two roles onto one size. An
+    // earlier 24 sp clamp did exactly that — it collapsed seven distinct roles
+    // onto a single size and cost the hierarchy.
 
     /** Nothing a viewer must read renders below this. */
-    private const val MIN_SIZE_SP = 16
+    private const val MIN_SIZE_SP = 14
 
-    /** Reading copy sits a step above the universal floor. */
-    private const val MIN_BODY_SIZE_SP = 24
+    /** The default reading-copy size — [FlickTvTypography]'s `bodyMedium`. */
+    private const val DEFAULT_BODY_SIZE_SP = 16
 
     /** Avoid thin strokes at distance — Light and Regular are out of range. */
     private val MIN_WEIGHT = FontWeight.Medium
@@ -120,6 +126,10 @@ object FlickType {
      * pills. Callers uppercase the text themselves so the string resource stays
      * the source of truth.
      *
+     * [sizeSp] defaults to [MIN_SIZE_SP] because this *is* the smallest role in
+     * the scale — `labelMedium` / `labelSmall`. It is the one style that sits on
+     * the floor by design rather than by clamping.
+     *
      * [trackingEm] is floored, never capped: wide tracking is the whole device
      * here, it runs in the loose direction the ten-foot read wants, and the
      * metrics panel's fixed width is measured against the exact values its call
@@ -162,14 +172,18 @@ object FlickType {
         )
     }
 
-    /** Geist reading copy — never below the [MIN_BODY_SIZE_SP] floor. */
+    /**
+     * Geist reading copy — never below the [MIN_SIZE_SP] floor. The three body
+     * roles it stands in for are 18 / 16 / 15 sp, so callers pass the one they
+     * mean; the default is the middle of those.
+     */
     fun body(
-        sizeSp: Int = MIN_BODY_SIZE_SP,
+        sizeSp: Int = DEFAULT_BODY_SIZE_SP,
         weight: FontWeight = FontWeight.SemiBold,
         trackingEm: Float = UI_TRACKING_EM,
         lineHeightRatio: Float = MIN_BODY_LINE_HEIGHT_RATIO,
     ): TextStyle {
-        val size = sizeSp.coerceAtLeast(MIN_BODY_SIZE_SP)
+        val size = sizeSp.coerceAtLeast(MIN_SIZE_SP)
         return TextStyle(
             fontFamily = Body,
             fontWeight = weight.coerceAtLeast(MIN_WEIGHT),
@@ -183,121 +197,130 @@ object FlickType {
 /**
  * TV typography for the theme. Roles map to the §1a ten-foot scale:
  *  - display* / headline* / titleLarge — Bricolage, the expressive voice, −0.02 em.
- *  - title(Medium|Small) / body* / labelLarge — Geist reading copy, ≥ 24 sp at
- *    non-negative tracking.
- *  - label(Medium|Small) — the uppercase Geist Mono micro-label, 16 sp flat.
+ *  - title(Medium|Small) / body* / labelLarge — Geist reading copy, non-negative
+ *    tracking, 15–18 sp.
+ *  - label(Medium|Small) — the uppercase Geist Mono micro-label, 14 sp flat.
  *
- * Screen owners must not override these below their role's floor.
+ * Fifteen roles, fifteen deliberate sizes — 40 / 31 / 27 / 27 / 22 / 20 / 21 /
+ * 18 / 17 / 18 / 16 / 15 / 16 / 14 / 14 sp. Repeats are intentional pairs that
+ * separate by family, weight or tracking rather than by size. Nothing is under
+ * 14 sp and nothing is clamped up into its neighbour: the hierarchy is the
+ * point, and a 960 × 540 dp canvas has no room to spend on type that is merely
+ * large.
+ *
+ * Line heights are ≥ 1.3 × the size, and ≥ 1.4 × for the three body roles.
+ *
+ * Screen owners must not override these below 14 sp.
  */
 val FlickTvTypography: Typography = Typography(
-    // Pairing headline — design 104 px ÷ 2.
+    // Pairing headline — the largest type the receiver ever draws.
     displayLarge = TextStyle(
-        fontFamily = FlickType.Display,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 52.sp,
-        lineHeight = 68.sp,
-        letterSpacing = (-0.02).em,
-    ),
-    displayMedium = TextStyle(
         fontFamily = FlickType.Display,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 40.sp,
         lineHeight = 52.sp,
         letterSpacing = (-0.02).em,
     ),
+    displayMedium = TextStyle(
+        fontFamily = FlickType.Display,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 31.sp,
+        lineHeight = 41.sp,
+        letterSpacing = (-0.02).em,
+    ),
     displaySmall = TextStyle(
-        fontFamily = FlickType.Display,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 34.sp,
-        lineHeight = 45.sp,
-        letterSpacing = (-0.02).em,
-    ),
-    // Now-playing title — design 68 px ÷ 2.
-    headlineLarge = TextStyle(
-        fontFamily = FlickType.Display,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 34.sp,
-        lineHeight = 45.sp,
-        letterSpacing = (-0.02).em,
-    ),
-    // Handshake title / panel headers — design 54 & 34 px ÷ 2.
-    headlineMedium = TextStyle(
         fontFamily = FlickType.Display,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 27.sp,
         lineHeight = 36.sp,
+        letterSpacing = (-0.02).em,
+    ),
+    // Now-playing title.
+    headlineLarge = TextStyle(
+        fontFamily = FlickType.Display,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 27.sp,
+        lineHeight = 36.sp,
+        letterSpacing = (-0.02).em,
+    ),
+    // Handshake title / panel headers.
+    headlineMedium = TextStyle(
+        fontFamily = FlickType.Display,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 22.sp,
+        lineHeight = 29.sp,
         letterSpacing = (-0.02).em,
     ),
     headlineSmall = TextStyle(
         fontFamily = FlickType.Display,
         fontWeight = FontWeight.Bold,
-        fontSize = 24.sp,
-        lineHeight = 32.sp,
+        fontSize = 20.sp,
+        lineHeight = 26.sp,
         letterSpacing = (-0.02).em,
     ),
     titleLarge = TextStyle(
         fontFamily = FlickType.Display,
         fontWeight = FontWeight.ExtraBold,
-        fontSize = 27.sp,
-        lineHeight = 36.sp,
+        fontSize = 21.sp,
+        lineHeight = 28.sp,
         letterSpacing = (-0.02).em,
     ),
     titleMedium = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.Bold,
-        fontSize = 24.sp,
-        lineHeight = 32.sp,
+        fontSize = 18.sp,
+        lineHeight = 24.sp,
         letterSpacing = 0.005.em,
     ),
     titleSmall = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.Bold,
-        fontSize = 24.sp,
-        lineHeight = 32.sp,
+        fontSize = 17.sp,
+        lineHeight = 23.sp,
         letterSpacing = 0.005.em,
     ),
     bodyLarge = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 24.sp,
-        lineHeight = 34.sp,
+        fontSize = 18.sp,
+        lineHeight = 26.sp,
         letterSpacing = 0.005.em,
     ),
     bodyMedium = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 24.sp,
-        lineHeight = 34.sp,
+        fontSize = 16.sp,
+        lineHeight = 23.sp,
         letterSpacing = 0.005.em,
     ),
     bodySmall = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.Medium,
-        fontSize = 24.sp,
-        lineHeight = 34.sp,
+        fontSize = 15.sp,
+        lineHeight = 21.sp,
         letterSpacing = 0.005.em,
     ),
     labelLarge = TextStyle(
         fontFamily = FlickType.Body,
         fontWeight = FontWeight.Bold,
-        fontSize = 24.sp,
-        lineHeight = 32.sp,
+        fontSize = 16.sp,
+        lineHeight = 21.sp,
         letterSpacing = 0.005.em,
     ),
-    // The uppercase mono micro-label — 16 sp flat, wide tracking.
+    // The uppercase mono micro-label — 14 sp flat, wide tracking.
     labelMedium = TextStyle(
         fontFamily = FlickType.Mono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 16.sp,
-        lineHeight = 21.sp,
+        fontSize = 14.sp,
+        lineHeight = 19.sp,
         letterSpacing = 0.14.em,
         fontFeatureSettings = "tnum, zero",
     ),
     labelSmall = TextStyle(
         fontFamily = FlickType.Mono,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 16.sp,
-        lineHeight = 21.sp,
+        fontSize = 14.sp,
+        lineHeight = 19.sp,
         letterSpacing = 0.2.em,
         fontFeatureSettings = "tnum, zero",
     ),

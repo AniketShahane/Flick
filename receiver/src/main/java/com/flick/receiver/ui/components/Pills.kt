@@ -26,9 +26,10 @@ import androidx.tv.material3.Text
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.glass
-import com.flick.receiver.ui.theme.rememberReducedMotion
 
 /**
  * The design `tvPulse` envelope (spec §6). Returns null — meaning "hold the
@@ -37,7 +38,7 @@ import com.flick.receiver.ui.theme.rememberReducedMotion
  */
 @Composable
 private fun rememberPulsePhase(active: Boolean): State<Float>? {
-    val reducedMotion = rememberReducedMotion()
+    val reducedMotion = LocalReducedMotion.current
     return if (active && !reducedMotion) {
         val transition = rememberInfiniteTransition(label = "tvPulse")
         transition.animateFloat(
@@ -60,7 +61,7 @@ private fun rememberPulsePhase(active: Boolean): State<Float>? {
 fun LiveDot(
     color: Color,
     modifier: Modifier = Modifier,
-    size: Dp = 7.dp,
+    size: Dp = 6.dp,
     pulsing: Boolean = false,
 ) {
     val phase = rememberPulsePhase(pulsing)
@@ -97,12 +98,12 @@ fun GlassPill(
     dotPulsing: Boolean = false,
     style: TextStyle = FlickType.monoEyebrow(trackingEm = 0.12f),
     color: Color = FlickColor.OnChrome,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 15.dp, vertical = 7.dp),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
     leading: @Composable (() -> Unit)? = null,
 ) {
     GlassPillContainer(modifier = modifier, contentPadding = contentPadding) {
         if (leading != null) leading()
-        if (dotColor != null) LiveDot(color = dotColor, size = 6.dp, pulsing = dotPulsing)
+        if (dotColor != null) LiveDot(color = dotColor, pulsing = dotPulsing)
         Text(text = text, color = color, style = style)
     }
 }
@@ -112,8 +113,8 @@ fun GlassPill(
 fun GlassPillContainer(
     modifier: Modifier = Modifier,
     shape: Shape = FlickShape.Pill,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 15.dp, vertical = 7.dp),
-    horizontalArrangement: Arrangement.Horizontal = Arrangement.spacedBy(9.dp),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.spacedBy(FlickSpace.Sm),
     content: @Composable RowScope.() -> Unit,
 ) {
     Row(

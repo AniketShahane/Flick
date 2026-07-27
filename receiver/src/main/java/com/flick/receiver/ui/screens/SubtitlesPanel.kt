@@ -38,11 +38,14 @@ import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.FlickTvRow
+import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
 /**
@@ -70,31 +73,33 @@ enum class SubtitleSize(val scale: Float, @param:StringRes val labelRes: Int) {
 }
 
 /**
- * Panel width. The spec draws 310 dp; the §1a type floors push the three size
- * cells (24 sp reading copy) past that, so the panel is 30 dp wider. Everything
- * else keeps its ÷2 design metrics.
+ * Panel width. The spec draws 310 dp. What actually sets the number is the track
+ * meta line, the widest fixed string the panel can be asked to draw: Geist Mono
+ * advances 0.6 em and `trackMeta` adds 0.1 em of tracking, so the longest label
+ * the format mapper emits — `CEA-608 · EMBEDDED`, 18 glyphs — measures
+ * 18 × 0.7 × 14 sp = 176.4 dp. Around it sit 2 × 17 dp of panel padding,
+ * 2 × [FocusRingBleed], the row's 2 × 12 dp inset, a 14 dp mark and a 10 dp gap,
+ * i.e. 112 dp of chrome. 292 dp leaves the text column 180 dp.
  */
-val SubtitlesPanelWidth: Dp = 340.dp
-
-/** Track-row markers are drawn at the ÷2 design size. */
-private val TrackMarkSize: Dp = 16.dp
+val SubtitlesPanelWidth: Dp = 292.dp
 
 /**
  * Horizontal inset on each track row. `Modifier.verticalScroll` clips hard at
- * `0..width` on the cross axis, and a focused row's ring is drawn 5.5 dp outside
- * its bounds with a 2.5 dp stroke *inside* the same layer that scales the row by
- * 1.06 — so the ring's outer edge sits `(rowHalfWidth + 6.75 dp) × 1.06` from the
- * row's centre. At this panel width that needs ≈ 15.5 dp of inset; 17 dp keeps a
- * margin for the row border and rounding.
+ * `0..width` on the cross axis, and a focused row's ring is drawn 4.5 dp outside
+ * its bounds with a 2 dp stroke *inside* the same layer that scales the row by
+ * 1.06 — so the ring's outer edge sits `(rowHalfWidth + 5.5 dp) × 1.06` from the
+ * row's centre. The scroll box is 258 dp wide here, so the inset must satisfy
+ * `(129 + 5.5 − b) × 1.06 ≤ 129`, i.e. b ≥ 13 dp; 15 dp keeps a margin for the
+ * row border and rounding.
  */
-private val FocusRingBleed: Dp = 17.dp
+private val FocusRingBleed: Dp = 15.dp
 
 /**
  * The scroll container inflates its clip by the max supported elevation on the
  * scroll axis, so the first and last rings survive on their own; these spacers
  * only stop a ring from painting over the header or the size selector.
  */
-private val FocusRingBleedVertical: Dp = 6.dp
+private val FocusRingBleedVertical: Dp = FlickSpace.Xs
 
 /**
  * The subtitles panel (receiver-expressive-spec.md §5.4) — left-anchored above
@@ -118,16 +123,23 @@ fun SubtitlesPanel(
     onSelectTrack: (String?) -> Unit,
     onSelectSize: (SubtitleSize) -> Unit,
     onDismiss: () -> Unit,
+    /** Changes for every open, including a reopen while an exit is retained. */
+    entryKey: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val entryFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { entryFocus.requestFocus() } }
+    LaunchedEffect(entryKey) { runCatching { entryFocus.requestFocus() } }
 
     val selectedIndex = tracks.indexOfFirst { it.isSelected }
     val offSelected = selectedIndex < 0
 
+    // The panel is one beacon group: the close button, the track rows and the
+    // three size cells share ONE ring that glides between them. The host sits
+    // outside the track list's scroll clip, so the ring is no longer something the
+    // scroll container can cut in half.
+    FocusBeaconHost(modifier = modifier) {
     GlassPanel(
-        modifier = modifier
+        modifier = Modifier
             .width(SubtitlesPanelWidth)
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
@@ -140,7 +152,10 @@ fun SubtitlesPanel(
         shape = FlickShape.Xl,
         tone = GlassPanelTone.Panel,
         contentPadding = PaddingValues(horizontal = 17.dp, vertical = 13.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+        // The playback chrome owns this panel's enter AND exit (spec B7); a second
+        // entrance latch here would double the parent's motion.
+        animateEntrance = false,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -149,7 +164,7 @@ fun SubtitlesPanel(
         ) {
             Text(
                 text = stringResource(R.string.subtitles_panel_title),
-                style = FlickType.display(sizeSp = 27),
+                style = FlickType.display(sizeSp = 22),
                 color = Color.White,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
@@ -169,7 +184,7 @@ fun SubtitlesPanel(
                 .fillMaxWidth()
                 .weight(1f, fill = false)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
         ) {
             Spacer(Modifier.height(FocusRingBleedVertical))
             TrackRow(
@@ -194,17 +209,17 @@ fun SubtitlesPanel(
 
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
         ) {
             Text(
                 text = stringResource(R.string.subtitles_size_label),
-                style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.18f),
+                style = FlickType.monoEyebrow(trackingEm = 0.18f),
                 color = FlickColor.OnPanelLabel,
                 maxLines = 1,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
             ) {
                 SubtitleSize.ALL.forEach { option ->
                     val on = option == size
@@ -220,7 +235,7 @@ fun SubtitlesPanel(
                     ) {
                         Text(
                             text = stringResource(option.labelRes),
-                            style = FlickType.body(sizeSp = 24),
+                            style = FlickType.body(sizeSp = 16),
                             color = if (on) FlickColor.OnLight else FlickColor.OnSurfaceDim,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
@@ -231,12 +246,13 @@ fun SubtitlesPanel(
             }
         }
     }
+    }
 }
 
 /**
- * The design puts the meta beside the label; at the 16 sp mono floor
- * `SRT · EMBEDDED` is wider than the label would then have left, so it sits on a
- * second line inside the row instead.
+ * The design puts the meta beside the label; even at 14 sp mono
+ * `CEA-608 · EMBEDDED` claims 176 dp of the row's 180 dp text column, so it sits
+ * on a second line inside the row instead.
  */
 @Composable
 private fun TrackRow(
@@ -254,14 +270,14 @@ private fun TrackRow(
             .padding(horizontal = FocusRingBleed),
         focusRequester = focusRequester,
         selected = selected,
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
     ) {
         Icon(
             imageVector = if (selected) FlickIcons.CheckCircle else FlickIcons.RadioButtonUnchecked,
             contentDescription = null,
             tint = if (selected) FlickColor.Spark else FlickColor.OnSurfaceFaint,
-            modifier = Modifier.size(TrackMarkSize),
+            modifier = Modifier.size(FlickDimens.GlyphSmall),
         )
         Column(
             modifier = Modifier.weight(1f),
@@ -269,7 +285,7 @@ private fun TrackRow(
         ) {
             Text(
                 text = label,
-                style = FlickType.body(sizeSp = 24, weight = FontWeight.Bold),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
                 color = if (selected) FlickColor.SparkLight else FlickColor.OnChrome,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -277,7 +293,7 @@ private fun TrackRow(
             if (meta != null) {
                 Text(
                     text = meta,
-                    style = FlickType.monoEyebrow(sizeSp = 16, trackingEm = 0.1f),
+                    style = FlickType.monoEyebrow(trackingEm = 0.1f),
                     color = if (selected) FlickColor.SparkLightDim else FlickColor.OnSurfaceFaint,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

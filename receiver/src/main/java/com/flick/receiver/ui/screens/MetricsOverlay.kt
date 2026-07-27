@@ -28,12 +28,19 @@ import com.flick.receiver.R
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.SubtitleCueKind
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import java.util.Locale
 
-/** Fixed label gutter — the whole point of the HUD is that values line up. */
-private val LabelGutter = 84.dp
+/**
+ * Fixed label gutter — the whole point of the HUD is that values line up, so this
+ * is measured rather than scaled: the longest label is `BITRATE` / `DROPPED`, and
+ * 7 glyphs of Geist Mono at 14 sp with 0.14 em of tracking advance
+ * 7 × 0.74 × 14 = 72.5 dp.
+ */
+private val LabelGutter = 76.dp
 
 /**
  * T10b · the opt-in developer HUD (default OFF; toggled from settings). This is
@@ -54,21 +61,26 @@ fun MetricsOverlay(
     val shape = FlickShape.Sm
     Column(
         modifier = modifier
-            .widthIn(min = 320.dp, max = 470.dp)
+            // The max is set by the footer, the one line here with no maxLines to
+            // fall back on: `metrics overlay · settings › playback` is 37 glyphs
+            // of 14 sp mono at 0.12 em tracking = 373 dp, and it sits inside
+            // 31 dp of plate padding, so anything under 404 dp wraps it.
+            .widthIn(min = 264.dp, max = 412.dp)
             .clip(shape)
             .background(FlickColor.ScrimVeil)
-            .border(1.dp, FlickColor.OutlineHairline, shape)
+            .border(FlickDimens.Hairline, FlickColor.OutlineHairline, shape)
             .drawBehind {
-                // 3dp brand rule along the leading edge. Blue, never amber: amber
-                // means focus everywhere else and this surface is never focusable.
+                // 2.5 dp brand rule along the leading edge. Blue, never amber:
+                // amber means focus everywhere else and this surface is never
+                // focusable.
                 drawRect(
                     color = FlickColor.PrimaryOnDark,
                     topLeft = Offset(0f, 0f),
-                    size = Size(3.dp.toPx(), size.height),
+                    size = Size(2.5.dp.toPx(), size.height),
                 )
             }
             .padding(start = 17.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
     ) {
         MetricRow(stringResource(R.string.metrics_net), netLine(snapshot), FlickColor.Live)
         MetricRow(
@@ -93,7 +105,7 @@ fun MetricsOverlay(
             modifier = Modifier
                 .padding(top = 3.dp)
                 .fillMaxWidth()
-                .height(1.dp)
+                .height(FlickDimens.Hairline)
                 .background(FlickColor.OutlineHairline),
         )
         Text(
@@ -111,18 +123,20 @@ private fun MetricRow(label: String, value: String, valueColor: Color) {
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // The 2 dp lift optically seats the 14 sp label on the 16 sp value's
+        // baseline; the two line boxes differ by 2.6 dp.
         Text(
             text = label,
             style = FlickType.monoEyebrow(trackingEm = 0.14f),
             color = FlickColor.OnPanelLabel,
             modifier = Modifier
                 .width(LabelGutter)
-                .padding(top = 3.dp),
+                .padding(top = 2.dp),
             maxLines = 1,
         )
         Text(
             text = value,
-            style = FlickType.monoTabular(sizeSp = 20, weight = FontWeight.Medium),
+            style = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.Medium),
             color = valueColor,
             modifier = Modifier.weight(1f),
             maxLines = 2,
