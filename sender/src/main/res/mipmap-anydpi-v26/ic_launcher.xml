@@ -2,9 +2,15 @@
 <!--
   minSdk is 26, so this adaptive icon covers every supported device and no PNG
   density buckets exist. <monochrome> is read only on API 33+ and ignored below.
+
+  The background is a disc rather than the flat @color: a full-bleed layer takes
+  the launcher's mask, which makes Flick a circle on one device and a squircle or
+  teardrop on the next. @drawable/ic_launcher_disc puts the circle in the artwork
+  so the shape is ours everywhere. <monochrome> deliberately keeps no disc — the
+  system masks and re-tints that layer itself.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ic_launcher_background" />
+    <background android:drawable="@drawable/ic_launcher_disc" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
     <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

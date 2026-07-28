@@ -28,11 +28,20 @@ import androidx.compose.ui.unit.dp
  * electric blue for action, amber for the media itself, cyan for the LAN. Dynamic
  * color survives only as a wallpaper tint on the quiet tonal containers — it is
  * never allowed to reach an anchored role.
+ *
+ * [darkTheme] defaults to the user's own [LocalThemePreference] resolved against the
+ * platform — the only read of the configuration's night mode inside a composition.
+ * `MainActivity` puts the same question to the Configuration for the window contract it
+ * has to settle before there is a composition to ask in, and hands an explicit choice to
+ * the platform as this app's own night mode: only [ThemePreference.SYSTEM] reaches the
+ * argument below, and it is also the one choice that leaves that mode unset. It stays a
+ * parameter so a test can pin a palette outright, and [FlickCinematicTheme] never routes
+ * through here at all.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FlickTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = LocalThemePreference.current.resolvesDark(isSystemInDarkTheme()),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {

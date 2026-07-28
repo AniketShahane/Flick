@@ -101,6 +101,8 @@ import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.flick.sender.NetworkUtils
 import com.flick.sender.R
+import com.flick.sender.media.LibraryFolders
+import com.flick.sender.media.LibraryScope
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibraryAction
 import com.flick.sender.media.MediaLibraryActionPolicy
@@ -111,8 +113,12 @@ import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.PairedTv
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.AdvisoryCard
+import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickMark
 import com.flick.sender.ui.components.FlickPrimaryButton
+import com.flick.sender.ui.components.LibraryFolderChip
+import com.flick.sender.ui.components.LibraryFolderSheet
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.NowPlayingDockClearance
 import com.flick.sender.ui.components.VideoTile
@@ -151,7 +157,11 @@ fun LibraryScreen(
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
-    val items by controller.mediaItems.collectAsState()
+    // One value, not four flows: the chip row's count, the tiles it counts and the
+    // folder that scoped both of them are always the same library.
+    val library by controller.library.collectAsState()
+    val folderScope = library.scope
+    val scoped = library.scoped
     val loading by controller.libraryLoading.collectAsState()
     val mediaAccess by controller.mediaAccess.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
@@ -173,6 +183,7 @@ fun LibraryScreen(
     val bottomClearance = NavClearance + if (castingItem != null) NowPlayingDockClearance else 0.dp
 
     var filter by remember { mutableStateOf(LibFilter.ALL) }
+    var choosingFolder by remember { mutableStateOf(false) }
 
     // The grid's answer to a chip tap. The epoch retriggers the wave; the window closes
     // it so a tile the lazy grid composes minutes later is not treated as arriving.
@@ -190,8 +201,8 @@ fun LibraryScreen(
     // back to the top cannot replay it on tiles the lazy grid recomposes.
     var staggerArmed by remember { mutableStateOf(false) }
     var staggerSpent by remember { mutableStateOf(false) }
-    LaunchedEffect(loading, items.isEmpty(), reduceMotion) {
-        if (staggerSpent || reduceMotion || loading || items.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(loading, scoped.isEmpty(), reduceMotion) {
+        if (staggerSpent || reduceMotion || loading || scoped.isEmpty()) return@LaunchedEffect
         staggerSpent = true
         staggerArmed = true
         delay(StaggerWindowMs)
@@ -201,9 +212,12 @@ fun LibraryScreen(
     // Deliberately not snapshot state: it is written and read in the same composition,
     // and observing it would recompose the grid a second time on the frame it flips.
     val emptyLatch = remember { EmptyLatch() }
+    // The WHOLE library decides this, never the scoped one: a folder the user narrowed
+    // to must not be able to raise the screen that says Flick has not been let into the
+    // gallery, or offer to re-open system selection for a library that is right there.
     emptyLatch.shown = libraryEmptyShown(
         access = mediaAccess,
-        itemCount = items.size,
+        itemCount = library.items.size,
         loading = loading,
         showing = emptyLatch.shown,
     )
@@ -224,96 +238,160 @@ fun LibraryScreen(
 
     // Both quality chips read a value MediaStore already reported, so the visible set
     // is a plain function of the library and the chip — no probe, nothing to subscribe
-    // to, and no work at all on the frame a tile arrives.
-    val filtered = remember(items, filter) {
+    // to, and no work at all on the frame a tile arrives. The folder narrowed the list
+    // before it got here, so the chips describe what is on screen rather than the
+    // phone: a count taken any earlier would be a tally of files this screen is hiding.
+    val filtered = remember(scoped, filter) {
         LibraryFilterPolicy.apply(
-            items = items,
+            items = scoped,
             filter = filter,
             resolutionLabel = { it.resolutionLabel },
         )
     }
 
-    LazyVerticalGrid(
-        // Adaptive rather than a fixed pair: rotation and foldables widen the row, and
-        // a fixed two-column split would stretch each 16:9 still into a letterbox sliver.
-        columns = GridCells.Adaptive(minSize = TileMinWidth),
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colors.canvas)
-            .statusBarsPadding()
-            .navigationBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
-        horizontalArrangement = Arrangement.spacedBy(13.dp),
-        verticalArrangement = Arrangement.spacedBy(13.dp),
-    ) {
-        fullWidth {
-            Header(
-                mediaAction = mediaAction,
-                onMediaAction = {
-                    when (mediaAction) {
-                        MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
-                        MediaLibraryAction.REFRESH -> controller.refreshMediaLibrary()
-                        MediaLibraryAction.HIDDEN -> Unit
+    Box(Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            // Adaptive rather than a fixed pair: rotation and foldables widen the row, and
+            // a fixed two-column split would stretch each 16:9 still into a letterbox sliver.
+            columns = GridCells.Adaptive(minSize = TileMinWidth),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(colors.canvas)
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
+            horizontalArrangement = Arrangement.spacedBy(13.dp),
+            verticalArrangement = Arrangement.spacedBy(13.dp),
+        ) {
+            fullWidth {
+                Header(
+                    mediaAction = mediaAction,
+                    onMediaAction = {
+                        when (mediaAction) {
+                            MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
+                            MediaLibraryAction.REFRESH -> controller.refreshMediaLibrary()
+                            MediaLibraryAction.HIDDEN -> Unit
+                        }
+                    },
+                )
+            }
+            fullWidth {
+                LinkPill(
+                    controller = controller,
+                    connectedTv = connectedTv,
+                    castingItem = castingItem,
+                    signal = signal,
+                    wifiLinkUp = wifiLinkUp,
+                )
+            }
+            fullWidth {
+                FilterChips(
+                    filter = filter,
+                    // What "All" would show, which under a folder is that folder — the
+                    // count has to describe the set the chip actually selects.
+                    totalCount = scoped.size,
+                    onSelect = { chosen ->
+                        filter = chosen
+                        // Armed from the tap rather than from the effect that closes it:
+                        // the wave has to be in place for the first composition the new
+                        // set is measured in, or the tiles paint once at rest and only
+                        // then dip.
+                        reflowArmed = !reduceMotion
+                        reflowEpoch++
+                    },
+                    trailing = {
+                        // Below API 29 MediaStore reports no bucket for a video, so no
+                        // folder is ever derived and this seat stays empty — the feature
+                        // is absent there rather than guessed at from a file path. A
+                        // choice made on a later phone cannot arrive to contradict that
+                        // either: the file holding it is excluded from backup, because a
+                        // bucket id names a path on the volume it was read from.
+                        if (LibraryFolders.chooserOffered(library.folders, folderScope)) {
+                            LibraryFolderChip(
+                                scope = folderScope,
+                                onClick = { choosingFolder = true },
+                            )
+                        }
+                    },
+                )
+            }
+            if (on24GHz) {
+                fullWidth {
+                    // The advisory and its fix live on the same surface now: the banner is a
+                    // shortcut to the Settings seat rather than a sheet of its own.
+                    BandAdvisory(onClick = { controller.openSettings() })
+                }
+            }
+            when {
+                loading -> fullWidth { Note(stringResource(R.string.library_loading)) }
+                // A folder that is gone and a folder that is showing nothing are
+                // different facts about the same choice, and neither is silence: the
+                // stored choice survives both until the user takes the offered way out.
+                folderScope is LibraryScope.Missing -> fullWidth {
+                    // Under a partial grant the cause is not a mystery and must not be
+                    // reported as one: the folder is outside the selection, so the repair
+                    // is to widen that selection rather than to give the folder up.
+                    if (mediaAccess.canReselect) {
+                        FolderHidden(
+                            name = folderScope.name,
+                            onSelectMore = onRequestVideoPermission,
+                        )
+                    } else {
+                        FolderMissing(
+                            name = folderScope.name,
+                            onShowAll = { controller.chooseLibraryFolder(null) },
+                        )
                     }
-                },
-            )
+                }
+                // Reached only through a quality chip — a folder Flick can see holds at
+                // least one video, which is why it is offered at all. It takes the
+                // chips' place because their copy offers everything ON THIS PHONE, which
+                // is not what tapping All would show while a folder is in force.
+                filtered.isEmpty() && folderScope is LibraryScope.Folder ->
+                    fullWidth { FolderEmpty(folderScope.name) }
+                // "All" cannot be empty while the library is not: only a quality chip can
+                // filter every file away.
+                filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
+            }
+            itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
+                LibraryTile(
+                    item = item,
+                    imageLoader = imageLoader,
+                    compact = compactTiles,
+                    unplayable = unplayable.containsKey(item.uriKey),
+                    onClick = { controller.openDetail(item) },
+                    sharedScope = sharedScope,
+                    animatedScope = animatedScope,
+                    // A filter switch reflows the surviving tiles instead of teleporting
+                    // them; placement is geometry and takes the spatial spring.
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = motionScheme.defaultEffectsSpec(),
+                            placementSpec = motionScheme.defaultSpatialSpec(),
+                            fadeOutSpec = motionScheme.fastEffectsSpec(),
+                        )
+                        .staggeredEntrance(index = index, armed = staggerArmed)
+                        .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
+                )
+            }
         }
-        fullWidth {
-            LinkPill(
-                controller = controller,
-                connectedTv = connectedTv,
-                castingItem = castingItem,
-                signal = signal,
-                wifiLinkUp = wifiLinkUp,
-            )
-        }
-        fullWidth {
-            FilterChips(
-                filter = filter,
-                totalCount = items.size,
-                onSelect = { chosen ->
-                    filter = chosen
-                    // Armed from the tap rather than from the effect that closes it:
-                    // the wave has to be in place for the first composition the new
-                    // set is measured in, or the tiles paint once at rest and only
-                    // then dip.
+        if (choosingFolder) {
+            LibraryFolderSheet(
+                folders = library.folders,
+                scope = folderScope,
+                // The whole library, because "All videos" is what leaving the folder
+                // restores — the scoped count is the one the chip row already states.
+                allCount = library.items.size,
+                onChoose = { folder ->
+                    choosingFolder = false
+                    controller.chooseLibraryFolder(folder)
+                    // A folder switch re-deals the grid for the same reason a chip tap
+                    // does: the new set is the consequence of the tap, not an unrelated
+                    // event that happened to it.
                     reflowArmed = !reduceMotion
                     reflowEpoch++
                 },
-            )
-        }
-        if (on24GHz) {
-            fullWidth {
-                // The advisory and its fix live on the same surface now: the banner is a
-                // shortcut to the Settings seat rather than a sheet of its own.
-                BandAdvisory(onClick = { controller.openSettings() })
-            }
-        }
-        when {
-            loading -> fullWidth { Note(stringResource(R.string.library_loading)) }
-            // "All" cannot be empty while the library is not: only a quality chip can
-            // filter every file away.
-            filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
-        }
-        itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
-            LibraryTile(
-                item = item,
-                imageLoader = imageLoader,
-                compact = compactTiles,
-                unplayable = unplayable.containsKey(item.uriKey),
-                onClick = { controller.openDetail(item) },
-                sharedScope = sharedScope,
-                animatedScope = animatedScope,
-                // A filter switch reflows the surviving tiles instead of teleporting
-                // them; placement is geometry and takes the spatial spring.
-                modifier = Modifier
-                    .animateItem(
-                        fadeInSpec = motionScheme.defaultEffectsSpec(),
-                        placementSpec = motionScheme.defaultSpatialSpec(),
-                        fadeOutSpec = motionScheme.fastEffectsSpec(),
-                    )
-                    .staggeredEntrance(index = index, armed = staggerArmed)
-                    .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
+                onDismiss = { choosingFolder = false },
             )
         }
     }
@@ -774,10 +852,21 @@ private fun Pill(
  * Every tap answers, including a re-tap of the chip that is already selected. The kick is
  * therefore driven from the tap itself: an exclusive axis leaves the selection untouched
  * on a re-tap, so selection cannot be what the feedback reads.
+ *
+ * [trailing] is the library's other axis — which folder — seated in the same flow so a
+ * narrow window wraps it onto its own line instead of squeezing the chips into three.
+ * It paints its own fill: only the seats reported below belong to the exclusive axis,
+ * and the travelling selection must never be able to land on a control that is not part
+ * of it.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter) -> Unit) {
+private fun FilterChips(
+    filter: LibFilter,
+    totalCount: Int,
+    onSelect: (LibFilter) -> Unit,
+    trailing: @Composable () -> Unit = {},
+) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
     val reduceMotion = rememberReduceMotion()
@@ -873,8 +962,9 @@ private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             // Only "All" carries a count: a per-bucket tally would claim a precision
-            // MediaStore's pixel dimensions do not have, and it is the count of the
-            // whole library that tells the user what the other chips are hiding.
+            // MediaStore's pixel dimensions do not have. It counts the set THIS chip
+            // selects — the folder in force, or the whole library when there is none —
+            // so what it names is always what tapping it would show.
             Chip(
                 text = stringResource(R.string.library_filter_all, totalCount),
                 active = filter == LibFilter.ALL,
@@ -899,6 +989,7 @@ private fun FilterChips(filter: LibFilter, totalCount: Int, onSelect: (LibFilter
                 squash = { pops.getValue(LibFilter.FULL_HD).value },
                 onTap = { tap(LibFilter.FULL_HD) },
             )
+            trailing()
         }
     }
 }
@@ -1068,6 +1159,66 @@ private fun FilterEmpty(filter: LibFilter) {
         )
         Text(
             text = stringResource(R.string.library_empty_filter_body),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+/**
+ * The chosen folder is not among the ones MediaStore reports any more, and with full
+ * access nothing here can say why. It is named rather than quietly dropped: the library
+ * the user set up is not the library they are looking at, and only they can decide to
+ * give that choice up — which is why the single action here is the only thing that
+ * discards it.
+ *
+ * INFO rather than CAUTION so it can share a screen with the amber band advisory
+ * without the two shouting over each other.
+ */
+@Composable
+private fun FolderMissing(name: String, onShowAll: () -> Unit) {
+    AdvisoryCard(
+        icon = FlickIcons.Warning,
+        title = stringResource(R.string.library_folder_missing_title, name),
+        body = stringResource(R.string.library_folder_missing_body),
+        tone = AdvisoryTone.INFO,
+        primaryLabel = stringResource(R.string.library_folder_missing_action),
+        onPrimary = onShowAll,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * The same absence under a partial grant, where it has exactly one cause: the folder is
+ * on the phone and the selection the user gave Flick holds nothing from it. Naming that
+ * is the difference between an accusation and an instruction — and the action reopens
+ * system selection, which is the only repair that keeps the folder. Giving it up is
+ * still offered, in the place it always was: the chip above this card.
+ */
+@Composable
+private fun FolderHidden(name: String, onSelectMore: () -> Unit) {
+    AdvisoryCard(
+        icon = FlickIcons.Private,
+        title = stringResource(R.string.library_folder_hidden_title, name),
+        body = stringResource(R.string.library_folder_hidden_body),
+        tone = AdvisoryTone.INFO,
+        primaryLabel = stringResource(R.string.library_folder_hidden_action),
+        onPrimary = onSelectMore,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** The folder is there; nothing in it survived the quality chip. */
+@Composable
+private fun FolderEmpty(name: String) {
+    val colors = LocalFlickColors.current
+    Column(Modifier.fillMaxWidth().padding(vertical = 26.dp)) {
+        Text(
+            text = stringResource(R.string.library_empty_folder, name),
+            style = FlickText.titleMedium.copy(color = colors.onSurface),
+        )
+        Text(
+            text = stringResource(R.string.library_empty_folder_body),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
             modifier = Modifier.padding(top = 6.dp),
         )

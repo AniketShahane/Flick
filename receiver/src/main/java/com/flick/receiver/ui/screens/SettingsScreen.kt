@@ -51,11 +51,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
+import com.flick.receiver.net.PairedPhone
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.TvOriginReveal
 import com.flick.receiver.ui.components.flickPlate
+import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.FlickColor
@@ -91,6 +93,8 @@ private val RowPadding = PaddingValues(horizontal = 18.dp, vertical = 11.dp)
 private val WideRowFocusReserve = 32.dp
 
 private const val SettingsRenameKey = "rename"
+private const val SettingsPairedHeaderKey = "pairedPhones"
+private const val SettingsPairedRowPrefix = "paired:"
 private const val SettingsMetricsKey = "metrics"
 private const val SettingsForgetKey = "forgetAll"
 private const val SettingsDiagnosticsKey = "diagnostics"
@@ -99,11 +103,17 @@ private const val SettingsClearDiagnosticsKey = "clearDiagnostics"
 private const val SettingsDoneKey = "done"
 
 /**
- * The first-appearance stagger. It covers the five rows that are always present
- * and never carries the two that own `bringIntoViewRequester`s — that machinery
- * reads layout coordinates, and it must not see anything moving. A sixth of the
- * entrance run is ~40 ms on the spring, the gap at which a column reads as
- * arriving in order.
+ * The first-appearance stagger. It covers the first five RENDERED rows — the row
+ * count moves with the number of paired phones, so it is a position in the column
+ * rather than a fixed set of rows — and never carries the two that own
+ * `bringIntoViewRequester`s: that machinery reads layout coordinates, and it must
+ * not see anything moving. A sixth of the entrance run is ~40 ms on the spring,
+ * the gap at which a column reads as arriving in order.
+ *
+ * The run stays five long rather than growing with the phone list. Beyond it the
+ * lead has eaten the whole run and [settingsStageProgress] would leave a row at a
+ * fraction of its alpha for the length of the entrance, so those rows are not
+ * staged at all and simply arrive with the column.
  */
 private const val SettingsStageLead = 0.16f
 private const val SettingsStagedRows = 5
@@ -137,7 +147,7 @@ private fun Modifier.settingsStage(
     progress: () -> Float,
     index: Int,
     settled: Boolean,
-): Modifier = if (settled) {
+): Modifier = if (settled || index >= SettingsStagedRows) {
     this
 } else {
     graphicsLayer {
@@ -147,12 +157,51 @@ private fun Modifier.settingsStage(
     }
 }
 
+/**
+ * Everything that moves the rows Clear and Done sit under. [pairedPhones] is in
+ * it because forgetting one removes a whole row from above them, and a
+ * `bringIntoView` fired against the placement they reported before that would
+ * scroll to a line the column no longer has. The two confirm latches are
+ * deliberately out: each swaps one summary for another on the same line.
+ */
 private data class SettingsLayoutEpoch(
     val diagnosticsVisible: Boolean,
     val diagnostics: List<FlickLog.Entry>,
+    val pairedPhones: List<PairedPhone>,
     val density: Float,
     val fontScale: Float,
 )
+
+/**
+ * Where D-pad focus is owed a landing once a forget disposes the focused row.
+ *
+ * "Nowhere" is deliberately NOT one of these. A LazyColumn item that goes away
+ * takes focus with it, so a forget that resolved to null would leave the remote
+ * steering a screen with no focus on it at all, recoverable only with Back —
+ * and one paired phone is the common case, not an edge one.
+ */
+internal sealed interface SettingsFocusReturn {
+    /** The surviving neighbour row, which is where the eye already is. */
+    data class Phone(val keyId: String) : SettingsFocusReturn
+
+    /** The Device name row: no phone row survives, and this one always exists. */
+    data object DeviceName : SettingsFocusReturn
+}
+
+/**
+ * Where D-pad focus goes when [keyId]'s row is forgotten: the row below it, the
+ * row above when it was the last one, and Device name when it was the only one.
+ *
+ * A key id that is not in [phones] cannot name a surviving neighbour either, so
+ * it takes the same landing rather than a null the caller would have to invent a
+ * meaning for.
+ */
+internal fun settingsFocusReturnAfterForget(phones: List<PairedPhone>, keyId: String): SettingsFocusReturn {
+    val index = phones.indexOfFirst { it.keyId == keyId }
+    if (index < 0) return SettingsFocusReturn.DeviceName
+    val neighbour = phones.getOrNull(index + 1)?.keyId ?: phones.getOrNull(index - 1)?.keyId
+    return neighbour?.let(SettingsFocusReturn::Phone) ?: SettingsFocusReturn.DeviceName
+}
 /**
  * T10a · Settings. The old always-on developer HUD survives here as one row —
  * "Playback metrics overlay", off by default, phrased for the curious. Focus
@@ -169,6 +218,9 @@ fun SettingsScreen(
     onToggleMetrics: () -> Unit,
     onForgetAll: () -> Unit,
     onDone: () -> Unit,
+    pairedPhones: List<PairedPhone> = emptyList(),
+    /** Returns whether the credential is actually gone; see `PairingManager.forget`. */
+    onForgetPhone: (String) -> Boolean = { false },
     diagnosticsVisible: Boolean = false,
     diagnostics: List<FlickLog.Entry> = emptyList(),
     onToggleDiagnostics: () -> Unit = {},
@@ -201,6 +253,7 @@ fun SettingsScreen(
     val layoutEpoch = SettingsLayoutEpoch(
         diagnosticsVisible = diagnosticsVisible,
         diagnostics = diagnostics,
+        pairedPhones = pairedPhones,
         density = density.density,
         fontScale = density.fontScale,
     )
@@ -212,6 +265,32 @@ fun SettingsScreen(
         SettingsBringIntoViewSpec(focusReservePx)
     }
     var confirmForget by remember { mutableStateOf(false) }
+    // The armed phone row, by key id rather than by a screen-level flag: arming
+    // one row must not arm its neighbours, and an armed row disarms the moment the
+    // D-pad leaves it — a row left armed off screen would be fired by a centre
+    // press the viewer aimed at something else entirely.
+    var armedForget by remember { mutableStateOf<String?>(null) }
+    var focusedPhone by remember { mutableStateOf<String?>(null) }
+    var renameFocused by remember { mutableStateOf(false) }
+    // Where focus must land once a forget disposes the focused row, and the
+    // requester lent to that row while it is being aimed at. Null means nothing
+    // is owed a landing at all — never "land nowhere", which is what
+    // [SettingsFocusReturn.DeviceName] exists to keep expressible.
+    var focusReturn by remember { mutableStateOf<SettingsFocusReturn?>(null) }
+    val phoneReturnFocus = remember { FocusRequester() }
+    // Date only, and never a timestamp: a v2 record has no date at all, and the
+    // hour a phone was paired is not a fact the viewer needs. The device locale
+    // rather than the diagnostics clock's `Locale.US` — that is developer output
+    // pinned to one locale, this is user copy.
+    val pairedDate = remember { SimpleDateFormat("d MMM yyyy", Locale.getDefault()) }
+    // Below two phones this row is never the right offer, for two different
+    // reasons. With one it is a second, blunter copy of that row's own Forget, and
+    // a TV settings column must not carry the same destructive action twice. With
+    // none it is a destructive action with nothing to destroy — still focusable,
+    // so a viewer can land on it, press it and watch nothing happen. The host
+    // closes this screen when the last phone goes, so the empty list is normally
+    // one exit frame; this screen must not depend on that to be coherent.
+    val showForgetAll = pairedPhones.size >= 2
     val reducedMotion = LocalReducedMotion.current
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
@@ -264,6 +343,29 @@ fun SettingsScreen(
         }
     }
     LaunchedEffect(Unit) { runCatching { renameFocus.requestFocus() } }
+    // Forgetting a phone disposes the very row focus is on, and a LazyColumn item
+    // that goes away takes D-pad focus with it — land nowhere and the remote
+    // steers nothing at all. Driven off the ARRIVAL of the new list rather than
+    // off the press, because the row is still composed at the moment of the press;
+    // [landTvFocus] then repeats the request until the replacement row is attached
+    // and placed, and falls back to Device name, which every state of this screen
+    // has.
+    LaunchedEffect(pairedPhones) {
+        when (val target = focusReturn) {
+            null -> return@LaunchedEffect
+            // Still the neighbour's landing, unless that row has itself gone in
+            // the meantime — then Device name, which no state of this screen is
+            // without.
+            is SettingsFocusReturn.Phone ->
+                if (pairedPhones.any { it.keyId == target.keyId }) {
+                    landTvFocus(phoneReturnFocus, renameFocus) { focusedPhone == target.keyId }
+                } else {
+                    landTvFocus(renameFocus, renameFocus) { renameFocused }
+                }
+            SettingsFocusReturn.DeviceName -> landTvFocus(renameFocus, renameFocus) { renameFocused }
+        }
+        focusReturn = null
+    }
     LaunchedEffect(layoutEpoch, clearPlacedEpoch, donePlacedEpoch, clearFocused, doneFocused) {
         when {
             clearFocused && clearPlacedEpoch == layoutEpoch -> clearBringIntoView.bringIntoView()
@@ -308,13 +410,22 @@ fun SettingsScreen(
                 contentPadding = settingsContentPadding,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
+            // The stagger's index is a RENDERED position, counted as the column is
+            // built: the phone rows make the count variable, so it can no longer be
+            // a constant per row. Each row captures its own value here rather than
+            // reading the counter from inside its item, which would compose against
+            // the final total.
+            var row = 0
+
+            val renameRow = row++
             item(key = SettingsRenameKey) {
                 FlickTvRow(
                     onClick = onRename,
                     focusRequester = renameFocus,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 0, settled = entranceSettled)
+                        .onFocusChanged { renameFocused = it.isFocused }
+                        .settingsStage(stage, index = renameRow, settled = entranceSettled)
                         .testTag("settings-first-row"),
                     contentPadding = RowPadding,
                 ) {
@@ -331,12 +442,15 @@ fun SettingsScreen(
                 }
             }
 
-            item(key = "pairedPhones") {
-                // Static info row (not a focus target).
+            val pairedHeaderRow = row++
+            item(key = SettingsPairedHeaderKey) {
+                // The section heading (not a focus target). With no phones it is
+                // still the whole answer — "Paired phones / None yet" — and there
+                // is nothing below it.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 1, settled = entranceSettled)
+                        .settingsStage(stage, index = pairedHeaderRow, settled = entranceSettled)
                         .testTag("settings-paired-row")
                         .clip(FlickShape.Md)
                         .background(FlickColor.SurfaceRaisedAlt)
@@ -352,6 +466,74 @@ fun SettingsScreen(
                 }
             }
 
+            pairedPhones.forEach { phone ->
+                val phoneRow = row++
+                item(key = SettingsPairedRowPrefix + phone.keyId) {
+                    val armed = armedForget == phone.keyId
+                    val returnTarget = focusReturn
+                    FlickTvRow(
+                        onClick = {
+                            // The latch is read here rather than through the
+                            // composed [armed] flag: a press must be judged
+                            // against the state at the moment of the press, never
+                            // against whichever recomposition last reached this row.
+                            if (armedForget == phone.keyId) {
+                                armedForget = null
+                                // Recorded from the list the viewer is looking at,
+                                // before the row goes away.
+                                focusReturn = settingsFocusReturnAfterForget(pairedPhones, phone.keyId)
+                                // A refused durable write leaves the row exactly
+                                // where it was, still focused, so nothing is owed
+                                // a landing.
+                                if (!onForgetPhone(phone.keyId)) focusReturn = null
+                            } else {
+                                armedForget = phone.keyId
+                            }
+                        },
+                        contentDescription = stringResource(
+                            R.string.settings_paired_forget_a11y,
+                            phone.label,
+                        ),
+                        focusRequester = phoneReturnFocus.takeIf {
+                            returnTarget is SettingsFocusReturn.Phone && returnTarget.keyId == phone.keyId
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { state ->
+                                if (state.isFocused) {
+                                    focusedPhone = phone.keyId
+                                } else {
+                                    if (focusedPhone == phone.keyId) focusedPhone = null
+                                    if (armedForget == phone.keyId) armedForget = null
+                                }
+                            }
+                            .settingsStage(stage, index = phoneRow, settled = entranceSettled)
+                            .testTag("settings-paired-phone-row"),
+                        contentPadding = RowPadding,
+                    ) {
+                        LabeledColumn(
+                            modifier = Modifier.weight(1f),
+                            title = phone.label,
+                            summary = when {
+                                armed -> stringResource(R.string.settings_paired_forget_confirm)
+                                phone.pairedAtMs != null -> stringResource(
+                                    R.string.settings_paired_since,
+                                    pairedDate.format(Date(phone.pairedAtMs)),
+                                )
+                                else -> stringResource(R.string.settings_paired_undated)
+                            },
+                            summaryColor = if (armed) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_paired_forget),
+                            style = FlickType.body(sizeSp = 18),
+                            color = if (armed) FlickColor.Caution else FlickColor.OnSurfaceFaint,
+                        )
+                    }
+                }
+            }
+
+            val metricsRow = row++
             item(key = SettingsMetricsKey) {
                 FlickTvRow(
                     onClick = onToggleMetrics,
@@ -361,7 +543,7 @@ fun SettingsScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 2, settled = entranceSettled)
+                        .settingsStage(stage, index = metricsRow, settled = entranceSettled)
                         .testTag("settings-metrics-row"),
                     contentPadding = RowPadding,
                 ) {
@@ -374,31 +556,41 @@ fun SettingsScreen(
                 }
             }
 
-            item(key = SettingsForgetKey) {
-                FlickTvRow(
-                    onClick = {
-                        if (confirmForget) onForgetAll() else confirmForget = true
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .settingsStage(stage, index = 3, settled = entranceSettled)
-                        .testTag("settings-forget-row"),
-                    contentPadding = RowPadding,
-                ) {
-                    LabeledColumn(
-                        modifier = Modifier.weight(1f),
-                        title = stringResource(R.string.settings_forget_all),
-                        summary = stringResource(
-                            if (confirmForget) R.string.settings_forget_all_confirm
-                            else R.string.settings_forget_all_summary,
-                        ),
-                        summaryColor = if (confirmForget) FlickColor.Caution else FlickColor.OnSurfaceDim,
-                    )
+            if (showForgetAll) {
+                val forgetAllRow = row++
+                item(key = SettingsForgetKey) {
+                    FlickTvRow(
+                        onClick = {
+                            if (confirmForget) onForgetAll() else confirmForget = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // Disarms with focus, exactly as the phone rows above
+                            // it do: a latch that survived the D-pad leaving could
+                            // be fired later by a centre press aimed elsewhere, and
+                            // two adjacent destructive rows that arm alike must not
+                            // disarm differently.
+                            .onFocusChanged { if (!it.isFocused) confirmForget = false }
+                            .settingsStage(stage, index = forgetAllRow, settled = entranceSettled)
+                            .testTag("settings-forget-row"),
+                        contentPadding = RowPadding,
+                    ) {
+                        LabeledColumn(
+                            modifier = Modifier.weight(1f),
+                            title = stringResource(R.string.settings_forget_all),
+                            summary = stringResource(
+                                if (confirmForget) R.string.settings_forget_all_confirm
+                                else R.string.settings_forget_all_summary,
+                            ),
+                            summaryColor = if (confirmForget) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                        )
+                    }
                 }
             }
 
             // Self-diagnosing TV: the same FlickTV lines adb would show, without a
             // laptop. Memory-only; nothing here is persisted.
+            val diagnosticsRow = row++
             item(key = SettingsDiagnosticsKey) {
                 FlickTvRow(
                     onClick = onToggleDiagnostics,
@@ -411,7 +603,7 @@ fun SettingsScreen(
                     modifier = Modifier
                         .tvRevealSource(diagnosticsOrigin)
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 4, settled = entranceSettled)
+                        .settingsStage(stage, index = diagnosticsRow, settled = entranceSettled)
                         .testTag("settings-diagnostics-row"),
                     contentPadding = RowPadding,
                 ) {

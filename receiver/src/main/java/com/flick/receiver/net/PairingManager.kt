@@ -8,12 +8,26 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Locale
 
 data class PairingSnapshot(
     val surface: PairingSurface,
     val pairedCount: Int,
     val mostRecentDeviceLabel: String?,
+    val devices: List<PairedPhone> = emptyList(),
 )
+
+/**
+ * One paired phone as everything outside this file is allowed to see it.
+ *
+ * It deliberately has no `key` field. The 256-bit pairing secret is the whole
+ * authorization story and it never leaves [PairingManager]: the UI layer reads
+ * this type, so no screen, snapshot or log can reach the key even by mistake.
+ *
+ * [pairedAtMs] is null for a record written before this TV recorded dates —
+ * unknown, never guessed.
+ */
+data class PairedPhone(val keyId: String, val label: String, val pairedAtMs: Long?)
 
 sealed interface PairingSurface {
     data object Standby : PairingSurface
@@ -73,7 +87,7 @@ class PairingManager(
         publish(PairingSurface.Standby)
     }
 
-    @Synchronized fun onForeground() { if (storedRecords().isEmpty()) requestOpen() }
+    @Synchronized fun onForeground() { if (storedPhones().isEmpty()) requestOpen() }
     @Synchronized fun onBackground() = closeSurface()
 
     @Synchronized fun tick() {
@@ -107,11 +121,15 @@ class PairingManager(
         }
         val label = normalizeLabel(device, 80).ifBlank { return PairAttemptResult.InvalidCode }
         val key = randomKey(); val keyId = randomId()
-        val records = storedRecords().toMutableList().apply { add("$keyId|$key|$label") }
-        // Key, keyId and label are one durable transaction before success is published.
+        val records = storedRecords() + encodePairingRecord(keyId, key, wall(), label)
+        // Key, keyId, date and label are one durable transaction before success is
+        // published. KEY_LAST_DEVICE_ID rides along because the bare label alone
+        // cannot say WHICH record the Idle screen is naming, and [forget] has to
+        // know that to avoid leaving a name behind for a phone it just removed.
         val committed = commitPairing(
             commit = {
-                prefs.edit().putStringSet(KEY_RECORDS, records.toSet()).putString(KEY_LAST_DEVICE, label)
+                prefs.edit().putStringSet(KEY_RECORDS, records)
+                    .putString(KEY_LAST_DEVICE, label).putString(KEY_LAST_DEVICE_ID, keyId)
                     .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
             },
             afterCommit = {
@@ -136,7 +154,7 @@ class PairingManager(
     @Synchronized fun forgetAllPairings(): Boolean {
         return commitForgetPairings(
             commit = {
-                prefs.edit().remove(KEY_RECORDS).remove(KEY_LAST_DEVICE)
+                prefs.edit().remove(KEY_RECORDS).remove(KEY_LAST_DEVICE).remove(KEY_LAST_DEVICE_ID)
                     .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
             },
             afterCommit = {
@@ -152,9 +170,76 @@ class PairingManager(
         )
     }
 
+    /**
+     * Removes exactly one credential, durable write first, and returns whether it
+     * is gone. False means this TV still admits that phone — no record carried
+     * [keyId], or `SharedPreferences` rejected the write — so a caller can never
+     * report a forget that did not happen.
+     *
+     * Unlike [forgetAllPairings] this does NOT reopen the pairing surface while
+     * any phone remains: a code is an authorization surface, and removing one of
+     * several phones is not a request to admit a new one. Reaching zero is the
+     * exception, and it takes exactly the [forgetAllPairings] path — including the
+     * lockout reset, so a TV cannot be left with no phones and no way to re-pair
+     * for the eight minutes a lockout can still be running.
+     *
+     * That exception is a contract on the CALLER: reaching zero opens a code, and
+     * this class cannot see which surface the screen is showing. A caller that
+     * keeps a higher-priority surface up after this returns leaves a code that is
+     * live, rotating and accepting attempts with nothing rendering it — which is
+     * exactly what [closeSurface] refuses to allow. `ReceiverApp` closes Settings
+     * on the emptied result for that reason.
+     */
+    @Synchronized fun forget(keyId: String): Boolean {
+        val records = storedRecords()
+        val remaining = recordsWithout(records, keyId) ?: return false
+        val emptied = remaining.isEmpty()
+        val nextLast = lastDeviceAfterForget(
+            remaining = remaining,
+            forgottenKeyId = keyId,
+            forgottenLabel = records.mapNotNull(::decodePairingRecord).firstOrNull { it.keyId == keyId }?.label,
+            storedKeyId = prefs.getString(KEY_LAST_DEVICE_ID, null),
+            storedLabel = prefs.getString(KEY_LAST_DEVICE, null),
+        )
+        return commitForgetPairings(
+            commit = {
+                prefs.edit().apply {
+                    if (emptied) remove(KEY_RECORDS) else putStringSet(KEY_RECORDS, remaining)
+                    if (nextLast != null) {
+                        if (nextLast.keyId == null) {
+                            remove(KEY_LAST_DEVICE); remove(KEY_LAST_DEVICE_ID)
+                        } else {
+                            putString(KEY_LAST_DEVICE, nextLast.label)
+                            putString(KEY_LAST_DEVICE_ID, nextLast.keyId)
+                        }
+                    }
+                    if (emptied) { putInt(KEY_LOCKOUT_ROUND, 0); putLong(KEY_LOCKOUT_UNTIL, 0L) }
+                }.commit()
+            },
+            afterCommit = {
+                FlickLog.i("pair", "forgot keyIdFp=${FlickLog.fp(keyId)} remaining=${remaining.size}")
+                if (emptied) {
+                    failures = 0
+                    lockoutRound = 0
+                    lockoutUntilElapsed = 0L
+                    lockoutUntilWall = 0L
+                    hostThrottles.clear()
+                    visible = true
+                    open = null
+                    publishEligible()
+                } else {
+                    publish(_snapshot.value.surface)
+                }
+            },
+        )
+    }
+
     @Synchronized fun clearPairings() = forgetAllPairings()
 
-    @Synchronized fun pairedCount(): Int = storedRecords().size
+    /** Every paired phone, newest first. Never carries the pairing key. */
+    @Synchronized fun pairedDevices(): List<PairedPhone> = storedPhones()
+
+    @Synchronized fun pairedCount(): Int = storedPhones().size
     @Synchronized fun pairedLabel(): String? = prefs.getString(KEY_LAST_DEVICE, null)
 
     /**
@@ -203,7 +288,15 @@ class PairingManager(
         return elapsed() + remaining
     }
     private fun publish(surface: PairingSurface) { _snapshot.value = snapshot(surface) }
-    private fun snapshot(surface: PairingSurface) = PairingSnapshot(surface, storedRecords().size, pairedLabel())
+    // Count and list come from the same decoded read. A record that cannot be
+    // decoded can never satisfy [findKey] either, so counting it would claim a
+    // phone is paired that this TV would refuse — and would leave the Settings
+    // list one row short of its own heading.
+    private fun snapshot(surface: PairingSurface): PairingSnapshot {
+        val phones = storedPhones()
+        return PairingSnapshot(surface, phones.size, pairedLabel(), phones)
+    }
+    private fun storedPhones(): List<PairedPhone> = pairedPhonesOf(storedRecords())
     private fun storedRecords(): Set<String> = prefs.getStringSet(KEY_RECORDS, emptySet()) ?: emptySet()
     private fun randomCode() = random.nextInt(10_000).toString().padStart(4, '0')
     private fun randomId() = bytes(16)
@@ -215,8 +308,12 @@ class PairingManager(
         private const val PREFS = "flick_pairing"
         private const val KEY_NAME = "tv_name"
         private const val KEY_TV_ID = "tv_id"
+        // The key is still `_v2`: v3 changed the ENCODING of a record, not the
+        // store it lives in, and both shapes coexist in this one set so an
+        // existing pairing survives the upgrade without re-pairing.
         private const val KEY_RECORDS = "pairing_records_v2"
         private const val KEY_LAST_DEVICE = "last_device"
+        private const val KEY_LAST_DEVICE_ID = "last_device_key_id"
         private const val KEY_LOCKOUT_ROUND = "lockout_round"
         private const val KEY_LOCKOUT_UNTIL = "lockout_until_epoch_ms"
         const val DEFAULT_TV_NAME = "Flick TV"
@@ -231,14 +328,116 @@ class PairingManager(
     }
 }
 
-data class PairingRecord(val keyId: String, val key: String, val label: String) {
+/** [pairedAtMs] is null for a v2 record: the date is unknown, never invented. */
+data class PairingRecord(
+    val keyId: String,
+    val key: String,
+    val label: String,
+    val pairedAtMs: Long? = null,
+) {
     companion object {
-        fun decode(value: String): PairingRecord? {
-            val parts = value.split('|', limit = 3)
-            return parts.takeIf { it.size == 3 }?.let { PairingRecord(it[0], it[1], it[2]) }
-        }
+        fun decode(value: String): PairingRecord? = decodePairingRecord(value)
     }
 }
+
+/**
+ * The version sentinel that opens a v3 record — and the reason there is one.
+ *
+ * v2 is `keyId|key|label`, with the label LAST precisely so it may contain `|`,
+ * which [normalizeLabel] does not strip. Adding a date field ahead of the label
+ * makes the two shapes ambiguous by field count alone: the perfectly legal v2
+ * label `12345|home` splits into four parts whose third parses as a number, and a
+ * migration that trusted the count would silently read a phone called "home"
+ * paired in 1970 — a wrong date shown to the user and half a label lost. A keyId
+ * is always 22 base64url characters, so a leading `v3` is a token no v2 record
+ * can produce, and the two are told apart with certainty rather than by guess.
+ */
+private const val RECORD_V3 = "v3"
+
+internal fun encodePairingRecord(keyId: String, key: String, pairedAtMs: Long, label: String): String =
+    "$RECORD_V3|$keyId|$key|$pairedAtMs|$label"
+
+/**
+ * Reads either shape. A v2 record migrates in place with an unknown date rather
+ * than being dropped: it is a live credential, and the user must not have to
+ * re-pair a phone because this TV started recording dates.
+ */
+internal fun decodePairingRecord(value: String): PairingRecord? {
+    if (value.startsWith("$RECORD_V3|")) {
+        val parts = value.split('|', limit = 5)
+        // A corrupt date costs the date, never the credential.
+        return parts.takeIf { it.size == 5 }
+            ?.let { PairingRecord(it[1], it[2], it[4], it[3].toLongOrNull()) }
+    }
+    val parts = value.split('|', limit = 3)
+    return parts.takeIf { it.size == 3 }?.let { PairingRecord(it[0], it[1], it[2], null) }
+}
+
+/**
+ * The stored set with [keyId]'s record removed, or null when no record carries it
+ * — a forget that removed nothing must say so rather than report success for a
+ * phone this TV still admits.
+ *
+ * A record that cannot be decoded is left in place. It authorizes nothing (it can
+ * never satisfy [PairingManager.findKey] either), and dropping it here would make
+ * forgetting one phone quietly rewrite the whole store.
+ */
+internal fun recordsWithout(records: Collection<String>, keyId: String): Set<String>? {
+    val doomed = records.firstOrNull { decodePairingRecord(it)?.keyId == keyId } ?: return null
+    return records.filterNotTo(LinkedHashSet<String>()) { it == doomed }
+}
+
+/** Null in both fields means the TV names no phone at all. */
+internal data class LastDevice(val label: String?, val keyId: String?)
+
+/**
+ * What `last_device` must hold once [forgottenKeyId] is gone, or null when it
+ * still names a phone this TV admits and may be left exactly as it is.
+ *
+ * The Idle screen renders that value as "Paired with …", so it may never name a
+ * phone that has just been removed. A store written before v3 recorded no
+ * last-paired key id, and the bare label is then the only signal it left: that
+ * costs a name when two phones share one, and shows "Ready" rather than a wrong
+ * name, which is the right direction to be wrong in.
+ *
+ * The replacement is the newest phone still paired. Undated records sort last, so
+ * an all-v2 remainder promotes a label alphabetically rather than by recency — it
+ * is still a phone that IS paired, which is the honest half of the claim.
+ */
+internal fun lastDeviceAfterForget(
+    remaining: Collection<String>,
+    forgottenKeyId: String,
+    forgottenLabel: String?,
+    storedKeyId: String?,
+    storedLabel: String?,
+): LastDevice? {
+    val stale = if (storedKeyId != null) {
+        storedKeyId == forgottenKeyId
+    } else {
+        storedLabel != null && storedLabel == forgottenLabel
+    }
+    if (!stale) return null
+    val next = pairedPhonesOf(remaining).firstOrNull() ?: return LastDevice(null, null)
+    return LastDevice(next.label, next.keyId)
+}
+
+/**
+ * Every decodable record as the UI sees it, in a TOTAL order. A `StringSet` has
+ * no order of its own, so without one the Settings list would reshuffle between
+ * process restarts for no reason the viewer could see. Dated records come first,
+ * newest first; records migrated from v2 have no date at all and follow, by
+ * label — with the key id as the final tiebreak so two identically named,
+ * identically dated phones still land in the same order every read.
+ */
+internal fun pairedPhonesOf(records: Collection<String>): List<PairedPhone> =
+    records.mapNotNull(::decodePairingRecord)
+        .map { PairedPhone(it.keyId, it.label, it.pairedAtMs) }
+        .sortedWith(
+            compareBy<PairedPhone> { it.pairedAtMs == null }
+                .thenByDescending { it.pairedAtMs ?: 0L }
+                .thenBy { it.label.lowercase(Locale.ROOT) }
+                .thenBy { it.keyId },
+        )
 
 fun normalizeLabel(value: String, max: Int): String {
     val normalized = StringBuilder()

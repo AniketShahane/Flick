@@ -10,6 +10,11 @@ import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
 import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.SubtitleServingState
+import com.flick.sender.media.LibraryFolder
+import com.flick.sender.media.LibraryFolderChoice
+import com.flick.sender.media.LibraryFolderStore
+import com.flick.sender.media.LibraryFolders
+import com.flick.sender.media.LibraryScope
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
 import com.flick.sender.media.MediaLibraryLoadGate
@@ -41,6 +46,24 @@ enum class PairErrorKind {
 }
 /** [host]/[port] are the QR's untrusted prefill hint — never dialed without a typed code. */
 data class PendingPairLaunch(val eventId: Long, val host: String? = null, val port: Int? = null)
+
+/**
+ * The library and everything the folder scope derives from it, published as one value.
+ *
+ * They travel together because they describe each other: the chip row states a count of
+ * [scoped], the chooser states a count per folder, and a screen that read those from
+ * separate emissions could paint one library's tally over another library's tiles.
+ *
+ * [items] is the whole library and stays that way — the access-level empty states are
+ * decided from it, so a chosen folder can never be mistaken for a gallery Flick was
+ * never let into.
+ */
+data class LibraryView(
+    val items: List<MediaItem> = emptyList(),
+    val folders: List<LibraryFolder> = emptyList(),
+    val scope: LibraryScope = LibraryScope.All,
+    val scoped: List<MediaItem> = emptyList(),
+)
 /**
  * A sideloaded subtitle the user picked, either by a one-shot SAF document pick or by
  * a filename match inside a folder they granted. [displayName] is already normalized
@@ -118,6 +141,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     val session = PlaybackSession(control, appContext.getString(R.string.media_title_generic))
     private val haptics = FlickHaptics(appContext)
     private val store = PairingStore(appContext)
+    private val libraryFolderStore = LibraryFolderStore(appContext)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
     private var pairingJob: Job? = null
@@ -144,7 +168,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _showQualitySheet = MutableStateFlow(false); val showQualitySheet = _showQualitySheet.asStateFlow()
     private val _showDiagnostics = MutableStateFlow(false); val showDiagnostics = _showDiagnostics.asStateFlow()
     val devices = nsd.devices
-    private val _mediaItems = MutableStateFlow<List<MediaItem>>(emptyList()); val mediaItems = _mediaItems.asStateFlow()
+    // Read here, at construction, rather than by the screen: the first library this
+    // publishes is already narrowed, so a scoped library never opens on everything and
+    // then visibly drops the files the user scoped away.
+    private var libraryFolder: LibraryFolderChoice? = libraryFolderStore.choice()
+    private var libraryResolved = false
+    private val _library = MutableStateFlow(
+        LibraryView(scope = LibraryFolders.scope(libraryFolder, emptyList(), resolved = false)),
+    )
+    val library = _library.asStateFlow()
     private val _libraryLoading = MutableStateFlow(false); val libraryLoading = _libraryLoading.asStateFlow()
     private val _mediaAccess = MutableStateFlow(MediaAccess.NONE); val mediaAccess = _mediaAccess.asStateFlow()
     val connection = control.connection
@@ -183,15 +215,23 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         libraryJob = null
         _mediaAccess.value = access
         if (access == MediaAccess.NONE) {
-            _mediaItems.value = emptyList()
+            // No query is run here, so the empty list that follows is not evidence about
+            // this phone's storage and must not be allowed to convict the stored folder.
+            libraryResolved = false
+            publishLibrary(emptyList())
             _libraryLoading.value = false
             return
         }
         _libraryLoading.value = true
         libraryJob = scope.launch {
-            val items = MediaLibrary.query(appContext)
+            val read = MediaLibrary.query(appContext)
             libraryGate.runIfLatest(load) {
-                _mediaItems.value = items
+                // Assigned from this read, never latched: "that folder is gone" is a claim
+                // about the folders published alongside it, and a read that failed partway
+                // is missing exactly the rows the newest-first sort put last. The rows it
+                // did get are still published — withheld is the verdict, not the library.
+                libraryResolved = read.complete
+                publishLibrary(read.items)
                 _libraryLoading.value = false
                 libraryJob = null
             }
@@ -199,6 +239,35 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun refreshMediaLibrary() {
         _mediaAccess.value.takeIf { it != MediaAccess.NONE }?.let(::onMediaAccess)
+    }
+
+    /**
+     * Narrow the library to one folder, or to everything when [folder] is null — which
+     * is also the repair offered when the chosen folder has gone.
+     *
+     * A view concern and nothing more: no cast, no served file and no resume is keyed
+     * on it, and the subtitle sidecar folder is a separate grant this never reads.
+     */
+    fun chooseLibraryFolder(folder: LibraryFolder?) {
+        val choice = folder?.let { LibraryFolderChoice(it.id, it.name) }
+        if (choice == libraryFolder) return
+        libraryFolder = choice
+        // Applied whether or not the write lands: a preference file that refused the
+        // commit costs the choice at the next launch, which is not a reason to ignore
+        // the tap the user just made.
+        if (choice == null) libraryFolderStore.clear() else libraryFolderStore.save(choice)
+        publishLibrary(_library.value.items)
+    }
+
+    private fun publishLibrary(items: List<MediaItem>) {
+        val folders = LibraryFolders.derive(items, MediaItem::bucketId, MediaItem::bucket)
+        val folderScope = LibraryFolders.scope(libraryFolder, folders, libraryResolved)
+        _library.value = LibraryView(
+            items = items,
+            folders = folders,
+            scope = folderScope,
+            scoped = LibraryFolders.scoped(items, folderScope, MediaItem::bucketId),
+        )
     }
     fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
     fun openLibrary() { _route.value = Route.Library }

@@ -5,6 +5,11 @@
   stroke overhang its visual box is x 4..60.5, y 10.5..53.5. Every coordinate
   below is that grid scaled 1.1x and shifted so the box centres on (54,54), which
   keeps the farthest point 31.2 from centre — inside the 66dp safe circle.
+
+  That farthest point is the middle bar's left cap (28.4 + 2.75), just ahead of
+  the triangle's tip at 26.1 + 4.95 = 31.1. Both clear the r=36 background disc
+  by ~4.8, which is all the canvas the mark leaves at its tightest: anything
+  scaled up from here starts landing on transparency.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"

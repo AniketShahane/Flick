@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Adaptive-icon foreground: the Flick mark alone on the 108-unit canvas. Also the
-  <monochrome> layer, which the launcher re-tints from its own alpha — so every
-  path here stays a flat fill.
+  Adaptive-icon foreground: the Flick mark alone on the 108-unit canvas. The
+  themed icon is ic_launcher_monochrome, not this file — the launcher keeps a
+  monochrome layer's alpha, and the streaks below are deliberately translucent.
 
-  The 64-unit mark is scaled to 58 units and centred at (54,54), which keeps its
-  furthest corner 32 units from centre — inside the 33-unit radius of the 66-unit
-  safe zone, so no launcher mask (circle, squircle, teardrop) can clip it.
+  The group maps the 64-unit grid to 58 units at (54,54): p -> 0.90625p + 25. The
+  mark's extreme is the triangle's right tip, vertex (56,32) plus its 4.5-unit
+  outset, i.e. 21.75 + 4.08 = 25.83 from centre; the middle streak's left cap is
+  next at 25.45. Both clear the 33-unit safe-zone radius, and both sit 10 units
+  inside the r=36 background disc, so nothing here lands on transparency.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"

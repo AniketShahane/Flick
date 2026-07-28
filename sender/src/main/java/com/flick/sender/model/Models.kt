@@ -16,6 +16,13 @@ data class MediaItem(
     val width: Int,
     val height: Int,
     val bucket: String?,
+    /**
+     * The MediaStore bucket this row belongs to, or null when nothing said — below
+     * API 29 the column is not public API for video at all, and a provider may
+     * withhold it on any release. Null therefore means "no folder Flick can name",
+     * never "loose in the gallery": the file is still listed, just not under a folder.
+     */
+    val bucketId: Long?,
 ) {
     val resolutionLabel: String get() = resolutionLabelFor(width, height)
 

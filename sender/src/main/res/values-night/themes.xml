@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      System dark mode resolves the Compose palette to the cinematic set, so the
-      cold-start frame and the status-bar icons have to follow it here too — a pale
-      window background would flash white before a near-black app. The navigation-bar
-      icons are owned by FlickApp's insets controller instead of this theme, because
-      they also have to invert per-route on the forced-cinematic screens.
+      The plate the system paints before this process runs, out of whatever night mode IT
+      resolves for Flick — a pale window background would flash white before a near-black
+      app. That resolution is Flick's own answer only while the appearance preference is
+      Match system: from API 31 MainActivity hands the choice to UiModeManager, so the
+      system reads this bucket off the app's own mode on every launch after the one the
+      choice was made on, and a Dark user on a light phone lands here too. API 26-30 has
+      no per-app night mode short of AppCompat, which this app does not use, so there this
+      stays the phone's answer and MainActivity's repaint from the resolved palette is the
+      first frame the preference owns. The status-bar icons are seeded from the same
+      window; the navigation-bar ones are owned by FlickApp's insets controller instead of
+      this theme, because they also have to invert per-route on the forced-cinematic
+      screens.
     -->
     <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">#050C1D</item>

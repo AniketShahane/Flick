@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Adaptive-icon background: the Flick canvas, blue-black and never #000. -->
+    <!--
+      Fill of the launcher-icon disc (@drawable/ic_launcher_disc): the Flick
+      canvas, blue-black and never #000.
+    -->
     <color name="ic_launcher_background">#FF04070F</color>
 </resources>

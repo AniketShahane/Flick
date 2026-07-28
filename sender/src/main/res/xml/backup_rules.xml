@@ -2,4 +2,13 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="flick_pairings.xml" />
     <exclude domain="sharedpref" path="flick_subtitles_online.xml" />
+    <!--
+      The library scope is a MediaStore bucket id — an opaque hash of a folder path on the
+      volume it was read from — so it identifies nothing on any other phone. Restored, it
+      resolves to a folder that is not there and the library opens on the card that says
+      so, which on a pre-Q device it can never stop saying: no row there carries a bucket
+      id at all. The appearance preference is deliberately NOT here: a light/dark choice is
+      about the person, not the device, and it should survive the move.
+    -->
+    <exclude domain="sharedpref" path="flick_library.xml" />
 </full-backup-content>

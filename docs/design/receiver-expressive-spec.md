@@ -208,6 +208,26 @@ Travel is capped — a jump longer than 320 dp fades out and blooms back in at t
 destination instead of flying across dead screen — and the travel spring damps at
 `TV_FOCUS_DAMPING`, so the painted extent stays inside `FocusRingReserve`.
 
+A member publishes its **pre-scale** layout rect and draws the 1.06 focus lift
+itself, so the host builds the ring in that same pre-scale space and puts it
+through a draw-phase scale rather than folding the lift into an inset. A uniform
+scale of a rounded rect is still a rounded rect: one inset, one radius, concentric
+at any aspect ratio. Adding the lift back as an inset instead needs a *different*
+amount per axis — 28.5 dp horizontally against 6.6 dp vertically on the 800 × 69 dp
+Settings "Device name" row — which leaves no single radius to grow the corner by.
+Taking the mean of the two put a **34.5 dp** corner on that row where §3 asks for
+17 × 1.06 + 4.5 = **22.5 dp**: 84 % of the ring's own half-height, so a rounded
+rectangle rang as a stadium. The error scales with the control's aspect ratio and
+vanishes at 1:1 — the transport keys are square, so their two insets were
+identical — which is why the Settings column is where it read as a bug.
+
+The offset and both stroke widths are divided by the lift before the scale, so the
+ring keeps the 4.5 dp offset and 2 dp stroke §3 names rather than the 6 % more the
+lift would carry them to. That is the one place the traveling ring and the local
+`flickFocusRing` differ — the local one draws *inside* the member's scaling layer
+and lets the lift take its offset to 4.77 dp — and it is 0.27 dp, half a physical
+pixel at TV density, in the direction of the spec.
+
 ---
 
 ## 4. Typography
@@ -578,16 +598,66 @@ the new brand:
   `(9,22.5,13×5)`, `(4,31.5,11×5)`, `(9,40.5,13×5)` r=2.5; triangle
   `M28,15 L56,32 L28,49` with a 9-unit round-join stroke.
 - Add a proper **adaptive icon**: `res/mipmap-anydpi-v26/ic_launcher.xml` with
-  `ic_launcher_background` (solid `#04070F`) + `ic_launcher_foreground` (the mark
-  inset to the 66 dp safe zone of the 108 dp canvas), and point the manifest at
-  `@mipmap/ic_launcher`. Keep a `@drawable/ic_launcher` fallback for pre-26
-  tooling paths.
+  `ic_launcher_background` + `ic_launcher_foreground` (the mark inset to the 66 dp
+  safe zone of the 108 dp canvas), and point the manifest at `@mipmap/ic_launcher`.
+  Keep a `@drawable/ic_launcher` fallback for pre-26 tooling paths.
+- The background layer is a **disc, not a plate** — `res/drawable/ic_launcher_disc.xml`,
+  `#04070F` at r = 36 about (54, 54), transparent outside it. Flick is round
+  because it chose to be, not because the device's mask said so.
 - `res/drawable/banner.xml` — 320 × 180 dp leanback banner: the mark plus a real
   "flick" wordmark drawn as paths (not the current grey placeholder bars) on
   `#04070F`, with the amber streaks reading at TV-launcher size.
 - `res/values/themes.xml` — window/status/navigation background `#FF04070F`.
 
 Keep everything vector and self-contained; no raster assets.
+
+### 8a. The 36-unit disc
+
+An adaptive layer is 108 × 108. The system reserves the outer 18 on every side for
+parallax and bleed, so only the central 72 × 72 is ever shown and only a 66-unit
+circle is guaranteed. A launcher applying a **circular** mask therefore draws
+exactly r = 36 about (54, 54) — which is the disc. The two edges coincide there,
+and on a squircle, rounded-square or teardrop launcher the corners fall outside
+the disc onto transparency, so a circle is what the user sees either way.
+
+36 is a **ceiling, not a preference**. Every stock mask spans the full 72, so it
+passes 36 units from centre at its edge midpoints: a larger disc is cut flat at
+those four points and reads as a squircle again, and a smaller one leaves a ring
+of wallpaper showing inside a circular mask.
+
+Clearance of each mark against that 36, measured from the path data with the
+stroke overhang resolved (the outer boundary of a round-join stroke is the shape
+plus a disc of half the stroke width, so the extreme is the farthest vertex plus
+that half-width):
+
+- `:receiver` — the group maps the 64-unit grid by `p -> 0.90625p + 25`. Extreme
+  is the triangle's right tip: vertex (56, 32) lands 21.75 from centre, plus the
+  4.5-unit outset scaled to 4.08 = **25.83**. The middle streak's left cap is next
+  at 25.45. Roughly 10 units of canvas in hand.
+- `:sender` — the mark is that grid at 1.1×, so it runs larger: the extreme is the
+  middle bar's left cap at 28.4 + 2.75 = **31.16**, just ahead of the triangle tip
+  at 26.13 + 4.95 = 31.08. Only ~4.8 units in hand, and nothing there may grow.
+
+`<monochrome>` never carries the disc — the system masks and re-tints that layer
+itself, so it stays artwork on transparency. It also must not be the colour
+foreground: the launcher keeps the layer's alpha and replaces only its colour, so
+the streaks' 0.5 / 0.85 fills would survive as ghosted bands. Both modules point
+it at a dedicated silhouette, the triangle alone, re-centred on (54, 54) and
+scaled up to hold its weight without the bars balancing it.
+
+`@drawable/ic_launcher` — the flat pre-adaptive fallback, unreachable on-device at
+minSdk 26 — is now a `layer-list` of the same two layers rather than its own
+transcription of the grid, so it is circular by construction and cannot drift.
+
+The Play Store **listing** icon is none of this. It is a separate 512 × 512
+32-bit PNG uploaded in Play Console — never extracted from the APK — and Play
+masks and rounds it itself, so a disc on transparency is the wrong export: the
+corners are Play's to cut, not ours. Fill the square with the canvas colour and
+centre the mark at the same fraction of the frame that it holds of the disc
+(0.87 for `:sender`, 0.72 for `:receiver`). The store silhouette is then Play's
+rounded square while the launcher stays a circle; that divergence is the
+platform's, and trying to fake a circle into the listing icon only buys a
+dark ring around it.
 
 ---
 

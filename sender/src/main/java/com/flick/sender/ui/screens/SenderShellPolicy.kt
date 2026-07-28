@@ -94,8 +94,9 @@ internal object SenderShellPolicy {
 
     /**
      * What the system-bar icons actually have to contend with. The route rule alone is
-     * not enough: in system dark mode every route resolves to the cinematic palette, so
-     * the pale-canvas routes paint near-black too and dark icons would vanish on them.
+     * not enough: on a dark resolution — the appearance preference, or the platform under
+     * Match system — every route lands on the cinematic palette, so the pale-canvas routes
+     * paint near-black too and dark icons would vanish on them.
      */
     fun darkBackdrop(destination: ShellDestination, lightPalette: Boolean): Boolean =
         !lightPalette || darkBackdrop(destination)

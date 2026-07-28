@@ -61,6 +61,7 @@ import com.flick.sender.ui.components.RevealTarget
 import com.flick.sender.ui.components.originRevealMask
 import com.flick.sender.ui.components.remoteCardBounds
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.delay
@@ -98,6 +99,8 @@ private class ShellHistory(var destination: ShellDestination, var seat: NavTab)
 fun FlickApp(
     controller: FlickController,
     batteryExempt: Boolean,
+    themePreference: ThemePreference,
+    onSelectTheme: (ThemePreference) -> Unit,
     onRequestVideoPermission: () -> Unit,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
@@ -339,6 +342,8 @@ fun FlickApp(
                             Route.Settings -> PhoneSettingsScreen(
                                 controller = controller,
                                 batteryExempt = batteryExempt,
+                                themePreference = themePreference,
+                                onSelectTheme = onSelectTheme,
                                 onOpenWifiSettings = onOpenWifiSettings,
                                 onRequestBatteryExemption = onRequestBatteryExemption,
                             )
@@ -567,11 +572,11 @@ internal fun physicalRouteDirection(logicalDirection: Int, layoutDirection: Layo
     if (layoutDirection == LayoutDirection.Rtl) -logicalDirection else logicalDirection
 
 /**
- * The window theme sets dark system-bar icons for the light screens; over a cinematic
- * backdrop — or in system dark mode, where every route resolves to it — they have to
- * invert. Both bars move together: the gesture handle sits on the same backdrop the
- * status bar does. Restored on dispose so the setting never outlives the Compose tree
- * that asked for it.
+ * `MainActivity` seeds both bars from the palette the appearance preference resolved to,
+ * which is dark icons for a light one; over a cinematic backdrop — and over every route
+ * once that palette is itself the dark one — they have to invert. Both bars move
+ * together: the gesture handle sits on the same backdrop the status bar does. Restored on
+ * dispose so the setting never outlives the Compose tree that asked for it.
  */
 @Composable
 private fun SystemBarAppearance(darkBackdrop: Boolean) {

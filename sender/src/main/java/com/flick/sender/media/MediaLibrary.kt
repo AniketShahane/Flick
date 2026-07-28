@@ -17,7 +17,20 @@ import kotlinx.coroutines.withContext
  */
 object MediaLibrary {
 
-    suspend fun query(context: Context): List<MediaItem> = withContext(Dispatchers.IO) {
+    /**
+     * One read of the collection: the rows it got, and whether it got all of them.
+     *
+     * [complete] is false when the provider declined to hand over a cursor at all, or when
+     * the walk failed partway — a CursorWindow it could not allocate, a row too large to
+     * deliver, a provider that died mid-iteration. The rows already in hand come back
+     * regardless, because those files are on this phone and the user asked to see them.
+     * What a partial read cannot do is support a claim about what is ABSENT: rows arrive
+     * newest first, so the tail it drops is the oldest folder's, and `LibraryFolders.scope`
+     * would read that absence as the folder having been deleted.
+     */
+    data class Read(val items: List<MediaItem>, val complete: Boolean)
+
+    suspend fun query(context: Context): Read = withContext(Dispatchers.IO) {
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         val hasBucket = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         val projection = buildList {
@@ -27,12 +40,15 @@ object MediaLibrary {
             add(MediaStore.Video.Media.SIZE)
             add(MediaStore.Video.Media.WIDTH)
             add(MediaStore.Video.Media.HEIGHT)
-            if (hasBucket) add(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            if (hasBucket) {
+                add(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                add(MediaStore.Video.Media.BUCKET_ID)
+            }
         }.toTypedArray()
 
         val sort = "${MediaStore.Video.Media.DATE_ADDED} DESC"
         val out = ArrayList<MediaItem>()
-        runCatching {
+        val complete = runCatching {
             context.contentResolver.query(collection, projection, null, null, sort)?.use { c ->
                 val idCol = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                 val nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
@@ -42,6 +58,11 @@ object MediaLibrary {
                 val hCol = c.getColumnIndex(MediaStore.Video.Media.HEIGHT)
                 val bucketCol = if (hasBucket) {
                     c.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                } else {
+                    -1
+                }
+                val bucketIdCol = if (hasBucket) {
+                    c.getColumnIndex(MediaStore.Video.Media.BUCKET_ID)
                 } else {
                     -1
                 }
@@ -60,12 +81,28 @@ object MediaLibrary {
                         width = pixelColumn(c, wCol),
                         height = pixelColumn(c, hCol),
                         bucket = if (bucketCol >= 0) c.getString(bucketCol) else null,
+                        bucketId = bucketColumn(c, bucketIdCol),
                     )
                 }
+                true
             }
-        }
-        out
+            // A null cursor is the provider refusing to answer, which is not the same
+            // answer as an empty gallery: only a cursor walked to its end can say what
+            // this phone does not have.
+            ?: false
+        }.getOrDefault(false)
+        Read(out, complete)
     }
+
+    /**
+     * A bucket id is an opaque hash of the folder's path, not a measurement, so unlike
+     * the columns above it has no value that reads as "nothing was scanned" — only an
+     * absent column or a null cell can say the row belongs to no folder Flick can group
+     * it under. The column is public API for video from Q, which is the same gate the
+     * display name is behind; below it the library simply has no folders to offer.
+     */
+    private fun bucketColumn(cursor: Cursor, index: Int): Long? =
+        if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else null
 
     private fun unsignedColumn(cursor: Cursor, index: Int): Long =
         if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index).coerceAtLeast(0L) else 0L

@@ -8,6 +8,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -19,6 +20,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
+import com.flick.receiver.net.PairedPhone
 import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickTvTheme
@@ -31,6 +33,19 @@ class SettingsScreenFocusTest {
 
     @get:Rule
     val composeRule = createComposeRule()
+
+    /**
+     * Two phones, because "Forget all phones" is only offered at two or more: at
+     * one it duplicates that row's own Forget, and at none it is a destructive
+     * action with nothing to destroy. Every case below therefore mounts the same
+     * column shape — Device name, the paired heading, two phone rows, then the
+     * rows this file has always walked. One phone is undated, which is how a
+     * pairing written before the TV recorded dates renders.
+     */
+    private val pairedPhones = listOf(
+        PairedPhone(keyId = "test-key-a", label = "Pixel 9 Pro", pairedAtMs = 1_726_000_000_000L),
+        PairedPhone(keyId = "test-key-b", label = "Galaxy S24", pairedAtMs = null),
+    )
 
     private val expandedDiagnostics = List(14) { index ->
         FlickLog.Entry(
@@ -67,20 +82,29 @@ class SettingsScreenFocusTest {
 
     private fun assertFocusedTargetIsRingSafe() {
         val viewportBounds = composeRule.onNodeWithTag("settings-scroll-viewport").getUnclippedBoundsInRoot()
-        val focusedTag = listOf(
+        // Every paired-phone row carries one shared tag, so the focused node is
+        // resolved by index within its tag rather than by the tag alone.
+        var focused: SemanticsNodeInteraction? = null
+        for (tag in listOf(
             "settings-first-row",
+            "settings-paired-phone-row",
             "settings-metrics-row",
             "settings-forget-row",
             "settings-diagnostics-row",
             "settings-clear-row",
             "settings-done-row",
-        ).firstOrNull { tag ->
-            composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes()
-                .any { it.config.getOrNull(SemanticsProperties.Focused) == true }
+        )) {
+            val nodes = composeRule.onAllNodesWithTag(tag)
+            val index = nodes.fetchSemanticsNodes()
+                .indexOfFirst { it.config.getOrNull(SemanticsProperties.Focused) == true }
+            if (index >= 0) {
+                focused = nodes[index]
+                break
+            }
         }
-        assertTrue("Expected one tagged Settings control to own D-pad focus", focusedTag != null)
-        if (focusedTag != null) {
-            val focusedBounds = composeRule.onNodeWithTag(focusedTag).getUnclippedBoundsInRoot()
+        assertTrue("Expected one tagged Settings control to own D-pad focus", focused != null)
+        if (focused != null) {
+            val focusedBounds = focused.getUnclippedBoundsInRoot()
             assertTrue(
                 "Focused settings rows need the shared ring reserve within the viewport; " +
                     "row=$focusedBounds, viewport=$viewportBounds",
@@ -124,7 +148,8 @@ class SettingsScreenFocusTest {
             FlickTvTheme {
                 SettingsScreen(
                     tvName = "Living Room TV",
-                    pairedSummary = "1 phone paired",
+                    pairedSummary = "2 paired",
+                    pairedPhones = pairedPhones,
                     metricsEnabled = false,
                     onRename = {},
                     onToggleMetrics = {},
@@ -149,7 +174,8 @@ class SettingsScreenFocusTest {
                 FlickTvTheme {
                     SettingsScreen(
                         tvName = "Living Room TV",
-                        pairedSummary = "1 phone paired",
+                        pairedSummary = "2 paired",
+                        pairedPhones = pairedPhones,
                         metricsEnabled = false,
                         onRename = {},
                         onToggleMetrics = {},
@@ -164,6 +190,8 @@ class SettingsScreenFocusTest {
         assertFocusedTargetIsRingSafe()
 
         val rename = composeRule.onNodeWithText("Device name")
+        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
+        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -171,6 +199,12 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        firstPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        secondPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         assertMetricsPaintStaysInsideHorizontalSafeArea()
@@ -196,6 +230,12 @@ class SettingsScreenFocusTest {
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        secondPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        secondPhone.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        firstPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        firstPhone.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
         composeRule.onNodeWithText("Device name").assertIsFocused()
         assertFocusedTargetIsRingSafe()
         assertFocusedFirstRowPaintStaysInsideViewport()
@@ -208,7 +248,8 @@ class SettingsScreenFocusTest {
                 FlickTvTheme {
                     SettingsScreen(
                         tvName = "Living Room TV",
-                        pairedSummary = "1 phone paired",
+                        pairedSummary = "2 paired",
+                        pairedPhones = pairedPhones,
                         metricsEnabled = false,
                         onRename = {},
                         onToggleMetrics = {},
@@ -224,6 +265,8 @@ class SettingsScreenFocusTest {
 
     private fun runExpandedDiagnosticsTraversal() {
         val rename = composeRule.onNodeWithText("Device name")
+        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
+        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -232,6 +275,12 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        firstPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        secondPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
@@ -277,7 +326,8 @@ class SettingsScreenFocusTest {
                 FlickTvTheme {
                     SettingsScreen(
                         tvName = "Living Room TV",
-                        pairedSummary = "1 phone paired",
+                        pairedSummary = "2 paired",
+                        pairedPhones = pairedPhones,
                         metricsEnabled = false,
                         onRename = {},
                         onToggleMetrics = {},
@@ -291,6 +341,8 @@ class SettingsScreenFocusTest {
         }
 
         val rename = composeRule.onNodeWithText("Device name")
+        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
+        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -299,6 +351,12 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        firstPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        secondPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
@@ -350,7 +408,8 @@ class SettingsScreenFocusTest {
             FlickTvTheme {
                 SettingsScreen(
                     tvName = "Living Room TV",
-                    pairedSummary = "1 phone paired",
+                    pairedSummary = "2 paired",
+                    pairedPhones = pairedPhones,
                     metricsEnabled = false,
                     onRename = {},
                     onToggleMetrics = {},
@@ -361,6 +420,8 @@ class SettingsScreenFocusTest {
         }
 
         val rename = composeRule.onNodeWithText("Device name")
+        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
+        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -369,6 +430,18 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput {
+            keyDown(Key.DirectionDown)
+            keyUp(Key.DirectionDown)
+        }
+        firstPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        firstPhone.performKeyInput {
+            keyDown(Key.DirectionDown)
+            keyUp(Key.DirectionDown)
+        }
+        secondPhone.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        secondPhone.performKeyInput {
             keyDown(Key.DirectionDown)
             keyUp(Key.DirectionDown)
         }

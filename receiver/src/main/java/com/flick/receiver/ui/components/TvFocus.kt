@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -104,9 +105,15 @@ val FlickFocusRingWidth: Dp = 2.dp
  * focused element actually needs beyond its own bounds is
  * `FOCUS_SCALE * (offset + width / 2 + contour) + (FOCUS_SCALE - 1) * side / 2`
  * — 1.06 × (4.5 + 1 + 1) + 0.03 × side, so 10 dp covers any control up to
- * ~103 dp. [FlickFocusRingContourWidth] is in that sum: it widened the ring
- * outward, and a control wide enough to exceed the reserve spends the difference
- * on the overscan margin rather than being cut, since nothing on the path clips.
+ * ~103 dp. That is [flickFocusRing] exactly: it draws inside the element's own
+ * scaling layer, so the lift carries its offset and its strokes out with it. The
+ * traveling ring of §3a divides both back out before scaling (see
+ * [focusRingPreScaleInset]) and settles `(FOCUS_SCALE - 1) × 6.5` = 0.39 dp
+ * inside the same bound, so the formula above is the worse of the two paths and
+ * the reserve covers both. [FlickFocusRingContourWidth] is in that sum: it
+ * widened the ring outward, and a control wide enough to exceed the reserve
+ * spends the difference on the overscan margin rather than being cut, since
+ * nothing on the path clips.
  */
 val FlickFocusRingOffset: Dp = 4.5.dp
 
@@ -385,6 +392,23 @@ internal val LocalFocusBeacon = staticCompositionLocalOf<FocusBeaconState?> { nu
 internal fun beaconHosted(): Boolean = LocalFocusBeacon.current != null
 
 /**
+ * How far outside the member's PRE-SCALE rect the traveling ring's outline sits,
+ * so that scaling the result by [lift] lands it `offsetPx × bloom` outside the
+ * *scaled* element on all four sides, with a corner of
+ * `elementRadius × lift + offsetPx × bloom`.
+ *
+ * The ring is built pre-scale and transformed rather than expanded in place
+ * because the focus lift is a UNIFORM scale, and a uniform scale of a rounded
+ * rect is still a rounded rect — one inset, one radius, concentric at any aspect
+ * ratio. Adding the lift back as an inset instead needs a different amount per
+ * axis, which leaves no single radius to grow the corner by: taking the mean of
+ * the two put a 34.5 dp corner on the 800 × 69 dp Settings row, 84 % of the
+ * ring's own half-height, where §3 asks for 17 × 1.06 + 4.5 = 22.5 dp.
+ */
+internal fun focusRingPreScaleInset(offsetPx: Float, bloom: Float, lift: Float): Float =
+    offsetPx * bloom / lift
+
+/**
  * Installs a single traveling focus ring for the focus group inside [content].
  *
  * One ring exists for the whole group and glides between its members instead of
@@ -487,31 +511,40 @@ fun FocusBeaconHost(
                     if (lit <= 0f) return@drawWithContent
                     val local = bounds.value.translate(-state.origin.x, -state.origin.y)
                     if (local.width <= 0f || local.height <= 0f) return@drawWithContent
-                    // The member publishes its pre-scale layout rect, so the host
-                    // adds back the focus lift the member is drawing itself with.
+                    // The member publishes its pre-scale layout rect and draws the
+                    // focus lift itself, as a centred `graphicsLayer` scale, so the
+                    // ring is built in that same pre-scale space and scaled here —
+                    // the construction the unhosted [flickFocusRing] path already
+                    // gets for free from the member's own scaling layer. Dividing
+                    // the offset and the strokes out first is the one difference:
+                    // it holds them at the 4.5 dp and 2 dp §3 names, where the
+                    // local ring lets the lift carry them 6 % further out.
                     val lift = if (reducedMotion) 1f else FlickMotion.FOCUS_SCALE
                     val bloom = RING_BLOOM_FLOOR + (1f - RING_BLOOM_FLOOR) * lit
-                    val ringOffset = FlickFocusRingOffset.toPx()
-                    val dx = (ringOffset + (lift - 1f) * 0.5f * local.width) * bloom
-                    val dy = (ringOffset + (lift - 1f) * 0.5f * local.height) * bloom
-                    val ringSize = Size(local.width + dx * 2f, local.height + dy * 2f)
+                    val inset = focusRingPreScaleInset(FlickFocusRingOffset.toPx(), bloom, lift)
+                    val ringSize = Size(local.width + inset * 2f, local.height + inset * 2f)
                     val outline = target.shape
-                        .grownBy(((dx + dy) * 0.5f).toDp())
+                        .grownBy(inset.toDp())
                         .createOutline(ringSize, layoutDirection, this)
-                    val stroke = FlickFocusRingWidth.toPx()
-                    translate(left = local.left - dx, top = local.top - dy) {
-                        drawOutline(
-                            outline = outline,
-                            color = FlickColor.FocusRingContour,
-                            alpha = lit,
-                            style = Stroke(width = stroke + FlickFocusRingContourWidth.toPx() * 2f),
-                        )
-                        drawOutline(
-                            outline = outline,
-                            color = ringColor.value,
-                            alpha = lit,
-                            style = Stroke(width = stroke),
-                        )
+                    val stroke = FlickFocusRingWidth.toPx() / lift
+                    val contour = FlickFocusRingContourWidth.toPx() / lift
+                    // The lift is centred on the member, and the published rect's
+                    // centre is invariant under it — see [FocusBeaconNode].
+                    scale(lift, lift, pivot = local.center) {
+                        translate(left = local.left - inset, top = local.top - inset) {
+                            drawOutline(
+                                outline = outline,
+                                color = FlickColor.FocusRingContour,
+                                alpha = lit,
+                                style = Stroke(width = stroke + contour * 2f),
+                            )
+                            drawOutline(
+                                outline = outline,
+                                color = ringColor.value,
+                                alpha = lit,
+                                style = Stroke(width = stroke),
+                            )
+                        }
                     }
                 }
                 // The group's own render node. Without it the ring's flight and its

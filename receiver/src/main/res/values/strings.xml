@@ -193,6 +193,14 @@
     <string name="settings_paired_phones">Paired phones</string>
     <string name="settings_paired_none">None yet</string>
     <string name="settings_paired_count">%1$d paired</string>
+    <!-- Per-phone rows. The date is only shown for a phone that actually carries one:
+         pairings made before the TV started recording it have no date to show, and the
+         row says so rather than inventing one. -->
+    <string name="settings_paired_since">Paired %1$s</string>
+    <string name="settings_paired_undated">Paired before this TV recorded dates</string>
+    <string name="settings_paired_forget">Forget</string>
+    <string name="settings_paired_forget_confirm">Press again to forget</string>
+    <string name="settings_paired_forget_a11y">Forget %1$s</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>

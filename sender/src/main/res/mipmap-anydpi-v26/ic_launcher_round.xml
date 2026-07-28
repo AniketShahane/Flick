@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  android:roundIcon target. An adaptive icon is already mask-agnostic, so this is
-  deliberately identical to ic_launcher; it exists only because launchers that
-  request the round variant fall back to the legacy icon when it is missing.
+  android:roundIcon target, deliberately identical to ic_launcher: the background
+  disc already makes that icon a circle under every mask, so the round request has
+  nothing left to ask for. The file exists only because launchers that request the
+  round variant fall back to the legacy icon when it is missing.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ic_launcher_background" />
+    <background android:drawable="@drawable/ic_launcher_disc" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
     <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

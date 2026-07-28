@@ -11,6 +11,12 @@
       @color/ic_launcher_background: the pale launcher plate would flash white
       before a near-black app, which is the same reason values-night overrides
       windowBackground at all.
+
+      Which bucket the system reads this out of is the app's own night mode from API 31,
+      because MainActivity sets one through UiModeManager — the splash attributes are
+      resolved before this process runs, so that stored mode is the only way an in-app
+      preference can reach them at all, and it only takes effect from the launch after the
+      choice is made.
     -->
     <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">#050C1D</item>

@@ -830,6 +830,31 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     tvName = tvName,
                                     pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
                                         else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
+                                    pairedPhones = pairingSnapshot.devices,
+                                    // Through the server, not straight to the
+                                    // manager: forgetting the phone that is
+                                    // connected right now must also end its
+                                    // session, and only the server owns that.
+                                    //
+                                    // Reaching zero phones closes this screen for
+                                    // the same reason Forget all does. It is not
+                                    // only that there is no list left to show:
+                                    // `PairingManager.forget` takes the Forget-all
+                                    // path when the store empties, which opens a
+                                    // live pairing code, and Settings outranks Pair
+                                    // in the surface router above — so leaving it open
+                                    // would leave a code that is valid, rotating
+                                    // and accepting attempts while nothing on
+                                    // screen renders it. Closing hands the router
+                                    // to `pairedCount == 0 -> Pair`, which does.
+                                    // The count is read from the store rather than
+                                    // from `pairingSnapshot`, which is a frame
+                                    // behind this press.
+                                    onForgetPhone = { keyId ->
+                                        val forgotten = server.forget(keyId)
+                                        if (forgotten && pairing.pairedCount() == 0) showSettings = false
+                                        forgotten
+                                    },
                                     metricsEnabled = metricsEnabled,
                                     onRename = {
                                         val next = nextName(tvName, tvNamePresets)

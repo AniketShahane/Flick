@@ -1,38 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Flick launcher icon, legacy/full-bleed form: the brand mark (blue play triangle
-  + three amber motion streaks) on the #04070F canvas. Kept as the pre-adaptive
-  fallback; the manifest points at @mipmap/ic_launcher.
+  Flick launcher icon, flat form: the pre-adaptive fallback for tooling paths that
+  resolve a plain drawable. minSdk is 26, so mipmap-anydpi-v26/ic_launcher always
+  matches on-device and nothing on a real launcher reaches this file.
 
-  Geometry is the design's 64-unit grid, with the 9-unit round-join stroke
-  resolved into the outline so a single flat fill carries the triangle.
+  It is now the adaptive icon's two layers stacked rather than its own copy of the
+  geometry: same disc, same mark, and it cannot drift out of step the way a second
+  transcription of the 64-unit grid could. The circle comes with it — a fallback
+  that stayed a full-bleed square would be the one place Flick is not round.
 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="48dp"
-    android:height="48dp"
-    android:viewportWidth="64"
-    android:viewportHeight="64">
-
-    <path
-        android:fillColor="#04070F"
-        android:pathData="M0,0h64v64H0z" />
-
-    <!-- motion streaks: (9,22.5,13x5) (4,31.5,11x5) (9,40.5,13x5), r=2.5 -->
-    <path
-        android:fillColor="#FFB61E"
-        android:fillAlpha="0.5"
-        android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
-    <path
-        android:fillColor="#FFB61E"
-        android:fillAlpha="0.85"
-        android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
-    <path
-        android:fillColor="#FFB61E"
-        android:fillAlpha="0.5"
-        android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
-
-    <!-- play triangle M28,15 L56,32 L28,49, outset 4.5 with round joins -->
-    <path
-        android:fillColor="#1240E8"
-        android:pathData="M30.34,11.15L58.34,28.15a4.5,4.5 0 0 1 0,7.7L30.34,52.85a4.5,4.5 0 0 1 -6.84,-3.85L23.5,15a4.5,4.5 0 0 1 6.84,-3.85z" />
-</vector>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_disc" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

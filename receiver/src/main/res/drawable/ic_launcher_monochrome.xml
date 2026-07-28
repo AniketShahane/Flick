@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon (Android 13+) silhouette. <monochrome> used to point at
+  ic_launcher_foreground, which cannot serve: the launcher keeps that layer's
+  alpha and replaces its colour, so the streaks' 0.5 and 0.85 fill alphas would
+  survive as ghosted bands of the theme colour instead of a solid mark.
+
+  The bars are dropped rather than flattened: only 1.65 units separate them from
+  the triangle in the full mark, a gap that reads because the two are different
+  colours, so in one colour at launcher size they close into a smudge. The
+  triangle alone is re-centred on (54,54) since the bars no longer balance it,
+  and scaled up to hold the same weight without them. Byte-identical to the
+  :sender silhouette — one brand, one themed mark.
+
+  No disc here: the system masks and tints this layer itself.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"
+        android:fillColor="#FF000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="10.35"
+        android:strokeLineJoin="round" />
+
+</vector>

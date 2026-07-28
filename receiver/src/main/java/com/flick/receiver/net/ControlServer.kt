@@ -38,6 +38,7 @@ import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -63,11 +64,32 @@ class ControlServer(
         val session: DefaultWebSocketServerSession,
         val token: Any,
         val generation: Long,
+        /** Which paired phone holds this lease, so a per-phone forget can find it. */
+        val keyId: String,
         val emit: suspend (String) -> Unit,
     )
 
     /** One immutable tuple so a reader can never see a host from one bind and a port from another. */
     private data class Binding(val engine: EmbeddedServer<*, *>, val host: String, val port: Int)
+
+    /**
+     * One resume handshake, from the moment a phone CLAIMS a key id until the
+     * lease decision is taken for it.
+     *
+     * [authenticate] reads the stored credential once, at `resumeInit`, and
+     * validates `resumeProof` against that cached copy — the store is never read
+     * again, and nothing re-checks the key id of a live connection either. A
+     * forget landing inside that round trip would therefore be invisible to the
+     * handshake, and the phone would authenticate against a credential this TV
+     * has already removed. This is the object a forget marks instead.
+     *
+     * [revoked] is `@Volatile` and is read under [serverLock] at the install, so
+     * marking it takes no lock at all — see [invalidateResumes] for why that
+     * matters.
+     */
+    private class ResumeTicket(val keyId: String) {
+        @Volatile var revoked = false
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private val serverLock = Any()
@@ -75,6 +97,11 @@ class ControlServer(
     private val sequence = AtomicLong()
     private val ownership = ControlOwnership()
     private val preAuthConnections = ConnectionPermitGate(MAX_PREAUTH_CONNECTIONS)
+    // Only handshakes that have read a credential and not yet been granted or
+    // refused a lease, so it is bounded by MAX_PREAUTH_CONNECTIONS: the session
+    // that adds a ticket removes it as soon as its lease decision is taken, and
+    // again in a finally so a cancelled or failed handshake leaves nothing behind.
+    private val outstandingResumes: MutableSet<ResumeTicket> = ConcurrentHashMap.newKeySet<ResumeTicket>()
     @Volatile private var generation = 0L
     @Volatile private var active: Connection? = null
     @Volatile private var binding: Binding? = null
@@ -166,6 +193,31 @@ class ControlServer(
         }
     }
 
+    /**
+     * [revokeActive] for exactly ONE lease — the socket belonging to the phone
+     * being forgotten, never whichever socket happens to hold the lease by the
+     * time the revoke runs.
+     *
+     * The identity test and the clear are one hold of [serverLock], and the test
+     * is by object identity against [target] rather than by key id. `active` is
+     * `@Volatile` and an idle replacement can install a different phone's socket
+     * between any test and any separate mutation; a single early read followed by
+     * an unconditional clear would still drop that replacement. Comparing the same
+     * object under the lock revokes what was inspected, or nothing.
+     */
+    private fun revokeActiveConnection(target: Connection, closeReason: String) {
+        val lost = synchronized(serverLock) {
+            if (active !== target) return
+            active = null
+            generation = counter.incrementAndGet()
+            ownership.invalidate()?.also { notifyControlLost(it) }
+            target
+        }
+        lost.session.launch {
+            runCatching { lost.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, closeReason)) }
+        }
+    }
+
     fun sendTerminal(castId: String, code: CastFailureCode, retryable: Boolean, status: Int? = null, beforeReady: Boolean = false) {
         sendResult(ControlCastResult.Failed(castId, code, retryable, status, beforeReady))
     }
@@ -187,7 +239,86 @@ class ControlServer(
         val castId = connection?.let { ownership.currentCast(it.token, it.generation) }
         if (connection != null && castId != null) stopCast(connection, castId)
         revokeActive("revoked")
-        return pairing.forgetAllPairings()
+        val cleared = pairing.forgetAllPairings()
+        if (cleared) {
+            // The revoke above ends the cast through the player while there is
+            // still an owner to do it; this pair runs the same after-the-write
+            // discipline [forget] does, and for the same reason. A durable commit
+            // is not instantaneous, so a handshake that cached a credential
+            // before it can otherwise finish its proof and take the lease during
+            // the write — after which nothing would look at it again.
+            invalidateResumes(null)
+            revokeActive("revoked")
+        }
+        return cleared
+    }
+
+    /**
+     * Marks every outstanding resume handshake a forget invalidates —
+     * [forgottenKeyId] null for a forget-all — and must be called AFTER the
+     * durable write and BEFORE the lease is read.
+     *
+     * That order is the whole guarantee, and it holds because a ticket is
+     * registered before [PairingManager.findKey] is called. A handshake already
+     * registered when the sweep runs is marked here; one registered after the
+     * sweep reads a store the write has already changed, so it caches nothing;
+     * one that installs a lease in between is found by the `active` read that
+     * follows. There is no fourth case, and therefore no window.
+     *
+     * The sweep takes no lock. Re-reading [PairingManager] from inside the
+     * install block would acquire [serverLock] → manager monitor while every
+     * forget acquires manager monitor → [serverLock], which is an AB-BA inversion
+     * that can deadlock the control server; a `@Volatile` flag owned by this
+     * class is readable under [serverLock] alone.
+     */
+    private fun invalidateResumes(forgottenKeyId: String?) {
+        outstandingResumes.forEach {
+            if (forgetInvalidatesResumeChallenge(it.keyId, forgottenKeyId)) it.revoked = true
+        }
+    }
+
+    /**
+     * Forgets ONE phone and, only if that phone is the one holding the live
+     * control lease, ends its session. Forgetting phone B must never drop phone A
+     * off a running film.
+     *
+     * **The durable write goes first**, which deliberately inverts
+     * [forgetAllPairings]'s order. There the revoke precedes the clear because the
+     * action is all-or-nothing and closes the screen; here the return value drives
+     * a row that stays on screen. Revoking first would mean that a rejected
+     * `SharedPreferences` write returns false — the row remains, the UI reports
+     * that nothing happened — while the phone that was casting has in fact just
+     * been cut off. Ordering it this way makes false mean nothing happened, which
+     * is the only version of it the user is not misled by. The cost is the
+     * microseconds between the write and the revoke, in which an already
+     * authenticated socket stays authenticated: it gains no capability it did not
+     * hold a moment earlier, and a cast started inside that window is still
+     * caught, because the lease is read after the write.
+     *
+     * [invalidateResumes] runs between the two and is not optional. Re-authenticating
+     * is NOT blocked by the store alone: [authenticate] reads the credential once
+     * at `resumeInit` and validates `resumeProof` against that cached copy, so a
+     * phone that opened its handshake before the write completes its proof
+     * afterwards against a record this TV no longer has. The whole
+     * `resumeInit` → `resumeProof` round trip is up to [AUTH_TIMEOUT_MS], and a
+     * paired phone can hold spare half-finished handshakes open indefinitely, so
+     * that is a durable bypass of Forget rather than a race worth rounding down.
+     */
+    fun forget(keyId: String): Boolean {
+        if (!pairing.forget(keyId)) return false
+        invalidateResumes(keyId)
+        val connection = synchronized(serverLock) { active } ?: return true
+        if (!forgetRevokesActiveConnection(keyId, connection.keyId)) return true
+        val castId = ownership.currentCast(connection.token, connection.generation)
+        // A cast is torn down through the player BEFORE the socket goes: the
+        // revoke invalidates the lease, and a film left decoding past that point
+        // has no owner left to stop it and no socket to report `stopped` on. A
+        // phone that is merely connected has no cast and needs none of this — the
+        // revoke alone is the whole job.
+        if (castId != null) stopCast(connection, castId)
+        revokeActiveConnection(connection, "forgotten")
+        FlickLog.i("pair", "forget revoked session keyIdFp=${FlickLog.fp(keyId)} hadCast=${castId != null}")
+        return true
     }
 
     private fun sendResult(result: ControlCastResult) {
@@ -224,62 +355,94 @@ class ControlServer(
 
         val emitLock = Mutex()
         val emit: suspend (String) -> Unit = { payload -> emitLock.withLock { send(Frame.Text(payload)) } }
-        val auth = try { withTimeoutOrNull(AUTH_TIMEOUT_MS) { authenticate(emit, peer, host, port) } } finally { preAuthConnections.release() }
-            ?: return closePolicy("auth_timeout_or_denied")
-        FlickLog.i("auth", "ok mode=${if (auth.resumed) "resume" else "pair"} keyIdFp=${FlickLog.fp(auth.record.keyId)} peer=$peer")
-
-        // The session itself is the lease token, so an atomic idle replacement can
-        // close exactly the displaced socket after installing the new lease.
-        val token: Any = this
-        lateinit var connection: Connection
-        var displaced: Any? = null
-        val busy = synchronized(serverLock) {
-            if (ownership.isBusy()) {
-                true
-            } else {
-                val next = counter.incrementAndGet()
-                connection = Connection(this, token, next, emit)
-                displaced = ownership.adoptIdleConnection(token, next)?.displaced
-                generation = next
-                active = connection
-                false
-            }
-        }
-        if (busy) {
-            FlickLog.i("ws", "busy reason=active_cast")
-            if (auth.resumed) emit(resumed(auth, host, port))
-            emit(json(linkedMapOf("t" to "busy", "v" to 2, "reason" to "active_cast")))
-            close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "busy"))
-            return
-        }
-        if (auth.resumed) emit(resumed(auth, host, port))
-        // The new lease is visible before the old idle socket is closed. Its finally
-        // cannot release or poison this lease because every release checks token+gen.
-        (displaced as? DefaultWebSocketServerSession)?.launch {
-            runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "superseded")) }
-        }
-
-        stateFeed(connection)
-        val pings = PingGate(SystemClock::elapsedRealtime)
+        // Deliberately outlives [authenticate]: the lease decision below is the
+        // point a concurrent forget has to be able to reach, so the ticket is
+        // dropped there rather than when the handshake returns. The finally is the
+        // net for every other exit, including the auth timeout's cancellation.
+        val resume = AtomicReference<ResumeTicket?>()
         try {
-            for (frame in incoming) {
-                if (frame !is Frame.Text || !frame.fin) { closeUnsupported(); return }
-                val text = frame.readText()
-                if (text.toByteArray(Charsets.UTF_8).size > MAX_FRAME) { closeTooBig(); return }
-                val objectValue = StrictJson.objectOnly(text)
-                if (objectValue == null) { rejectMalformed(connection, null, null); return }
-                if (!authenticatedCommand(objectValue, connection, peer, pings)) { rejectMalformed(connection, objectValue.string("t")?.value, objectValue.string("castId")?.value); return }
+            val auth = try { withTimeoutOrNull(AUTH_TIMEOUT_MS) { authenticate(emit, peer, host, port, resume) } } finally { preAuthConnections.release() }
+                ?: return closePolicy("auth_timeout_or_denied")
+            FlickLog.i("auth", "ok mode=${if (auth.resumed) "resume" else "pair"} keyIdFp=${FlickLog.fp(auth.record.keyId)} peer=$peer")
+
+            // The session itself is the lease token, so an atomic idle replacement can
+            // close exactly the displaced socket after installing the new lease.
+            val token: Any = this
+            lateinit var connection: Connection
+            var displaced: Any? = null
+            val admission = synchronized(serverLock) {
+                // A `@Volatile` read of this server's own state, never a re-read of
+                // PairingManager: the forget path acquires the manager monitor and
+                // then [serverLock], so reaching back for the store from inside this
+                // block would invert that order. The `pair` path installs a record
+                // [PairingManager.attemptPair] has just committed and carries no
+                // ticket at all, so it can never be refused here.
+                val decision = leaseAdmission(
+                    resumeRevoked = resume.get()?.revoked == true,
+                    busy = ownership.isBusy(),
+                )
+                if (decision == LeaseAdmission.INSTALL) {
+                    val next = counter.incrementAndGet()
+                    connection = Connection(this, token, next, auth.record.keyId, emit)
+                    displaced = ownership.adoptIdleConnection(token, next)?.displaced
+                    generation = next
+                    active = connection
+                }
+                decision
+            }
+            // The ticket has done its work the moment that decision is taken under
+            // [serverLock]: a forget arriving from here on either finds this lease
+            // installed and revokes it, or finds nothing to revoke.
+            resume.getAndSet(null)?.let(outstandingResumes::remove)
+            when (admission) {
+                // The wire reason stays the generic proof failure. It is what this
+                // phone gets on its next connection anyway, once `resumeInit` cannot
+                // find the record, so the frame enumerates nothing new.
+                LeaseAdmission.FORGOTTEN -> {
+                    FlickLog.i("auth", "resume refused reason=forgotten keyIdFp=${FlickLog.fp(auth.record.keyId)} peer=$peer")
+                    emit(deniedFrame(DENIED_PROOF))
+                    return closePolicy("resume_forgotten")
+                }
+                LeaseAdmission.BUSY -> {
+                    FlickLog.i("ws", "busy reason=active_cast")
+                    if (auth.resumed) emit(resumed(auth, host, port))
+                    emit(json(linkedMapOf("t" to "busy", "v" to 2, "reason" to "active_cast")))
+                    close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "busy"))
+                    return
+                }
+                LeaseAdmission.INSTALL -> Unit
+            }
+            if (auth.resumed) emit(resumed(auth, host, port))
+            // The new lease is visible before the old idle socket is closed. Its finally
+            // cannot release or poison this lease because every release checks token+gen.
+            (displaced as? DefaultWebSocketServerSession)?.launch {
+                runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "superseded")) }
+            }
+
+            stateFeed(connection)
+            val pings = PingGate(SystemClock::elapsedRealtime)
+            try {
+                for (frame in incoming) {
+                    if (frame !is Frame.Text || !frame.fin) { closeUnsupported(); return }
+                    val text = frame.readText()
+                    if (text.toByteArray(Charsets.UTF_8).size > MAX_FRAME) { closeTooBig(); return }
+                    val objectValue = StrictJson.objectOnly(text)
+                    if (objectValue == null) { rejectMalformed(connection, null, null); return }
+                    if (!authenticatedCommand(objectValue, connection, peer, pings)) { rejectMalformed(connection, objectValue.string("t")?.value, objectValue.string("castId")?.value); return }
+                }
+            } finally {
+                val released = synchronized(serverLock) {
+                    if (!ownership.release(token, connection.generation)) false else {
+                        if (active?.token === token && active?.generation == connection.generation) active = null
+                        generation = counter.incrementAndGet()
+                        true
+                    }
+                }
+                FlickLog.i("ws", "close gen=${connection.generation} peer=$peer released=$released")
+                if (released) notifyControlLost(connection.generation)
             }
         } finally {
-            val released = synchronized(serverLock) {
-                if (!ownership.release(token, connection.generation)) false else {
-                    if (active?.token === token && active?.generation == connection.generation) active = null
-                    generation = counter.incrementAndGet()
-                    true
-                }
-            }
-            FlickLog.i("ws", "close gen=${connection.generation} peer=$peer released=$released")
-            if (released) notifyControlLost(connection.generation)
+            resume.getAndSet(null)?.let(outstandingResumes::remove)
         }
     }
 
@@ -288,6 +451,7 @@ class ControlServer(
         peer: String,
         host: String,
         port: Int,
+        resume: AtomicReference<ResumeTicket?>,
     ): Auth? {
         var malformed = 0
         var negotiation: Pair<String, String>? = null
@@ -346,9 +510,19 @@ class ControlServer(
                         if (overBudget("resumeInit")) return null
                         continue
                     }
-                    val record = pairing.findKey(obj.string("tvId")!!.value, obj.string("keyId")!!.value)
+                    val claimedKeyId = obj.string("keyId")!!.value
+                    // Registered BEFORE the store is read, and the order is the
+                    // whole guarantee — see [invalidateResumes]. Registering after
+                    // would leave a handshake that had already read a credential
+                    // invisible to a forget sweeping between the two. The
+                    // `challenge != null` guard above admits exactly one
+                    // `resumeInit` per session, so this can only ever run once.
+                    val ticket = ResumeTicket(claimedKeyId)
+                    outstandingResumes.add(ticket)
+                    resume.set(ticket)
+                    val record = pairing.findKey(obj.string("tvId")!!.value, claimedKeyId)
                     if (record == null) {
-                        FlickLog.i("auth", "resume denied reason=unknown_key keyIdFp=${FlickLog.fp(obj.string("keyId")?.value)} peer=$peer")
+                        FlickLog.i("auth", "resume denied reason=unknown_key keyIdFp=${FlickLog.fp(claimedKeyId)} peer=$peer")
                         emit(deniedFrame(DENIED_PROOF))
                         return null
                     }
@@ -649,6 +823,48 @@ internal fun isSubtitleLanguageTag(value: String?): Boolean =
     value != null && value.length <= 20 && value.matches(LANGUAGE_TAG)
 
 private val LANGUAGE_TAG = Regex("^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$")
+
+/**
+ * Whether forgetting [forgottenKeyId] must end the live control session.
+ *
+ * Only ever the phone being forgotten. Forgetting phone B while phone A holds the
+ * lease — casting or idle — must leave A's socket exactly as it was, so a forget
+ * aimed at one phone can never interrupt another's film. A null [activeKeyId]
+ * means no phone holds the lease at all and there is nothing to end.
+ */
+internal fun forgetRevokesActiveConnection(forgottenKeyId: String, activeKeyId: String?): Boolean =
+    activeKeyId != null && activeKeyId == forgottenKeyId
+
+/**
+ * Whether a forget must invalidate an outstanding resume handshake that claimed
+ * [challengeKeyId]. [forgottenKeyId] is null for a forget-all, which invalidates
+ * every one of them.
+ *
+ * A resume handshake caches the credential it reads at `resumeInit` and proves
+ * against that copy, so "the record is gone" is not by itself a refusal — this is.
+ * It is still only ever the phone being forgotten: another phone's half-finished
+ * handshake is not a session to end, and dropping it would make forgetting phone B
+ * cost phone A a reconnection for nothing.
+ */
+internal fun forgetInvalidatesResumeChallenge(challengeKeyId: String, forgottenKeyId: String?): Boolean =
+    forgottenKeyId == null || forgottenKeyId == challengeKeyId
+
+/** What a completed authentication is allowed to do with the control lease. */
+internal enum class LeaseAdmission { FORGOTTEN, BUSY, INSTALL }
+
+/**
+ * Whether a phone that has just authenticated may take the lease.
+ *
+ * [resumeRevoked] outranks [busy] deliberately. Both refuse, but `busy` is an
+ * invitation to try again in a moment and a forgotten phone must never be given
+ * one — its next attempt has to start at `resumeInit` and be denied by the
+ * missing record, not queue behind a cast.
+ */
+internal fun leaseAdmission(resumeRevoked: Boolean, busy: Boolean): LeaseAdmission = when {
+    resumeRevoked -> LeaseAdmission.FORGOTTEN
+    busy -> LeaseAdmission.BUSY
+    else -> LeaseAdmission.INSTALL
+}
 
 // The complete `denied` reason vocabulary. Only "code" and "expired" are derived
 // from what the user typed, so the frame stays non-enumerating: it is not an

@@ -223,7 +223,10 @@ val CinematicFlickColors = FlickColors(
     posterScrim = Color(0x9E000000),
 )
 
-/** System dark mode lands on the same cinematic set the remote always uses. */
+/**
+ * A dark resolution — chosen outright in Settings, or inherited from the platform while
+ * the preference is Match system — lands on the same cinematic set the remote always uses.
+ */
 val DarkFlickColors = CinematicFlickColors
 
 object FlickGradients {

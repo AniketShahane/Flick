@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon background layer: the canvas drawn as a disc instead of a full
+  bleed, so Flick is a circle by choice rather than whatever shape the launcher's
+  mask happens to be.
+
+  An adaptive layer is 108 units and only the central 72 survive any mask, so a
+  launcher applying a circular mask draws exactly r=36 about (54,54) — this disc.
+  On a circular launcher the two edges coincide; on a squircle, rounded-square or
+  teardrop launcher the corners fall outside the disc onto transparency and a
+  circle is still what the user sees.
+
+  36 is a ceiling, not a preference: a larger disc would be cut flat where the
+  square-ish masks pass 36 units from centre at their edge midpoints, and the
+  result would read as a squircle again. A smaller one would leave the wallpaper
+  showing through a ring inside a circular mask.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="@color/ic_launcher_background"
+        android:pathData="M54,18a36,36 0 1 1 0,72a36,36 0 1 1 0,-72z" />
+
+</vector>
