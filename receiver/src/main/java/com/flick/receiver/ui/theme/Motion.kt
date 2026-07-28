@@ -51,7 +51,9 @@ val LocalReducedMotion = staticCompositionLocalOf { false }
  *
  * The design file names four animations; they map onto these tokens as:
  * `tvRise` → [panelSpatial] over a [TvRise] offset, `tvBurst` → [tvBurstScale] +
- * [tvBurstAlpha], `tvSpin` → [tvSpin], `tvPulse` → [tvPulse].
+ * [tvBurstAlpha], `tvPulse` → [tvPulse]. `tvSpin` has no token left: both arcs it
+ * drove — the handshake ring and the rebuffer ring — are now `FlickLoader`, which
+ * carries its own motion.
  */
 object FlickMotion {
 
@@ -86,9 +88,6 @@ object FlickMotion {
     /** `tvBurst` reaches full opacity and unit scale at 22 % of its run. */
     const val TV_BURST_PEAK_MS = 158
 
-    /** Design `tvSpin` — the handshake ring, one turn per second, linear. */
-    const val TV_SPIN_MS = 1000
-
     /** Design `tvPulse` full cycle; the spec below runs a reversing half-cycle. */
     const val TV_PULSE_MS = 1900
 
@@ -118,13 +117,17 @@ object FlickMotion {
     // --- Spring vocabulary (Expressive) -------------------------------------
 
     /**
-     * The Expressive motion scheme's spring stiffnesses, transcribed. The receiver's
-     * material3 comes from the Compose BOM, where `MotionScheme` and
-     * `MaterialTheme.motionScheme` are `internal` — only the sender's pinned alpha
-     * exposes them — so the TV cannot read the scheme object the phone reads. These
-     * are its expressive values verbatim (`ExpressiveMotionTokens`), transcribed in
-     * this one place so both apps still animate off a single vocabulary. Stiffness
-     * is never adjusted for the TV; only damping is, below.
+     * The Expressive motion scheme's spring stiffnesses, transcribed verbatim from
+     * `ExpressiveMotionTokens` in this one place so both apps animate off a single
+     * vocabulary. Stiffness is never adjusted for the TV; only damping is, below.
+     *
+     * The transcription originally existed because the receiver took material3 from
+     * the Compose BOM, where `MotionScheme` is `internal`. That is no longer why it
+     * stays: the module is now pinned to the same 1.5.0-alpha24 the sender uses, so
+     * `MaterialTheme.motionScheme` IS reachable here. It is still transcribed
+     * because reading the scheme would hand back the phone's damping, and the whole
+     * TV deviation below is the damping — the values are identical either way, and
+     * this keeps the one place a reader has to look.
      */
     private const val DEFAULT_SPATIAL_STIFFNESS = 380f
     private const val FAST_SPATIAL_STIFFNESS = 800f
@@ -218,15 +221,6 @@ object FlickMotion {
         1f at TV_BURST_PEAK_MS using ChromeFade
         0f at TV_BURST_MS
     }
-
-    /**
-     * Handshake ring rotation — one linear turn per second, forever. Guard every
-     * call site through [LocalReducedMotion]; the static ring still reads.
-     */
-    fun tvSpin(): InfiniteRepeatableSpec<Float> = infiniteRepeatable(
-        animation = tween(TV_SPIN_MS, easing = LinearEasing),
-        repeatMode = RepeatMode.Restart,
-    )
 
     /**
      * The live-dot breath — a reversing half-cycle, so one full there-and-back

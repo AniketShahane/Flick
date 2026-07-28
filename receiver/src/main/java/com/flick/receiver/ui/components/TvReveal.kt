@@ -86,7 +86,8 @@ fun Modifier.tvRevealSource(origin: TvRevealOrigin): Modifier =
 /**
  * Wipes [color] outward from [origin] to cover the whole surface, then hands off
  * to [content] — the TV half of the phone's "a surface is born at the control
- * that summoned it".
+ * that summoned it". Taking [visible] away runs the same wipe backwards, so the
+ * surface also DIES at the control it was born from.
  *
  * The circle is a DRAW-phase clip, never a recomposition or a layout of the
  * content underneath: what sits behind a TV panel is a live decoder surface, and
@@ -99,8 +100,15 @@ fun Modifier.tvRevealSource(origin: TvRevealOrigin): Modifier =
  *
  * [visible] drives the wipe, not the presence of [content] in the focus graph:
  * while it is false nothing is drawn, but the content is still composed and its
- * focusables are still reachable. Compose this only while the surface should
- * exist. A [GlassPanel] inside a reveal must pass `animateEntrance = false` — the
+ * focusables are still reachable. **A caller that wants the retreat must keep
+ * this composed past the close** — a draw-phase animation cannot run in a subtree
+ * that has already been disposed — and [onRetreated] is what says the surface is
+ * finally gone. It is also reported by a surface that composes hidden and is
+ * never revealed at all, so a caller that keys anything off it must qualify the
+ * report with its own open/closed state; that is the price of the report being
+ * reachable from every path rather than only from a completed animation.
+ *
+ * A [GlassPanel] inside a reveal must pass `animateEntrance = false` — the
  * reveal owns the arrival, and two entrances on one panel fight each other.
  */
 @Composable
@@ -109,6 +117,7 @@ fun TvOriginReveal(
     origin: TvRevealOrigin,
     color: Color,
     modifier: Modifier = Modifier,
+    onRetreated: () -> Unit = {},
     content: @Composable BoxScope.() -> Unit,
 ) {
     val reducedMotion = LocalReducedMotion.current
@@ -127,16 +136,38 @@ fun TvOriginReveal(
     // Exits lead with the fast spring, the way `glassPanelExit` does: a surface
     // that retraces its whole arrival reads as being dragged off screen.
     val retreatSpec = rememberUpdatedState(FlickMotion.focusSpatial<Float>())
+    // Read through a holder so a caller that rebuilds the lambda cannot restart
+    // the wipe, and so the report is always made to the current caller.
+    val retreated = rememberUpdatedState(onRetreated)
 
     LaunchedEffect(visible, reducedMotion) {
         if (reducedMotion) {
             wash.snapTo(0f)
             reach.snapTo(if (visible) 1f else 0f)
+            if (!visible) retreated.value()
             return@LaunchedEffect
         }
         if (!visible) {
-            wash.snapTo(0f)
-            reach.animateTo(0f, retreatSpec.value)
+            if (reach.value <= 0f) {
+                // Nothing was ever wiped in — a surface composed hidden, or a
+                // retreat that has already run. Reported anyway: the caller's
+                // subtree is waiting on this to know it may go.
+                wash.snapTo(0f)
+                retreated.value()
+                return@LaunchedEffect
+            }
+            // The entrance read backwards, which is what makes the surface read
+            // as being pulled INTO the control rather than as one more thing
+            // fading off the film: the colour comes back over the content while
+            // the circle closes on the same origin it opened from. The colour
+            // leads — `glassPanelExit`'s rule — and the geometry takes the FASTER
+            // spring than the arrival did, which is the whole of "leaves in a
+            // fraction of the time it arrived" on a spring that has no duration.
+            coroutineScope {
+                launch { wash.animateTo(1f, handoffSpec.value) }
+                reach.animateTo(0f, retreatSpec.value)
+            }
+            retreated.value()
             return@LaunchedEffect
         }
         if (reach.value >= 1f) {

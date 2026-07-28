@@ -26,6 +26,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -221,12 +222,47 @@ fun SettingsScreen(
     }
     val stage = { entrance.value }
     // The diagnostics log is summoned by one row and appears directly under it,
-    // so it is born there. The latch is held at screen level rather than inside
-    // the list item: a LazyColumn disposes an item that scrolls out of view, and
-    // a latch living there would replay the reveal every time it came back.
+    // so it is born there — and pulled back into the same row when the toggle
+    // goes off. The latch is held at screen level rather than inside the list
+    // item: a LazyColumn disposes an item that scrolls out of view, and a latch
+    // living there would replay the reveal every time it came back.
     val diagnosticsOrigin = rememberTvRevealOrigin()
     var diagnosticsRevealed by remember { mutableStateOf(false) }
-    LaunchedEffect(diagnosticsVisible) { diagnosticsRevealed = diagnosticsVisible }
+    // The log's MOUNT LIFETIME, which outlives [diagnosticsVisible]: the retreat
+    // is a draw-phase animation and cannot run in an item the list has already
+    // dropped. Cleared by the reveal once the circle has closed.
+    var diagnosticsRetained by remember { mutableStateOf(false) }
+    // Whether the list is composing that item at all. A LazyColumn only composes
+    // what its viewport reaches, so a log the toggle has scrolled past has no
+    // reveal to run the retreat and none to report it — retention held there
+    // would keep a full-height slot in the list that nothing draws until it next
+    // scrolls in. Held as a State read only from the effect below: read at
+    // composition scope, an item composing during the list's own measure pass
+    // would invalidate this whole screen.
+    val diagnosticsComposed = remember { mutableStateOf(false) }
+    LaunchedEffect(diagnosticsVisible) {
+        when {
+            diagnosticsVisible -> {
+                diagnosticsRetained = true
+                diagnosticsRevealed = true
+            }
+            // Closed with the log outside the viewport: nothing is on screen to
+            // pull back and no report is coming, so the row is released now. The
+            // latch goes with it — left true, the next open would find the reveal
+            // already flagged visible and the log would arrive settled instead of
+            // wiping out of the row.
+            !diagnosticsComposed.value -> {
+                diagnosticsRevealed = false
+                diagnosticsRetained = false
+            }
+            diagnosticsRevealed -> diagnosticsRevealed = false
+            // The open is published a frame after the item mounts, so the wipe
+            // gets the false → true edge it needs. A toggle reversed inside that
+            // frame leaves nothing to pull back and no retreat to report, so the
+            // row is released here instead of waiting forever on one.
+            else -> diagnosticsRetained = false
+        }
+    }
     LaunchedEffect(Unit) { runCatching { renameFocus.requestFocus() } }
     LaunchedEffect(layoutEpoch, clearPlacedEpoch, donePlacedEpoch, clearFocused, doneFocused) {
         when {
@@ -388,19 +424,41 @@ fun SettingsScreen(
                 }
             }
 
-            if (diagnosticsVisible) {
+            if (diagnosticsVisible || diagnosticsRetained) {
                 item(key = SettingsDiagnosticEntriesKey) {
-                    // The log's own fill wipes out of the Diagnostics row above it —
-                    // this screen's hero moment, and the only reveal on it. It is a
-                    // draw-phase effect: the Clear row below owns a
-                    // BringIntoViewRequester, and that machinery must never measure
-                    // a row whose position is still moving. Nothing inside here is
-                    // focusable, so no focus target moves either.
+                    // A LazyColumn disposes an item scrolled out of the viewport,
+                    // and a retreat that is not composed can never report that it
+                    // finished. Leaving the viewport therefore ends the retention
+                    // too, rather than holding a slot in the list for a surface
+                    // nobody is drawing — while an item that leaves with the log
+                    // still on keeps it, so scrolling back and closing still
+                    // collapses into the row. The toggle is read at disposal
+                    // rather than captured per composition: the list can drop this
+                    // item in the same measure pass that closed the log, and would
+                    // then never recompose it with the new value.
+                    val diagnosticsOn = rememberUpdatedState(diagnosticsVisible)
+                    DisposableEffect(Unit) {
+                        diagnosticsComposed.value = true
+                        onDispose {
+                            diagnosticsComposed.value = false
+                            if (!diagnosticsOn.value) diagnosticsRetained = false
+                        }
+                    }
+                    // The log's own fill wipes out of the Diagnostics row above it
+                    // and collapses back into it — this screen's hero moment, and
+                    // the only reveal on it. It is a draw-phase effect: the Clear
+                    // row below owns a BringIntoViewRequester, and that machinery
+                    // must never measure a row whose position is still moving.
+                    // Nothing inside here is focusable, so no focus target moves
+                    // either.
                     TvOriginReveal(
                         visible = diagnosticsRevealed,
                         origin = diagnosticsOrigin,
                         color = FlickColor.SurfaceRaisedAlt,
                         modifier = Modifier.fillMaxWidth(),
+                        // Also reported by a reveal that composes hidden and is
+                        // never opened, so only a close may drop the row.
+                        onRetreated = { if (!diagnosticsVisible) diagnosticsRetained = false },
                     ) {
                     Column(
                         modifier = Modifier
@@ -444,6 +502,12 @@ fun SettingsScreen(
                     }
                     }
                 }
+            }
+
+            // Not retained through the retreat: the log's collapse is drawn, so it
+            // moves nothing, but this row is a focus target for a log that is
+            // already going away and it leaves with the toggle that owns it.
+            if (diagnosticsVisible) {
                 item(key = SettingsClearDiagnosticsKey) {
                     FlickTvRow(
                         onClick = onClearDiagnostics,

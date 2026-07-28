@@ -289,11 +289,25 @@ Full-bleed `Canvas` @ 82 % over the (covered) player surface. Centred card:
 hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
 (`FlickMotion.TvRiseCard`).
 
-Contents: a 48 dp amber spinner ring (3.5 dp stroke, `Spark` on `Spark` @ 22 %,
-continuous rotation — **skip the rotation under `rememberReducedMotion()`**),
-then `connecting_title` Bricolage 800 / 27 sp, then `connecting_detail` 24 sp
-`OnSurfaceDim`. Where a device label is known, the title becomes
-"<device> is flicking <title>" using the real session values.
+Contents: `FlickLoader` — the Material 3 Expressive shape-morph loading indicator
+in `Spark`, at `FlickLoaderDefaults.Size` — then `connecting_title` Bricolage 800 /
+27 sp, then `connecting_detail` 24 sp `OnSurfaceDim`. Where a device label is
+known, the title becomes "<device> is flicking <title>" using the real session
+values.
+
+The hand-drawn 48 dp amber arc this replaces is retired. The loader is the phone's,
+so the two apps now speak one vocabulary for the same handshake: see
+`sender/.../ConnectingScreen.HandshakeIndicator`. It is **liveness, not progress** —
+the handshake sits in one stage for as long as the TV takes to answer, so a
+determinate shape would hold still for the whole wait and read as a hang, and
+nothing here may imply transcoding, of which this project does none. `FlickLoader`
+owns its own reduced-motion fallback (the resting silhouette, held still); call
+sites must not wrap it in a second `LocalReducedMotion` branch.
+
+This is only possible because `:receiver` is pinned to material3 **1.5.0-alpha24**
+rather than taking the Compose BOM's 1.4.0, which ships `LoadingIndicatorTokens`
+but no `LoadingIndicator` composable. Both modules therefore resolve one Compose
+runtime (1.12.0-beta01) instead of two that agree by accident.
 
 ### 5.3 Playback (`PlaybackScreen.kt`)
 
@@ -377,6 +391,25 @@ Left-anchored above the transport panel, **292 dp** wide, `GlassPanel`, 20 dp ra
 
 Every row is D-pad focusable per §3. `Back` closes the panel.
 
+**Both side panels arrive AND leave by the same origin wipe** (`TvOriginReveal`).
+A TV has no finger, so the origin is the focused control: whichever card summoned
+the panel is where it is born, and the circle closes back onto that same card when
+the panel is dismissed. There is no `AnimatedVisibility` and no fade in either
+direction — a fade over either half would be a second transition and a second
+compositing layer, i.e. a full-panel offscreen buffer at 4K, on exactly the frames
+the panel is most expensive.
+
+That has one structural consequence worth stating, because it is easy to undo by
+accident: **the panel's mount lifetime must outlive its close.** A draw-phase
+animation cannot run in a subtree that has already left the composition, which is
+why the retreat was dead code before — the parent unmounted the panel on the frame
+it was dismissed. Presence is now held by `retainedPanel` and released by the
+reveal's `onRetreated` report. Focus does *not* wait for that report: the focus and
+semantics gates flip the instant the close starts, so the remote is back on the
+transport bar while the panel is still being drawn away. A reveal also reports
+itself settled-and-hidden when it composes hidden and is never opened, so every
+caller qualifies the report with its own open/closed state.
+
 ### 5.5 Stream metrics panel (new — `ui/screens/StreamMetricsPanel.kt`)
 
 Right-anchored above the transport panel, **488 dp** wide, `GlassPanel`, 20 dp radius,
@@ -444,10 +477,11 @@ shared vocabulary and the sender/receiver damping bias.
 |---|---|
 | `tvRise` (panel entrance) | `panelSpatial()` + a `graphicsLayer` rise of `FlickMotion.TvRise` (21 dp) |
 | chrome / panel exit | `focusSpatial()` over half the entrance travel, alpha on `fastStateEffects()` — `glassPanelExit()` defines it once |
+| panel reveal / retreat | `TvOriginReveal` — `panelSpatial()` in, `focusSpatial()` back out, the SAME wipe run backwards onto the same origin |
 | `tvBurst` (seek flash, 0.72 s) | scale 0.7→1→1.14 with fade, `flickSettle` easing (the keyframes are the design) |
 | seek-step impulse | snap to 1 → `flickSettleSpatial()` back to 0, one kick per accepted protocol step |
 | `tvPulse` (live dot, 1.9 s) | infinite pulse in `LiveDot`, bound to real state only |
-| `tvSpin` (handshake ring, 1 s linear) | `LinearEasing` infinite rotation; the arc length breathes 35°→110°→35° across one turn off the same phase |
+| indeterminate loading (handshake, rebuffer) | `FlickLoader` — material3's Expressive shape morph. `tvSpin` is retired with the arcs it drove |
 | chrome fade | `chromeFadeIn()` / `chromeFadeOut()` |
 | focus ring / scale / beacon travel | `focusSpatial()` |
 | colour, alpha, selection fill | `stateEffects()` |
@@ -478,13 +512,22 @@ The TV is decoding 4K Dolby Vision while this UI composes. Inside `:receiver`:
 At most **one** `rememberInfiniteTransition` per screen, and none on a surface an
 instrumentation test mounts and waits for idle on.
 
-The playback screen's single one is the **buffering arc**, and it is a deliberate
+The playback screen's single one is the **rebuffer loader**, and it is a deliberate
 exception to the "no infinite animation while the decoder runs" line: it exists
 only while `PlaybackPhase.Buffering` — real state, not ambience — and a frozen
-ring during a rebuffer reads as a hung app on the one app whose entire claim is
-that it does not stall. It pays the fence in full instead: the phase is a
-`State<Float>` read inside `drawBehind`, so a rebuffer repaints one 40 dp arc and
-recomposes nothing. No instrumentation test mounts the buffering phase.
+indicator during a rebuffer reads as a hung app on the one app whose entire claim
+is that it does not stall. No instrumentation test mounts the buffering phase.
+
+It still pays the fence in full. material3's `LoadingIndicator` drives its
+`Animatable`s from a single `LaunchedEffect` and reads their values inside a
+`ContentDrawScope` lambda, against a `Path` and a float array hoisted out of the
+draw — verified by disassembling `LoadingIndicatorKt` in 1.5.0-alpha24, because
+the fence is a hard constraint and an upstream component's word is not evidence.
+So a rebuffer repaints one 40 dp indicator and recomposes nothing, exactly as the
+hand-drawn arc did. Call sites still give it `Modifier.graphicsLayer()`: the state
+plate carries no layer of its own, so without one the morph re-records the
+buffering card's type — and the scrims above it — every frame of the state with
+the least headroom in the app.
 
 Every infinite/ambient animation must be skipped when `rememberReducedMotion()`
 is true — the static end-state still reads correctly. Finite springs snap on their own at

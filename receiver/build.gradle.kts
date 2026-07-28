@@ -122,8 +122,11 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     // material3 supplies the single OutlinedTextField used for URL entry
-    // (Compose-for-TV intentionally ships no text field).
-    implementation("androidx.compose.material3:material3")
+    // (Compose-for-TV intentionally ships no text field) AND the Expressive
+    // LoadingIndicator family, which does not exist in the BOM's 1.4.0. Pinned to
+    // the same alpha the sender uses so one Compose runtime (1.12.0-beta01) is
+    // resolved for both apps rather than two that only agree by accident.
+    implementation(libs.androidx.material3.expressive)
     // Lifecycle-aware Compose helpers (LocalLifecycleOwner, etc.).
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")

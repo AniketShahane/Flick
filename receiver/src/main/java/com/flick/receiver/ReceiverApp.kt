@@ -16,8 +16,6 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -35,7 +33,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,17 +43,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.State
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -98,6 +92,7 @@ import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
+import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.screens.ErrorScreen
@@ -130,8 +125,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
-import kotlin.math.PI
-import kotlin.math.cos
 
 /**
  * The address flow is the real trigger; this only covers an address change that
@@ -190,23 +183,8 @@ internal fun receiverPlaybackGesturesEnabled(
 /** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
 private const val DIAGNOSTICS_VISIBLE = 14
 
-/** Handshake card + spinner ring metrics (receiver-expressive-spec.md §5.2). */
+/** Handshake card width (receiver-expressive-spec.md §5.2). */
 private val HANDSHAKE_CARD_WIDTH = 450.dp
-private val HANDSHAKE_RING_SIZE = 48.dp
-private val HANDSHAKE_RING_STROKE = 3.5.dp
-
-/** Where the handshake ring rests, arc and angle both, when motion is off. */
-private const val HANDSHAKE_RING_SWEEP = 90f
-private const val HANDSHAKE_RING_RESTING_ANGLE = 315f
-
-/**
- * The indeterminate envelope: the lit arc breathes between these two lengths once
- * per turn instead of holding a fixed sweep. A constant arc reads as a spinning
- * object; a breathing one reads as work whose end is not yet known, which is
- * exactly what a handshake is.
- */
-private const val HANDSHAKE_RING_MIN_SWEEP = 35f
-private const val HANDSHAKE_RING_MAX_SWEEP = 110f
 
 /** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
 private val SUBTITLE_SIZES = SubtitleSize.values()
@@ -1036,7 +1014,11 @@ private fun ConnectingScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 riseDistance = FlickMotion.TvRiseCard,
             ) {
-                HandshakeRing()
+                // Liveness, not progress. The handshake sits in one stage for as long
+                // as the TV takes to answer, so a determinate shape would hold still
+                // for the whole wait and read as a hang. It must never imply
+                // transcoding, of which this project does none.
+                FlickLoader()
                 Text(
                     text = if (deviceLabel != null && title != null) {
                         stringResource(R.string.connecting_device_title, deviceLabel, title)
@@ -1056,63 +1038,6 @@ private fun ConnectingScreen(
             }
         }
     }
-}
-
-/**
- * The amber handshake spinner. It rests at a fixed angle under reduced motion.
- *
- * The angle is read inside the draw lambda, not during composition, so a spinner
- * over a live decoder invalidates only the draw phase.
- */
-@Composable
-private fun HandshakeRing(modifier: Modifier = Modifier) {
-    val reducedMotion = LocalReducedMotion.current
-    val startAngle: State<Float> = if (reducedMotion) {
-        remember { mutableStateOf(HANDSHAKE_RING_RESTING_ANGLE) }
-    } else {
-        rememberInfiniteTransition(label = "handshake").animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = FlickMotion.tvSpin(),
-            label = "handshakeSweep",
-        )
-    }
-    Box(
-        modifier = modifier
-            .size(HANDSHAKE_RING_SIZE)
-            .drawBehind {
-                val stroke = Stroke(width = HANDSHAKE_RING_STROKE.toPx())
-                val angle = startAngle.value
-                drawArc(
-                    color = FlickColor.Spark.copy(alpha = 0.22f),
-                    startAngle = 0f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    style = stroke,
-                )
-                drawArc(
-                    color = FlickColor.Spark,
-                    startAngle = angle,
-                    sweepAngle = if (reducedMotion) {
-                        HANDSHAKE_RING_SWEEP
-                    } else {
-                        handshakeArcSweep(angle)
-                    },
-                    useCenter = false,
-                    style = stroke,
-                )
-            },
-    )
-}
-
-/**
- * Arc length as a function of the single rotation phase — one 35°→110°→35° breath
- * per turn. Deriving it from the same phase keeps the ring on one animation
- * instead of two that could drift apart.
- */
-private fun handshakeArcSweep(angleDegrees: Float): Float {
-    val breath = (1f - cos(angleDegrees * (PI / 180f).toFloat())) * 0.5f
-    return HANDSHAKE_RING_MIN_SWEEP + (HANDSHAKE_RING_MAX_SWEEP - HANDSHAKE_RING_MIN_SWEEP) * breath
 }
 
 /**

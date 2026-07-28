@@ -1,26 +1,25 @@
 package com.flick.receiver.ui.screens
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animate
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -30,10 +29,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -61,6 +65,7 @@ import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
+import kotlin.math.roundToInt
 
 /**
  * Panel width. The spec draws 370 dp, which is the design's 740 px ÷ 2. The panel
@@ -90,7 +95,8 @@ private val HistogramHeight: Dp = 28.dp
 
 private val HistogramBarGap: Dp = 2.5.dp
 
-private val HistogramBarShape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp)
+/** The design's cap on a bar's head. Its foot stays square, on the axis. */
+private val HistogramBarCap: Dp = 2.dp
 
 /**
  * Gaps between and inside the stats grid. The design draws 20 px / 16 px ÷ 2; the
@@ -417,72 +423,199 @@ private fun ThroughputBlock(
                 maxLines = 1,
             )
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(HistogramHeight),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(HistogramBarGap),
-        ) {
-            val slots = throughput.capacity.coerceAtLeast(1)
-            val lead = (slots - throughput.size).coerceAtLeast(0)
-            repeat(slots) { slot ->
-                val index = slot - lead
-                if (index < 0) {
-                    // Nothing measured for this slot yet: leave it empty rather
-                    // than drawing a zero-height bar that reads as a dropout.
-                    Box(Modifier.weight(1f))
-                } else {
-                    // Each slot animates to the value that has just marched into
-                    // it, so the whole row reads as sliding left one sample at a
-                    // time and new data enters from the right.
-                    HistogramBar(ratio = throughput.ratioAt(index), modifier = Modifier.weight(1f))
-                }
-            }
-        }
+        ThroughputHistogram(throughput = throughput)
     }
 }
 
 /**
- * One measured histogram slot.
+ * The forty-slot histogram, drawn as ONE node.
  *
- * The height is a gauge fraction, so it takes the EFFECTS spec: a spatial spring
- * would overshoot and draw, for a few frames, a throughput the receiver never
- * measured. A slot's first real sample snaps — `animateFloatAsState` starts at its
- * target — so an empty slot never grows up out of the floor.
+ * A slot used to be a composable: a Box carrying `animateFloatAsState` AND
+ * `animateColorAsState` AND a `graphicsLayer` AND a `clip` — which is a second
+ * graphics layer — AND a `drawBehind`. At capacity that was 40 layout nodes, 80
+ * render nodes, 80 Animatables each with its own conflated channel and coroutine,
+ * and 80 SpringSpecs rebuilt on every recomposition: on the order of 1,200 objects
+ * on the frame the panel opens, to put forty rounded rects on screen. The ring
+ * marches every sample, so all of that retargeted twice a second for as long as
+ * the panel stayed up, over a live decoder.
  *
- * Both drivers are held as State and read inside the layer / draw lambdas. A
- * sample lands every half second and marches the whole ring along, so reading
- * either one here recomposed FORTY of these per frame for the length of every
- * transition — on the panel a viewer opens over a running decoder.
+ * So the bars are data: four float arrays and ONE 0..1 driver, read in the draw
+ * lambda. Every bar was critically damped on the same effects spec and started
+ * from rest, and a critically damped spring's normalised path does not depend on
+ * how far it travels — one driver reproduces forty of them. It differs only in the
+ * tail: a bar with a very small move used to fall inside the visibility threshold
+ * and stop a few frames early, and now settles with the row, from under a third of
+ * a dp away.
+ *
+ * The gauge keeps the EFFECTS spec. A spatial spring would overshoot and draw, for
+ * a few frames, a throughput the receiver never measured.
  */
 @Composable
-private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
-    val fraction = animateFloatAsState(
-        targetValue = ratio.coerceAtLeast(MIN_BAR_FRACTION),
-        animationSpec = FlickMotion.stateEffects(),
-        label = "histogramBar",
-    )
-    val tint = animateColorAsState(
-        targetValue = if (ratio < LOW_BAR_THRESHOLD) FlickColor.HistogramBarLow
-        else FlickColor.HistogramBar,
-        animationSpec = FlickMotion.stateEffects(),
-        label = "histogramBarTint",
-    )
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            // Scale rather than height: the Row is fixed at HistogramHeight and
-            // this panel sits over a live decoder, so a bar may never relayout.
-            // The 2 dp cap squashes by the same factor and stays sub-pixel.
-            .graphicsLayer {
-                scaleY = fraction.value
-                transformOrigin = TransformOrigin(0.5f, 1f)
-            }
-            .clip(HistogramBarShape)
-            .drawBehind { drawRect(tint.value) },
+private fun ThroughputHistogram(throughput: ThroughputSnapshot, modifier: Modifier = Modifier) {
+    val slots = throughput.capacity.coerceAtLeast(1)
+    val bars = remember(slots) {
+        // The window that is already on screen is folded in at composition, not on
+        // the effect below: the panel opens over a running session, and a histogram
+        // that arrived a frame after the panel would flash empty.
+        HistogramBars(slots).apply { retarget(throughput, 1f) }
+    }
+    var progress by remember(bars) { mutableFloatStateOf(1f) }
+    val gauge: FiniteAnimationSpec<Float> = FlickMotion.stateEffects()
+    LaunchedEffect(bars, throughput) {
+        val moving = bars.retarget(throughput, progress)
+        // Reset even when nothing travels: a bar that snaps into a slot while the
+        // rest of the row holds still writes no progress of its own, and a driver
+        // left untouched would never invalidate the draw that paints it.
+        progress = 0f
+        if (moving) {
+            animate(0f, 1f, animationSpec = gauge) { value, _ -> progress = value }
+        } else {
+            progress = 1f
+        }
+    }
+    Spacer(
+        modifier
+            .fillMaxWidth()
+            .height(HistogramHeight)
+            // The driver is read HERE. Forty bars redraw without recomposing
+            // anything, and the panel over the decoder never recomposes to animate.
+            .drawBehind { bars.draw(this, progress) },
     )
 }
+
+/**
+ * The histogram's bars, held outside composition: a start and a target per slot,
+ * plus the count of slots that have never carried a measurement.
+ *
+ * Deliberately not snapshot state. The only observable value is the driver in
+ * [ThroughputHistogram], and it is read in a draw lambda, so a sample landing
+ * every half second invalidates draw and nothing else.
+ */
+internal class HistogramBars(private val slots: Int) {
+
+    private val heightFrom = FloatArray(slots)
+    private val heightTo = FloatArray(slots)
+
+    /** Blend toward the tint: 0 is [FlickColor.HistogramBarLow], 1 [FlickColor.HistogramBar]. */
+    private val tintFrom = FloatArray(slots)
+    private val tintTo = FloatArray(slots)
+
+    /**
+     * Slots `0 until` this have never been measured, and are not drawn at all — a
+     * zero-height bar would read as a dropout, claiming a reading never taken.
+     */
+    var emptySlots: Int = slots
+        private set
+
+    fun heightFractionAt(slot: Int, progress: Float): Float =
+        travel(heightFrom[slot], heightTo[slot], progress)
+
+    fun tintBlendAt(slot: Int, progress: Float): Float =
+        travel(tintFrom[slot], tintTo[slot], progress)
+
+    /**
+     * Take a new window. [progress] is the driver's CURRENT value, so a bar caught
+     * mid-flight sets off again from the height it is drawing rather than from
+     * wherever the interrupted transition had been aimed.
+     *
+     * Returns whether anything has to travel: a window that only fills a slot for
+     * the first time has nothing to animate.
+     */
+    fun retarget(throughput: ThroughputSnapshot, progress: Float): Boolean {
+        val lead = (slots - throughput.size).coerceIn(0, slots)
+        var moving = false
+        for (slot in lead until slots) {
+            // Each slot takes the value that has just marched into it, so the row
+            // reads as sliding left one sample at a time, new data entering right.
+            val ratio = throughput.ratioAt(slot - lead)
+            val height = ratio.coerceAtLeast(MIN_BAR_FRACTION)
+            val tint = if (ratio < LOW_BAR_THRESHOLD) 0f else 1f
+            if (slot < emptySlots) {
+                // This slot's first measurement arrives AT its height. Growing up
+                // out of the floor would draw a climb that was never measured.
+                heightFrom[slot] = height
+                tintFrom[slot] = tint
+            } else {
+                heightFrom[slot] = heightFractionAt(slot, progress)
+                tintFrom[slot] = tintBlendAt(slot, progress)
+                if (heightFrom[slot] != height || tintFrom[slot] != tint) moving = true
+            }
+            heightTo[slot] = height
+            tintTo[slot] = tint
+        }
+        emptySlots = lead
+        return moving
+    }
+
+    /**
+     * One draw scope for the whole row.
+     *
+     * A bar's head takes the design's cap and its foot stays square, which
+     * `drawRoundRect` cannot express on its own, so each bar is drawn one cap
+     * TALLER and a rect clip takes the bottom corners off. A rect clip is a clip,
+     * not a layer; the per-bar path it replaces would allocate one RoundRect per
+     * bar per frame.
+     *
+     * Height is drawn rather than scaled. The node is fixed at [HistogramHeight]
+     * and a bar changes only what this lambda paints, so nothing here can relayout
+     * over the decoder — and the cap's vertical radius still tracks the bar, as it
+     * did when a `scaleY` squashed it.
+     */
+    fun draw(scope: DrawScope, progress: Float) = with(scope) {
+        val gap = HistogramBarGap.toPx()
+        val cap = HistogramBarCap.toPx()
+        val pitch = histogramBarPitch(size.width, gap, slots)
+        val low = FlickColor.HistogramBarLow
+        val high = FlickColor.HistogramBar
+        // Every bar in transition shares the one driver, so a frame holds at most
+        // two blends: the Oklab walk runs twice rather than forty times.
+        var rising = Color.Unspecified
+        var falling = Color.Unspecified
+        clipRect {
+            for (slot in emptySlots until slots) {
+                val from = tintFrom[slot]
+                val to = tintTo[slot]
+                val color = when {
+                    from == to -> if (to == 0f) low else high
+                    from == 0f -> {
+                        if (rising == Color.Unspecified) rising = lerp(low, high, progress)
+                        rising
+                    }
+                    from == 1f -> {
+                        if (falling == Color.Unspecified) falling = lerp(high, low, progress)
+                        falling
+                    }
+                    // Reachable only for the bars a sample interrupted inside the
+                    // fraction of a second a tint takes to settle.
+                    else -> lerp(low, high, tintBlendAt(slot, progress))
+                }
+                val fraction = heightFractionAt(slot, progress)
+                val height = fraction * size.height
+                val left = (slot * pitch).roundToInt().toFloat()
+                val right = (slot * pitch + pitch - gap).roundToInt().toFloat()
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(left, size.height - height),
+                    size = Size(right - left, height + cap * fraction),
+                    cornerRadius = CornerRadius(cap, cap * fraction),
+                )
+            }
+        }
+    }
+
+    // Landing exactly ON the target matters for the tint: a blend left a rounding
+    // error short of 0 or 1 would take draw's interrupted path for good.
+    private fun travel(from: Float, to: Float, progress: Float): Float =
+        if (progress >= 1f) to else from + (to - from) * progress
+}
+
+/**
+ * Distance from one bar's left edge to the next. The Row this replaced gave forty
+ * weighted children `(width − 39 gaps) ÷ 40` each, and the drawing has to land on
+ * that same grid: the panel's width is a measurement (see [StreamMetricsPanelWidth]).
+ */
+internal fun histogramBarPitch(width: Float, gap: Float, slots: Int): Float =
+    (width + gap) / slots
 
 @Composable
 private fun StatsGrid(cells: List<StatCell>, stage: () -> Float, settled: Boolean) {

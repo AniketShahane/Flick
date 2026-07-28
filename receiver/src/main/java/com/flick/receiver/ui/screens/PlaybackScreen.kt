@@ -5,7 +5,6 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.EnterExitState
-import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
@@ -14,7 +13,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -40,7 +38,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,7 +51,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.LookaheadScope
@@ -75,6 +71,7 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FocusBeaconHost
@@ -227,10 +224,10 @@ private const val STATE_CHIP_TOP_FRACTION = 0.28f
 private const val PAUSED_REST_ALPHA = 0.5f
 
 /**
- * Where the buffering arc rests under reduced motion — off the vertical so the
- * static ring still reads as a gauge rather than as a full circle with a nick.
+ * The rebuffer plate's loader. Smaller than [FlickLoader]'s own default: this
+ * plate's padding and both of its type sizes were measured around a 40 dp ring.
  */
-private const val BUFFER_RESTING_SWEEP = 315f
+private val BufferingLoaderSize = 40.dp
 
 /** Below this the net-health dot reads as pressure rather than headroom. */
 private const val WEAK_RSSI_DBM = -70
@@ -338,8 +335,15 @@ fun PlaybackScreen(
         }
     }
 
-    // The panel the slot draws: the live one while it is open, the last one while
-    // its exit is still retained.
+    // The panel the slot draws, and — because the slot is composed only while this
+    // is set — the panel's whole MOUNT LIFETIME. It deliberately outlives
+    // [openPanel]: the wipe that opened the panel runs backwards to close it, and
+    // a draw-phase animation cannot run in a subtree that has already been taken
+    // out of the composition. The reveal reports when the circle has finally
+    // closed, and that report is what clears this.
+    //
+    // Read only on the closed branch below, so arming it on an open never
+    // invalidates the composition that opened the panel.
     var retainedPanel by remember { mutableStateOf(PlaybackPanel.None) }
     LaunchedEffect(openPanel) { if (openPanel != PlaybackPanel.None) retainedPanel = openPanel }
     val renderedPanel = if (openPanel != PlaybackPanel.None) openPanel else retainedPanel
@@ -583,29 +587,19 @@ fun PlaybackScreen(
         // The side panel — a SIBLING of the transport, drawn after it so the two
         // never read as stacked while they exchange. The slot is an empty
         // full-screen box that bounds the panel's height; only the card itself is
-        // ever animated, so the fade never buys a full-screen scratch layer.
+        // ever animated, so nothing here buys a full-screen scratch layer.
+        //
+        // There is no `AnimatedVisibility` around it, in either direction. The
+        // origin wipe IS the arrival AND the departure (§5.4/§5.5): the panel is
+        // born at the card that summoned it and pulled back into the same card.
+        // A fade over either half would be a second transition and a second
+        // compositing layer — a full-panel offscreen buffer at 4K — on exactly
+        // the frames the panel is most expensive. Presence is therefore a plain
+        // `if` on [renderedPanel], whose lifetime already spans the retreat.
         LookaheadScope {
             val panelScope = this
             Box(modifier = Modifier.fillMaxSize().padding(safeArea)) {
-                AnimatedVisibility(
-                    visible = openPanel != PlaybackPanel.None,
-                    // The origin wipe IS the arrival (§5.4/§5.5): the panel is
-                    // born at the card that summoned it. A fade on top of it
-                    // would be a second entrance and a second compositing layer
-                    // on exactly the frames the panel is most expensive.
-                    enter = EnterTransition.None,
-                    exit = fadeOut(FlickMotion.fastStateEffects()),
-                    modifier = Modifier
-                        .align(
-                            if (renderedPanel == PlaybackPanel.Metrics) Alignment.BottomEnd
-                            else Alignment.BottomStart,
-                        )
-                        // ONE panel container that travels: switching Subtitles →
-                        // Metrics glides it across the screen and resizes it,
-                        // instead of cutting one card out and another in.
-                        .animateBounds(panelScope, boundsTransform = PanelTravel),
-                    label = "playbackSidePanel",
-                ) {
+                if (renderedPanel != PlaybackPanel.None) {
                     PlaybackSidePanel(
                         openPanel = openPanel,
                         renderedPanel = renderedPanel,
@@ -618,6 +612,25 @@ fun PlaybackScreen(
                         onOpenPanel = onOpenPanel,
                         onSelectSubtitleTrack = onSelectSubtitleTrack,
                         onSelectSubtitleSize = onSelectSubtitleSize,
+                        // The reveal also reports itself settled-and-hidden before
+                        // it has ever been asked to open, so only a close is
+                        // allowed to take the panel out of the composition.
+                        onRetreated = {
+                            if (openPanel == PlaybackPanel.None) {
+                                retainedPanel = PlaybackPanel.None
+                            }
+                        },
+                        modifier = Modifier
+                            .align(
+                                if (renderedPanel == PlaybackPanel.Metrics) Alignment.BottomEnd
+                                else Alignment.BottomStart,
+                            )
+                            // ONE panel container that travels: switching
+                            // Subtitles → Metrics glides it across the screen and
+                            // resizes it, instead of cutting one card out and
+                            // another in. Neither panel ever retreats on that
+                            // path — the swap keeps [openPanel] open throughout.
+                            .animateBounds(panelScope, boundsTransform = PanelTravel),
                     )
                 }
             }
@@ -999,6 +1012,13 @@ private fun AnimatedVisibilityScope.BottomChrome(
  * [landTvFocus], which retries across frames rather than once, because a
  * `FocusRequester` whose node has not been placed yet throws and would strand the
  * remote entirely.
+ *
+ * The panel is composed past its own close so the wipe can run backwards — see
+ * [onRetreated] — and the focus gate below is what makes that safe: [openPanel]
+ * flips the instant the close starts, so the whole subtree leaves the focus graph
+ * and the accessibility tree while it is still being drawn. Focus lands back on
+ * the transport bar, which returns on the same state change, rather than waiting
+ * out the retreat inside a panel that is already going away.
  */
 @Composable
 private fun PlaybackSidePanel(
@@ -1013,13 +1033,16 @@ private fun PlaybackSidePanel(
     onOpenPanel: (PlaybackPanel) -> Unit,
     onSelectSubtitleTrack: (String?) -> Unit,
     onSelectSubtitleSize: (SubtitleSize) -> Unit,
+    /** Reported once the wipe has closed back onto the card that summoned it. */
+    onRetreated: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val open = openPanel != PlaybackPanel.None
     // Bumped when one panel replaces another, and when a close is reversed before
-    // its exit has finished — the two cases where this subtree is NOT rebuilt by
-    // the open itself and would otherwise keep a settled wipe and a stale focus
-    // request. Seeded from the panel this host was composed for, so the ordinary
-    // open costs no second pass over the panel's contents.
+    // its retreat has finished — the two cases where this subtree is NOT rebuilt by
+    // the open itself and would otherwise keep a half-collapsed wipe and a stale
+    // focus request. Seeded from the panel this host was composed for, so the
+    // ordinary open costs no second pass over the panel's contents.
     var entryKey by remember { mutableStateOf(0) }
     var previousPanel by remember { mutableStateOf(openPanel) }
     LaunchedEffect(openPanel) {
@@ -1028,17 +1051,28 @@ private fun PlaybackSidePanel(
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .focusProperties { canFocus = open }
             .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
     ) {
-        // The panel's glass is born at the card that summoned it — this screen's
-        // one hero moment, and the only reveal on it. Inside the key the latch
-        // only ever goes false → true, so the surface stays fully drawn while the
-        // parent runs the dismissal.
+        // The panel's glass is born at the card that summoned it and pulled back
+        // into the same card — this screen's one hero moment, and the only reveal
+        // on it.
         key(entryKey) {
             var revealed by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) { revealed = true }
+            // The wipe belongs to a false → true edge, so the open is published a
+            // frame after this subtree mounts rather than at composition, where it
+            // would arrive already settled. A close landing inside that one frame
+            // therefore has no wipe to run backwards and produces no retreat to
+            // report — the host is released here instead, so the terminal state is
+            // reachable from that path too.
+            LaunchedEffect(open) {
+                when {
+                    open -> revealed = true
+                    revealed -> revealed = false
+                    else -> onRetreated()
+                }
+            }
             TvOriginReveal(
                 visible = revealed,
                 origin = if (renderedPanel == PlaybackPanel.Metrics) {
@@ -1047,6 +1081,7 @@ private fun PlaybackSidePanel(
                     subtitlesRevealOrigin
                 },
                 color = FlickColor.GlassPanel,
+                onRetreated = onRetreated,
             ) {
                 when (renderedPanel) {
                     PlaybackPanel.Subtitles -> SubtitlesPanel(
@@ -1550,40 +1585,15 @@ private fun PlaybackFinishedChip(modifier: Modifier = Modifier) {
 }
 
 /**
- * The buffering ring's phase, or null when the viewer asked for no motion — in
- * which case the arc rests at [BUFFER_RESTING_SWEEP].
- *
- * The caller reads this INSIDE its draw lambda. A rebuffer is the moment the
- * decoder has least headroom, so the arc is allowed to repaint per frame but not
- * to recompose the overlay per frame.
- */
-@Composable
-private fun rememberBufferSweep(): State<Float>? {
-    val reducedMotion = LocalReducedMotion.current
-    return if (reducedMotion) {
-        null
-    } else {
-        val transition = rememberInfiniteTransition(label = "buffer")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = FlickMotion.tvSpin(),
-            label = "bufferSweep",
-        )
-    }
-}
-
-/**
  * T7. The calm rebuffer read — restyled onto the state plate, because it lands
  * dead centre, in the band neither scrim covers, and its only protection was the
  * 0.38 state dim. Over a white frame that left the title at 3.2:1 and both the
- * detail line and the amber arc under 1.9:1 — invisible exactly when the viewer
+ * detail line and the amber loader under 1.9:1 — invisible exactly when the viewer
  * most needs to know the app has not died. The handshake card, which carries a
  * far less urgent message, has had a full-screen veil behind it all along.
  */
 @Composable
 private fun BufferingOverlay(modifier: Modifier = Modifier) {
-    val sweep = rememberBufferSweep()
     GlassPanel(
         modifier = modifier,
         shape = FlickShape.Xl,
@@ -1596,32 +1606,16 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
         // exactly that frame; the plate arrives as a cut, which is also calmer.
         animateEntrance = false,
     ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                // The arc turns once a second on its own render node. The plate
-                // around it carries no layer of its own, so without this the sweep
-                // re-records the buffering card's type — and the scrims above it —
-                // on every frame of the one state with the least headroom in the
-                // app.
-                .graphicsLayer()
-                .drawBehind {
-                    val stroke = Stroke(width = 3.dp.toPx())
-                    drawArc(
-                        color = FlickColor.Spark.copy(alpha = 0.22f),
-                        startAngle = 0f,
-                        sweepAngle = 360f,
-                        useCenter = false,
-                        style = stroke,
-                    )
-                    drawArc(
-                        color = FlickColor.Spark,
-                        startAngle = sweep?.value ?: BUFFER_RESTING_SWEEP,
-                        sweepAngle = 90f,
-                        useCenter = false,
-                        style = stroke,
-                    )
-                },
+        FlickLoader(
+            // The morph runs on its own render node. The plate around it carries
+            // no layer of its own, so without this the loader re-records the
+            // buffering card's type — and the scrims above it — on every frame of
+            // the one state with the least headroom in the app.
+            modifier = Modifier.graphicsLayer(),
+            // Held at the ring size this plate was measured against: its padding
+            // and both type sizes were set around 40 dp, not the loader's own
+            // 10-foot default.
+            size = BufferingLoaderSize,
         )
         Text(
             text = stringResource(R.string.buffering_title),
