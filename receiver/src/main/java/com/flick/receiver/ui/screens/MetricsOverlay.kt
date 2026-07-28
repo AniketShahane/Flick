@@ -82,7 +82,7 @@ fun MetricsOverlay(
             .padding(start = 17.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
     ) {
-        MetricRow(stringResource(R.string.metrics_net), netLine(snapshot), FlickColor.Live)
+        MetricRow(stringResource(R.string.metrics_net), netLine(snapshot), netTint(snapshot))
         MetricRow(
             stringResource(R.string.metrics_buf),
             stringResource(
@@ -145,6 +145,7 @@ private fun MetricRow(label: String, value: String, valueColor: Color) {
     }
 }
 
+@Composable
 private fun netLine(s: DiagnosticsSnapshot): String {
     val parts = mutableListOf(mbps(s.bitrateEstimateBps))
     if (s.wifiBand != null) {
@@ -153,6 +154,27 @@ private fun netLine(s: DiagnosticsSnapshot): String {
     }
     return parts.joinToString(" · ")
 }
+
+/**
+ * The NET row's own health. Tinting it green unconditionally reported every link
+ * as good on the one surface a tuner opens to find a bad one: an em dash, a
+ * 2.4 GHz radio that cannot carry 4K VBR peaks and a healthy 5 GHz link all read
+ * the same. Nothing measured makes no claim at all.
+ */
+internal fun netTint(s: DiagnosticsSnapshot): Color = when {
+    s.bitrateEstimateBps <= 0L -> FlickColor.OnChrome
+    // [CROWDED_BAND] is WifiTelemetry's own label, and an RSSI of 0 is the value
+    // it reports when it has none — only a negative reading can be weak.
+    s.wifiBand == CROWDED_BAND -> FlickColor.Caution
+    s.wifiRssiDbm <= WEAK_RSSI_DBM -> FlickColor.Caution
+    else -> FlickColor.Live
+}
+
+/** 2.4 GHz cannot sustain 4K VBR peaks on the verified hardware. */
+private const val CROWDED_BAND = "2.4 GHz"
+
+/** Below this the link is worth flagging before the film stalls on it. */
+private const val WEAK_RSSI_DBM = -75
 
 private fun vidLine(s: DiagnosticsSnapshot): String {
     val res = if (s.width > 0) "${s.width}×${s.height}" else "—"
@@ -180,8 +202,17 @@ private fun subtitleLine(s: DiagnosticsSnapshot): String {
     )
 }
 
-private fun mbps(bps: Long): String =
-    if (bps <= 0L) "—" else String.format(Locale.US, "%.1f Mb/s", bps / 1_000_000.0)
+/**
+ * One formatter, one unit string, everywhere. The dev HUD used to carry its own
+ * `%.1f Mb/s`, so the same measurement could be read off two surfaces at two
+ * precisions.
+ */
+@Composable
+private fun mbps(bps: Long): String = if (bps <= 0L) {
+    stringResource(R.string.metrics_unavailable)
+} else {
+    stringResource(R.string.metrics_value_mbps, formatMbps(bps))
+}
 
 private fun seconds(ms: Long): String =
     String.format(Locale.US, "%.1f s", ms / 1000.0)

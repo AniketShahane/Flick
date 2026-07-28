@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-sealed interface Route { data object Connect : Route; data object Library : Route; data class Detail(val item: MediaItem) : Route; data object Connecting : Route; data object NowPlaying : Route; data class Failure(val kind: CastErrorKind, val failure: CastFailure) : Route }
+sealed interface Route { data object Connect : Route; data object Library : Route; data object Settings : Route; data class Detail(val item: MediaItem) : Route; data object Connecting : Route; data object NowPlaying : Route; data class Failure(val kind: CastErrorKind, val failure: CastFailure) : Route }
 data class PairedTv(val name: String, val host: String, val port: Int, val tvId: String)
 enum class PairErrorKind {
     CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
@@ -46,6 +46,15 @@ data class PendingPairLaunch(val eventId: Long, val host: String? = null, val po
  */
 data class SelectedSubtitle(val uri: Uri, val displayName: String, val language: String?)
 sealed interface CastStartState { data object Idle : CastStartState; data class ConnectingControl(val castId: String) : CastStartState; data class StartingSource(val castId: String) : CastStartState; data class AwaitingAcceptance(val castId: String) : CastStartState; data class AwaitingFirstFrame(val castId: String) : CastStartState; data class Active(val castId: String) : CastStartState; data class Failed(val castId: String, val code: String) : CastStartState }
+
+/**
+ * Whether a failure may carry a Retry action. [retryable] is the receiver's verdict on
+ * the code, but a retry is re-cast of a specific item: a terminal that lands after the
+ * cast record was cleared has nothing to hand [CastCoordinator.flickToTv], and offering
+ * the button then leaves the user tapping the only control on the screen for no effect.
+ */
+internal fun castRetryOffered(retryable: Boolean, hasCastRecord: Boolean): Boolean =
+    retryable && hasCastRecord
 
 /** Application-scoped owner of pairing, control, service state and cast generations. */
 class CastCoordinator(private val appContext: Context, private val scope: CoroutineScope) {
@@ -77,7 +86,6 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _pendingPairLaunch = MutableStateFlow<PendingPairLaunch?>(null)
     val pendingPairLaunch: StateFlow<PendingPairLaunch?> = _pendingPairLaunch.asStateFlow()
     private val _showQualitySheet = MutableStateFlow(false); val showQualitySheet = _showQualitySheet.asStateFlow()
-    private val _showAdvisories = MutableStateFlow(false); val showAdvisories = _showAdvisories.asStateFlow()
     private val _showDiagnostics = MutableStateFlow(false); val showDiagnostics = _showDiagnostics.asStateFlow()
     val devices = nsd.devices
     private val _mediaItems = MutableStateFlow<List<MediaItem>>(emptyList()); val mediaItems = _mediaItems.asStateFlow()
@@ -134,6 +142,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
     fun openLibrary() { _route.value = Route.Library }
+    fun openSettings() { _route.value = Route.Settings }
     fun openDetail(item: MediaItem) {
         // A sideloaded subtitle belongs to the title it was picked for. Browsing to a
         // different one drops it, but only while nothing is casting: a live cast owns
@@ -234,7 +243,6 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (canRestoreNowPlaying()) _route.value = Route.NowPlaying
     }
     fun toggleQualitySheet(show: Boolean) { _showQualitySheet.value = show }
-    fun toggleAdvisories(show: Boolean) { _showAdvisories.value = show }
     fun toggleDiagnostics(show: Boolean) { _showDiagnostics.value = show }
 
     fun acceptPairLaunch(event: IncomingPairEvent) {
@@ -551,10 +559,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun terminal(castId: String, code: String, retryable: Boolean = false, httpStatus: Int? = null) {
         if (currentCastId != castId) return
-        FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$retryable httpStatus=$httpStatus")
-        _castFailure.value = CastFailure(code, retryable, httpStatus)
+        val item = _castingItem.value
+        val offerRetry = castRetryOffered(retryable, item != null)
+        retryItem = item.takeIf { offerRetry }
+        FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$offerRetry httpStatus=$httpStatus")
+        _castFailure.value = CastFailure(code, offerRetry, httpStatus)
         publishCastStart(CastStartState.Failed(castId, code))
-        retryItem = _castingItem.value.takeIf { retryable }
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = true)
         _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
     }

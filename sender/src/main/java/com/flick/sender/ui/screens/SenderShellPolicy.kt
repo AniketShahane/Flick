@@ -3,14 +3,14 @@ package com.flick.sender.ui.screens
 import com.flick.sender.net.Route
 
 /**
- * The two destinations the floating nav can select. There is no Remote seat: the remote
- * only exists while something is casting, and the dock that rides above this bar is the
- * door to it.
+ * The three destinations the floating nav can select. There is no Remote seat: the
+ * remote only exists while something is casting, and the dock that rides above this bar
+ * is the door to it.
  */
-internal enum class NavTab { LIBRARY, DEVICES }
+internal enum class NavTab { LIBRARY, DEVICES, SETTINGS }
 
 /** A [Route] reduced to shell identity, dropping the payloads Detail and Failure carry. */
-internal enum class ShellDestination { CONNECT, LIBRARY, DETAIL, CONNECTING, NOW_PLAYING, FAILURE }
+internal enum class ShellDestination { CONNECT, LIBRARY, SETTINGS, DETAIL, CONNECTING, NOW_PLAYING, FAILURE }
 
 /**
  * Pure policy for the floating navigation. The rules live on the [ShellDestination]
@@ -22,6 +22,7 @@ internal object SenderShellPolicy {
     fun destinationOf(route: Route): ShellDestination = when (route) {
         Route.Connect -> ShellDestination.CONNECT
         Route.Library -> ShellDestination.LIBRARY
+        Route.Settings -> ShellDestination.SETTINGS
         is Route.Detail -> ShellDestination.DETAIL
         Route.Connecting -> ShellDestination.CONNECTING
         Route.NowPlaying -> ShellDestination.NOW_PLAYING
@@ -30,9 +31,13 @@ internal object SenderShellPolicy {
 
     fun navVisible(route: Route): Boolean = navVisible(destinationOf(route))
 
-    /** Only the two browsing surfaces reserve room for it; the rest are full-bleed. */
-    fun navVisible(destination: ShellDestination): Boolean =
-        destination == ShellDestination.LIBRARY || destination == ShellDestination.CONNECT
+    /** Only the seats the bar itself offers reserve room for it; the rest are full-bleed. */
+    fun navVisible(destination: ShellDestination): Boolean = when (destination) {
+        ShellDestination.LIBRARY, ShellDestination.CONNECT, ShellDestination.SETTINGS -> true
+        ShellDestination.DETAIL, ShellDestination.CONNECTING, ShellDestination.NOW_PLAYING,
+        ShellDestination.FAILURE,
+        -> false
+    }
 
     fun dockVisible(route: Route): Boolean = dockVisible(destinationOf(route))
 
@@ -67,6 +72,7 @@ internal object SenderShellPolicy {
             NavTab.LIBRARY
         ShellDestination.CONNECT, ShellDestination.CONNECTING, ShellDestination.FAILURE ->
             NavTab.DEVICES
+        ShellDestination.SETTINGS -> NavTab.SETTINGS
     }
 
     fun darkBackdrop(route: Route): Boolean = darkBackdrop(destinationOf(route))
@@ -78,7 +84,9 @@ internal object SenderShellPolicy {
      */
     fun darkBackdrop(destination: ShellDestination): Boolean = when (destination) {
         ShellDestination.CONNECTING, ShellDestination.NOW_PLAYING, ShellDestination.DETAIL -> true
-        ShellDestination.CONNECT, ShellDestination.LIBRARY, ShellDestination.FAILURE -> false
+        ShellDestination.CONNECT, ShellDestination.LIBRARY, ShellDestination.SETTINGS,
+        ShellDestination.FAILURE,
+        -> false
     }
 
     fun darkBackdrop(route: Route, lightPalette: Boolean): Boolean =

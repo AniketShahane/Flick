@@ -34,7 +34,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -98,33 +97,31 @@ internal val PrimaryTransportGlyphSize = 28.dp
 internal val TransportClusterGap = 16.dp
 
 /**
- * A squared transport button (spec §5.3 row 3). [primary] paints the amber play
- * key — an opaque `Spark` fill, ink in `OnSpark`, an amber drop shadow, and a
- * WHITE focus ring because amber on amber vanishes. Secondary keys are the cool
- * translucent squares.
+ * The amber play key (spec §5.3 row 3) — an opaque `Spark` fill, ink in `OnSpark`,
+ * an amber drop shadow, and a WHITE focus ring because amber on amber vanishes.
+ *
+ * It is the only focusable in the cluster, so the fill no longer animates between
+ * states: it was already `Spark` in every one of them.
  */
 @Composable
-private fun TransportButton(
+private fun TransportPlayKey(
     onClick: () -> Unit,
-    side: Dp,
-    shape: Shape,
-    primary: Boolean,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
     contentDescription: String? = null,
     enabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
+    val shape = FlickShape.Play
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val pressed by interaction.collectIsPressedAsState()
     val reducedMotion = LocalReducedMotion.current
     val hosted = beaconHosted()
     val ringVisible = focused && enabled
-    val ringColor = if (primary) FlickColor.FocusRingOnSpark else FlickColor.FocusRing
-    // Held as State and read inside the layer / draw lambdas below: these keys sit
-    // directly over the decoder, so a D-pad move may repaint them but may not
-    // recompose them once a frame.
+    // Held as State and read inside the layer / draw lambdas below: this key sits
+    // directly over the decoder, so a D-pad move may repaint it but may not
+    // recompose it once a frame.
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f
@@ -141,21 +138,12 @@ private fun TransportButton(
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "transportRingPresence",
     )
-    val fill by animateColorAsState(
-        targetValue = when {
-            primary -> FlickColor.Spark
-            pressed -> FlickColor.ControlFill
-            else -> FlickColor.ControlFillStrong
-        },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
-        label = "transportPressFill",
-    )
     Box(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .focusProperties { canFocus = enabled }
-            .size(side)
-            .focusBeacon(shape, ringColor)
+            .size(PrimaryTransportTargetSize)
+            .focusBeacon(shape, FlickColor.FocusRingOnSpark)
             .graphicsLayer {
                 val lift = scale.value
                 scaleX = lift
@@ -165,16 +153,66 @@ private fun TransportButton(
             .flickFocusRing(
                 visible = ringVisible && !hosted,
                 shape = shape,
-                ringColor = ringColor,
+                ringColor = FlickColor.FocusRingOnSpark,
                 progress = { ringPresence.value },
             )
-            .then(if (primary) Modifier.sparkShadow(shape = shape) else Modifier)
+            .sparkShadow(shape = shape)
             .clip(shape)
-            .background(fill)
-            .then(
-                if (primary) Modifier
-                else Modifier.border(FlickDimens.Hairline, FlickColor.Outline, shape),
+            .background(FlickColor.Spark)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
             )
+            .then(
+                if (enabled) {
+                    Modifier.semantics(mergeDescendants = true) {
+                        this.role = Role.Button
+                        if (contentDescription != null) this.contentDescription = contentDescription
+                    }
+                } else {
+                    Modifier.clearAndSetSemantics { }
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+/**
+ * A ±10 s seek glyph, drawn as what it is: a **mark for a remote gesture**, not a
+ * key you can land on.
+ *
+ * `TvRemoteKeyPolicy` consumes physical Left/Right as ±10 s seeks at the Activity
+ * boundary, so these two can never take D-pad focus while the film is running —
+ * yet they used to wear the §3 unfocused vocabulary (`ControlFillStrong` plus the
+ * `Outline` hairline), which in this system means exactly one thing: *this is a
+ * focus target*. Two full-size affordances promised a landing that ~95 % of the
+ * time did not exist, and the one time it did (a side panel open, horizontal keys
+ * handed back to Compose) it was an accident of state, not a feature.
+ *
+ * So the plate and the hairline are gone and the glyph is all that is left. It
+ * keeps its 48 dp box — the box is the row's rhythm, and the interaction test
+ * measures it — and it keeps its click action and `contentDescription`, so an
+ * accessibility service can still reach the action even though the D-pad never
+ * will.
+ *
+ * It carries no `graphicsLayer`: the §3 disabled alpha would buy two more render
+ * nodes over a live decoder for a state that is not a user state here. `enabled`
+ * is false only while the chrome is leaving, and the chrome's own fade covers it.
+ */
+@Composable
+private fun TransportGestureMark(
+    onClick: () -> Unit,
+    contentDescription: String?,
+    enabled: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .size(SecondaryTransportTargetSize)
+            .focusProperties { canFocus = false }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -264,8 +302,19 @@ fun PlayPauseGlyph(
 }
 
 /**
- * The transport cluster (spec §5.3 row 3): back-10 / play-pause / fwd-10. On
- * entry, focus lands on play via [playFocusRequester].
+ * The transport cluster (spec §5.3 row 3): back-10 / play-pause / fwd-10.
+ *
+ * Exactly ONE of the three is a focus target, and it is the one focus lands on at
+ * entry via [playFocusRequester]. The flanking ±10 s glyphs are
+ * [TransportGestureMark]s — the remote's own Left/Right, reported back to the
+ * viewer, not keys the D-pad can reach. That asymmetry is the point: the row now
+ * reads as one key you press and two marks that tell you what the remote does.
+ *
+ * [enabled] is the chrome's gate on the whole cluster. [primaryEnabled] is
+ * narrower and belongs to the play key alone: the ±10 s marks still carry a
+ * working accessibility action in states where pressing play would do nothing —
+ * see `primaryTransportLive`. With it false the caller must also route the row's
+ * vertical chain past the key, which can no longer accept focus.
  */
 @Composable
 fun TransportCluster(
@@ -279,35 +328,30 @@ fun TransportCluster(
     playPauseContentDescription: String? = null,
     forward10ContentDescription: String? = null,
     enabled: Boolean = true,
+    primaryEnabled: Boolean = true,
 ) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(TransportClusterGap),
     ) {
-        TransportButton(
+        TransportGestureMark(
             onClick = onBack10,
-            side = SecondaryTransportTargetSize,
-            shape = FlickShape.Lg,
-            primary = false,
             contentDescription = back10ContentDescription,
             enabled = enabled,
         ) {
             Icon(
                 imageVector = FlickIcons.Replay10,
                 contentDescription = null,
-                tint = Color.White,
+                tint = FlickColor.OnChrome,
                 modifier = Modifier.size(TransportGlyphSize),
             )
         }
-        TransportButton(
+        TransportPlayKey(
             onClick = onPlayPause,
-            side = PrimaryTransportTargetSize,
-            shape = FlickShape.Play,
-            primary = true,
             focusRequester = playFocusRequester,
             contentDescription = playPauseContentDescription,
-            enabled = enabled,
+            enabled = enabled && primaryEnabled,
         ) {
             PlayPauseGlyph(
                 playing = playing,
@@ -315,18 +359,15 @@ fun TransportCluster(
                 tint = FlickColor.OnSpark,
             )
         }
-        TransportButton(
+        TransportGestureMark(
             onClick = onForward10,
-            side = SecondaryTransportTargetSize,
-            shape = FlickShape.Lg,
-            primary = false,
             contentDescription = forward10ContentDescription,
             enabled = enabled,
         ) {
             Icon(
                 imageVector = FlickIcons.Forward10,
                 contentDescription = null,
-                tint = Color.White,
+                tint = FlickColor.OnChrome,
                 modifier = Modifier.size(TransportGlyphSize),
             )
         }
@@ -382,7 +423,7 @@ fun VolumeCells(
     val filled = (level.coerceIn(0f, 1f) * cells).toInt()
     val ringVisible = focused && enabled
     val shape = FlickShape.Lg
-    // Read inside the layer / draw lambdas below — see [TransportButton].
+    // Read inside the layer / draw lambdas below — see [TransportPlayKey].
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f

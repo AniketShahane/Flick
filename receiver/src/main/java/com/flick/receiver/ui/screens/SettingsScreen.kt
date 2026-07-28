@@ -127,11 +127,22 @@ private fun settingsStageProgress(progress: Float, index: Int): Float {
 /**
  * A staged row's entrance. `graphicsLayer` only — a layout offset here would move
  * the bounds the `SettingsLayoutEpoch` / `bringIntoView` machinery measures.
+ *
+ * [settled] drops the layer once the column has arrived: a finished entrance must
+ * not leave a render node per row composited for the life of the screen.
  */
-private fun Modifier.settingsStage(progress: () -> Float, index: Int): Modifier = graphicsLayer {
-    val stage = settingsStageProgress(progress(), index)
-    alpha = stage
-    translationY = (1f - stage) * SettingsStageRise.toPx()
+private fun Modifier.settingsStage(
+    progress: () -> Float,
+    index: Int,
+    settled: Boolean,
+): Modifier = if (settled) {
+    this
+} else {
+    graphicsLayer {
+        val stage = settingsStageProgress(progress(), index)
+        alpha = stage
+        translationY = (1f - stage) * SettingsStageRise.toPx()
+    }
 }
 
 private data class SettingsLayoutEpoch(
@@ -202,8 +213,10 @@ fun SettingsScreen(
     val reducedMotion = LocalReducedMotion.current
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
+    var entranceSettled by remember { mutableStateOf(false) }
     LaunchedEffect(reducedMotion) {
         if (reducedMotion) entrance.snapTo(1f) else entrance.animateTo(1f, entranceSpec)
+        entranceSettled = true
     }
     val stage = { entrance.value }
     // The diagnostics log is summoned by one row and appears directly under it,
@@ -264,7 +277,7 @@ fun SettingsScreen(
                     focusRequester = renameFocus,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 0)
+                        .settingsStage(stage, index = 0, settled = entranceSettled)
                         .testTag("settings-first-row"),
                     contentPadding = RowPadding,
                 ) {
@@ -286,7 +299,7 @@ fun SettingsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 1)
+                        .settingsStage(stage, index = 1, settled = entranceSettled)
                         .testTag("settings-paired-row")
                         .clip(FlickShape.Md)
                         .background(FlickColor.SurfaceRaisedAlt)
@@ -311,7 +324,7 @@ fun SettingsScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 2)
+                        .settingsStage(stage, index = 2, settled = entranceSettled)
                         .testTag("settings-metrics-row"),
                     contentPadding = RowPadding,
                 ) {
@@ -331,7 +344,7 @@ fun SettingsScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 3)
+                        .settingsStage(stage, index = 3, settled = entranceSettled)
                         .testTag("settings-forget-row"),
                     contentPadding = RowPadding,
                 ) {
@@ -361,7 +374,7 @@ fun SettingsScreen(
                     modifier = Modifier
                         .tvRevealSource(diagnosticsOrigin)
                         .fillMaxWidth()
-                        .settingsStage(stage, index = 4)
+                        .settingsStage(stage, index = 4, settled = entranceSettled)
                         .testTag("settings-diagnostics-row"),
                     contentPadding = RowPadding,
                 ) {

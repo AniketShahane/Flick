@@ -3,6 +3,7 @@ package com.flick.sender.net
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.util.FlickLog
@@ -29,11 +30,21 @@ import java.util.ArrayDeque
  * monotonic sequence: a receiver that re-registers to flip its TXT `state` looks
  * like lost-then-found, and a late `onServiceLost` carrying an older stamp must
  * never delete the record a newer resolve just wrote.
+ *
+ * A browse alone does not keep that TXT true. `onServiceFound` fires once per service
+ * and [NsdManager] never re-resolves it, so a receiver that changes `state` in place —
+ * or whose goodbye never reaches this phone — leaves a resolution describing a state
+ * the TV has left, and the row goes on telling the user to wake a TV they have already
+ * woken. Two things converge it: on API 34+ each held record is subscribed to with
+ * [NsdManager.ServiceInfoCallback], which reports the record's own changes; everywhere
+ * else, and for anything that subscription refuses, [SWEEP_PERIOD_MS] re-resolves the
+ * names nothing is watching. Both write through [onResolved], so a stale answer can
+ * only ever be replaced by a newer one and the row cannot flap between the two.
  */
 class NsdDiscovery(context: Context) {
 
-    private val nsd = context.applicationContext
-        .getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val appContext = context.applicationContext
+    private val nsd = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
 
     private val _devices = MutableStateFlow<List<DiscoveredTv>>(emptyList())
     val devices: StateFlow<List<DiscoveredTv>> = _devices.asStateFlow()
@@ -44,6 +55,8 @@ class NsdDiscovery(context: Context) {
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private val retryScope = CoroutineScope(Dispatchers.Main.immediate)
     private var retryJob: Job? = null
+    private var sweepJob: Job? = null
+    private var sweepsLeft = 0
     private val retryGate = NsdRetryGate()
 
     // serviceName -> the browse record last seen for it, so a loss (or a pre-connect
@@ -51,11 +64,24 @@ class NsdDiscovery(context: Context) {
     private val lastInfoByName = HashMap<String, NsdServiceInfo>()
     // serviceName -> the resolve sequence that produced the currently held record.
     private val resolvedAt = HashMap<String, Long>()
+    // serviceName -> its live API 34+ record subscription, while one is registered.
+    private val monitors = HashMap<String, NsdManager.ServiceInfoCallback>()
     private val _resolveRevision = MutableStateFlow(0L)
 
     fun start() {
         synchronized(lock) {
-            if (!retryGate.begin()) return
+            // Every caller of start() is a moment of attention — the app coming up, the
+            // device list being opened, a rescan — which is what the sweep budget is
+            // spent on. Nobody is reading a row hours later, so nothing is re-queried then.
+            sweepsLeft = SWEEP_BUDGET
+            if (!retryGate.begin()) {
+                // Already browsing, so there is no second discovery to open — but the
+                // caller asked to look again, and what the browse cannot notice on its
+                // own is a TXT `state` that changed under a record already held.
+                sweepStale()
+                startSweep()
+                return
+            }
             val listener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
                     FlickLog.w("nsd", "discovery failed code=$errorCode")
@@ -83,6 +109,7 @@ class NsdDiscovery(context: Context) {
                 discoveryListener = null
                 if (retryGate.startFailed()) scheduleRetry()
             }
+            if (discoveryListener != null) startSweep()
         }
     }
 
@@ -93,6 +120,8 @@ class NsdDiscovery(context: Context) {
             pending.clear()
             resolving = false
             retryJob?.cancel(); retryJob = null
+            sweepJob?.cancel(); sweepJob = null
+            monitors.keys.toList().forEach(::dropMonitor)
             retryGate.stopRequested()
         }
     }
@@ -143,6 +172,64 @@ class NsdDiscovery(context: Context) {
         }
     }
 
+    /** Re-resolves every held record no subscription is watching. Callers hold [lock]. */
+    private fun sweepStale() {
+        // A pass already in flight is the freshest answer there is, and queueing a second
+        // one behind it would let a stalled resolve grow the queue once per period.
+        if (resolving || pending.isNotEmpty()) return
+        var queued = false
+        for ((name, info) in lastInfoByName) {
+            if (monitors.containsKey(name)) continue
+            pending.addLast(info)
+            queued = true
+        }
+        if (queued) pumpResolve()
+    }
+
+    /**
+     * Ends with the budget rather than idling on it: a timer that outlived its last pass
+     * would go on waking the main looper every [SWEEP_PERIOD_MS] for the life of the
+     * process to decide it has nothing to do. Every [start] re-arms the budget and starts
+     * it again, which is the same moment of attention the budget is spent on.
+     */
+    private fun startSweep() {
+        if (sweepJob?.isActive == true) return
+        sweepJob = retryScope.launch {
+            while (true) {
+                delay(SWEEP_PERIOD_MS)
+                synchronized(lock) {
+                    if (discoveryListener == null || sweepsLeft <= 0) return@launch
+                    sweepsLeft--
+                    sweepStale()
+                }
+            }
+        }
+    }
+
+    /**
+     * Subscribes to one service's own record so its TXT changes arrive without a browse
+     * event. Bounded because the platform caps concurrent NSD requests and a home LAN
+     * that answers with more receivers than this has nothing more to tell us.
+     */
+    private fun ensureMonitor(name: String) {
+        if (Build.VERSION.SDK_INT < MONITOR_API) return
+        if (monitors.containsKey(name) || monitors.size >= MAX_MONITORS) return
+        val info = lastInfoByName[name] ?: return
+        val monitor = ServiceMonitor(name)
+        monitors[name] = monitor
+        runCatching { nsd.registerServiceInfoCallback(info, appContext.mainExecutor, monitor) }
+            .onFailure {
+                FlickLog.w("nsd", "monitor rejected name=$name")
+                monitors.remove(name)
+            }
+    }
+
+    private fun dropMonitor(name: String) {
+        if (Build.VERSION.SDK_INT < MONITOR_API) return
+        val monitor = monitors.remove(name) ?: return
+        runCatching { nsd.unregisterServiceInfoCallback(monitor) }
+    }
+
     @Suppress("DEPRECATION")
     private fun onResolved(info: NsdServiceInfo) {
         val host = info.host?.hostAddress ?: return
@@ -174,6 +261,7 @@ class NsdDiscovery(context: Context) {
             _devices.value = (_devices.value.filter { it.name != name && it.host != tv.host } + tv)
                 .sortedByDescending { it.state == TvAvailability.READY }
             _resolveRevision.value = stamp
+            ensureMonitor(name)
         }
     }
 
@@ -197,6 +285,7 @@ class NsdDiscovery(context: Context) {
                         FlickLog.i("nsd", "dropped name=$name")
                         resolvedAt.remove(name)
                         lastInfoByName.remove(name)
+                        dropMonitor(name)
                         _devices.value = _devices.value.filter { it.name != name }
                     }
                 }
@@ -225,10 +314,42 @@ class NsdDiscovery(context: Context) {
         }
     }
 
+    /**
+     * The API 34+ subscription to one service's own record. It survives its own
+     * [onServiceLost]: the platform keeps reporting the service if it returns, which is
+     * exactly the re-registration a receiver performs to flip its advertised state.
+     */
+    private inner class ServiceMonitor(private val name: String) : NsdManager.ServiceInfoCallback {
+        override fun onServiceUpdated(serviceInfo: NsdServiceInfo) = onResolved(serviceInfo)
+
+        override fun onServiceLost() = onLost(name)
+
+        override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+            FlickLog.w("nsd", "monitor failed name=$name code=$errorCode")
+            // Handing the name back to the sweep is the whole recovery: it is the path
+            // every pre-34 device already takes.
+            synchronized(lock) { if (monitors[name] === this) monitors.remove(name) }
+        }
+
+        override fun onServiceInfoCallbackUnregistered() {
+            synchronized(lock) { if (monitors[name] === this) monitors.remove(name) }
+        }
+    }
+
     private companion object {
         const val SERVICE_TYPE = "_flick._tcp."
         const val SERVICE_TYPE_MATCH = "_flick._tcp"
         const val LOSS_GRACE_MS = 2_500L
         const val REFRESH_TIMEOUT_MS = 900L
+        /** Android 14 — the first release with a per-service record subscription. */
+        const val MONITOR_API = 34
+        const val MAX_MONITORS = 4
+        // The ceiling on how long a woken TV can go on being listed as asleep where no
+        // subscription is available.
+        const val SWEEP_PERIOD_MS = 15_000L
+        // Five minutes of re-resolving per moment of attention. Unbounded, this would be
+        // one query per held TV every 15 s for as long as the process lives — a browse
+        // costs nothing to leave running, but a resolve loop is traffic.
+        const val SWEEP_BUDGET = 20
     }
 }

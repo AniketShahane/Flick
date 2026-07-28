@@ -13,6 +13,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -50,7 +51,7 @@ class ControlClient(private val scope: CoroutineScope) {
 
     private val client = HttpClient(CIO) {
         install(WebSockets) {
-            pingIntervalMillis = 5_000
+            pingIntervalMillis = PING_INTERVAL_MS
             // Enforce the frozen decoded-frame limit before readText allocates it.
             maxFrameSize = ControlProtocolV2.MAX_FRAME_BYTES.toLong()
         }
@@ -280,8 +281,15 @@ class ControlClient(private val scope: CoroutineScope) {
     private fun installAuthenticated(socket: DefaultClientWebSocketSession, value: AuthenticatedEndpoint) {
         endpoint = value
         _connection.value = ConnectionStatus.CONNECTED
-        reader = scope.launch {
-            try {
+        reader = scope.launch(transportFailures(socket)) {
+            // A peer that stops answering does not end this loop: Ktor closes
+            // `incoming` WITH the failure as the channel's cause, so it arrives as a
+            // throw. Cancellation and our own defects are re-raised unchanged; only a
+            // transport failure becomes the disconnect `dropAuthenticated` performs.
+            absorbingTransportFailure(
+                onTransportLoss = { FlickLog.w("ws", "control lost ${it.javaClass.simpleName}", it) },
+                always = { dropAuthenticated(socket) },
+            ) {
                 for (incoming in socket.incoming) {
                     if (incoming !is Frame.Text || !incoming.fin) {
                         closeBad(socket, CloseReason.Codes.CANNOT_ACCEPT)
@@ -298,10 +306,43 @@ class ControlClient(private val scope: CoroutineScope) {
                     }
                     frames.emit(frame)
                 }
-            } finally {
-                if (session === socket) { endpoint = null; _connection.value = ConnectionStatus.DISCONNECTED; closeInternal() }
             }
         }
+    }
+
+    /**
+     * The backstop for whatever escapes [absorbingTransportFailure] itself — a defect
+     * it re-raises on purpose, or a throw out of the teardown. Nothing higher up can
+     * stand in for it: Ktor's ping/pong watchdog is a SIBLING coroutine of this
+     * reader, so [open]'s try/catch had returned the moment pairing succeeded and
+     * never saw the timeout that killed the process mid-cast.
+     *
+     * It is attached to the reader's own `launch` because a CoroutineExceptionHandler
+     * is consulted only on the context of the coroutine whose failure reaches a root.
+     * The application scope's SupervisorJob refuses the failure, which makes the
+     * reader itself that root; a handler on any scope that did not launch the reader
+     * would never be looked at.
+     */
+    private fun transportFailures(socket: DefaultClientWebSocketSession) = CoroutineExceptionHandler { _, error ->
+        when (ControlTransportFailure.classify(error)) {
+            ControlFailure.CANCELLED -> Unit
+            ControlFailure.TRANSPORT -> {
+                FlickLog.w("ws", "control lost ${error.javaClass.simpleName}", error)
+                dropAuthenticated(socket)
+            }
+            // Re-raising the SAME instance is what keeps a real defect fatal:
+            // kotlinx hands that instance straight to the default uncaught handler
+            // instead of reporting a failure inside the handler.
+            ControlFailure.BUG -> throw error
+        }
+    }
+
+    /** Reconnects happen: a late failure from a prior socket must never tear down its successor. */
+    private fun dropAuthenticated(socket: DefaultClientWebSocketSession) {
+        if (session !== socket) return
+        endpoint = null
+        _connection.value = ConnectionStatus.DISCONNECTED
+        closeInternal()
     }
 
     private sealed interface Received {
@@ -378,5 +419,27 @@ class ControlClient(private val scope: CoroutineScope) {
         const val OPEN_TIMEOUT_MS = 6_000L
         // P2 residual: without a wire-level ready acknowledgement, silence in this fixed window cannot prove availability.
         const val BUSY_DISPOSITION_MS = 250L
+
+        /**
+         * Ktor derives the pong deadline as exactly twice this value and offers no
+         * separate setting, and its pinger spends a whole interval draining stale
+         * pongs BEFORE it puts the next ping on the wire. So the two numbers that
+         * matter are not the same number: a stalled link is tolerated for 2x
+         * (30 seconds) of missing pong once a ping is out, while a TV that dies is
+         * noticed between 2x and 3x (30 to 45 seconds) later, never sooner — the
+         * phone reads CONNECTED over a dead cast for that whole window.
+         *
+         * The tolerance floor is what this value is chosen for. The former 5_000
+         * tolerated 10 seconds, which an ordinary home-Wi-Fi stall under a 4K VBR
+         * peak exceeds, and crossing it releases the receiver's lease and costs the
+         * user the film; the 45-second detection ceiling is the price paid for that.
+         * 15_000 also keeps a ping on the wire about every 15 seconds, inside Ktor
+         * CIO's 45-second server connection-idle timeout, so an authenticated but
+         * idle session is never reaped for silence either. The receiver is unaffected
+         * in both directions: it installs no pinger of its own (the server plugin's
+         * pingPeriod defaults to zero) and the pong is answered by Ktor's own ponger
+         * rather than by ControlServer, so single-controller ownership never sees it.
+         */
+        const val PING_INTERVAL_MS = 15_000L
     }
 }

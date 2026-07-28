@@ -55,12 +55,20 @@
              (Compose re-reads the new Configuration) so rotation / dark-mode / split-
              screen / locale / font-scale never recreate it and tear down the live
              FlickController — the control WS, PlaybackSession, route and casting item
-             all survive, mirroring the receiver activity. -->
+             all survive, mirroring the receiver activity.
+
+             adjustResize, never the inherited default: that default resolves to
+             adjustPan, which lifts the whole window by the keyboard on top of the ime
+             inset the sheets already pad themselves with — one keyboard applied twice.
+             The window draws edge to edge (decorFitsSystemWindows false), so this
+             resizes nothing; it stops the pan and leaves WindowInsets.ime as the only
+             lift. Below API 30 it is also what makes that inset non-zero at all. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

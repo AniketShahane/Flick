@@ -165,7 +165,7 @@ fun Modifier.flickSharedFrame(
 @Composable
 fun VideoTile(
     item: MediaItem,
-    hdr: HdrType,
+    hdr: HdrType?,
     imageLoader: ImageLoader,
     onClick: () -> Unit,
     compact: Boolean = false,
@@ -244,7 +244,10 @@ fun VideoTile(
             )
             Text(
                 text = metaLabel(item, stringResource(R.string.media_unknown)),
-                style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceFaint),
+                // onSurfaceFaint is cleared only for tracked uppercase labels: this line
+                // is 11 sp mixed case and it is under every tile in the grid, which makes
+                // it the most-read text in the app and the least readable ink for it.
+                style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceDim),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 3.dp),
@@ -253,9 +256,13 @@ fun VideoTile(
     }
 }
 
-/** "4K DV" / "4K HDR10" / "4K" — the dynamic range is only claimed once probed. */
+/**
+ * "4K DV" / "4K HDR10" / "4K" — the dynamic range is only claimed once probed, which is
+ * why null (still probing) and [HdrType.NONE] (probed, no HDR) render the same badge:
+ * the resolution is all this tile knows in either case.
+ */
 @Composable
-private fun badgeLabel(hdr: HdrType, resolutionLabel: String): String = when (hdr) {
+private fun badgeLabel(hdr: HdrType?, resolutionLabel: String): String = when (hdr) {
     HdrType.DOLBY_VISION -> stringResource(
         R.string.library_tile_badge,
         resolutionLabel,
@@ -266,7 +273,7 @@ private fun badgeLabel(hdr: HdrType, resolutionLabel: String): String = when (hd
         resolutionLabel,
         stringResource(R.string.media_hdr10_badge),
     )
-    HdrType.NONE -> resolutionLabel
+    HdrType.NONE, null -> resolutionLabel
 }
 
 private fun metaLabel(item: MediaItem, unknown: String): String {

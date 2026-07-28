@@ -44,14 +44,14 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,6 +67,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,6 +101,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
+import com.flick.sender.NetworkUtils
 import com.flick.sender.R
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibraryAction
@@ -115,10 +117,8 @@ import com.flick.sender.ui.components.FlickMark
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.NowPlayingDockClearance
-import com.flick.sender.ui.components.RevealOrigin
 import com.flick.sender.ui.components.VideoTile
 import com.flick.sender.ui.components.rememberVideoImageLoader
-import com.flick.sender.ui.components.revealOrigin
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
@@ -132,8 +132,11 @@ import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Room the floating nav needs at the foot of the scroll (design §5.4). */
 private val NavClearance = 116.dp
@@ -143,7 +146,6 @@ private val NavClearance = 116.dp
 fun LibraryScreen(
     controller: FlickController,
     onRequestVideoPermission: () -> Unit,
-    revealOrigin: RevealOrigin,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
@@ -159,6 +161,7 @@ fun LibraryScreen(
     // State, not a value: the 2 s telemetry poll must stop at the pill that shows it
     // rather than rebuilding the whole grid.
     val signal = rememberSignalState()
+    val wifiLinkUp = rememberWifiLinkUp(signal)
     val on24GHz by remember(signal) { derivedStateOf { signal.value.on24GHz } }
     val compactTiles = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
@@ -193,14 +196,26 @@ fun LibraryScreen(
         staggerArmed = false
     }
 
-    if (mediaAccess == MediaAccess.NONE || (items.isEmpty() && !loading)) {
+    // Deliberately not snapshot state: it is written and read in the same composition,
+    // and observing it would recompose the grid a second time on the frame it flips.
+    val emptyLatch = remember { EmptyLatch() }
+    emptyLatch.shown = libraryEmptyShown(
+        access = mediaAccess,
+        itemCount = items.size,
+        loading = loading,
+        showing = emptyLatch.shown,
+    )
+    if (emptyLatch.shown) {
         EmptyState(
             controller = controller,
             connectedTv = connectedTv,
             castingItem = castingItem,
             signal = signal,
+            wifiLinkUp = wifiLinkUp,
+            mediaAccess = mediaAccess,
             bottomClearance = bottomClearance,
             onChoose = onRequestVideoPermission,
+            onRefresh = { controller.refreshMediaLibrary() },
         )
         return
     }
@@ -232,7 +247,6 @@ fun LibraryScreen(
         fullWidth {
             Header(
                 mediaAction = mediaAction,
-                revealOrigin = revealOrigin,
                 onMediaAction = {
                     when (mediaAction) {
                         MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
@@ -240,7 +254,6 @@ fun LibraryScreen(
                         MediaLibraryAction.HIDDEN -> Unit
                     }
                 },
-                onTune = { controller.toggleAdvisories(true) },
             )
         }
         fullWidth {
@@ -249,6 +262,7 @@ fun LibraryScreen(
                 connectedTv = connectedTv,
                 castingItem = castingItem,
                 signal = signal,
+                wifiLinkUp = wifiLinkUp,
             )
         }
         fullWidth {
@@ -268,10 +282,9 @@ fun LibraryScreen(
         }
         if (on24GHz) {
             fullWidth {
-                BandAdvisory(
-                    revealOrigin = revealOrigin,
-                    onClick = { controller.toggleAdvisories(true) },
-                )
+                // The advisory and its fix live on the same surface now: the banner is a
+                // shortcut to the Settings seat rather than a sheet of its own.
+                BandAdvisory(onClick = { controller.openSettings() })
             }
         }
         when {
@@ -382,17 +395,18 @@ private fun LazyGridScope.fullWidth(
     Box(Modifier.padding(bottom = 5.dp)) { content() }
 }
 
+/**
+ * The brand lockup, shared by the populated library and its empty state so the mark
+ * cannot move when the first video arrives. The 48 dp floor is what the action button
+ * imposes on the populated header — that header always carries one, because it is only
+ * reached with access granted — so the empty state has to claim the same height even
+ * though it carries nothing beside the wordmark.
+ */
 @Composable
-private fun Header(
-    mediaAction: MediaLibraryAction,
-    revealOrigin: RevealOrigin,
-    onMediaAction: () -> Unit,
-    onTune: () -> Unit,
-) {
+private fun Wordmark(trailing: @Composable RowScope.() -> Unit = {}) {
     val colors = LocalFlickColors.current
-    val tuneLabel = stringResource(R.string.a11y_library_tune)
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -404,6 +418,17 @@ private fun Header(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        trailing()
+    }
+}
+
+@Composable
+private fun Header(
+    mediaAction: MediaLibraryAction,
+    onMediaAction: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    Wordmark {
         if (mediaAction != MediaLibraryAction.HIDDEN) {
             val label = stringResource(
                 if (mediaAction == MediaLibraryAction.SELECT_MORE) {
@@ -425,34 +450,58 @@ private fun Header(
                 Text(text = label, style = FlickText.labelMedium)
             }
         }
-        FilledTonalIconButton(
-            onClick = onTune,
-            shapes = IconButtonDefaults.shapes(
-                shape = RoundedCornerShape(FlickCorners.tuneBtn),
-                pressedShape = PressedPillShape,
-            ),
-            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                containerColor = colors.inverseSurface,
-                contentColor = colors.onInverseSurface,
-            ),
-            modifier = Modifier
-                .size(48.dp)
-                // The advisories sheet is born here, in the top-right corner it was
-                // asked for from.
-                .revealOrigin(revealOrigin)
-                .semantics { contentDescription = tuneLabel },
-        ) {
-            Icon(
-                FlickIcons.Tune,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-            )
-        }
     }
 }
 
-/** Which of the pill's three honest states is showing. */
-private enum class LinkPillState { CASTING, PAIRED, UNPAIRED }
+/** Which of the pill's four honest states is showing. */
+internal enum class LinkPillState { CASTING, PAIRED, UNPAIRED, OFFLINE }
+
+/**
+ * A pairing is a stored credential, not a live link: it survives the network the link
+ * runs over going away, and with Wi-Fi off the phone would go on calling an unreachable
+ * TV "Ready". [wifiLinkUp] is the one thing this phone actually measured — its own
+ * Wi-Fi link — so the fourth face says that and nothing about the TV, which from here
+ * is unknowable. A cast in flight outranks it: bytes moving are the better evidence.
+ */
+internal fun linkPillState(paired: Boolean, casting: Boolean, wifiLinkUp: Boolean): LinkPillState = when {
+    !paired -> LinkPillState.UNPAIRED
+    casting -> LinkPillState.CASTING
+    !wifiLinkUp -> LinkPillState.OFFLINE
+    else -> LinkPillState.PAIRED
+}
+
+/**
+ * Whether this phone's Wi-Fi is up — every value this returns is something that was
+ * actually read, which is why [linkPillState] may treat a `false` as a fact.
+ *
+ * [SignalInfo.hasLink] alone cannot carry that: [rememberSignalState] publishes its
+ * record before its first poll has run, so a null band there means both "nothing has
+ * looked yet" and "Wi-Fi is down". The pill states the second one, and this screen is
+ * rebuilt on every entry, so keying on it would open the library amber on a healthy
+ * phone every single time. The first answer is therefore read inline, on the frame the
+ * pill first needs it; a `true` from the shared poll is then proof and costs nothing,
+ * and only its ambiguous `false` is asked again here.
+ */
+@Composable
+private fun rememberWifiLinkUp(signal: State<SignalInfo>): State<Boolean> {
+    val context = LocalContext.current
+    val confirmed = remember(context) { mutableStateOf(NetworkUtils.getWifiLinkInfo(context) != null) }
+    LaunchedEffect(context, signal) {
+        // Collected off composition on purpose: reading the shared record at this
+        // function's scope would put the whole grid behind the pill on the 2 s poll.
+        snapshotFlow { signal.value.hasLink }.collectLatest { reported ->
+            if (reported) {
+                confirmed.value = true
+                return@collectLatest
+            }
+            while (true) {
+                confirmed.value = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) != null }
+                delay(WifiLinkRecheckMs)
+            }
+        }
+    }
+    return confirmed
+}
 
 /**
  * Snapshotted so the face being replaced keeps the words it was showing while it
@@ -467,11 +516,11 @@ private data class LinkPillModel(
 )
 
 /**
- * One slot, three honest states: a cast in flight, paired but idle, nothing paired.
- * It is a single pill that changes face rather than three pills that replace each
- * other. The wording follows the TV's own reported phase — `castingItem` stays set
- * through pause and end — and the throughput number only replaces the band once the
- * server is actually writing bytes.
+ * One slot, four honest states: a cast in flight, paired but idle, paired with no link
+ * to reach the TV over, nothing paired. It is a single pill that changes face rather
+ * than four pills that replace each other. The wording follows the TV's own reported
+ * phase — `castingItem` stays set through pause and end — and the throughput number
+ * only replaces the band once the server is actually writing bytes.
  */
 @Composable
 private fun LinkPill(
@@ -479,15 +528,18 @@ private fun LinkPill(
     connectedTv: PairedTv?,
     castingItem: MediaItem?,
     signal: State<SignalInfo>,
+    wifiLinkUp: State<Boolean>,
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
-    val state = when {
-        connectedTv != null && castingItem != null -> LinkPillState.CASTING
-        connectedTv != null -> LinkPillState.PAIRED
-        else -> LinkPillState.UNPAIRED
-    }
+    // Unwrapped here rather than by the caller: the answer changes only when Wi-Fi does,
+    // and this is the deepest scope that needs it, so the grid behind it never rebuilds.
+    val state = linkPillState(
+        paired = connectedTv != null,
+        casting = castingItem != null,
+        wifiLinkUp = wifiLinkUp.value,
+    )
 
     // Kept as State so the 10 Hz session clock stops at this pill instead of
     // invalidating the grid behind it; only the phase itself reaches composition.
@@ -503,6 +555,7 @@ private fun LinkPill(
     val line = when {
         tvName == null -> stringResource(R.string.empty_no_tv)
         state == LinkPillState.CASTING -> stringResource(castPillLabel(phase), tvName)
+        state == LinkPillState.OFFLINE -> stringResource(R.string.library_offline_pill, tvName)
         else -> stringResource(R.string.library_ready_pill, tvName)
     }
     val model = LinkPillModel(state = state, line = line, playing = phase == PlaybackPhase.PLAYING)
@@ -511,19 +564,30 @@ private fun LinkPill(
     val connectLabel = stringResource(R.string.a11y_open_connect)
     val description = when (state) {
         LinkPillState.CASTING -> restoreLabel
-        LinkPillState.PAIRED -> null
+        LinkPillState.PAIRED, LinkPillState.OFFLINE -> null
         LinkPillState.UNPAIRED -> connectLabel
     }
     val action: (() -> Unit)? = when (state) {
         LinkPillState.CASTING -> ({ controller.restoreNowPlaying() })
-        LinkPillState.PAIRED -> null
+        // Offline is not a control: nothing in this app can put the phone back on Wi-Fi,
+        // and a tap that opened Connect would only start a scan that cannot find anything.
+        LinkPillState.PAIRED, LinkPillState.OFFLINE -> null
         LinkPillState.UNPAIRED -> ({ controller.openConnect() })
     }
 
-    val unpaired = state == LinkPillState.UNPAIRED
-    val ink = if (unpaired) colors.onPrimaryContainer else colors.onPrimary
+    val ink = when (state) {
+        // Amber never clears its contrast floor as ink, so the offline face inverts the
+        // way every other caution surface in the app does: solid fill, dark ink.
+        LinkPillState.OFFLINE -> colors.onCaution
+        LinkPillState.UNPAIRED -> colors.onPrimaryContainer
+        else -> colors.onPrimary
+    }
     val container by animateColorAsState(
-        targetValue = if (unpaired) colors.primaryContainer else colors.primary,
+        targetValue = when (state) {
+            LinkPillState.OFFLINE -> colors.caution
+            LinkPillState.UNPAIRED -> colors.primaryContainer
+            else -> colors.primary
+        },
         // Colour never overshoots; only the pill's geometry is allowed to.
         animationSpec = Motion.orSnap(reduceMotion, motionScheme.defaultEffectsSpec<Color>()),
         label = "link pill container",
@@ -592,31 +656,51 @@ private fun LinkPill(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    if (face.state == LinkPillState.UNPAIRED) {
-                        Icon(
-                            FlickIcons.Cast,
-                            contentDescription = null,
-                            tint = colors.onPrimaryContainer,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = face.line,
-                            style = FlickText.labelMedium.copy(color = colors.onPrimaryContainer),
-                        )
-                    } else {
-                        LiveDot(
-                            color = colors.sparkLight,
-                            size = 10.dp,
-                            pulsing = face.playing,
-                        )
-                        Text(
-                            text = face.line,
-                            style = FlickText.labelMedium.copy(color = colors.onPrimary),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        PillTelemetry(signal)
+                    when (face.state) {
+                        LinkPillState.UNPAIRED -> {
+                            Icon(
+                                FlickIcons.Cast,
+                                contentDescription = null,
+                                tint = colors.onPrimaryContainer,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = face.line,
+                                style = FlickText.labelMedium.copy(color = colors.onPrimaryContainer),
+                            )
+                        }
+                        // No dot and no telemetry: the dot is the mark of a live link and
+                        // there is no band to report while Wi-Fi is not the transport.
+                        LinkPillState.OFFLINE -> {
+                            Icon(
+                                FlickIcons.Warning,
+                                contentDescription = null,
+                                tint = colors.onCaution,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = face.line,
+                                style = FlickText.labelMedium.copy(color = colors.onCaution),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        LinkPillState.CASTING, LinkPillState.PAIRED -> {
+                            LiveDot(
+                                color = colors.sparkLight,
+                                size = 10.dp,
+                                pulsing = face.playing,
+                            )
+                            Text(
+                                text = face.line,
+                                style = FlickText.labelMedium.copy(color = colors.onPrimary),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            PillTelemetry(signal)
+                        }
                     }
                 }
             }
@@ -626,16 +710,26 @@ private fun LinkPill(
 
 /**
  * TransferTelemetry only counts bytes this phone's server actually wrote, so a zero is
- * "nothing is moving", never a measured rate. The band is the honest stand-in.
+ * "nothing is moving", never a measured rate. The band is the honest stand-in — and
+ * with no Wi-Fi link there is no band either, at which point the slot goes empty rather
+ * than falling through to the generic "Wi-Fi" label, which would name a link that is
+ * not up.
  */
 @Composable
 private fun RowScope.PillTelemetry(signal: State<SignalInfo>) {
     val colors = LocalFlickColors.current
     val live = signal.value
-    Text(
-        text = if (live.serving) Format.megabits(live.throughputBitsPerSec) else live.bandLabel(),
-        style = FlickText.monoSmall.copy(color = colors.onPrimaryMuted),
-    )
+    val text = when {
+        live.serving -> Format.megabits(live.throughputBitsPerSec)
+        live.hasLink -> live.bandLabel()
+        else -> null
+    }
+    if (text != null) {
+        Text(
+            text = text,
+            style = FlickText.monoSmall.copy(color = colors.onPrimaryMuted),
+        )
+    }
 }
 
 /** The TV's phase, not the presence of a cast record: it survives pause and end. */
@@ -909,7 +1003,7 @@ private fun Chip(
 }
 
 @Composable
-private fun BandAdvisory(revealOrigin: RevealOrigin, onClick: () -> Unit) {
+private fun BandAdvisory(onClick: () -> Unit) {
     val colors = LocalFlickColors.current
     val interaction = remember { MutableInteractionSource() }
     val label = stringResource(R.string.a11y_library_band_advisory)
@@ -923,7 +1017,6 @@ private fun BandAdvisory(revealOrigin: RevealOrigin, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .revealOrigin(revealOrigin)
             .clip(RoundedCornerShape(FlickCorners.warning))
             .background(colors.caution)
             .clickable(
@@ -995,8 +1088,10 @@ private fun LibraryTile(
     val context = LocalContext.current
     // The badge is the only thing on this screen that still needs a dynamic range, and
     // it needs it per tile. MediaProbe memoizes by uri, so a tile recomposed on scroll
-    // costs a map lookup rather than a second container parse.
-    val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
+    // costs a map lookup rather than a second container parse. Null rather than
+    // [HdrType.NONE] until it answers: NONE is the probe's verdict, not its starting
+    // point, and the tile must not be told the file has no HDR before anyone looked.
+    val hdr by produceState<HdrType?>(initialValue = null, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
     VideoTile(
@@ -1011,69 +1106,149 @@ private fun LibraryTile(
     )
 }
 
+/** The answer [libraryEmptyShown] gave last, held across recompositions. */
+private class EmptyLatch(var shown: Boolean = false)
+
+/**
+ * Whether the library stands down to its [EmptyState].
+ *
+ * [showing] is the answer the screen is already giving, and it is what keeps the empty
+ * state up while a re-query is in flight: refreshing from it raises [loading], and
+ * falling through to the grid for the length of that query would replace the whole
+ * window with a header, a link pill and an "All (0)" chip row — and then replace it back
+ * the moment MediaStore confirms there is still nothing. A library that has never
+ * resolved has no answer to hold, which is the one case the grid's loading note is for.
+ * Denied access never waits on a query: none is run.
+ */
+internal fun libraryEmptyShown(
+    access: MediaAccess,
+    itemCount: Int,
+    loading: Boolean,
+    showing: Boolean,
+): Boolean = when {
+    access == MediaAccess.NONE -> true
+    loading -> showing && itemCount == 0
+    else -> itemCount == 0
+}
+
+/**
+ * The first screen a new user ever sees, and it stands in for two different situations:
+ * a gallery Flick has not been let into ([MediaAccess.NONE]) and a gallery that is
+ * genuinely empty. Neither may claim the other's copy — "nothing to flick yet" is a lie
+ * about a phone full of films Flick simply cannot read — so the hero, the body and the
+ * action are all chosen off the access level.
+ *
+ * The wordmark is the populated header's, in the populated header's seat: this screen is
+ * the whole window while it is up, and without it the brand would be missing from the
+ * one surface a new install opens on. That is also why the hero disc no longer carries
+ * the mark a second time — the glyph names what is missing instead.
+ */
 @Composable
 private fun EmptyState(
     controller: FlickController,
     connectedTv: PairedTv?,
     castingItem: MediaItem?,
     signal: State<SignalInfo>,
+    wifiLinkUp: State<Boolean>,
+    mediaAccess: MediaAccess,
     bottomClearance: Dp,
     onChoose: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val locked = mediaAccess == MediaAccess.NONE
+    // Mirrors MediaLibraryActionPolicy: full access already sees every video, so the only
+    // honest action left there is to look again — re-asking for a granted permission
+    // opens no system UI at all and would read as a dead button.
+    val actionLabel = when (mediaAccess) {
+        MediaAccess.NONE -> R.string.empty_locked_choose
+        MediaAccess.PARTIAL -> R.string.empty_choose
+        MediaAccess.FULL -> R.string.library_refresh_videos
+    }
+    val action = if (mediaAccess == MediaAccess.FULL) onRefresh else onChoose
+
     Column(
         Modifier
             .fillMaxSize()
             .background(colors.canvas)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(start = 20.dp, end = 20.dp, bottom = bottomClearance),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            // Unconditional, like the grid this screen stands in for. On a short window —
+            // split screen, a large type scale — the hero is taller than the room left for
+            // it, and a centred column with nowhere to scroll pushes its own button out
+            // through the bottom edge: on a phone Flick has not been let into, that button
+            // is the only way into the app at all.
+            .verticalScroll(rememberScrollState())
+            // Top and start match the grid's own content padding, so granting access or
+            // adding the first video never moves the mark.
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
     ) {
+        Wordmark()
+        // The grid's 13 dp row gap plus the 5 dp every section block carries: the pill
+        // lands in the same place here as it does under the populated header.
+        Spacer(Modifier.height(18.dp))
         LinkPill(
             controller = controller,
             connectedTv = connectedTv,
             castingItem = castingItem,
             signal = signal,
+            wifiLinkUp = wifiLinkUp,
         )
-        Spacer(Modifier.height(34.dp))
-        Box(
-            Modifier
-                .size(104.dp)
-                .shadow(18.dp, CircleShape, clip = false, ambientColor = PrimaryShadow, spotColor = PrimaryShadow)
-                .clip(CircleShape)
-                .background(colors.primaryContainer),
-            contentAlignment = Alignment.Center,
+        // Surplus spacers rather than a weighted hero: a weighted child is FIXED to the
+        // room that is left over, so a hero taller than that room overflows both of its
+        // edges and the column never grows enough to scroll it back. These collapse to
+        // nothing the moment the stack outgrows the window, and split the surplus evenly
+        // when it does not — which is the same seat Arrangement.Center gave it.
+        Spacer(Modifier.weight(1f))
+        Column(
+            Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            FlickMark(modifier = Modifier.size(56.dp))
-        }
-        Spacer(Modifier.height(22.dp))
-        Text(
-            text = stringResource(R.string.empty_title),
-            style = FlickText.headlineMedium.copy(color = colors.onSurface),
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = stringResource(R.string.empty_body),
-            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(24.dp))
-        FlickPrimaryButton(
-            text = stringResource(R.string.empty_choose),
-            onClick = onChoose,
-            modifier = Modifier.width(240.dp),
-        )
-        if (connectedTv != null) {
-            Spacer(Modifier.height(16.dp))
+            Box(
+                Modifier
+                    .size(104.dp)
+                    .shadow(18.dp, CircleShape, clip = false, ambientColor = PrimaryShadow, spotColor = PrimaryShadow)
+                    .clip(CircleShape)
+                    .background(colors.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (locked) FlickIcons.Private else FlickIcons.GridView,
+                    contentDescription = null,
+                    tint = colors.onPrimaryContainer,
+                    modifier = Modifier.size(46.dp),
+                )
+            }
+            Spacer(Modifier.height(22.dp))
             Text(
-                text = stringResource(R.string.empty_tv_ready, connectedTv.name),
+                text = stringResource(if (locked) R.string.empty_locked_title else R.string.empty_title),
+                style = FlickText.headlineMedium.copy(color = colors.onSurface),
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = stringResource(if (locked) R.string.empty_locked_body else R.string.empty_body),
                 style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
                 textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(24.dp))
+            FlickPrimaryButton(
+                text = stringResource(actionLabel),
+                onClick = action,
+                modifier = Modifier.width(240.dp),
+            )
+            // The pill at the top of this same screen names the link when it is gone;
+            // "ready when you are" underneath it would contradict it in one window.
+            if (connectedTv != null && wifiLinkUp.value) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = stringResource(R.string.empty_tv_ready, connectedTv.name),
+                    style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
+        Spacer(Modifier.weight(1f))
     }
 }
 
@@ -1085,6 +1260,11 @@ private val TileMinWidth = 150.dp
 
 /** The face arriving grows into place rather than appearing at full size. */
 private const val PillSwapScale = 0.9f
+
+// Matches the shared telemetry poll, so the pill and the band chip beside it can never
+// be more than one tick apart. Only ever runs while the shared record says there is no
+// link — once it says there is, that answer is proof and this stops.
+private const val WifiLinkRecheckMs = 2_000L
 
 // Entrance stagger: one step per tile up to the twelfth, which is roughly two screens
 // on the widest column count — beyond that the sequence reads as loading, not arrival.

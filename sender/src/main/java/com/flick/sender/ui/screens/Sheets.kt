@@ -18,14 +18,19 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableIntState
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,11 +55,28 @@ import com.flick.sender.ui.theme.rememberReduceMotion
 private val SheetPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp)
 
 /**
+ * How many sheets are raised UNDERNEATH the floating chrome.
+ *
+ * The shell's nav pill and now-playing dock float over the route, so a sheet a route
+ * raises inside itself is painted underneath them — the pill lands on whatever sits at
+ * the foot of the sheet, which on the pairing sheets is the Connect button. Counting
+ * rather than flagging, because a sheet may replace another while the first is still
+ * running its exit and a boolean would clear the chrome back in under the second one.
+ *
+ * The shell hands its overlay layer a counter of its own, because a sheet hosted there is
+ * drawn OVER the chrome: evicting bars that sheet already covers is motion nobody asked
+ * for, played through a scrim that shows it.
+ *
+ * The default is a detached counter, so a sheet composed outside the shell — a preview,
+ * a test — still increments something real and simply moves no chrome.
+ */
+internal val LocalSheetDepth = staticCompositionLocalOf<MutableIntState> { mutableIntStateOf(0) }
+
+/**
  * A scrimmed bottom sheet used for the pairing code, manual entry, the quality
- * sheet (S10), advisories and diagnostics. Tapping the scrim dismisses; taps on
- * the sheet are swallowed. The surface colour comes from the enclosing theme, so
- * wrapping a caller in `FlickCinematicTheme` turns the sheet cinematic without
- * changing anything here.
+ * sheet (S10) and diagnostics. Tapping the scrim dismisses; taps on the sheet are
+ * swallowed. The surface colour comes from the enclosing theme, so wrapping a caller in
+ * `FlickCinematicTheme` turns the sheet cinematic without changing anything here.
  */
 @Composable
 fun BottomSheet(
@@ -65,6 +87,13 @@ fun BottomSheet(
     val colors = LocalFlickColors.current
     val dismissDescription = stringResource(R.string.a11y_dismiss_sheet)
     val sheetTitle = stringResource(R.string.a11y_sheet)
+    // Held for exactly as long as this sheet is composed — including the frames it
+    // spends leaving — so the chrome above it comes back only once it is actually gone.
+    val sheetDepth = LocalSheetDepth.current
+    DisposableEffect(sheetDepth) {
+        sheetDepth.intValue++
+        onDispose { sheetDepth.intValue-- }
+    }
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val rise = rememberSheetRise()
@@ -89,6 +118,13 @@ fun BottomSheet(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                // OUTSIDE the surface: it reserves height without painting a band or
+                // lifting the sheet off the bottom edge. On a window shorter than the
+                // cap below — landscape, split screen — that cap stops being the
+                // ceiling, and a sheet left free to fill whatever a raised keyboard
+                // leaves puts its heading under the status bar, where no amount of
+                // scrolling can bring it back.
+                .statusBarsPadding()
                 .heightIn(max = 640.dp)
                 .sheetRiseTransform(rise)
                 .clip(SheetShape)

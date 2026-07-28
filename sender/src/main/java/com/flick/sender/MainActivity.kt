@@ -56,7 +56,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Each screen owns the content insets it needs; the activity only owns the
-        // edge-to-edge window contract so those insets are never applied twice.
+        // edge-to-edge window contract so those insets are never applied twice. The
+        // manifest's adjustResize is the other half of that contract — inherit the
+        // default there and the platform pans the window for the keyboard on top of
+        // whatever the content already padded for it.
         enableEdgeToEdge()
         // Without this the platform paints its own translucent band behind the
         // navigation bar, which cuts across the cinematic gradient the remote and the

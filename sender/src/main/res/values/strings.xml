@@ -156,14 +156,6 @@
     <string name="np_direct_play_badge">DIRECT PLAY</string>
     <string name="np_meta">%1$s · %2$s · on %3$s</string>
     <string name="np_meta_format">%1$s · %2$s</string>
-    <!-- Stat strip. The TV picks the decoder and no control frame reports it, so that
-         slot shows the buffer reserve the phone can actually measure. -->
-    <string name="np_stat_source">SOURCE</string>
-    <string name="np_stat_source_value">This phone</string>
-    <string name="np_stat_reserve">RESERVE</string>
-    <string name="np_stat_reserve_value">%1$.1f s</string>
-    <string name="np_stat_link">LINK</string>
-    <string name="np_stat_link_value">%1$d dBm</string>
     <!-- Must match the skip the transport actually sends. -->
     <string name="np_seek_seconds">10</string>
     <string name="np_volume_percent">%1$d%%</string>
@@ -171,7 +163,6 @@
          no state to read, so both segments stay disabled. -->
     <string name="np_segment_subs">Subs</string>
     <string name="np_segment_audio">Audio</string>
-    <string name="np_segment_signal">Signal</string>
     <string name="np_segment_unavailable">Unavailable for this cast</string>
     <string name="buffering_title">Topping up the buffer</string>
     <string name="buffering_body">Your Wi-Fi took a breath — the reserve is absorbing it. Quality stays full; nothing is being downgraded.</string>
@@ -238,7 +229,6 @@
     <!-- Resource-backed accessibility labels for the expressive sender surfaces. -->
     <string name="a11y_open_connect">Connect to a TV</string>
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
-    <string name="a11y_open_quality">Open signal and quality</string>
     <string name="a11y_back_to_library">Back to your videos</string>
     <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
     <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>
@@ -374,4 +364,43 @@
     <!-- Wire label for a sideloaded subtitle whose file name normalizes to nothing
          printable; the TV shows this in its subtitle track list. -->
     <string name="subtitle_label_generic">Subtitles</string>
+
+    <!-- ===== Shell — settings destination & empty library ===== -->
+    <string name="nav_settings">Settings</string>
+    <string name="settings_heading">Signal\n&amp; setup.</string>
+    <!-- Singular of advisories_footer, for the one-card state. -->
+    <string name="advisories_footer_one">It\'s one-time. Flick never asks twice.</string>
+    <!-- MediaAccess.NONE: the gallery is not empty, Flick has simply not been let into it. -->
+    <string name="empty_locked_title">Flick can\'t see your videos yet</string>
+    <string name="empty_locked_body">Allow access and every video on this phone shows up here. Flick reads them on this device — nothing is uploaded, and nothing leaves your Wi-Fi.</string>
+    <string name="empty_locked_choose">Allow access</string>
+
+    <!-- ===== Devices — the live link ===== -->
+    <!-- S1 · the device row that is the live link, not a place to go. -->
+    <string name="connect_device_connected">Connected</string>
+
+    <!-- ===== Pairing scanner ===== -->
+    <string name="scan_reader_unavailable">Flick can\'t start the QR reader on this phone. Type the code shown on your TV.</string>
+
+    <!-- ===== Honest readouts — gauges, errors, discovery ===== -->
+    <!-- S3 · the link pill's fourth face: paired, but this phone has no Wi-Fi link for
+         that pairing to run over. Worded about the phone, which is what we measured —
+         the TV's own state is not knowable from here. -->
+    <string name="library_offline_pill">No Wi-Fi · %1$s</string>
+    <!-- S10 · gauge units. The number is formatted in code against Locale.US, like every
+         other reading in the app; only its unit is copy. Separate strings because a
+         reading that carried its unit wrapped the card at the space. -->
+    <string name="quality_unit_mbps">Mb/s</string>
+    <string name="quality_unit_seconds">s</string>
+    <!-- S12 · the second action on the "reachable, not serving" face. It leaves the
+         error, which is the one thing here that is not another way to open Connect. -->
+    <string name="error_reachable_secondary_library">Back to my library</string>
+
+    <!-- ===== Remote — the metrics segment ===== -->
+    <!-- S6–S9 · the remote's segmented row. The third segment opens the signal &amp;
+         quality sheet; it is named for what the sheet shows rather than for the one
+         reading the top chip already carries. -->
+    <string name="np_segment_metrics">Metrics</string>
+    <!-- Voiced instead of the visible label, so it has to contain it. -->
+    <string name="a11y_np_metrics">Stream metrics</string>
 </resources>

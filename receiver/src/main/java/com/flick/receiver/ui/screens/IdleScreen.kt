@@ -85,15 +85,25 @@ private fun idleStageProgress(progress: Float, index: Int): Float {
     return ((progress - IdleStageLead * index) / span).coerceIn(0f, 1f)
 }
 
-/** Entrance for one staged child, read inside the layer block. */
+/**
+ * Entrance for one staged child, read inside the layer block. [settled] drops the
+ * layer once the screen has arrived — idle is a screensaver the TV holds for
+ * hours, and it may not keep compositing a transform that finished in the first
+ * half second.
+ */
 private fun Modifier.idleStage(
     progress: () -> Float,
     index: Int,
+    settled: Boolean,
     rise: Dp = 0.dp,
-): Modifier = graphicsLayer {
-    val stage = idleStageProgress(progress(), index)
-    alpha = stage
-    translationY = (1f - stage) * rise.toPx()
+): Modifier = if (settled) {
+    this
+} else {
+    graphicsLayer {
+        val stage = idleStageProgress(progress(), index)
+        alpha = stage
+        translationY = (1f - stage) * rise.toPx()
+    }
 }
 
 /**
@@ -150,8 +160,10 @@ fun IdleScreen(
 
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
+    var entranceSettled by remember { mutableStateOf(false) }
     LaunchedEffect(reducedMotion) {
         if (reducedMotion) entrance.snapTo(1f) else entrance.animateTo(1f, entranceSpec)
+        entranceSettled = true
     }
     val stage = { entrance.value }
 
@@ -181,7 +193,7 @@ fun IdleScreen(
                 color = FlickColor.OnSurface,
                 modifier = Modifier
                     .padding(top = FlickSpace.Lg)
-                    .idleStage(stage, index = 0, rise = IdleClockRise),
+                    .idleStage(stage, index = 0, settled = entranceSettled, rise = IdleClockRise),
             )
         }
 
@@ -191,7 +203,7 @@ fun IdleScreen(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(bottom = FlickDimens.FocusRingReserve)
-                .idleStage(stage, index = 1),
+                .idleStage(stage, index = 1, settled = entranceSettled),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -218,7 +230,7 @@ fun IdleScreen(
                     end = FlickDimens.FocusRingReserve,
                     bottom = FlickDimens.FocusRingReserve,
                 )
-                .idleStage(stage, index = 2),
+                .idleStage(stage, index = 2, settled = entranceSettled),
             horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md),
         ) {
             FlickTvButton(

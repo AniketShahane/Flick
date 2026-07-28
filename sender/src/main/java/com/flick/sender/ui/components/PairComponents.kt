@@ -8,11 +8,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,15 +24,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,21 +57,33 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
 /**
- * A discovered-TV row (design §5.1.4) in one of three states: the featured TV is a
- * filled brand-blue card, other ready TVs are tonal, and a sleeping TV is a flat
- * outline that cannot be tapped — selecting it would only fail at the handshake.
+ * A discovered-TV row (design §5.1.4) in one of four states: the [connected] TV wears
+ * the filled card and an amber ring, the featured TV is the same filled brand-blue
+ * card without one, other ready TVs are tonal, and a sleeping TV is a flat outline
+ * that cannot be tapped — selecting it would only fail at the handshake.
+ *
+ * [connected] outranks both of the others. Featured is a recommendation of where to
+ * go next and a sleeping advertisement is stale the moment the TV answers a control
+ * frame; a live link is neither, so it decides the row on its own.
  */
 @Composable
 fun DeviceRow(
     tv: DiscoveredTv,
     featured: Boolean,
+    connected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
     val shape = RoundedCornerShape(FlickCorners.deviceRow)
-    val asleep = tv.state == TvAvailability.SLEEPING
-    val primary = featured && !asleep
+    val connectedLabel = stringResource(R.string.connect_device_connected)
+    val asleep = tv.state == TvAvailability.SLEEPING && !connected
+    val primary = (featured || connected) && !asleep
+    // Tapping a known TV does not open the pairing sheet — selectDevice resumes its
+    // stored pairing, which closes and re-dials the control link and routes to Library.
+    // The one row whose whole claim is that the link is up must not be the control that
+    // tears it down mid-cast.
+    val interactive = !asleep && !connected
 
     val container = when {
         asleep -> Color.Transparent
@@ -101,11 +117,10 @@ fun DeviceRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .then(if (asleep) Modifier.alpha(0.6f) else Modifier)
             // Ahead of the shadow, fill and outline: the press layer only wraps what
             // follows it, so a later pressScale would shrink the row's contents inside
             // a card that stayed full size.
-            .then(if (asleep) Modifier else Modifier.pressScale(interaction))
+            .then(if (interactive) Modifier.pressScale(interaction) else Modifier)
             .then(
                 if (primary) {
                     Modifier.shadow(14.dp, shape, clip = false, ambientColor = PrimaryShadow, spotColor = PrimaryShadow)
@@ -117,11 +132,18 @@ fun DeviceRow(
             // a clip laid over this one could only ever shrink what it already encloses.
             .pressMorph(interaction, restRadius = FlickCorners.deviceRow, pressedRadius = 22.dp)
             .background(container)
-            .then(if (asleep) Modifier.border(2.dp, colors.outline, shape) else Modifier)
             .then(
-                if (asleep) {
-                    Modifier
-                } else {
+                when {
+                    asleep -> Modifier.border(2.dp, colors.outline, shape)
+                    // Amber is the list's only mark of a live link, and it survives both
+                    // palettes unchanged — the blue fill does not, so the ring rather
+                    // than the fill is what separates connected from featured.
+                    connected -> Modifier.border(2.dp, colors.spark, shape)
+                    else -> Modifier
+                },
+            )
+            .then(
+                if (interactive) {
                     Modifier
                         .clickable(
                             interactionSource = interaction,
@@ -129,6 +151,23 @@ fun DeviceRow(
                             onClick = onClick,
                         )
                         .semantics { role = Role.Button }
+                } else {
+                    Modifier
+                },
+            )
+            .then(
+                when {
+                    // Nothing merges this row once it stops being clickable, so without
+                    // this the reader walks a name and an address and never says which
+                    // TV is the live one.
+                    connected -> Modifier.semantics(mergeDescendants = true) {
+                        stateDescription = connectedLabel
+                    }
+                    // The wash that used to say "not now" took the instruction down to
+                    // 2.65:1 with it — and said nothing at all to a reader. The flat
+                    // outline carries it visually; this is what carries it aloud.
+                    asleep -> Modifier.semantics(mergeDescendants = true) { disabled() }
+                    else -> Modifier
                 },
             )
             .heightIn(min = 48.dp)
@@ -157,20 +196,26 @@ fun DeviceRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (connected) ConnectedBadge(connectedLabel)
             Text(
                 // The live endpoint is shown here so the user reads the address off the
                 // phone rather than transcribing it from across the room — which means
                 // it has to survive the clamp. A sleeping TV's wake instruction plus a
                 // host:port does not fit one 12.5 sp line on a 412 dp frame.
-                text = listOfNotNull(tv.model, stateLabel(tv.state), "${tv.host}:${tv.port}")
-                    .joinToString(" · "),
+                text = listOfNotNull(
+                    tv.model,
+                    // The badge above already says it, and an advertisement that still
+                    // claims READY or SLEEPING is the stale half of the row.
+                    if (connected) null else stateLabel(tv.state),
+                    "${tv.host}:${tv.port}",
+                ).joinToString(" · "),
                 style = FlickText.bodyMedium.copy(color = subtitle),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 3.dp),
             )
         }
-        if (!asleep) {
+        if (interactive) {
             Icon(
                 imageVector = FlickIcons.ChevronRight,
                 contentDescription = null,
@@ -178,6 +223,32 @@ fun DeviceRow(
                 modifier = Modifier.size(26.dp),
             )
         }
+    }
+}
+
+/**
+ * The live-link mark, inside the row rather than trailing it: a pill wide enough to
+ * carry the word would eat the name's clamp on a 360 dp frame. Amber inverts to dark
+ * ink for the same reason the caution status pill does — as ink it never clears its
+ * contrast floor.
+ */
+@Composable
+private fun ConnectedBadge(label: String) {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .padding(top = 7.dp)
+            .clip(PillShape)
+            .background(colors.spark)
+            .padding(horizontal = 9.dp, vertical = 4.dp)
+            // Spoken once: the row carries this as its state description, and a reader
+            // that also read the pill would say "connected" twice per TV.
+            .clearAndSetSemantics {},
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LiveDot(color = colors.onSpark, size = 6.dp, pulsing = true)
+        Spacer(Modifier.width(6.dp))
+        Text(text = label, style = FlickText.labelMedium.copy(color = colors.onSpark))
     }
 }
 

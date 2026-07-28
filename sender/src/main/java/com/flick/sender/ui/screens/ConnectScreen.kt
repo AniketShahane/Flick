@@ -52,11 +52,13 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.PairLaunchEventIds
 import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
+import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
+import com.flick.sender.net.PairedTv
 import com.flick.sender.ui.components.DeviceRow
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
@@ -83,6 +85,7 @@ fun ConnectScreen(controller: FlickController) {
     val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
     val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
+    val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
     val manualLabel = stringResource(R.string.connect_manual)
     val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
@@ -148,8 +151,21 @@ fun ConnectScreen(controller: FlickController) {
 
     // The blue row is the recommendation: whichever TV the code sheet is open for,
     // otherwise the first one advertising itself awake (discovery sorts READY first).
-    val featuredHost = pairTarget?.host
-        ?: devices.firstOrNull { it.state == TvAvailability.READY }?.host
+    // A live link retires the automatic half of that — recommending a second TV beside
+    // the one already carrying playback reads as a choice the user does not have.
+    val recommended = devices
+        .takeIf { !linkLive(connection, connectedTv) }
+        ?.firstOrNull { it.state == TvAvailability.READY }
+    val featuredHost = pairTarget?.host ?: recommended?.host
+
+    // NSD re-advertises on its own schedule and drops entries that miss a probe, but
+    // the link is a fact independent of both. A connected TV no advertisement accounts
+    // for is still surfaced, from the pairing record — the only place the verified
+    // endpoint is held — so the section never reports "nothing here" while the phone is
+    // driving that TV, and never hands the claim to a row advertising some other address.
+    val undiscoveredConnection = connectedTv?.takeIf { paired ->
+        linkLive(connection, paired) && devices.none { isConnectedDevice(connection, paired, it) }
+    }
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the last device row and the
@@ -184,6 +200,23 @@ fun ConnectScreen(controller: FlickController) {
                 style = FlickText.monoEyebrowWide.copy(color = colors.onSurfaceFaint),
                 modifier = Modifier.padding(start = 4.dp),
             )
+            if (undiscoveredConnection != null) {
+                DeviceRow(
+                    tv = DiscoveredTv(
+                        name = undiscoveredConnection.name,
+                        host = undiscoveredConnection.host,
+                        port = undiscoveredConnection.port,
+                        tvId = undiscoveredConnection.tvId,
+                        // Nothing about this row comes from an advertisement, so it
+                        // claims no model and no availability it cannot vouch for.
+                        model = null,
+                        state = TvAvailability.UNKNOWN,
+                    ),
+                    featured = false,
+                    connected = true,
+                    onClick = {},
+                )
+            }
             if (devices.isEmpty()) {
                 Text(
                     text = stringResource(R.string.connect_searching),
@@ -195,6 +228,7 @@ fun ConnectScreen(controller: FlickController) {
                     DeviceRow(
                         tv = tv,
                         featured = tv.host == featuredHost,
+                        connected = isConnectedDevice(connection, connectedTv, tv),
                         onClick = { controller.selectDevice(tv) },
                     )
                 }
@@ -282,6 +316,35 @@ fun ConnectScreen(controller: FlickController) {
             onDismiss = { scanOpen = false },
         )
     }
+}
+
+/** A paired record only describes a live TV while the control link is actually up. */
+internal fun linkLive(connection: ConnectionStatus, connected: PairedTv?): Boolean =
+    connection == ConnectionStatus.CONNECTED && connected != null
+
+/**
+ * Whether [tv] is the TV the phone is connected to right now.
+ *
+ * The endpoint decides it. While the link is live the record carries the address the
+ * socket was actually verified against — both pairing and resume commit it before
+ * publishing the record — so there is no stale endpoint here for an identity to rescue.
+ * An advertised `tvId` therefore cannot buy the badge for another address: mDNS is
+ * unauthenticated (see `submitDiscoveredPair`, which refuses to re-derive a host from
+ * it), and the badged row is also the one printing the address the user reads off the
+ * phone. The identity is only a veto — an address that changed hands between
+ * advertisements is not the live link either. Names are never compared: two TVs in one
+ * house routinely ship with the same one.
+ */
+internal fun isConnectedDevice(
+    connection: ConnectionStatus,
+    connected: PairedTv?,
+    tv: DiscoveredTv,
+): Boolean {
+    if (connected == null || !linkLive(connection, connected)) return false
+    if (connected.host != tv.host || connected.port != tv.port) return false
+    val pairedId = connected.tvId.takeIf { it.isNotBlank() }
+    val advertisedId = tv.tvId?.takeIf { it.isNotBlank() }
+    return pairedId == null || advertisedId == null || pairedId == advertisedId
 }
 
 /**

@@ -83,13 +83,14 @@ dependencies {
     implementation("io.ktor:ktor-client-core:3.1.3")
     implementation("io.ktor:ktor-client-cio:3.1.3")
     implementation("io.ktor:ktor-client-websockets:3.1.3")
-    // In-app pairing scanner: CameraX preview + frame analysis, decoded by the same
-    // ZXing version the receiver uses to GENERATE the QR, so one library covers both.
+    // In-app pairing scanner: CameraX preview + frame analysis, decoded by ML Kit. The
+    // bundled artifact — not play-services-mlkit-barcode-scanning — because the model
+    // then ships in the APK and the first scan works offline, with no module download.
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
     // Filmic video-frame stills for the gallery + the scrub preview loader.
     implementation("io.coil-kt:coil-compose:2.7.0")

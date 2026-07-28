@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -72,6 +74,9 @@ fun ErrorScreen(
     val primaryLabel: String
     val onPrimary: () -> Unit
     val secondaryLabel: String?
+    // Carried beside the label rather than assumed: a second action that runs the first
+    // one's handler is a button whose words are the only thing that distinguishes it.
+    val onSecondary: (() -> Unit)?
     val pillText: String
     val pillKind: StatusKind
 
@@ -81,6 +86,7 @@ fun ErrorScreen(
         primaryLabel = stringResource(R.string.error_generic_primary)
         onPrimary = controller::retryCast
         secondaryLabel = null
+        onSecondary = null
         pillText = stringResource(R.string.error_unreachable_pill)
         pillKind = StatusKind.TROUBLE
     } else when (kind) {
@@ -89,7 +95,10 @@ fun ErrorScreen(
             body = stringResource(R.string.error_reachable_body, tvName)
             primaryLabel = stringResource(R.string.error_reachable_primary)
             onPrimary = { controller.openConnect() }
-            secondaryLabel = stringResource(R.string.error_reachable_secondary)
+            // Not the checkup the old copy promised: nothing on this phone runs one, and
+            // the only other move here — open Connect — is what the primary already does.
+            secondaryLabel = stringResource(R.string.error_reachable_secondary_library)
+            onSecondary = { controller.back() }
             pillText = stringResource(R.string.error_reachable_pill)
             pillKind = StatusKind.CAUTION
         }
@@ -99,6 +108,7 @@ fun ErrorScreen(
             primaryLabel = stringResource(R.string.error_unreachable_primary)
             onPrimary = { controller.openConnect() }
             secondaryLabel = stringResource(R.string.error_unreachable_secondary)
+            onSecondary = { controller.openConnect() }
             pillText = stringResource(R.string.error_unreachable_pill)
             pillKind = StatusKind.TROUBLE
         }
@@ -108,6 +118,7 @@ fun ErrorScreen(
             primaryLabel = stringResource(R.string.error_nolan_primary)
             onPrimary = onOpenWifiSettings
             secondaryLabel = null
+            onSecondary = null
             pillText = stringResource(R.string.error_unreachable_pill)
             pillKind = StatusKind.TROUBLE
         }
@@ -117,6 +128,7 @@ fun ErrorScreen(
             primaryLabel = stringResource(R.string.error_generic_primary)
             onPrimary = { controller.back() }
             secondaryLabel = null
+            onSecondary = null
             pillText = stringResource(R.string.error_unreachable_pill)
             pillKind = StatusKind.TROUBLE
         }
@@ -131,12 +143,24 @@ fun ErrorScreen(
             .background(colors.canvas)
             .statusBarsPadding()
             .navigationBarsPadding(),
-        contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.padding(horizontal = 26.dp),
+            Modifier
+                .fillMaxSize()
+                // The face is centred while it fits and scrolls when it does not. Two
+                // actions at a large type scale outgrow a phone window, and the one that
+                // overflows is the primary — the move this screen exists to offer.
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 26.dp, vertical = 24.dp)
+                // The pill owns the foot of this box, so the stack has to stop above it:
+                // nothing else keeps the two apart.
+                .padding(bottom = StatusPillBand),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Surplus spacers rather than a weighted face: weighting the face itself
+            // would fix it to the room left over, so a face taller than the window could
+            // never grow past it to be scrolled back. These collapse instead.
+            Spacer(Modifier.weight(1f))
             TvEmblem(dotColor = dotColor, muted = amber)
             Spacer(Modifier.height(24.dp))
             Text(
@@ -179,7 +203,7 @@ fun ErrorScreen(
                     .heightIn(min = 48.dp)
                     .padding(vertical = 19.dp),
             )
-            if (secondaryLabel != null) {
+            if (secondaryLabel != null && onSecondary != null) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = secondaryLabel,
@@ -192,11 +216,13 @@ fun ErrorScreen(
                             interactionSource = secondaryInteraction,
                             indication = flickRipple(colors.primary),
                             role = Role.Button,
-                        ) { controller.openConnect() }
+                            onClick = onSecondary,
+                        )
                         .heightIn(min = 48.dp)
                         .padding(vertical = 15.dp),
                 )
             }
+            Spacer(Modifier.weight(1f))
         }
 
         Box(
@@ -209,6 +235,10 @@ fun ErrorScreen(
         }
     }
 }
+
+// The band the bottom-anchored status pill claims: its own height at the largest type
+// scale, plus the 24 dp it floats above the navigation bar. Content stops here.
+internal val StatusPillBand = 78.dp
 
 /** An outlined TV with a status lamp — the fault, drawn rather than apologised for. */
 @Composable

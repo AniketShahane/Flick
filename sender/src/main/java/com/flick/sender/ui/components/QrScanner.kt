@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.Settings
@@ -14,6 +13,7 @@ import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -57,13 +57,12 @@ import com.flick.sender.R
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.DecodeHintType
-import com.google.zxing.MultiFormatReader
-import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.ReaderException
-import com.google.zxing.common.HybridBinarizer
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlinx.coroutines.channels.Channel
 
@@ -106,116 +105,46 @@ class QrScanGate(private val quietMs: Long = 2_000L) {
 }
 
 /**
- * The TV paints the lower-left finder eye amber and the upper two brand blue. Amber
- * sits at roughly three quarters of the luminance of the white card behind it, so a
- * threshold over Y alone erases that eye and the symbol loses a finder pattern no
- * decoder can work without. Folding the blue channel back in (recovered from Cb)
- * darkens any warm colour while leaving neutrals — the white card, the black
- * modules — exactly where they were.
+ * The detector is configured for QR alone, and every result is re-checked against that
+ * here: widening the detector's format set later must not quietly widen what pairing
+ * will act on.
  */
-internal object QrInk {
-    /** The BT.601 Cb → blue coefficient (1.772) in 8-bit fixed point. */
-    private const val BLUE_COEFFICIENT = 454
-
-    /**
-     * Writes width × height darkness samples into [out], which shares [lumaRowStride]
-     * with [luma] so both can be read as one padded plane. Both arrays must hold
-     * `lumaRowStride * height` bytes.
-     */
-    fun fold(
-        luma: ByteArray,
-        lumaRowStride: Int,
-        chromaBlue: ByteArray,
-        chromaRowStride: Int,
-        chromaPixelStride: Int,
-        width: Int,
-        height: Int,
-        out: ByteArray,
-    ) {
-        for (row in 0 until height) {
-            val lumaOffset = row * lumaRowStride
-            val chromaOffset = (row / 2) * chromaRowStride
-            for (col in 0 until width) {
-                val y = luma[lumaOffset + col].toInt() and 0xFF
-                val chromaIndex = chromaOffset + (col / 2) * chromaPixelStride
-                val cb = if (chromaIndex in chromaBlue.indices) chromaBlue[chromaIndex].toInt() and 0xFF else 128
-                val blue = y + ((BLUE_COEFFICIENT * (cb - 128)) shr 8)
-                out[lumaOffset + col] = (if (blue < y) blue.coerceAtLeast(0) else y).toByte()
-            }
-        }
-    }
+internal object QrPayload {
+    /** The string this result may contribute, or null when it is not one to route. */
+    fun of(format: Int, rawValue: String?): String? =
+        if (format == Barcode.FORMAT_QR_CODE) rawValue?.takeIf { it.isNotBlank() } else null
 }
 
 /**
- * Decodes QR symbols straight out of the camera's YUV planes. Frames are never turned
- * into Bitmaps and the working arrays are reused: a per-frame allocation of that size
- * costs more than the decode and the preview starts dropping.
+ * Hands camera frames to ML Kit's bundled QR detector. [ImageProxy.close] runs on every
+ * outcome and before anything else: KEEP_ONLY_LATEST holds exactly one image, so a
+ * single frame left open ends analysis for the rest of the session.
  */
-internal class QrCodeAnalyzer(private val onPayload: (String) -> Unit) : ImageAnalysis.Analyzer {
-    private val reader = MultiFormatReader().apply {
-        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
-    }
-    private var luma = ByteArray(0)
-    private var chroma = ByteArray(0)
-    private var ink = ByteArray(0)
+internal class QrCodeAnalyzer(
+    private val scanner: BarcodeScanner,
+    private val callbacks: Executor,
+    private val onPayload: (String) -> Unit,
+) : ImageAnalysis.Analyzer {
 
+    @ExperimentalGetImage
     override fun analyze(image: ImageProxy) {
-        try {
-            runCatching { decode(image) }.getOrNull()?.let(onPayload)
-        } finally {
+        val frame = image.image
+        val task = frame?.let {
+            runCatching {
+                scanner.process(InputImage.fromMediaImage(it, image.imageInfo.rotationDegrees))
+            }.getOrNull()
+        }
+        if (task == null) {
             image.close()
+            return
         }
-    }
-
-    private fun decode(image: ImageProxy): String? {
-        if (image.format != ImageFormat.YUV_420_888) return null
-        val width = image.width
-        val height = image.height
-        val plane = image.planes.getOrNull(0) ?: return null
-        val rowStride = plane.rowStride
-        if (width <= 0 || height <= 0 || rowStride < width) return null
-        val size = rowStride * height
-        if (luma.size != size) luma = ByteArray(size)
-        plane.buffer.apply {
-            rewind()
-            get(luma, 0, minOf(remaining(), size))
+        task.addOnCompleteListener(callbacks) { done ->
+            image.close()
+            // Task.getResult() rethrows a failed detection, so it is only safe past here.
+            if (!done.isSuccessful) return@addOnCompleteListener
+            val found: List<Barcode> = done.result ?: emptyList()
+            found.firstNotNullOfOrNull { QrPayload.of(it.format, it.rawValue) }?.let(onPayload)
         }
-        val source = PlanarYUVLuminanceSource(
-            darkness(image, rowStride, width, height),
-            rowStride,
-            height,
-            0,
-            0,
-            width,
-            height,
-            false,
-        )
-        return try {
-            reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
-        } catch (absent: ReaderException) {
-            null
-        } finally {
-            // Required between images when the reader's state is reused.
-            reader.reset()
-        }
-    }
-
-    /** Plain luminance when the frame carries no usable chroma, so decoding degrades
-     * to monochrome rather than to nothing. */
-    private fun darkness(image: ImageProxy, rowStride: Int, width: Int, height: Int): ByteArray {
-        val plane = image.planes.getOrNull(1) ?: return luma
-        val chromaRowStride = plane.rowStride
-        val chromaPixelStride = plane.pixelStride
-        if (chromaRowStride <= 0 || chromaPixelStride <= 0) return luma
-        val chromaSize = chromaRowStride * ((height + 1) / 2)
-        if (chroma.size != chromaSize) chroma = ByteArray(chromaSize)
-        plane.buffer.apply {
-            rewind()
-            get(chroma, 0, minOf(remaining(), chromaSize))
-        }
-        if (ink.size != luma.size) ink = ByteArray(luma.size)
-        QrInk.fold(luma, rowStride, chroma, chromaRowStride, chromaPixelStride, width, height, ink)
-        return ink
     }
 }
 
@@ -308,6 +237,24 @@ private fun Viewfinder(
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
+    // The bundled model ships in the APK, so the very first scan works offline and with
+    // no Play-services module to download first.
+    val scanner = remember {
+        runCatching {
+            BarcodeScanning.getClient(
+                BarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                    .build(),
+            )
+        }.getOrNull()
+    }
+    if (scanner == null) {
+        ScannerNotice(message = stringResource(R.string.scan_reader_unavailable), modifier = modifier)
+        return
+    }
+    // A detector holds native state that no finalizer reclaims.
+    DisposableEffect(scanner) { onDispose { scanner.close() } }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     val description = stringResource(R.string.a11y_scan_viewfinder)
     val currentPayload by rememberUpdatedState(onPayload)
@@ -323,18 +270,22 @@ private fun Viewfinder(
         }
     }
 
-    // Decoding runs on the analysis executor; the composition and the pairing
-    // controller are only ever touched from this collector.
+    // A payload produced after the sheet closes dies here: this collector is the only
+    // thing that ever reaches the composition or the pairing controller, and it is
+    // cancelled with the viewfinder.
     LaunchedEffect(payloads) {
         for (payload in payloads) currentPayload(payload)
     }
 
-    DisposableEffect(lifecycleOwner, previewView) {
+    DisposableEffect(lifecycleOwner, previewView, scanner) {
         val executor = Executors.newSingleThreadExecutor()
-        // Both the gate and the analyzer's working buffers are confined to that single
-        // analysis thread, which is the only thread that ever calls them.
+        // Detection results come back on the main thread, not on the analysis executor:
+        // that one is shut down below, and a listener handed to a dead executor is
+        // rejected mid-flight.
+        val callbacks = ContextCompat.getMainExecutor(context)
+        // The gate is therefore only ever touched from one thread.
         val gate = QrScanGate()
-        val analyzer = QrCodeAnalyzer { raw ->
+        val analyzer = QrCodeAnalyzer(scanner, callbacks) { raw ->
             gate.accept(raw, SystemClock.elapsedRealtime())?.let { payloads.trySend(it) }
         }
         var released = false
@@ -367,7 +318,7 @@ private fun Viewfinder(
                     currentFailure()
                 }
             },
-            ContextCompat.getMainExecutor(context),
+            callbacks,
         )
         onDispose {
             released = true

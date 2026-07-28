@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -85,6 +86,53 @@ class RevealOrigin(private val target: RevealTarget) {
 }
 
 /**
+ * The shell's [RevealTarget.QUALITY] channel. A composition local rather than a
+ * parameter because the two controls that open that sheet sit four and five levels
+ * inside a screen that otherwise knows nothing about the shell's overlay layer, and
+ * threading the wire through every one of them would put a shell concern in their
+ * signatures.
+ *
+ * The default instance exists so a control lifted out of the shell — a preview — still
+ * composes; nothing consumes it, so an origin published there is simply never spent.
+ */
+internal val LocalQualityRevealOrigin = staticCompositionLocalOf { RevealOrigin(RevealTarget.QUALITY) }
+
+/** Where a press has got to, decided once per final pass by [PressToSummon]. */
+internal enum class PressVerdict { PENDING, SUMMONS, ABANDONED }
+
+/**
+ * Whether the press under way is still going to become the click that summons a surface.
+ *
+ * Consumption alone is NOT somebody taking the gesture away: `clickable` consumes the
+ * down it is about to act on, and consumes the up again, both on the main pass — which
+ * runs before the final pass this is fed from. Reading either as a steal withdraws the
+ * origin of every press that ever becomes a click, and every surface is then born at its
+ * own centre instead of at the control. Foundation's own
+ * `ClickableNode.checkForCancellation` excludes the down it consumed for exactly this
+ * reason; this excludes the press pass and reads the release first.
+ *
+ * What is left is honest: a consumed MOVE is a scroll or a pager that has taken the
+ * gesture, and a pointer that leaves the control's bounds is a press the user thought
+ * better of.
+ */
+internal class PressToSummon {
+    private var pressPass = true
+
+    fun onFinalPass(pressed: Boolean, consumed: Boolean, inBounds: Boolean): PressVerdict {
+        val own = pressPass
+        pressPass = false
+        return when {
+            // Released: only inside the control is the click on its way, and only then is
+            // the origin it published the one that surface is born at.
+            !pressed -> if (inBounds) PressVerdict.SUMMONS else PressVerdict.ABANDONED
+            consumed && !own -> PressVerdict.ABANDONED
+            !inBounds -> PressVerdict.ABANDONED
+            else -> PressVerdict.PENDING
+        }
+    }
+}
+
+/**
  * Publishes this control's centre as [origin] for whatever it summons. Recorded on the
  * initial pass of the pointer down and never consumed there, so the control's own click
  * detector still owns the gesture.
@@ -106,21 +154,21 @@ internal fun Modifier.revealOrigin(origin: RevealOrigin): Modifier {
                 val node = coordinates.value?.takeIf { it.isAttached } ?: return@awaitEachGesture
                 val ticket = origin.record(node.localToRoot(node.size.toSize().center))
                 val bounds = Rect(Offset.Zero, size.toSize())
-                var willClick = true
-                while (willClick) {
+                val press = PressToSummon()
+                var verdict = PressVerdict.PENDING
+                while (verdict == PressVerdict.PENDING) {
                     // The final pass, so a scroll or a pager that took this gesture has
-                    // already said so by the time the decision is made.
+                    // already said so by the time the decision is made — and so the first
+                    // event here is the down's own, which this control consumed.
                     val event = awaitPointerEvent(PointerEventPass.Final)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (change.isConsumed || !bounds.contains(change.position)) {
-                        willClick = false
-                    } else if (!change.pressed) {
-                        // Released inside these bounds: the click is on its way, and the
-                        // origin it published is the one that surface is born at.
-                        break
-                    }
+                    verdict = press.onFinalPass(
+                        pressed = change.pressed,
+                        consumed = change.isConsumed,
+                        inBounds = bounds.contains(change.position),
+                    )
                 }
-                if (!willClick) origin.withdraw(ticket)
+                if (verdict != PressVerdict.SUMMONS) origin.withdraw(ticket)
             }
         }
 }

@@ -2,8 +2,8 @@ package com.flick.receiver.ui.components
 
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -38,17 +38,26 @@ import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.glassChrome
 import com.flick.receiver.ui.theme.glassPanel
+import com.flick.receiver.ui.theme.glassState
 import com.flick.receiver.ui.theme.panelTopHighlightBrush
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Which glass a [GlassPanel] is cut from (receiver-expressive-spec.md §2a):
- *  - [Chrome] — `#163A8C` @ 13 %, the bottom transport panel;
- *  - [Panel]  — `#163A8C` @ 50 %, the subtitles / metrics panels and the
- *    handshake card, which carry dense text and need more body;
+ *  - [Chrome] — the bottom transport panel, which sits inside the bottom scrim;
+ *  - [Panel]  — the subtitles / metrics panels and the handshake card, which
+ *    carry dense text and reach up through the unscrimmed band;
+ *  - [State]  — a **centred state overlay**: buffering, paused, finished. It sits
+ *    where there is no scrim by design, so its plate is the whole read;
  *  - [Solid]  — the opaque `Surface` card with a white hairline, for panels that
  *    do not sit over moving video (the pairing manual-entry card).
+ *
+ * The three film-facing tones are graded by how much scrim is under them, not by
+ * taste: `UNSCRIMMED_BAND` is real and permanent, and a surface that lands in it
+ * owns its own backdrop. See `FlickColor.GlassState`.
  */
-enum class GlassPanelTone { Chrome, Panel, Solid }
+enum class GlassPanelTone { Chrome, Panel, State, Solid }
 
 /**
  * The shared floating panel: glass fill, hairline border, the §2d inner top
@@ -121,22 +130,34 @@ fun GlassPanel(
  * settle past its target, the fade is alpha and takes an effects spring that must
  * not — an opacity animating past 1 is a rendering fault, not expression. Both are
  * read inside the layer block, so the entrance never recomposes the panel.
+ *
+ * Once both have settled the layer is DROPPED rather than left compositing a
+ * finished transform forever. Every panel on screen otherwise keeps a render node
+ * of its own for the life of the surface, and while alpha is below 1 that node is
+ * an offscreen buffer at panel resolution — real GPU memory and a real composite
+ * per frame, bought for an animation that ended a second after the screen opened.
  */
 @Composable
 private fun rememberGlassPanelEntrance(riseDistance: Dp): Modifier {
     val reducedMotion = LocalReducedMotion.current
-    var entered by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { entered = true }
-    val fade = animateFloatAsState(
-        targetValue = if (entered) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
-        label = "glassPanelFade",
-    )
-    val rise = animateFloatAsState(
-        targetValue = if (entered) 0f else 1f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.panelSpatial(),
-        label = "glassPanelRise",
-    )
+    val fadeSpec: FiniteAnimationSpec<Float> = FlickMotion.stateEffects()
+    val riseSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
+    val fade = remember { Animatable(0f) }
+    val rise = remember { Animatable(1f) }
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(reducedMotion) {
+        if (reducedMotion) {
+            fade.snapTo(1f)
+            rise.snapTo(0f)
+        } else {
+            coroutineScope {
+                launch { fade.animateTo(1f, fadeSpec) }
+                launch { rise.animateTo(0f, riseSpec) }
+            }
+        }
+        settled = true
+    }
+    if (settled) return Modifier
     return Modifier.graphicsLayer {
         alpha = fade.value
         translationY = rise.value * riseDistance.toPx()
@@ -183,6 +204,10 @@ private fun Modifier.glassTone(
     GlassPanelTone.Panel ->
         if (borderColor == null) glassPanel(shape)
         else background(FlickColor.GlassPanel, shape)
+            .border(FlickDimens.Hairline, borderColor, shape)
+    GlassPanelTone.State ->
+        if (borderColor == null) glassState(shape)
+        else background(FlickColor.GlassState, shape)
             .border(FlickDimens.Hairline, borderColor, shape)
     GlassPanelTone.Solid ->
         background(FlickColor.Surface, shape)

@@ -1,8 +1,11 @@
 package com.flick.sender.ui.screens
 
+import com.flick.sender.media.MediaAccess
 import com.flick.sender.model.CastErrorKind
 import com.flick.sender.model.CastFailure
+import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.Route
+import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.ui.Format
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,14 +24,16 @@ class SenderShellPolicyTest {
     @Test fun everyRouteMapsToExactlyOneShellDestination() {
         assertEquals(ShellDestination.CONNECT, SenderShellPolicy.destinationOf(Route.Connect))
         assertEquals(ShellDestination.LIBRARY, SenderShellPolicy.destinationOf(Route.Library))
+        assertEquals(ShellDestination.SETTINGS, SenderShellPolicy.destinationOf(Route.Settings))
         assertEquals(ShellDestination.CONNECTING, SenderShellPolicy.destinationOf(Route.Connecting))
         assertEquals(ShellDestination.NOW_PLAYING, SenderShellPolicy.destinationOf(Route.NowPlaying))
         assertEquals(ShellDestination.FAILURE, SenderShellPolicy.destinationOf(failure))
     }
 
-    @Test fun theNavFloatsOverBrowsingSurfacesAndOverNothingElse() {
+    @Test fun theNavFloatsOverItsOwnSeatsAndOverNothingElse() {
         assertTrue(SenderShellPolicy.navVisible(ShellDestination.LIBRARY))
         assertTrue(SenderShellPolicy.navVisible(ShellDestination.CONNECT))
+        assertTrue(SenderShellPolicy.navVisible(ShellDestination.SETTINGS))
         assertFalse(SenderShellPolicy.navVisible(ShellDestination.DETAIL))
         assertFalse(SenderShellPolicy.navVisible(ShellDestination.CONNECTING))
         assertFalse(SenderShellPolicy.navVisible(ShellDestination.NOW_PLAYING))
@@ -36,13 +41,29 @@ class SenderShellPolicyTest {
 
         assertTrue(SenderShellPolicy.navVisible(Route.Library))
         assertTrue(SenderShellPolicy.navVisible(Route.Connect))
+        assertTrue(SenderShellPolicy.navVisible(Route.Settings))
         assertFalse(SenderShellPolicy.navVisible(Route.Connecting))
         assertFalse(SenderShellPolicy.navVisible(Route.NowPlaying))
         assertFalse(SenderShellPolicy.navVisible(failure))
     }
 
-    @Test fun theNavHasExactlyTwoSeatsAndTheRemoteIsNotOneOfThem() {
-        assertEquals(listOf(NavTab.LIBRARY, NavTab.DEVICES), NavTab.entries.toList())
+    // The seat order is load-bearing: FlickApp reads it back as the lateral direction the
+    // route slides in, so a reorder here silently inverts the screen against the pill.
+    @Test fun theNavHasExactlyThreeSeatsAndTheRemoteIsNotOneOfThem() {
+        assertEquals(listOf(NavTab.LIBRARY, NavTab.DEVICES, NavTab.SETTINGS), NavTab.entries.toList())
+    }
+
+    // Settings is a peer of the library, never a launch destination — so unlike Connect
+    // it has no arm that hands Back to the system.
+    @Test fun backFromSettingsReturnsToTheLibraryRatherThanLeavingTheApp() {
+        assertEquals(
+            BackDisposition.SHOW_LIBRARY,
+            SenderNavigationPolicy.backDisposition(Route.Settings, connectFromLibrary = false),
+        )
+        assertEquals(
+            BackDisposition.SHOW_LIBRARY,
+            SenderNavigationPolicy.backDisposition(Route.Settings, connectFromLibrary = true),
+        )
     }
 
     // Every surface over the library answers LIBRARY: back out of the detail sheet or
@@ -54,12 +75,14 @@ class SenderShellPolicyTest {
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.CONNECT))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.CONNECTING))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(ShellDestination.FAILURE))
+        assertEquals(NavTab.SETTINGS, SenderShellPolicy.selectedTab(ShellDestination.SETTINGS))
 
         assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(Route.Library))
         assertEquals(NavTab.LIBRARY, SenderShellPolicy.selectedTab(Route.NowPlaying))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(Route.Connect))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(Route.Connecting))
         assertEquals(NavTab.DEVICES, SenderShellPolicy.selectedTab(failure))
+        assertEquals(NavTab.SETTINGS, SenderShellPolicy.selectedTab(Route.Settings))
     }
 
     // The dock is the only door to the remote now, so it has to be on every surface the
@@ -73,6 +96,7 @@ class SenderShellPolicyTest {
         }
         assertTrue(SenderShellPolicy.dockVisible(Route.Library))
         assertTrue(SenderShellPolicy.dockVisible(Route.Connect))
+        assertTrue(SenderShellPolicy.dockVisible(Route.Settings))
         assertFalse(SenderShellPolicy.dockVisible(Route.NowPlaying))
         assertFalse(SenderShellPolicy.dockVisible(Route.Connecting))
         assertFalse(SenderShellPolicy.dockVisible(failure))
@@ -81,9 +105,11 @@ class SenderShellPolicyTest {
     @Test fun theDockMorphsAcrossEveryPairThatJoinsItToTheRemoteAndNoOther() {
         assertTrue(SenderShellPolicy.dockMorph(ShellDestination.LIBRARY, ShellDestination.NOW_PLAYING))
         assertTrue(SenderShellPolicy.dockMorph(ShellDestination.CONNECT, ShellDestination.NOW_PLAYING))
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.SETTINGS, ShellDestination.NOW_PLAYING))
         // Symmetric: minimizing is the same geometry read backwards.
         assertTrue(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.LIBRARY))
         assertTrue(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.CONNECT))
+        assertTrue(SenderShellPolicy.dockMorph(ShellDestination.NOW_PLAYING, ShellDestination.SETTINGS))
 
         // No dock on the other side, so nothing to grow out of or shrink back into.
         assertFalse(SenderShellPolicy.dockMorph(ShellDestination.CONNECTING, ShellDestination.NOW_PLAYING))
@@ -101,30 +127,57 @@ class SenderShellPolicyTest {
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.DETAIL))
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.LIBRARY))
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.CONNECT))
+        // Settings is a pale canvas surface like the other two browsing seats.
+        assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.SETTINGS))
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.FAILURE))
 
         assertTrue(SenderShellPolicy.darkBackdrop(Route.NowPlaying))
         assertTrue(SenderShellPolicy.darkBackdrop(Route.Connecting))
         assertFalse(SenderShellPolicy.darkBackdrop(Route.Library))
         assertFalse(SenderShellPolicy.darkBackdrop(Route.Connect))
+        assertFalse(SenderShellPolicy.darkBackdrop(Route.Settings))
         assertFalse(SenderShellPolicy.darkBackdrop(failure))
     }
 
     @Test fun aDarkPaletteInvertsTheBarsOnEveryRouteIncludingTheLightSurfaces() {
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.LIBRARY, lightPalette = false))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.CONNECT, lightPalette = false))
+        assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.SETTINGS, lightPalette = false))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.FAILURE, lightPalette = false))
         assertTrue(SenderShellPolicy.darkBackdrop(Route.Library, lightPalette = false))
 
         // A light palette falls back to the pure route rule.
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.LIBRARY, lightPalette = true))
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.CONNECT, lightPalette = true))
+        assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.SETTINGS, lightPalette = true))
         assertFalse(SenderShellPolicy.darkBackdrop(ShellDestination.FAILURE, lightPalette = true))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.NOW_PLAYING, lightPalette = true))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.CONNECTING, lightPalette = true))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.DETAIL, lightPalette = true))
         assertFalse(SenderShellPolicy.darkBackdrop(Route.Library, lightPalette = true))
         assertTrue(SenderShellPolicy.darkBackdrop(Route.NowPlaying, lightPalette = true))
+    }
+
+    // The empty state's own Refresh raises `loading` on a library that is already empty.
+    // Falling through to the grid there flashes its entire chrome — header, link pill,
+    // an "All (0)" chip row — and snaps back the moment the query returns nothing new.
+    @Test fun theEmptyLibraryHoldsItsGroundWhileARequeryIsInFlight() {
+        assertTrue(libraryEmptyShown(MediaAccess.FULL, itemCount = 0, loading = false, showing = false))
+        assertTrue(libraryEmptyShown(MediaAccess.FULL, itemCount = 0, loading = true, showing = true))
+        // Re-picking from PARTIAL keeps the previous (empty) list until the query lands.
+        assertTrue(libraryEmptyShown(MediaAccess.PARTIAL, itemCount = 0, loading = true, showing = true))
+        // A first load has no answer to hold, so the grid shows its loading note instead.
+        assertFalse(libraryEmptyShown(MediaAccess.FULL, itemCount = 0, loading = true, showing = false))
+        // A query that found something ends the empty state whatever it was showing.
+        assertFalse(libraryEmptyShown(MediaAccess.FULL, itemCount = 4, loading = false, showing = true))
+        assertFalse(libraryEmptyShown(MediaAccess.PARTIAL, itemCount = 1, loading = false, showing = true))
+    }
+
+    // Denied access is answered by the permission rather than by MediaStore: no query is
+    // run, so nothing about the loading flag may keep the grid up over it.
+    @Test fun deniedAccessAlwaysShowsTheEmptyState() {
+        assertTrue(libraryEmptyShown(MediaAccess.NONE, itemCount = 0, loading = false, showing = false))
+        assertTrue(libraryEmptyShown(MediaAccess.NONE, itemCount = 0, loading = true, showing = false))
     }
 
     @Test fun shellFormattersMatchTheSpecifiedNumericForms() {

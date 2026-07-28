@@ -100,8 +100,11 @@ val FlickFocusRingWidth: Dp = 2.dp
  * the outermost focusable on a screen must keep [FlickDimens.FocusRingReserve]
  * of clearance inside the overscan safe area or the ring clips. The extent a
  * focused element actually needs beyond its own bounds is
- * `FlickMotion.FOCUS_SCALE * (offset + width / 2) + (FOCUS_SCALE - 1) * side / 2`
- * — 1.06 × (4.5 + 1) + 0.03 × side, so 10 dp covers any control up to ~139 dp.
+ * `FOCUS_SCALE * (offset + width / 2 + contour) + (FOCUS_SCALE - 1) * side / 2`
+ * — 1.06 × (4.5 + 1 + 1) + 0.03 × side, so 10 dp covers any control up to
+ * ~103 dp. [FlickFocusRingContourWidth] is in that sum: it widened the ring
+ * outward, and a control wide enough to exceed the reserve spends the difference
+ * on the overscan margin rather than being cut, since nothing on the path clips.
  */
 val FlickFocusRingOffset: Dp = 4.5.dp
 
@@ -122,14 +125,31 @@ private val FocusCornerGrowth: Dp = 4.dp
  */
 private val FocusBeaconTravelCap: Dp = 320.dp
 
+/**
+ * The dark contour on the ring's outer edge — 1 dp of [FlickColor.FocusRingContour]
+ * on each side of the amber stroke.
+ *
+ * The ring is the only decoration in the system drawn OUTSIDE its control, so on
+ * the playback screen part of it lands on the film rather than on chrome, and the
+ * film is not ours: amber measures 1.2:1 against the frame under the END SESSION
+ * pill. The contour costs one extra stroked outline on the one element that holds
+ * focus, and it is invisible on every dark surface — it only appears where it is
+ * the whole read.
+ */
+val FlickFocusRingContourWidth: Dp = 1.dp
+
 /** The hairline a filled affordance carries around its fill. */
 val FlickControlBorderWidth: Dp = FlickDimens.Hairline
 
 /**
- * The stroke for an **outline-only** affordance — the END SESSION pill (spec §5.3)
- * is the only one on the playback screen. Double the control hairline: with no
- * fill of its own the border is the whole control, it sits directly on the film,
- * and at its height the top scrim has already thinned out.
+ * The stroke for an **outline-only** affordance. Double the control hairline:
+ * with no fill of its own the border is the whole silhouette.
+ *
+ * Width was never the compensation for a thinned scrim — the END SESSION pill
+ * carried this stroke in `OutlineSoft` (white @ 18 %) over bare film and
+ * composited to 0.68 luminance against its own backdrop, invisible at any width.
+ * A control that sits where the scrim has thinned takes a plate; see
+ * `FlickColor.GlassState`.
  */
 val FlickOutlinedChromeBorderWidth: Dp = 2.dp
 
@@ -204,12 +224,19 @@ fun Modifier.flickFocusRing(
         if (ringSize.width <= 0f || ringSize.height <= 0f) return@drawWithContent
         val ringShape = if (bloom >= 0.999f) settledShape else shape.grownBy(offset * bloom)
         val outline = ringShape.createOutline(ringSize, layoutDirection, this)
+        val stroke = width.toPx()
         translate(left = -inset, top = -inset) {
+            drawOutline(
+                outline = outline,
+                color = FlickColor.FocusRingContour,
+                alpha = presence,
+                style = Stroke(width = stroke + FlickFocusRingContourWidth.toPx() * 2f),
+            )
             drawOutline(
                 outline = outline,
                 color = ringColor,
                 alpha = presence,
-                style = Stroke(width = width.toPx()),
+                style = Stroke(width = stroke),
             )
         }
     }
@@ -364,12 +391,19 @@ fun FocusBeaconHost(
                     val outline = target.shape
                         .grownBy(((dx + dy) * 0.5f).toDp())
                         .createOutline(ringSize, layoutDirection, this)
+                    val stroke = FlickFocusRingWidth.toPx()
                     translate(left = local.left - dx, top = local.top - dy) {
+                        drawOutline(
+                            outline = outline,
+                            color = FlickColor.FocusRingContour,
+                            alpha = lit,
+                            style = Stroke(width = stroke + FlickFocusRingContourWidth.toPx() * 2f),
+                        )
                         drawOutline(
                             outline = outline,
                             color = ringColor.value,
                             alpha = lit,
-                            style = Stroke(width = FlickFocusRingWidth.toPx()),
+                            style = Stroke(width = stroke),
                         )
                     }
                 },

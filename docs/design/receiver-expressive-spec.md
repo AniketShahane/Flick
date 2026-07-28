@@ -263,14 +263,24 @@ Two columns inside the safe area: content `1fr` / QR column **272 dp**, gap **40
 
 **Right column**: a **248 dp** white `QrCode` card centred in the 272 dp column, with
 an 18 dp quiet zone and a 26 dp radius.
-Recolour the QR: modules `#0A1533`; the two upper finder eyes' inner squares
-`#1240E8`, the lower-left eye's inner square `#FFB61E`; centre overlay = white
-rounded square (16 dp radius) holding `BrandMark` tinted `Primary`. Below the
-card, a 14 dp wifi glyph + `flick://<host>:<port>` mono **14 sp** `OnSurfaceMuted`.
+Recolour the QR: modules `#0A1533`; **all three** finder eyes' inner squares
+`#1240E8`; centre overlay = white rounded square (16 dp radius) holding
+`BrandMark` tinted `Primary` over its amber streaks. Below the card, a 14 dp wifi
+glyph + `flick://<host>:<port>` mono **14 sp** `OnSurfaceMuted`.
 
 > The eye recolouring requires drawing the three finder patterns explicitly over
 > the ZXing matrix. Keep error correction at `M` and keep the payload byte-identical
 > — the centre overlay must not exceed the ~15 % the `M` level can lose.
+>
+> **The lower-left eye was amber `#FFB61E` and that made the symbol undecodable.**
+> A binarizer thresholds luma: amber sits at ~0.73 against a 1.0 white plate, above
+> the ~0.54 midpoint between the plate and the `#0A1533` ink, so the amber core
+> binarized as WHITE. That destroys the finder pattern's mandatory 1:1:3:1:1
+> dark/light run, leaves only two of the three patterns findable, and no standard
+> scanner — system camera, Lens, ZXing — can read the code. `#1240E8` measures
+> ~0.27, comfortably on the dark side. **Amber may never carry a module a scanner
+> has to read**; the centre plate is the one place it can live, because the error
+> correction already covers that area.
 
 ### 5.2 Connecting / handshake (`ReceiverApp.ConnectingScreen`)
 

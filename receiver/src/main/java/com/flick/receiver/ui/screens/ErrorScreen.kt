@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -21,8 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
@@ -43,17 +40,23 @@ import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
+import com.flick.receiver.ui.theme.errorAmbientBackground
 import com.flick.receiver.ui.theme.tvOverscanSafeArea
-import kotlin.math.max
 
 /**
  * T9 · Errors, calm and specific. Amber [ErrorKind.NotServing] = "reachable, not
  * serving" (the stream ended); crimson [ErrorKind.Unreachable] = the phone left
- * the network. Either way the held position is promised and D-pad recovery is one
- * press away.
+ * the network. Either way the held position is promised.
  *
- * The two diagnoses stay visually distinct: the accent tints the ambient wash,
- * the phone glyph's status dot and the primary action.
+ * The two diagnoses stay visually distinct: the accent tints the ambient wash and
+ * the phone glyph's status dot.
+ *
+ * There is exactly ONE action, and it carries the primary treatment. Retrying a
+ * cast is not the TV's to offer: every retry needs a fresh castId and a fresh
+ * media token, both minted by the sender (control-channel.md §6/§8 — "retry is
+ * user initiated"), and the terminal frame this screen was raised by has already
+ * put that affordance on the phone. A second, de-emphasised key here would be an
+ * offer the receiver cannot honour.
  *
  * NOTHING on this screen moves after the single fade that brings it in. A
  * diagnosed fault is presented still: a card that springs into place and a status
@@ -64,17 +67,11 @@ import kotlin.math.max
 fun ErrorScreen(
     kind: ErrorKind,
     deviceLabel: String?,
-    onPrimary: (() -> Unit)?,
-    onSecondary: () -> Unit,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val primaryFocus = remember { FocusRequester() }
-    val secondaryFocus = remember { FocusRequester() }
-    LaunchedEffect(kind, onPrimary != null) {
-        runCatching {
-            (if (onPrimary != null) primaryFocus else secondaryFocus).requestFocus()
-        }
-    }
+    val actionFocus = remember { FocusRequester() }
+    LaunchedEffect(kind) { runCatching { actionFocus.requestFocus() } }
 
     // The whole entrance: one fade, no geometry. Read inside the layer block so
     // even that costs no recomposition.
@@ -97,26 +94,14 @@ fun ErrorScreen(
         if (unreachable) R.string.error_unreachable_detail else R.string.error_not_serving_detail,
         device,
     )
-    val primaryLabel = stringResource(
-        if (unreachable) R.string.error_keep_waiting else R.string.error_try_again,
-    )
-    val secondaryLabel = stringResource(
+    val actionLabel = stringResource(
         if (unreachable) R.string.error_end_session else R.string.error_back_to_standby,
     )
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(FlickColor.Canvas)
-            .drawBehind {
-                drawRect(
-                    Brush.radialGradient(
-                        colors = listOf(accent.copy(alpha = 0.20f), Color.Transparent),
-                        center = Offset(size.width * 0.5f, size.height * 0.14f),
-                        radius = max(size.width, size.height) * 0.68f,
-                    ),
-                )
-            }
+            .errorAmbientBackground(accent)
             // After the wash, so the gradient still runs to the panel edge while
             // the card inside it stops at the overscan inset.
             .tvOverscanSafeArea(),
@@ -146,37 +131,19 @@ fun ErrorScreen(
                 color = FlickColor.OnSurfaceDim,
                 textAlign = TextAlign.Center,
             )
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md),
-                verticalAlignment = Alignment.CenterVertically,
+            FlickTvButton(
+                onClick = onDismiss,
+                focusRequester = actionFocus,
+                containerColor = FlickColor.Spark,
+                borderColor = Color.Transparent,
+                ringColor = FlickColor.FocusRingOnSpark,
+                contentPadding = FlickDimens.ControlPadding,
             ) {
-                if (onPrimary != null) {
-                    FlickTvButton(
-                        onClick = onPrimary,
-                        focusRequester = primaryFocus,
-                        containerColor = FlickColor.Spark,
-                        borderColor = Color.Transparent,
-                        ringColor = FlickColor.FocusRingOnSpark,
-                        contentPadding = FlickDimens.ControlPadding,
-                    ) {
-                        Text(
-                            text = primaryLabel,
-                            style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                            color = FlickColor.OnSpark,
-                        )
-                    }
-                }
-                FlickTvButton(
-                    onClick = onSecondary,
-                    focusRequester = secondaryFocus,
-                    contentPadding = FlickDimens.ControlPadding,
-                ) {
-                    Text(
-                        text = secondaryLabel,
-                        style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.OnSurfaceDim,
-                    )
-                }
+                Text(
+                    text = actionLabel,
+                    style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                    color = FlickColor.OnSpark,
+                )
             }
         }
     }

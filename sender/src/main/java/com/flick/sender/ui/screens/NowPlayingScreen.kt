@@ -14,6 +14,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -86,6 +87,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.LiveDot
+import com.flick.sender.ui.components.LocalQualityRevealOrigin
 import com.flick.sender.ui.components.PhoneScrubBar
 import com.flick.sender.ui.components.SignalChip
 import com.flick.sender.ui.components.TransportCluster
@@ -93,6 +95,7 @@ import com.flick.sender.ui.components.VolumeSlider
 import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
+import com.flick.sender.ui.components.revealOrigin
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
@@ -142,26 +145,9 @@ private fun RemoteScreen(
     val signal = rememberSignalState()
     val configuration = LocalConfiguration.current
     val compactWidth = isCompactWidth(configuration.screenWidthDp)
-    val screenHeight = configuration.screenHeightDp
-    // The ordinary remote stays one-handed. A short landscape window cannot honestly
-    // contain transport, volume and stop above the system bars, so it scrolls rather
-    // than cutting off terminal controls.
-    val compactLayout = needsCompactRemoteLayout(screenHeight, configuration.fontScale)
-    val dense = screenHeight < DenseScreenDp
-    val showStats = screenHeight >= StatStripFloorDp
-    val gap = if (dense) 11.dp else 15.dp
-    val clusterGap = if (dense) 16.dp else 24.dp
-    val chrome = if (showStats) (if (dense) DenseChromeDp else FullChromeDp) else BareChromeDp
-    // The chrome figures are measured at font scale 1 and every control in them grows
-    // with the scale, so the poster gives the difference back instead of letting the
-    // control stack run past the bottom edge on the non-scrolling layout.
-    val chromeBudget = (chrome * configuration.fontScale).roundToInt()
-    val posterHeight = (screenHeight - chromeBudget).coerceIn(
-        if (compactLayout) CompactPosterMinDp else PosterMinDp,
-        if (compactLayout) CompactPosterMaxDp else PosterMaxDp,
-    ).dp
+    val fontScale = configuration.fontScale
     val reduceMotion = rememberReduceMotion()
-    val compactScrollState = rememberScrollState()
+    val remoteScrollState = rememberScrollState()
     // Owned here rather than by the shell: the subtitles sheet belongs to the video on
     // this screen, and the shell's overlay channel is the pairing/quality one.
     var showSubtitles by rememberSaveable { mutableStateOf(false) }
@@ -190,8 +176,8 @@ private fun RemoteScreen(
 
     val phase by remember { derivedStateOf { playbackState.value.phase } }
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
-    // Buffering stays a bounded, centered face. It must never enter the compact
-    // scroll container because its weighted body needs finite height constraints.
+    // Buffering stays a bounded, centered face. It must never enter the scroll
+    // container because its weighted body needs finite height constraints.
     val showBuffering = phase == PlaybackPhase.BUFFERING && !scrubbing
 
     Box(
@@ -206,23 +192,20 @@ private fun RemoteScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 22.dp)
-                .then(
-                    if (usesCompactRemoteScroll(compactLayout, showBuffering)) {
-                        // Let the scrub bar retain every pointer while a drag is active;
-                        // scrolling resumes immediately after the terminal seek.
-                        Modifier.verticalScroll(compactScrollState, enabled = !scrubbing)
-                    } else {
-                        Modifier
-                    },
-                ),
+                // Horizontal inset belongs to the content, not to this column: a scroll
+                // container clips to its own bounds, and the poster's 28 dp drop shadow
+                // needs that gutter INSIDE the clip or it is sheared off at both edges.
+                .padding(top = 8.dp, bottom = 22.dp),
         ) {
+            // Outside the scroll container: minimize is the way off this screen and must
+            // not be something the user has to scroll back up to find.
             TopRow(
                 serving = server.status == ServerStatus.RUNNING,
                 signal = signal,
                 compactWidth = compactWidth,
                 onMinimize = { controller.minimizeNowPlaying() },
                 onSignal = { controller.toggleQualitySheet(true) },
+                modifier = Modifier.padding(horizontal = RemoteGutter),
             )
 
             // Swap to the full buffering face only when NOT scrubbing: a scrub itself
@@ -231,24 +214,55 @@ private fun RemoteScreen(
             if (showBuffering) {
                 BufferingContent(signal = signal)
             } else {
-                RemoteContent(
-                    controller = controller,
-                    playbackState = playbackState,
-                    item = item,
-                    tvName = tv?.name ?: stringResource(R.string.np_tv_generic),
-                    hdr = hdr,
-                    signal = signal,
-                    posterHeight = posterHeight,
-                    gap = gap,
-                    clusterGap = clusterGap,
-                    showStats = showStats,
-                    compactLayout = compactLayout,
-                    pulse = { pulse.value },
-                    subtitleAttached = subtitleAttached,
-                    onSubtitles = { showSubtitles = true },
-                    sharedScope = sharedScope,
-                    animatedScope = animatedScope,
-                )
+                BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                    // Measured, not read off the display: this is the box the stack is
+                    // actually laid out in, so the window insets, the screen padding and
+                    // the row above are already out of the figure — the only way a budget
+                    // survives a gesture bar, a cutout or a display-size setting that the
+                    // constants never saw.
+                    val viewport = maxHeight
+                    val plan = remoteHeightPlan(viewport.value.roundToInt(), fontScale)
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            // Unconditional. A threshold that opts into scrolling can only
+                            // be right for the font scale, inset depth and title length it
+                            // was measured against, and everything past the miss is what
+                            // gets cut off. Enabled is still gated on the drag so the
+                            // scrub bar keeps the pointer through it; scrolling resumes at
+                            // the terminal seek.
+                            .verticalScroll(remoteScrollState, enabled = !scrubbing),
+                    ) {
+                        // At least a viewport tall. A weight inside a scroll container
+                        // resolves against the container's MINIMUM main-axis size — with
+                        // no floor the surplus spacer collapses and a roomy window renders
+                        // a cramped stack with dead space under it.
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = viewport)
+                                .padding(horizontal = RemoteGutter),
+                        ) {
+                            RemoteContent(
+                                controller = controller,
+                                playbackState = playbackState,
+                                item = item,
+                                tvName = tv?.name ?: stringResource(R.string.np_tv_generic),
+                                hdr = hdr,
+                                posterHeight = plan.posterHeightDp.dp,
+                                gap = plan.gapDp.dp,
+                                captionGap = plan.captionGapDp.dp,
+                                clusterGap = plan.clusterGapDp.dp,
+                                reservePreview = plan.reservePreview,
+                                pulse = { pulse.value },
+                                subtitleAttached = subtitleAttached,
+                                onSubtitles = { showSubtitles = true },
+                                sharedScope = sharedScope,
+                                animatedScope = animatedScope,
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -292,6 +306,7 @@ private fun ColumnScope.TopRow(
     compactWidth: Boolean,
     onMinimize: () -> Unit,
     onSignal: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
     val live = signal.value
@@ -299,8 +314,13 @@ private fun ColumnScope.TopRow(
     val signalHealthy = live.healthy
     val minimizeDescription = stringResource(R.string.a11y_minimize_now_playing)
     val minimizeInteraction = remember { MutableInteractionSource() }
+    // The chip opens the same sheet the Metrics segment does, so it publishes its own
+    // bounds too. One of the two publishing alone is the fault: the channel is spent on
+    // every open, so an unarmed control would either inherit the other's origin or fly
+    // the sheet out of the wrong end of the screen.
+    val revealOrigin = LocalQualityRevealOrigin.current
     Row(
-        Modifier.fillMaxWidth(),
+        modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -348,7 +368,12 @@ private fun ColumnScope.TopRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        SignalChip(text = signalText, onClick = onSignal, healthy = signalHealthy)
+        SignalChip(
+            text = signalText,
+            onClick = onSignal,
+            modifier = Modifier.revealOrigin(revealOrigin),
+            healthy = signalHealthy,
+        )
     }
 }
 
@@ -359,12 +384,11 @@ private fun ColumnScope.RemoteContent(
     item: MediaItem?,
     tvName: String,
     hdr: HdrType,
-    signal: State<SignalInfo>,
     posterHeight: Dp,
     gap: Dp,
+    captionGap: Dp,
     clusterGap: Dp,
-    showStats: Boolean,
-    compactLayout: Boolean,
+    reservePreview: Boolean,
     pulse: () -> Float,
     subtitleAttached: Boolean,
     onSubtitles: () -> Unit,
@@ -413,14 +437,14 @@ private fun ColumnScope.RemoteContent(
         animatedScope = animatedScope,
     )
 
-    Spacer(Modifier.height(gap))
+    Spacer(Modifier.height(captionGap))
     Text(
         title,
         style = FlickText.headlineLarge.copy(color = colors.onSurface),
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(MetaLead))
     Text(
         meta,
         style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
@@ -428,18 +452,12 @@ private fun ColumnScope.RemoteContent(
         overflow = TextOverflow.Ellipsis,
     )
 
-    if (showStats) {
-        Spacer(Modifier.height(gap))
-        StatStrip(playbackState = playbackState, signal = signal)
-    }
-
-    if (compactLayout) {
-        // Weight has no bounded height inside the scroll container. A compact gap keeps
-        // the hierarchy legible while leaving every control reachable.
-        Spacer(Modifier.height(gap))
-    } else {
-        Spacer(Modifier.weight(1f))
-    }
+    // Two spacers, not one: the fixed gap is the hierarchy break the stack always owes,
+    // and the weight is only the surplus a roomy viewport has left over. The weight
+    // resolves to zero the moment the stack is taller than its container's minimum,
+    // which is exactly when the fixed gap has to carry the separation alone.
+    Spacer(Modifier.height(gap))
+    Spacer(Modifier.weight(1f))
 
     // --- transport region ---
     val preview = rememberScrubFrame(item?.uri, { playbackState.value.targetMs }, scrubbing)
@@ -458,7 +476,11 @@ private fun ColumnScope.RemoteContent(
         durationMs = { playbackState.value.durationMs },
         targetLabel = seekTargetDescription,
         confirmedLabel = confirmedDescription,
-        reservePreviewSpace = compactLayout,
+        // Only where the body is short enough for the bar to reach the top 96 dp of the
+        // scroll viewport, which is the only place the preview can be clipped. Carrying
+        // the headroom anywhere else buys nothing and costs a permanent 104 dp band in
+        // a stack that is already scrolling.
+        reservePreviewSpace = reservePreview,
         stateLabel = if (syncing) stringResource(R.string.syncing) else null,
         adjustableActionLabel = adjustSeekDescription,
         // Read in the draw phase: the wave amplitude follows the TV's own play state,
@@ -501,7 +523,7 @@ private fun ColumnScope.RemoteContent(
     SegmentedRow(
         subtitleAttached = subtitleAttached,
         onSubtitles = onSubtitles,
-        onSignal = { controller.toggleQualitySheet(true) },
+        onMetrics = { controller.toggleQualitySheet(true) },
     )
 
     // The mock has no stop control on the remote, but this is the only in-app
@@ -521,9 +543,9 @@ private fun ColumnScope.StopCastControl(onStop: () -> Unit) {
     Box(
         modifier = Modifier
             .align(Alignment.CenterHorizontally)
-            .padding(top = 6.dp)
+            .padding(top = StopCastLead)
             .pressScale(interaction)
-            .heightIn(min = 48.dp)
+            .heightIn(min = ControlMinHeight)
             .clip(PillShape)
             .semantics(mergeDescendants = true) { contentDescription = stopCastingDescription }
             .clickable(
@@ -631,129 +653,34 @@ private fun ColumnScope.Poster(
 }
 
 /**
- * SOURCE / RESERVE / LINK. The mock's DECODER card has no source — the TV picks the
- * decoder and no control frame reports it — so the slot carries the buffer reserve
- * the phone can genuinely measure, and LINK shows RSSI rather than a round trip the
- * protocol never times.
- */
-@Composable
-private fun StatStrip(
-    playbackState: State<PlaybackUiState>,
-    signal: State<SignalInfo>,
-) {
-    val colors = LocalFlickColors.current
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        StatCard(
-            eyebrow = stringResource(R.string.np_stat_source),
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(
-                stringResource(R.string.np_stat_source_value),
-                style = FlickText.bodyMedium.copy(color = colors.onSurface),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        StatCard(
-            eyebrow = stringResource(R.string.np_stat_reserve),
-            modifier = Modifier.weight(1f),
-        ) {
-            ReserveValue(playbackState)
-        }
-        StatCard(
-            eyebrow = stringResource(R.string.np_stat_link),
-            modifier = Modifier.weight(1f),
-        ) {
-            LinkValue(signal)
-        }
-    }
-}
-
-/** Isolated as a leaf: RSSI moves with every telemetry poll. */
-@Composable
-private fun LinkValue(signal: State<SignalInfo>) {
-    val colors = LocalFlickColors.current
-    val live = signal.value
-    // rssi 0 with no band means "not on Wi-Fi", not "0 dBm". The full band + strength
-    // form is too wide for a third of the row.
-    val known = live.hasLink && live.rssiDbm != 0
-    Text(
-        if (known) {
-            stringResource(R.string.np_stat_link_value, live.rssiDbm)
-        } else {
-            stringResource(R.string.media_unknown)
-        },
-        style = FlickText.monoSmall.copy(color = if (live.healthy) colors.link else colors.caution),
-        maxLines = 1,
-    )
-}
-
-/** The eyebrow and the value stay separate nodes so a screen reader speaks the value, not a label for it. */
-@Composable
-private fun StatCard(
-    eyebrow: String,
-    modifier: Modifier = Modifier,
-    value: @Composable () -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    Column(
-        modifier
-            .clip(RoundedCornerShape(FlickCorners.statCard))
-            .background(colors.fillCard)
-            .padding(12.dp),
-    ) {
-        Text(eyebrow, style = FlickText.monoEyebrow.copy(color = colors.onSurfaceFaint), maxLines = 1)
-        Spacer(Modifier.height(6.dp))
-        value()
-    }
-}
-
-/**
- * `bufferedMs` is the TV's absolute buffered position, so the honest reserve is what
- * sits ahead of the confirmed playhead. Isolated as a leaf: it moves with the clock.
- */
-@Composable
-private fun ReserveValue(playbackState: State<PlaybackUiState>) {
-    val colors = LocalFlickColors.current
-    val state = playbackState.value
-    val known = state.durationMs > 0L && state.bufferedMs > 0L
-    Text(
-        if (known) {
-            stringResource(
-                R.string.np_stat_reserve_value,
-                (state.bufferedMs - state.confirmedMs).coerceAtLeast(0L) / 1000f,
-            )
-        } else {
-            stringResource(R.string.media_unknown)
-        },
-        style = FlickText.monoSmall.copy(color = colors.onSurface),
-        maxLines = 1,
-    )
-}
-
-/**
  * Subtitles select an EXTERNAL file the phone serves alongside the video, so that
  * segment carries state and a command. Audio-track selection still has neither in the
  * control protocol, so it stays disabled rather than wired to a no-op.
+ *
+ * Metrics takes the amber: spark is the accent this product spends on the media and on
+ * what it is measuring — the playhead, the DIRECT PLAY badge, the volume blade — and
+ * this is the one segment that opens a reading rather than changing the cast. Two filled
+ * pills and one empty still read as a set because only the hue differs; the pill, the
+ * height and the icon-plus-label lockup are the same three.
  */
 @Composable
 private fun ColumnScope.SegmentedRow(
     subtitleAttached: Boolean,
     onSubtitles: () -> Unit,
-    onSignal: () -> Unit,
+    onMetrics: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val unavailable = stringResource(R.string.np_segment_unavailable)
+    // The sheet this segment opens is born at it, so the press publishes the segment's
+    // own bounds to the shell's channel.
+    val revealOrigin = LocalQualityRevealOrigin.current
     Row(
         Modifier
             .fillMaxWidth()
             .clip(PillShape)
             .background(colors.fillCard)
-            .padding(6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(SegmentInset),
+        horizontalArrangement = Arrangement.spacedBy(SegmentInset),
     ) {
         Segment(
             icon = FlickIcons.Captions,
@@ -769,10 +696,15 @@ private fun ColumnScope.SegmentedRow(
             unavailableLabel = unavailable,
         )
         Segment(
+            // Still the dial: the sheet behind this segment is a pair of gauges, and a
+            // signal-bars glyph would both narrow the claim to link strength and repeat
+            // the chip already reading it at the top of the screen.
             icon = FlickIcons.Speed,
-            label = stringResource(R.string.np_segment_signal),
-            description = stringResource(R.string.a11y_open_quality),
-            onClick = onSignal,
+            label = stringResource(R.string.np_segment_metrics),
+            description = stringResource(R.string.a11y_np_metrics),
+            accent = true,
+            modifier = Modifier.revealOrigin(revealOrigin),
+            onClick = onMetrics,
         )
     }
 }
@@ -782,24 +714,40 @@ private fun RowScope.Segment(
     icon: ImageVector,
     label: String,
     description: String,
+    modifier: Modifier = Modifier,
+    accent: Boolean = false,
     unavailableLabel: String? = null,
     stateLabel: String? = null,
     onClick: (() -> Unit)? = null,
 ) {
     val colors = LocalFlickColors.current
     val active = onClick != null
-    val ink = if (active) colors.onInverseSurface else colors.onSurfaceDim.copy(alpha = 0.5f)
+    val fill = when {
+        !active -> Color.Transparent
+        accent -> colors.spark
+        else -> colors.inverseSurface
+    }
+    val ink = when {
+        !active -> colors.onSurfaceDim.copy(alpha = 0.5f)
+        // 8.6:1 on the amber fill; the pale ink the other live segment carries would
+        // fall to 1.6:1 on it.
+        accent -> colors.onSpark
+        else -> colors.onInverseSurface
+    }
     val interaction = remember { MutableInteractionSource() }
-    // The live segment is a pale pill on the cinematic backdrop, so its ripple takes
-    // the ink that reads on the pill, not the one that reads on the screen.
-    val indication = flickRipple(colors.onInverseSurface)
+    // A live segment is a filled pill on the cinematic backdrop, so its ripple takes the
+    // ink that reads on its own fill, not the one that reads on the screen.
+    val indication = flickRipple(ink)
     Row(
         Modifier
             .weight(1f)
+            // Ahead of the press response: a scale the finger drives must not move the
+            // bounds the sheet is told to be born at.
+            .then(modifier)
             .then(if (active) Modifier.pressScale(interaction) else Modifier)
-            .heightIn(min = 48.dp)
+            .heightIn(min = ControlMinHeight)
             .clip(PillShape)
-            .background(if (active) colors.inverseSurface else Color.Transparent)
+            .background(fill)
             .then(
                 if (onClick != null) {
                     Modifier.clickable(
@@ -848,7 +796,8 @@ private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
         Modifier
             .fillMaxWidth()
             .weight(1f)
-            .padding(horizontal = 12.dp),
+            // Carries the screen gutter itself: the column above it no longer does.
+            .padding(horizontal = RemoteGutter + 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -895,29 +844,128 @@ private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
 private fun PlaybackUiState.bufferedFraction(): Float =
     if (durationMs > 0L) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
-// The normal remote has no scroll container, so the poster carries the height budget.
-// Short windows switch to the compact scroll layout above before anything is clipped.
-private const val DenseScreenDp = 780
-private const val StatStripFloorDp = 700
-private const val CompactRemoteHeightDp = 620
-private const val FullChromeDp = 585
-private const val DenseChromeDp = 545
-private const val BareChromeDp = 500
+// Every figure below is in the SCROLLED BODY's frame — the box left after the window
+// insets, the screen padding and the top row, as BoxWithConstraints measures it. None
+// of them can clip a control: the body scrolls, so they only decide how generous it is.
+private const val DenseViewportDp = 640
+
+/**
+ * Roughly what the transport region costs from the scrub bar down. A body this short
+ * has no surplus left to spend and has to buy space back from the poster — and it is
+ * the same figure that decides how near the top edge the bar can be scrolled.
+ */
+private const val RoomyViewportDp = 480
+
+/**
+ * The share had to come down with the stat strip, not stay where it was. Everything
+ * under the poster is a control the thumb reaches for, and on the reference phone —
+ * 384×832 dp, a 690 dp body — the rest of the stack costs what [remoteStackCostDp]
+ * computes without it. A third of the body left the segmented row and the stop control
+ * under the fold; a quarter clears both with room to spare, and the poster is still the
+ * widest thing on the screen.
+ */
+private const val PosterViewportShare = 0.24f
 private const val PosterMinDp = 104
-private const val PosterMaxDp = 232
+private const val PosterMaxDp = 192
 private const val CompactPosterMinDp = 72
 private const val CompactPosterMaxDp = 160
 private val BufferingIndicatorDp = 56.dp
 
-/**
- * The remote's fixed control stack costs [CompactRemoteHeightDp] at font scale 1, and
- * every control in it grows with the scale — so the trigger is a budget, not a flag.
- * A tall phone at 1.1x still has the room and must not be degraded to the scrolling
- * layout for it.
- */
-internal fun needsCompactRemoteLayout(screenHeightDp: Int, fontScale: Float): Boolean =
-    screenHeightDp < CompactRemoteHeightDp * fontScale
+// The screen's side gutter. Applied per region rather than to the whole column so the
+// scrolled body's clip encloses it.
+private val RemoteGutter = 18.dp
 
-/** The buffering face uses a weighted, centered body and therefore requires bounded height. */
-internal fun usesCompactRemoteScroll(compactLayout: Boolean, buffering: Boolean): Boolean =
-    compactLayout && !buffering
+/** Android's minimum touch target, and the height every control in the cluster carries. */
+private val ControlMinHeight = 48.dp
+
+/** The segmented row's inset, around its three pills and between them. */
+private val SegmentInset = 6.dp
+
+/** The stop control's break from the segmented row above it. */
+private val StopCastLead = 6.dp
+
+// The rest of the stack, in dp at font scale 1. All five are MIRRORED rather than read —
+// three are private layout constants inside components this screen does not own, two are
+// line heights of a type scale that resolves fonts — and a pure JVM test cannot measure
+// Compose either way. So this is the one place they are written down, and moving one of
+// those components or its type means moving the figure with it. The segmented row and the
+// stop control are absent on purpose: the remote lays those two out itself, from the Dp
+// above, so they are the same symbols and cannot drift at all.
+private const val ScrubBarDp = 75 // PhoneScrubBar: 48 dp grab + 11 dp + the ~16 dp time row
+private const val TransportClusterDp = 76 // TransportCluster: the play FAB, its tallest key
+private const val VolumeRowDp = 48 // VolumeSlider's own box
+private const val TitleLineDp = 31 // FlickText.headlineLarge, one 31 sp line
+private const val MetaLineDp = 17 // FlickText.bodyMedium, one 17 sp line
+
+/** The fixed lead-in between the title and the meta line under it. */
+private val MetaLead = 4.dp
+
+/** How generous the remote's stack may be in the viewport it was actually given. */
+internal data class RemoteHeightPlan(
+    val posterHeightDp: Int,
+    val dense: Boolean,
+    val reservePreview: Boolean,
+    val gapDp: Int,
+    val captionGapDp: Int,
+    val clusterGapDp: Int,
+)
+
+/**
+ * What the remote's stack costs in the spacing [plan] chose, with a title of
+ * [titleLines]. This is the budget [PosterViewportShare] was tuned against, written as
+ * arithmetic rather than as prose so the share cannot quietly stop clearing the fold:
+ * every figure the remote owns is the symbol that lays it out, and the rest are the
+ * mirrored component heights above.
+ *
+ * Font scale is already in [plan] — in the poster and in the gaps — but not in these
+ * line heights, so the figure is a floor above scale 1 rather than a reading. Scale 1 is
+ * the fit that is promised; the body scrolls unconditionally for everything else.
+ */
+internal fun remoteStackCostDp(plan: RemoteHeightPlan, titleLines: Int): Int {
+    val cluster = (ControlMinHeight * 2 + SegmentInset * 2 + StopCastLead).value.roundToInt()
+    val transport = ScrubBarDp + TransportClusterDp + VolumeRowDp + cluster +
+        plan.clusterGapDp * 3
+    return plan.gapDp + plan.posterHeightDp + plan.captionGapDp +
+        TitleLineDp * titleLines + MetaLead.value.roundToInt() + MetaLineDp +
+        plan.gapDp + transport
+}
+
+/**
+ * The poster is the one elastic element, so it is taken as a share of the viewport
+ * rather than as what a fixed chrome figure leaves over: a subtraction is only ever
+ * right for the chrome it was measured against, and it collapses the poster to its
+ * floor the moment a real device disagrees. Type scale divides the share because every
+ * other control in the stack grows with it and the poster is what gives that back.
+ *
+ * A scale below 1 shrinks the text but must not let the poster claim the room it frees
+ * — the band's own ceiling is the design's, not the viewport's.
+ */
+internal fun remoteHeightPlan(viewportHeightDp: Int, fontScale: Float): RemoteHeightPlan {
+    val scale = fontScale.coerceAtLeast(1f)
+    val cramped = viewportHeightDp < RoomyViewportDp * scale
+    val dense = viewportHeightDp < DenseViewportDp * scale
+    return RemoteHeightPlan(
+        posterHeightDp = (viewportHeightDp * PosterViewportShare / scale).roundToInt().coerceIn(
+            if (cramped) CompactPosterMinDp else PosterMinDp,
+            if (cramped) CompactPosterMaxDp else PosterMaxDp,
+        ),
+        dense = dense,
+        // The scrub preview lifts 96 dp above the bar and the body clips at its
+        // viewport — but scrolled to the foot, the bar still sits a whole control stack
+        // (bar, transport, volume, segments, stop: ~365 dp at this band's spacing) above
+        // the bottom edge. Only a viewport short enough to close that gap can ever carry
+        // the bar into the top 96 dp; everywhere else the reservation is 104 dp of blank
+        // to scroll past and a relocation jump on every grab.
+        reservePreview = cramped,
+        // Spacing is the plan's to decide, not the layout's: the fold budget is measured
+        // in these three, so a rhythm the screen chose inline would be a figure the
+        // budget could only ever copy.
+        gapDp = if (dense) 11 else 15,
+        // The title and the meta line are the poster's caption, not a band of their own:
+        // with the stat strip gone they are the only thing between the still and the
+        // transport, and an equal gap on both sides would leave them floating between two
+        // things they belong to neither of.
+        captionGapDp = if (dense) 8 else 10,
+        clusterGapDp = if (dense) 16 else 24,
+    )
+}

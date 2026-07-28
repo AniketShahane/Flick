@@ -233,4 +233,20 @@
         <item>Office TV</item>
         <item>Flick TV</item>
     </string-array>
+
+    <!-- ===== TV playback — state plate & contrast ===== -->
+    <!-- T-end · the film has run out. Distinct from paused: nothing is waiting to resume. -->
+    <string name="playback_finished_eyebrow">FINISHED · DIRECT FILE</string>
+    <string name="playback_finished_chip">Finished</string>
+    <!-- Primary transport key past the end of the film. Shown only when a real restart is wired. -->
+    <string name="transport_watch_again">Watch again</string>
+
+    <!-- ===== TV — honest readouts & error actions ===== -->
+    <!-- T8 · Quality moment — the resolution half of the card's headline label. -->
+    <string name="quality_resolution_4k">4K</string>
+    <string name="quality_resolution_1440p">1440p</string>
+    <string name="quality_resolution_1080p">1080p</string>
+    <string name="quality_resolution_720p">720p</string>
+    <!-- Anything shorter than 720 lines is named by its own height. -->
+    <string name="quality_resolution_lines">%1$dp</string>
 </resources>

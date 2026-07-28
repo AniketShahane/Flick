@@ -64,9 +64,14 @@ import kotlin.math.roundToInt
  * than inset into it, so each screen it appears on reserves its own bottom padding.
  * The caller owns the 16 dp margins and the window insets.
  *
- * Selection is ONE fill that travels between the two seats rather than two fills that
- * cross-fade: the tab left behind and the tab arrived at are the same object moving,
+ * Selection is ONE fill that travels between the seats rather than one fill per seat
+ * cross-fading: the tab left behind and the tab arrived at are the same object moving,
  * which is the claim the route transition makes at the same moment.
+ *
+ * The travelling fill is seat-count agnostic — it is placed against measured bounds — so
+ * a seat is added by adding a [NavItem] and nothing else. Three 76 dp seats plus the
+ * row's 12 dp margins are 252 dp, which still leaves free space to distribute inside the
+ * 328 dp the bar spans on the narrowest phone the app supports.
  */
 @Composable
 internal fun FlickBottomNav(
@@ -150,6 +155,14 @@ internal fun FlickBottomNav(
                 host = host,
                 onSeat = { reportSeat(NavTab.DEVICES, it) },
                 onClick = { onSelect(NavTab.DEVICES) },
+            )
+            NavItem(
+                icon = FlickIcons.Tune,
+                label = stringResource(R.string.nav_settings),
+                active = selected == NavTab.SETTINGS,
+                host = host,
+                onSeat = { reportSeat(NavTab.SETTINGS, it) },
+                onClick = { onSelect(NavTab.SETTINGS) },
             )
         }
     }

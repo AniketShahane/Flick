@@ -6,10 +6,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -40,7 +42,6 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
-import com.flick.sender.ui.Format
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
@@ -48,6 +49,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import java.util.Locale
 
 /** Alternating fact-row tint. A one-off wash, deliberately not a palette role. */
 private val FactRowTint = Color.White.copy(alpha = 0.05f)
@@ -76,9 +78,12 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
     // so unwrapping it here would re-run the whole sheet ten times a second.
     val playbackState = controller.playback.collectAsState()
     val item by controller.castingItem.collectAsState()
-    val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
+    // Null until the container has actually been parsed. [HdrType.NONE] is the probe's
+    // verdict "no HDR here", which the sheet states as "SDR" — seeding with it would
+    // make that claim about every file for the length of the probe.
+    val hdr by produceState<HdrType?>(initialValue = null, item?.uri) {
         val uri = item?.uri
-        value = if (uri != null) MediaProbe.detectHdr(context, uri) else HdrType.NONE
+        value = if (uri != null) MediaProbe.detectHdr(context, uri) else null
     }
 
     val neededMbps = when (item?.resolutionLabel) {
@@ -112,10 +117,17 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
         )
 
         Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+        Row(
+            // The two gauges are one instrument pair: the taller card's content sets the
+            // height and the shorter one grows into it, so a longer eyebrow or a reading
+            // that had to wrap can never leave one bar sitting above the other.
+            Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
             GaugeCard(
                 eyebrow = stringResource(R.string.quality_throughput),
-                value = if (serving) Format.megabits(signal.throughputBitsPerSec) else unknown,
+                value = if (serving) gaugeReading(throughputMbps) else unknown,
+                unit = stringResource(R.string.quality_unit_mbps),
                 known = serving,
                 fraction = if (serving) throughputFraction else 0f,
                 barColor = signalColor,
@@ -137,8 +149,8 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
             )
             FactRow(
                 label = stringResource(R.string.quality_fact_range),
-                value = if (item == null) unknown else hdrLabelFor(hdr),
-                valueColor = if (item == null) colors.onSurfaceFaint else colors.sparkBright,
+                value = hdr?.let { hdrLabelFor(it) } ?: unknown,
+                valueColor = if (hdr == null) colors.onSurfaceFaint else colors.sparkBright,
                 tinted = true,
             )
             // The decoder is chosen by Media3 on the TV and no control frame carries
@@ -196,11 +208,8 @@ private fun RowScope.BufferGauge(playbackState: State<PlaybackUiState>, casting:
     val reserveSeconds = (state.bufferedMs - state.confirmedMs).coerceAtLeast(0L) / 1000.0
     GaugeCard(
         eyebrow = stringResource(R.string.quality_buffer),
-        value = if (hasReserve) {
-            stringResource(R.string.quality_buffer_value, reserveSeconds)
-        } else {
-            stringResource(R.string.media_unknown)
-        },
+        value = if (hasReserve) gaugeReading(reserveSeconds) else stringResource(R.string.media_unknown),
+        unit = stringResource(R.string.quality_unit_seconds),
         known = hasReserve,
         fraction = if (hasReserve) {
             (reserveSeconds / BufferFullSeconds).coerceIn(0.0, 1.0).toFloat()
@@ -211,10 +220,26 @@ private fun RowScope.BufferGauge(playbackState: State<PlaybackUiState>, casting:
     )
 }
 
+/**
+ * Pinned to [Locale.US] the way every other reading in the app is (see `Format`). A
+ * string resource would have formatted against the device locale, which puts "61,4" in
+ * this gauge while the pill beside it still reads "61.4 Mb/s" from `Format.megabits` —
+ * one measurement, two decimal marks, in one session.
+ */
+internal fun gaugeReading(value: Double): String = String.format(Locale.US, "%.1f", value)
+
+/**
+ * One instrument: eyebrow, reading, unit, bar. The reading carries no unit of its own
+ * because "61.4 Mb/s" is wider than this card on a 360 dp frame — it wrapped at the
+ * space, which both broke the number in half and made the throughput card a whole line
+ * taller than its pair. The bar is pushed to the foot of the card so that whatever the
+ * lines above cost, the two bars still read as one scale.
+ */
 @Composable
 private fun RowScope.GaugeCard(
     eyebrow: String,
     value: String,
+    unit: String,
     known: Boolean,
     fraction: Float,
     barColor: Color,
@@ -223,31 +248,45 @@ private fun RowScope.GaugeCard(
     Column(
         Modifier
             .weight(1f)
+            .fillMaxHeight()
             .clip(RoundedCornerShape(FlickCorners.qualityCard))
             .background(colors.fillCard)
             .padding(17.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(eyebrow, style = FlickText.monoEyebrow.copy(color = colors.onSurfaceFaint))
-        Text(
-            text = value,
-            style = FlickText.monoGauge.copy(color = if (known) colors.onSurface else colors.onSurfaceFaint),
-        )
+        // Weighted, so the card that came up short spends the difference here and the
+        // bar below it stays on the line its pair's bar is on.
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = value,
+                style = FlickText.monoGauge.copy(color = if (known) colors.onSurface else colors.onSurfaceFaint),
+            )
+            // Drawn even for an unknown reading: the unit says what the gauge measures,
+            // which is true whether or not there is a number for it yet.
+            Text(unit, style = FlickText.monoSmall.copy(color = colors.onSurfaceFaint))
+        }
+        GaugeBar(fraction = fraction, barColor = barColor)
+    }
+}
+
+@Composable
+private fun GaugeBar(fraction: Float, barColor: Color) {
+    val colors = LocalFlickColors.current
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(8.dp)
+            .clip(PillShape)
+            .background(colors.fillTrack),
+    ) {
         Box(
             Modifier
-                .fillMaxWidth()
+                .fillMaxWidth(fraction)
                 .height(8.dp)
                 .clip(PillShape)
-                .background(colors.fillTrack),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth(fraction)
-                    .height(8.dp)
-                    .clip(PillShape)
-                    .background(barColor),
-            )
-        }
+                .background(barColor),
+        )
     }
 }
 

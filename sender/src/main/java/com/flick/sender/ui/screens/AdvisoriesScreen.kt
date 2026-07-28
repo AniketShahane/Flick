@@ -3,6 +3,7 @@ package com.flick.sender.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,14 +33,24 @@ import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 
-/** S11 — advisories. Tinted, actionable cards; casting is never blocked. */
+/**
+ * S11 — advisories. Tinted, actionable cards; casting is never blocked.
+ *
+ * A column body rather than a surface of its own: the settings destination that hosts it
+ * owns the scroll, the heading and the clearance the floating chrome needs. It was a
+ * bottom sheet until Settings became a nav peer, and nothing summons it as one any more.
+ *
+ * Each card carries its fix and nothing else. The sheet's "Cast anyway" / "Later" were
+ * its dismissals; on a destination there is nothing to dismiss, and neither ever
+ * silenced the card it sat on — a seat the user can walk onto at any time must not offer
+ * a deferral it does not honour.
+ */
 @Composable
-fun AdvisoriesScreen(
+internal fun Advisories(
     batteryExempt: Boolean,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
     onOpenDiagnostics: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val signal = rememberSignalInfo()
@@ -48,16 +59,7 @@ fun AdvisoriesScreen(
     val showBand = signal.on24GHz
     val showBattery = !batteryExempt
 
-    BottomSheet(onDismiss = onDismiss) {
-        SheetGrabber()
-        Spacer(Modifier.height(4.dp))
-        Text(stringResource(R.string.advisories_title), style = FlickText.headlineMedium.copy(color = colors.onSurface))
-        Text(
-            stringResource(R.string.advisories_sub),
-            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.padding(top = 5.dp, bottom = 18.dp),
-        )
-
+    Column {
         if (showBand) {
             AdvisoryCard(
                 icon = FlickIcons.Wifi,
@@ -66,8 +68,6 @@ fun AdvisoriesScreen(
                 tone = AdvisoryTone.CAUTION,
                 primaryLabel = stringResource(R.string.advisory_band_primary),
                 onPrimary = onOpenWifiSettings,
-                secondaryLabel = stringResource(R.string.advisory_band_secondary),
-                onSecondary = onDismiss,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(11.dp))
@@ -80,8 +80,6 @@ fun AdvisoriesScreen(
                 tone = AdvisoryTone.INFO,
                 primaryLabel = stringResource(R.string.advisory_battery_primary),
                 onPrimary = onRequestBatteryExemption,
-                secondaryLabel = stringResource(R.string.advisory_battery_secondary),
-                onSecondary = onDismiss,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(11.dp))
@@ -100,12 +98,24 @@ fun AdvisoriesScreen(
             Spacer(Modifier.height(11.dp))
         }
 
-        Text(
-            stringResource(R.string.advisories_footer),
-            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            textAlign = TextAlign.Center,
-        )
+        // The footer is a claim about the cards above it, and this is a destination the
+        // user can walk onto at any time rather than a sheet raised the once: "Both"
+        // names a card that is not there when only one advisory shows, and names nothing
+        // at all on a phone that is already tuned up.
+        if (showBand || showBattery) {
+            Text(
+                stringResource(
+                    if (showBand && showBattery) {
+                        R.string.advisories_footer
+                    } else {
+                        R.string.advisories_footer_one
+                    },
+                ),
+                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
 
         Spacer(Modifier.height(6.dp))
         val diagnosticsInteraction = remember { MutableInteractionSource() }
@@ -122,7 +132,7 @@ fun AdvisoriesScreen(
                 .semantics { contentDescription = diagnosticsDescription }
                 .clickable(
                     interactionSource = diagnosticsInteraction,
-                    // This sheet follows the system palette rather than forcing the
+                    // This surface follows the system palette rather than forcing the
                     // cinematic one, so the ripple takes the role that inverts with it.
                     indication = flickRipple(colors.onSurface),
                     role = Role.Button,

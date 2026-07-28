@@ -70,12 +70,11 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
 import com.flick.receiver.ui.components.FlickTvButton
-import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.GlassPill
-import com.flick.receiver.ui.components.GlassPillContainer
 import com.flick.receiver.ui.components.SpecChip
 import com.flick.receiver.ui.components.TelemetryReveal
 import com.flick.receiver.ui.components.TransportCluster
@@ -85,6 +84,7 @@ import com.flick.receiver.ui.components.TvScrubBar
 import com.flick.receiver.ui.components.VolumeCells
 import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
+import com.flick.receiver.ui.theme.BOTTOM_SCRIM_FRACTION
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
@@ -94,8 +94,11 @@ import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
+import com.flick.receiver.ui.theme.TOP_SCRIM_FRACTION
 import com.flick.receiver.ui.theme.bottomScrimBrush
+import com.flick.receiver.ui.theme.glassState
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
+import com.flick.receiver.ui.theme.seekAccentIntensity
 import com.flick.receiver.ui.theme.seekBurstWash
 import com.flick.receiver.ui.theme.topScrimBrush
 import kotlinx.coroutines.delay
@@ -187,21 +190,12 @@ private val SeekBurstNudge = 4.dp
 private const val SEEK_BURST_GLYPH_SPIN = 36f
 
 /**
- * The wash reports the real speed level the key policy reached (1×/2×/3×), so a
- * long hold is visibly more forceful than a tap without inventing a number.
+ * The state chip's vertical anchor (§5.3). It is 2 % below where the top scrim
+ * ends, and it stays there: the chip carries its own plate rather than borrowing
+ * a scrim that is already fully transparent at this height — see
+ * `UNSCRIMMED_BAND` and `FlickColor.GlassState`.
  */
-private fun seekWashIntensity(speedLevel: Int): Float = when (speedLevel.coerceIn(1, 3)) {
-    1 -> 0.62f
-    2 -> 0.82f
-    else -> 1f
-}
-
-/** Design's top / bottom playback scrim coverage (§2d). */
-private const val TOP_SCRIM_FRACTION = 0.26f
-private const val BOTTOM_SCRIM_FRACTION = 0.56f
-
-/** The paused chip's vertical anchor (§5.3). */
-private const val PAUSED_CHIP_TOP_FRACTION = 0.28f
+private const val STATE_CHIP_TOP_FRACTION = 0.28f
 
 /**
  * Where the buffering arc rests under reduced motion — off the vertical so the
@@ -213,6 +207,23 @@ private const val BUFFER_RESTING_SWEEP = 315f
 private const val WEAK_RSSI_DBM = -70
 
 /**
+ * Whether the primary transport key is a control at all.
+ *
+ * `PlaybackPhase.Ended` with no `onReplay` is the one case where it is not. The
+ * default play action resumes, and a resume past the end of the film only sets
+ * `playWhenReady` on a player that has nothing left to play — so the key would be
+ * the single focused, enabled affordance on a screen that has just told the
+ * viewer the film is finished, and pressing it would do nothing at all. It is
+ * disabled instead, and the entry focus and the row's vertical chain both route
+ * around it.
+ *
+ * This is a fallback, not a feature: give the screen a real `onReplay` and it
+ * never applies.
+ */
+internal fun primaryTransportLive(phase: PlaybackPhase, onReplay: (() -> Unit)?): Boolean =
+    phase != PlaybackPhase.Ended || onReplay != null
+
+/**
  * T3–T8 · the playback canvas. [videoContent] is the full-bleed ExoPlayer surface
  * (owned by the app). Chrome is summoned by [chromeVisible] and fades on the
  * chromeFade timing; when hidden (T4) nothing is drawn over the film. Seeking
@@ -222,6 +233,18 @@ private const val WEAK_RSSI_DBM = -70
  * the net-health pill and the metrics panel; [throughput] drives the histogram.
  * A field the receiver cannot know is omitted or drawn as an em-dash — the panel
  * never fills a gap with a plausible number.
+ *
+ * **The film is not ours.** Every surface here may end up over a snow field or a
+ * daylight exterior, so nothing on this screen leans on the content being dark.
+ * The two scrims cover the top 26 % and the bottom 56 % and deliberately leave
+ * `UNSCRIMMED_BAND` between them uncovered — extending them would darken the one
+ * part of the frame the viewer is actually watching. Everything that lands in
+ * that band therefore owns its backdrop: [GlassPanelTone.State].
+ *
+ * [onReplay] is what makes `PlaybackPhase.Ended` actionable. Without it the state
+ * still READS as finished — the chip, the eyebrow and a deeper dim all say so —
+ * but the primary key is not offered, because the resume behind it cannot restart
+ * a finished player; see [primaryTransportLive].
  */
 @Composable
 fun PlaybackScreen(
@@ -258,6 +281,7 @@ fun PlaybackScreen(
     onSelectSubtitleTrack: (String?) -> Unit = {},
     onSelectSubtitleSize: (SubtitleSize) -> Unit = {},
     onEndSession: (() -> Unit)? = null,
+    onReplay: (() -> Unit)? = null,
     videoContent: @Composable () -> Unit,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
@@ -290,7 +314,10 @@ fun PlaybackScreen(
         videoContent()
 
         // Dim while paused / seeking / buffering — the frame stays visible.
+        // Ended goes deepest and is the one state where that is not a compromise:
+        // the film is over, so the last frame is a still, not the content.
         val targetDim = when {
+            phase == PlaybackPhase.Ended -> 0.50f
             phase == PlaybackPhase.Paused -> 0.34f
             seeking -> 0.30f
             phase == PlaybackPhase.Buffering -> 0.38f
@@ -356,14 +383,15 @@ fun PlaybackScreen(
             BufferingOverlay(Modifier.align(Alignment.Center))
         }
 
-        // T5 paused affordance
-        if (phase == PlaybackPhase.Paused) {
+        // T5 paused / the finished state. One slot, because they are the same
+        // job: the single thing on screen that says the TV has not frozen.
+        if (phase == PlaybackPhase.Paused || phase == PlaybackPhase.Ended) {
             Column(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.fillMaxHeight(PAUSED_CHIP_TOP_FRACTION))
-                PausedChip()
+                Spacer(Modifier.fillMaxHeight(STATE_CHIP_TOP_FRACTION))
+                PlaybackStateChip(phase = phase)
             }
         }
 
@@ -447,6 +475,7 @@ fun PlaybackScreen(
         ) {
             BottomChrome(
                 playing = playing,
+                phase = phase,
                 positionMs = positionMs,
                 durationMs = durationMs,
                 bufferedMs = bufferedMs,
@@ -468,6 +497,7 @@ fun PlaybackScreen(
                 onPlayPause = onPlayPause,
                 onForward10 = onForward10,
                 onSetVolume = onSetVolume,
+                onReplay = onReplay,
                 playFocusRequester = playFocusRequester,
                 subtitlesCardFocusRequester = subtitlesCardFocus,
                 metricsCardFocusRequester = metricsCardFocus,
@@ -539,13 +569,21 @@ private fun AnimatedVisibilityScope.TopChrome(
                 leading = { BrandMark(size = FlickDimens.GlyphSmall, tint = FlickColor.OnSurface) },
             )
             if (onEndSession != null) {
+                // The design's outline-only pill, given a plate. It hangs at ~16 %
+                // of the frame, where the top scrim has decayed to ~0.30, and it is
+                // the only focusable in the top chrome — with a transparent fill
+                // the white-18 % border stood 1.2:1 from its own backdrop over a
+                // bright frame and the label read 1.1:1. The 2 dp stroke is kept
+                // explicitly (a filled control would otherwise take the hairline):
+                // it is the pill's identity, it is just no longer load-bearing.
                 FlickTvButton(
                     onClick = onEndSession,
                     focusRequester = endSessionFocusRequester,
                     modifier = Modifier.focusProperties { down = subtitlesCardFocusRequester },
                     shape = FlickShape.Pill,
-                    containerColor = Color.Transparent,
+                    containerColor = FlickColor.GlassState,
                     borderColor = FlickColor.OutlineSoft,
+                    borderWidth = FlickOutlinedChromeBorderWidth,
                     contentPadding = FlickDimens.ControlPadding,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
@@ -625,6 +663,7 @@ private fun netHealthColor(band: String?, rssiDbm: Int): Color {
 @Composable
 private fun AnimatedVisibilityScope.BottomChrome(
     playing: Boolean,
+    phase: PlaybackPhase,
     positionMs: Long,
     durationMs: Long,
     bufferedMs: Long,
@@ -646,6 +685,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
     onPlayPause: () -> Unit,
     onForward10: () -> Unit,
     onSetVolume: (Float) -> Unit,
+    onReplay: (() -> Unit)?,
     playFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
@@ -655,9 +695,15 @@ private fun AnimatedVisibilityScope.BottomChrome(
     interactive: Boolean,
 ) {
     // On each reveal, land focus on play so there is always exactly one focused
-    // element while chrome is up (design §1.7).
-    LaunchedEffect(interactive) {
-        if (interactive) runCatching { playFocusRequester.requestFocus() }
+    // element while chrome is up (design §1.7). When the primary key is not a
+    // live control the subtitles card is the first one that is — and the phase can
+    // reach Ended while the chrome is already up, which takes focus off a key that
+    // has just stopped being focusable.
+    val primaryLive = primaryTransportLive(phase, onReplay)
+    LaunchedEffect(interactive, primaryLive) {
+        if (!interactive) return@LaunchedEffect
+        val entry = if (primaryLive) playFocusRequester else subtitlesCardFocusRequester
+        runCatching { entry.requestFocus() }
     }
     val reducedMotion = LocalReducedMotion.current
     // Where each side panel is summoned from. The card publishes its own centre
@@ -815,6 +861,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
             ) {
                 TransportHeaderRow(
                     title = title,
+                    phase = phase,
                     seeking = seeking,
                     hdr = hdr,
                     diagnostics = diagnostics,
@@ -829,6 +876,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 )
                 TransportControlRow(
                     playing = playing,
+                    phase = phase,
                     volume = volume,
                     openPanel = openPanel,
                     onVolumeEngagementChanged = onVolumeEngagementChanged,
@@ -843,6 +891,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
                     onPlayPause = onPlayPause,
                     onForward10 = onForward10,
                     onSetVolume = onSetVolume,
+                    onReplay = onReplay,
                     playFocusRequester = playFocusRequester,
                     subtitlesCardFocusRequester = subtitlesCardFocusRequester,
                     metricsCardFocusRequester = metricsCardFocusRequester,
@@ -860,6 +909,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
 @Composable
 private fun TransportHeaderRow(
     title: String?,
+    phase: PlaybackPhase,
     seeking: Boolean,
     hdr: HdrType,
     diagnostics: DiagnosticsSnapshot,
@@ -873,11 +923,13 @@ private fun TransportHeaderRow(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // The eyebrow is the transport's own tense. Left at "NOW PLAYING" past
+            // the end of the film it is the chrome asserting something untrue.
             Text(
-                text = if (seeking) {
-                    stringResource(R.string.syncing_with_phone)
-                } else {
-                    stringResource(R.string.now_playing_eyebrow)
+                text = when {
+                    seeking -> stringResource(R.string.syncing_with_phone)
+                    phase == PlaybackPhase.Ended -> stringResource(R.string.playback_finished_eyebrow)
+                    else -> stringResource(R.string.now_playing_eyebrow)
                 },
                 style = FlickType.monoEyebrow(trackingEm = 0.2f),
                 color = if (seeking) FlickColor.Spark else FlickColor.SparkBright,
@@ -978,24 +1030,34 @@ private fun TransportScrubRow(
 }
 
 /**
- * `[Subtitles] ⟨back10 · play · fwd10⟩ [volume] [Stream metrics]`.
+ * `[Subtitles] ⟨−10 · play · +10⟩ [volume] [Stream metrics]`.
  *
  * The two flanking boxes carry equal weight, which centres the transport group
  * and lets either card ellipsise rather than overflow the panel on a narrow
  * viewport.
  *
- * Up/Down are wired explicitly across the row. Physical Left/Right are captured
- * by `TvRemoteKeyPolicy` as ±10 s seeks and never reach Compose during playback,
- * so the vertical axis is the only one available for traversal.
+ * **The row is laid out horizontally and traversed vertically, and only three of
+ * its five items are focusable.** Physical Left/Right are captured by
+ * `TvRemoteKeyPolicy` as ±10 s seeks at the Activity boundary and never reach
+ * Compose during playback — a deliberate, unit-tested product decision (spec §0
+ * forbids changing it, and Left/Right-scrubs is the conventional TV player).
+ * Two consequences used to be papered over and are now stated by the design
+ * instead:
  *
- * The row is one beacon group: a single amber ring glides between the subtitles
- * card, the three transport keys, volume and the metrics card rather than
- * vanishing at one control and popping in at the next. This is the surface a
- * viewer actually lives on, so it is the group the traveling ring has to land on.
+ *  - the ±10 s glyphs cannot take focus, so they no longer wear the §3 unfocused
+ *    vocabulary that means "focus target" in this system — see
+ *    `TransportGestureMark`;
+ *  - there is **no `FocusBeaconHost` here**, and that is the point. The beacon is
+ *    one ring travelling along a group's own axis; this group's axis of layout is
+ *    orthogonal to its axis of traversal, so a Down press sent the ring sideways
+ *    across the panel at constant y. Spec §3a already exempts groups where travel
+ *    cannot read (top chrome, the metrics panel); this is the same case for a
+ *    sharper reason, and each control blooms its own ring in place.
  */
 @Composable
 private fun TransportControlRow(
     playing: Boolean,
+    phase: PlaybackPhase,
     volume: Float,
     openPanel: PlaybackPanel,
     onVolumeEngagementChanged: (Boolean) -> Unit,
@@ -1006,6 +1068,7 @@ private fun TransportControlRow(
     onPlayPause: () -> Unit,
     onForward10: () -> Unit,
     onSetVolume: (Float) -> Unit,
+    onReplay: (() -> Unit)?,
     playFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
@@ -1015,7 +1078,14 @@ private fun TransportControlRow(
     metricsRevealOrigin: TvRevealOrigin,
     interactive: Boolean,
 ) {
-    FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
+    // Past the end of the film the primary key stops being a play key. It only
+    // says so when the caller actually gave it a restart to run: a key relabelled
+    // "Watch again" that resumes nothing is a worse lie than the play triangle it
+    // replaced. With no restart wired it is not a key at all, and the vertical
+    // chain below closes over the gap rather than pointing at a control that can
+    // no longer accept focus.
+    val replay = if (phase == PlaybackPhase.Ended) onReplay else null
+    val primaryLive = primaryTransportLive(phase, onReplay)
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -1046,7 +1116,7 @@ private fun TransportControlRow(
                             endSessionFocusRequester != null -> endSessionFocusRequester
                             else -> FocusRequester.Default
                         }
-                        down = playFocusRequester
+                        down = if (primaryLive) playFocusRequester else volumeFocusRequester
                     },
             )
         }
@@ -1060,13 +1130,18 @@ private fun TransportControlRow(
             TransportCluster(
                 playing = playing,
                 onBack10 = onBack10,
-                onPlayPause = onPlayPause,
+                onPlayPause = replay ?: onPlayPause,
                 onForward10 = onForward10,
                 playFocusRequester = playFocusRequester,
                 enabled = interactive,
+                primaryEnabled = primaryLive,
                 back10ContentDescription = stringResource(R.string.transport_back_10),
                 playPauseContentDescription = stringResource(
-                    if (playing) R.string.transport_pause else R.string.transport_play,
+                    when {
+                        replay != null -> R.string.transport_watch_again
+                        playing -> R.string.transport_pause
+                        else -> R.string.transport_play
+                    },
                 ),
                 forward10ContentDescription = stringResource(R.string.transport_forward_10),
             )
@@ -1085,7 +1160,7 @@ private fun TransportControlRow(
             modifier = Modifier
                 .focusRequester(volumeFocusRequester)
                 .focusProperties {
-                    up = playFocusRequester
+                    up = if (primaryLive) playFocusRequester else subtitlesCardFocusRequester
                     down = metricsCardFocusRequester
                 },
         )
@@ -1115,7 +1190,6 @@ private fun TransportControlRow(
                     },
             )
         }
-    }
     }
 }
 
@@ -1215,16 +1289,21 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
     }
 
     Box(Modifier.fillMaxSize()) {
-        // The wash is its own layer so the impulse can move the glyph without
-        // sliding an edge-anchored gradient, and so the wash can carry the real
-        // 1x/2x/3x speed level as intensity.
+        // The wash is drawn separately from the glyph column so the impulse can
+        // move the glyph without sliding an edge-anchored gradient. It carries NO
+        // graphicsLayer: the speed level is the amber accent's alpha inside the
+        // wash, not the whole box's, and a layer alpha here would thin the dark
+        // bed the glyph is read against — and buy an offscreen buffer the width of
+        // a third of the screen over a live decoder to do it.
         Box(
             modifier = Modifier
                 .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
                 .fillMaxWidth(SEEK_BURST_WIDTH_FRACTION)
                 .fillMaxHeight()
-                .graphicsLayer { alpha = seekWashIntensity(speedLevel) }
-                .seekBurstWash(fromRight = forward),
+                .seekBurstWash(
+                    fromRight = forward,
+                    accentIntensity = seekAccentIntensity(speedLevel),
+                ),
         )
         Column(
             modifier = Modifier
@@ -1297,21 +1376,35 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
     }
 }
 
+/**
+ * The paused / finished chip (spec §5.3). It is the design's glass pill on the
+ * state plate rather than on the top-chrome [FlickColor.Glass] tone: it hangs at
+ * [STATE_CHIP_TOP_FRACTION], two points BELOW where the top scrim ends, and on a
+ * bright frame the pill tone left "Paused" at 3.0:1 and its amber glyph at 1.7:1
+ * — on the one indicator that says the TV has not frozen.
+ *
+ * Finished is not a second kind of paused, so it does not borrow the pause glyph.
+ */
 @Composable
-private fun PausedChip(modifier: Modifier = Modifier) {
-    GlassPillContainer(
-        modifier = modifier,
-        contentPadding = PaddingValues(start = 10.dp, top = 7.dp, end = 14.dp, bottom = 7.dp),
+private fun PlaybackStateChip(phase: PlaybackPhase, modifier: Modifier = Modifier) {
+    val ended = phase == PlaybackPhase.Ended
+    Row(
+        modifier = modifier
+            .glassState(FlickShape.Pill)
+            .padding(start = 10.dp, top = 7.dp, end = 14.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(11.dp),
     ) {
         Icon(
-            imageVector = FlickIcons.Pause,
+            imageVector = if (ended) FlickIcons.CheckCircle else FlickIcons.Pause,
             contentDescription = null,
             tint = FlickColor.Spark,
             modifier = Modifier.size(FlickDimens.GlyphMedium),
         )
         Text(
-            text = stringResource(R.string.paused_title),
+            text = stringResource(
+                if (ended) R.string.playback_finished_chip else R.string.paused_title,
+            ),
             style = FlickType.display(sizeSp = 20),
             color = Color.White,
             maxLines = 1,
@@ -1343,13 +1436,28 @@ private fun rememberBufferSweep(): State<Float>? {
     }
 }
 
+/**
+ * T7. The calm rebuffer read — restyled onto the state plate, because it lands
+ * dead centre, in the band neither scrim covers, and its only protection was the
+ * 0.38 state dim. Over a white frame that left the title at 3.2:1 and both the
+ * detail line and the amber arc under 1.9:1 — invisible exactly when the viewer
+ * most needs to know the app has not died. The handshake card, which carries a
+ * far less urgent message, has had a full-screen veil behind it all along.
+ */
 @Composable
 private fun BufferingOverlay(modifier: Modifier = Modifier) {
     val sweep = rememberBufferSweep()
-    Column(
+    GlassPanel(
         modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
+        shape = FlickShape.Xl,
+        tone = GlassPanelTone.State,
+        contentPadding = PaddingValues(horizontal = 30.dp, vertical = 22.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        // A rebuffer is the frame with the least GPU headroom in the whole app.
+        // The shared entrance would add two animators and a compositing layer to
+        // exactly that frame; the plate arrives as a cut, which is also calmer.
+        animateEntrance = false,
     ) {
         Box(
             modifier = Modifier

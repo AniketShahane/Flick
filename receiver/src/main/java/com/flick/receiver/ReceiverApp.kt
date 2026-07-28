@@ -109,6 +109,7 @@ import com.flick.receiver.ui.screens.PlaybackScreen
 import com.flick.receiver.ui.screens.QualityInfo
 import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.screens.SubtitleSize
+import com.flick.receiver.ui.screens.formatMbps
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
@@ -118,6 +119,8 @@ import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
+import com.flick.receiver.util.preferredWindowRefreshRate
+import com.flick.receiver.util.refreshRateHintDelayMs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
@@ -126,9 +129,6 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
 import kotlin.math.PI
 import kotlin.math.cos
-
-/** Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). */
-private val TV_NAME_PRESETS = listOf("Living Room TV", "Bedroom TV", "Den TV", "Office TV", "Flick TV")
 
 /**
  * The address flow is the real trigger; this only covers an address change that
@@ -243,6 +243,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var showDiagnostics by remember { mutableStateOf(false) }
     val logRevision by FlickLog.revision.collectAsState()
     var tvName by remember { mutableStateOf(pairing.tvName) }
+    // Remembered rather than read through stringArrayResource: this composable
+    // recomposes with the 10 Hz position feed, and the presets never change under
+    // a composition that is still alive.
+    val tvNamePresets = remember(context) {
+        context.resources.getStringArray(R.array.tv_name_presets)
+    }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
     // adds a timer of its own.
@@ -526,14 +532,35 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         }
     }
 
-    // Refresh-rate matching (preserved), best-effort once the frame rate is known.
-    LaunchedEffect(snapshot.frameRate) {
-        val fps = snapshot.frameRate
-        if (fps > 0f) {
-            RefreshRateHelper.applyToWindow(window, fps)
-            val surface = (playerView?.videoSurfaceView as? SurfaceView)?.holder?.surface
-            RefreshRateHelper.applyToSurface(surface, fps)
-        }
+    // Refresh-rate matching, best-effort and derived from the CURRENT stage rather
+    // than latched on the first frame rate ever seen — see
+    // [preferredWindowRefreshRate]. The rate is deliberately held for the whole of
+    // visible playback, chrome and open panels included: a mode switch on the
+    // verified hardware costs a visible HDMI resync, and two of them per chrome
+    // reveal is worse than chrome animating at the film's own cadence.
+    val requestedRefreshRate = preferredWindowRefreshRate(
+        presentingVideo = surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        contentFrameRate = snapshot.frameRate,
+    )
+    // Same argument applied to the gap BETWEEN two films: a cast arriving over a
+    // running one passes through the handshake, and a release committed there is
+    // undone a second later at the same cadence — see [refreshRateHintDelayMs].
+    // The effect is re-keyed on the delay so the settle is abandoned, not merely
+    // outlived, the moment the next stage decides what the hint should be.
+    val refreshRateDelayMs = refreshRateHintDelayMs(
+        requestedRate = requestedRefreshRate,
+        castHandshakeInFlight = surfaceMode == PlayerSurfaceMode.CoveredConnecting,
+    )
+    LaunchedEffect(window, requestedRefreshRate, refreshRateDelayMs, playerView) {
+        if (refreshRateDelayMs > 0L) delay(refreshRateDelayMs)
+        RefreshRateHelper.applyToWindow(window, requestedRefreshRate)
+        val surface = (playerView?.videoSurfaceView as? SurfaceView)?.holder?.surface
+        RefreshRateHelper.applyToSurface(surface, requestedRefreshRate)
+    }
+    // A torn-down player must not leave the window pinned: nothing else runs after
+    // this composable leaves, so the release has to be its own disposal.
+    DisposableEffect(window) {
+        onDispose { RefreshRateHelper.releaseWindow(window) }
     }
 
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
@@ -662,6 +689,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         onBack10 = { session.onSkip(-10_000L) },
                         onPlayPause = { if (frame.playing) session.onPause() else session.onPlay() },
                         onForward10 = { session.onSkip(10_000L) },
+                        // Passing this is what lets the Ended state offer "Watch again" at
+                        // all: without it the screen deliberately leaves the primary key
+                        // inert rather than relabelling a control that would resume nothing.
+                        onReplay = { session.onSeek(0L); session.onPlay() },
                         onSetVolume = { session.onSetVolume(it) },
                         playFocusRequester = playFocus,
                         diagnostics = snapshot,
@@ -707,12 +738,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     ) { playerSurface() }
                 }
 
+                // The screen offers no retry: a failed v2 cast must get a fresh
+                // cast ID and media token, and only the sender can mint those.
                 is MediaStage.Error -> ErrorScreen(
                     kind = stage.kind,
                     deviceLabel = deviceLabel,
-                    // A failed v2 cast must get a fresh sender cast ID/token.
-                    onPrimary = null,
-                    onSecondary = { session.backToStandby() },
+                    onDismiss = { session.backToStandby() },
                 )
 
                 MediaStage.None -> {
@@ -773,7 +804,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                         else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
                                     metricsEnabled = metricsEnabled,
                                     onRename = {
-                                        val next = nextName(tvName)
+                                        val next = nextName(tvName, tvNamePresets)
                                         pairing.tvName = next
                                         tvName = next
                                         if (boundPort > 0) {
@@ -805,7 +836,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     lastTeardown = lastTeardown,
                                     codeExpiresAtElapsedMs = rendered.codeExpiresAtElapsedMs,
                                     onRename = {
-                                        val next = nextName(tvName)
+                                        val next = nextName(tvName, tvNamePresets)
                                         pairing.tvName = next
                                         tvName = next
                                         if (boundPort > 0) {
@@ -1181,9 +1212,10 @@ private fun PlayerView.configureSubtitles(
     if (subtitles.isAttachedToWindow) startListening()
 }
 
-private fun nextName(current: String): String {
-    val idx = TV_NAME_PRESETS.indexOf(current)
-    return TV_NAME_PRESETS[(idx + 1).mod(TV_NAME_PRESETS.size)]
+/** Cycles the friendly-name presets behind the on-screen "Rename TV" (no keyboard on TV). */
+internal fun nextName(current: String, presets: Array<String>): String {
+    if (presets.isEmpty()) return current
+    return presets[(presets.indexOf(current) + 1).mod(presets.size)]
 }
 
 private fun AndroidKeyEvent.toTvRemoteButton(): TvRemoteButton = when (keyCode) {
@@ -1227,43 +1259,53 @@ internal fun rootFocusCatcherEnabled(stage: MediaStage, chromeVisible: Boolean):
     else -> false
 }
 
+@Composable
 private fun qualityInfo(s: DiagnosticsSnapshot): QualityInfo {
+    val unavailable = stringResource(R.string.metrics_unavailable)
     // Honest quality read: real resolution + the HDR class actually being decoded
     // (never a hardcoded "Dolby Vision" for every stream).
     val resolution = when {
-        s.width >= 3840 || s.height >= 2160 -> "4K"
-        s.height >= 1440 -> "1440p"
-        s.height >= 1080 -> "1080p"
-        s.height >= 720 -> "720p"
-        s.height > 0 -> "${s.height}p"
+        s.width >= 3840 || s.height >= 2160 -> stringResource(R.string.quality_resolution_4k)
+        s.height >= 1440 -> stringResource(R.string.quality_resolution_1440p)
+        s.height >= 1080 -> stringResource(R.string.quality_resolution_1080p)
+        s.height >= 720 -> stringResource(R.string.quality_resolution_720p)
+        s.height > 0 -> stringResource(R.string.quality_resolution_lines, s.height)
         else -> null
     }
     val hdr = when (s.hdrType) {
-        HdrType.DOLBY_VISION -> "Dolby Vision"
-        HdrType.HDR10 -> "HDR10"
+        HdrType.DOLBY_VISION -> stringResource(R.string.quality_dolby_vision)
+        HdrType.HDR10 -> stringResource(R.string.quality_hdr10)
         HdrType.NONE -> null
     }
-    val label = listOfNotNull(resolution, hdr).joinToString(" · ").ifBlank { "Direct-play" }
-    val throughput = buildString {
-        val mbps = if (s.bitrateEstimateBps > 0L) s.bitrateEstimateBps / 1_000_000.0 else 0.0
-        if (mbps > 0.0) append(String.format(java.util.Locale.US, "%.0f Mb/s", mbps))
-        if (s.wifiBand != null) {
-            if (isNotEmpty()) append(" · ")
-            append(s.wifiBand)
-        }
-        if (isEmpty()) append("—")
-    }
-    val bars = when {
-        s.wifiRssiDbm >= -55 -> 4
-        s.wifiRssiDbm >= -65 -> 3
-        s.wifiRssiDbm >= -75 -> 2
-        s.wifiRssiDbm < 0 -> 1
-        else -> 4
+    val directPlay = stringResource(R.string.quality_direct_play)
+    // One formatter for every throughput on screen: this card is up for 4.5 s
+    // WITH the chrome, and a card reading "31 Mb/s" over a panel reading
+    // "30.6 Mb/s" is two claims about one measurement.
+    val mbps = if (s.bitrateEstimateBps > 0L) {
+        stringResource(R.string.metrics_value_mbps, formatMbps(s.bitrateEstimateBps))
+    } else {
+        null
     }
     return QualityInfo(
-        qualityLabel = label,
-        decoder = s.decoderName ?: "—",
-        throughput = throughput,
-        bars = bars,
+        qualityLabel = listOfNotNull(resolution, hdr).joinToString(" · ").ifBlank { directPlay },
+        decoder = s.decoderName ?: unavailable,
+        throughput = listOfNotNull(mbps, s.wifiBand).joinToString(" · ").ifBlank { unavailable },
+        // Unlit is the least this can claim: `bars` has no way to say "unmeasured",
+        // and only QualityCard can drop the row.
+        bars = wifiBars(s.wifiRssiDbm) ?: 0,
     )
+}
+
+/**
+ * Wi-Fi bars, or null when the TV has no link to report. `wifiRssiDbm` is 0 both
+ * on Ethernet and when the read fails, so an unguarded `>= -55` lights all four
+ * bars for a radio that was never measured — the one fabricated reading on a card
+ * whose whole job is to be believed.
+ */
+internal fun wifiBars(rssiDbm: Int): Int? = when {
+    rssiDbm >= 0 -> null
+    rssiDbm >= -55 -> 4
+    rssiDbm >= -65 -> 3
+    rssiDbm >= -75 -> 2
+    else -> 1
 }

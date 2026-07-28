@@ -8,7 +8,9 @@ internal object SenderNavigationPolicy {
         Route.Library -> BackDisposition.SYSTEM
         Route.Connecting -> BackDisposition.CANCEL_CAST
         Route.Connect -> if (connectFromLibrary) BackDisposition.CLOSE_PAIRING else BackDisposition.SYSTEM
-        Route.NowPlaying, is Route.Detail, is Route.Failure -> BackDisposition.SHOW_LIBRARY
+        // Settings is a nav peer but never a launch destination, so unlike Connect it has
+        // no arm that leaves the app: the library is always underneath it.
+        Route.Settings, Route.NowPlaying, is Route.Detail, is Route.Failure -> BackDisposition.SHOW_LIBRARY
     }
 
     fun canRestoreNowPlaying(state: CastStartState, hasItem: Boolean): Boolean =

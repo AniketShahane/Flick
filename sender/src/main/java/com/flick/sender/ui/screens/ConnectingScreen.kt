@@ -29,6 +29,7 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -116,7 +118,7 @@ fun ConnectingScreen(
     val stage = steps.firstOrNull { it.second == StepState.ACTIVE }
         ?: steps.lastOrNull { it.second == StepState.DONE }
         ?: steps.first()
-    val doneSteps = steps.count { it.second == StepState.DONE }
+    val stageIndex = steps.indexOf(stage).coerceAtLeast(0)
 
     FlickCinematicTheme {
         val colors = LocalFlickColors.current
@@ -127,68 +129,79 @@ fun ConnectingScreen(
             // keep Cancel on screen. It sheds the decorative diagram and the wide gaps,
             // never the frame: the frame is the surface the remote's poster flies from,
             // and a landing with no departure is the moment lost.
-            val roomy = maxHeight >= RoomyColumnHeight
-            Column(
+            val roomy = connectingIsRoomy(maxHeight.value, LocalDensity.current.fontScale)
+            // The status pill owns the foot of the window; centring the column in what is
+            // left is the only thing keeping Cancel out from under it.
+            Box(
                 Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth()
-                    .padding(horizontal = 36.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(if (roomy) 24.dp else 13.dp),
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .padding(bottom = StatusPillBand),
+                contentAlignment = Alignment.Center,
             ) {
-                // The file itself, waiting on the wire. It is the same frame the remote
-                // lands on, so the handshake ends with the still travelling, not fading.
-                CastFrame(
-                    item = item,
-                    sharedScope = sharedScope,
-                    animatedScope = animatedScope,
-                    width = if (roomy) CastFrameWidth else CastFrameCompactWidth,
-                    height = if (roomy) CastFrameHeight else CastFrameCompactHeight,
-                )
-                if (roomy) HandoffDiagram()
                 Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 36.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (roomy) 24.dp else 13.dp),
                 ) {
-                    Text(
-                        text = tv?.let { stringResource(R.string.connecting_title, it.name) }
-                            ?: stringResource(R.string.connecting_title_generic),
-                        style = FlickText.headlineSmall.copy(color = colors.onSurface),
-                        textAlign = TextAlign.Center,
+                    // The file itself, waiting on the wire. It is the same frame the
+                    // remote lands on, so the handshake ends with the still travelling,
+                    // not fading.
+                    CastFrame(
+                        item = item,
+                        sharedScope = sharedScope,
+                        animatedScope = animatedScope,
+                        width = if (roomy) CastFrameWidth else CastFrameCompactWidth,
+                        height = if (roomy) CastFrameHeight else CastFrameCompactHeight,
                     )
-                    AnimatedContent(
-                        targetState = stage.first,
-                        transitionSpec = {
-                            if (reduceMotion) {
-                                EnterTransition.None togetherWith ExitTransition.None
-                            } else {
-                                (
-                                    slideInVertically(motionScheme.fastSpatialSpec()) { it / 2 } +
-                                        fadeIn(motionScheme.fastEffectsSpec())
-                                    ) togetherWith (
-                                    slideOutVertically(motionScheme.fastSpatialSpec()) { -it / 2 } +
-                                        fadeOut(motionScheme.fastEffectsSpec())
-                                    )
-                            }
-                        },
-                        label = "stage",
-                    ) { line ->
+                    if (roomy) HandoffDiagram()
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
                         Text(
-                            text = line,
-                            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                            text = tv?.let { stringResource(R.string.connecting_title, it.name) }
+                                ?: stringResource(R.string.connecting_title_generic),
+                            style = FlickText.headlineSmall.copy(color = colors.onSurface),
                             textAlign = TextAlign.Center,
-                            // Two lines are always reserved so a longer stage name never
-                            // walks the Cancel button down the screen mid-handshake.
-                            minLines = 2,
                         )
+                        AnimatedContent(
+                            targetState = stage.first,
+                            transitionSpec = {
+                                if (reduceMotion) {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                } else {
+                                    (
+                                        slideInVertically(motionScheme.fastSpatialSpec()) { it / 2 } +
+                                            fadeIn(motionScheme.fastEffectsSpec())
+                                        ) togetherWith (
+                                        slideOutVertically(motionScheme.fastSpatialSpec()) { -it / 2 } +
+                                            fadeOut(motionScheme.fastEffectsSpec())
+                                        )
+                                }
+                            },
+                            label = "stage",
+                        ) { line ->
+                            Text(
+                                text = line,
+                                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                                textAlign = TextAlign.Center,
+                                // Two lines are always reserved so a longer stage name
+                                // never walks the Cancel button down the screen
+                                // mid-handshake.
+                                minLines = 2,
+                            )
+                        }
                     }
+                    HandshakeIndicator(stageIndex = stageIndex)
+                    FlickSubtleButton(
+                        text = stringResource(R.string.connecting_cancel),
+                        onClick = controller::cancelCast,
+                        modifier = Modifier.semantics { contentDescription = cancelDescription },
+                    )
                 }
-                HandshakeIndicator(doneSteps = doneSteps)
-                FlickSubtleButton(
-                    text = stringResource(R.string.connecting_cancel),
-                    onClick = controller::cancelCast,
-                    modifier = Modifier.semantics { contentDescription = cancelDescription },
-                )
             }
 
             Box(
@@ -240,13 +253,15 @@ private fun CastFrame(
 }
 
 /**
- * Four discrete protocol steps, never interpolated time. The shape changes when a
- * stage lands and at no other moment, which is also why nothing here may imply
- * transcoding progress — there is none.
+ * Liveness, not progress. The handshake sits in one stage for as long as the TV takes
+ * to wake, so a determinate shape would hold still for the whole wait and read as a
+ * hang — and the wait is the only thing on screen saying the app has not died. The
+ * line above names which of the four protocol steps is in flight; this shape says
+ * only that one still is, and it must never imply transcoding, of which there is none.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun HandshakeIndicator(doneSteps: Int) {
+private fun HandshakeIndicator(stageIndex: Int) {
     val colors = LocalFlickColors.current
     val stages = remember {
         listOf(
@@ -256,11 +271,18 @@ private fun HandshakeIndicator(doneSteps: Int) {
             MaterialShapes.Pill,
         )
     }
-    LoadingIndicator(
-        progress = { doneSteps / HandshakeSteps },
-        color = colors.sparkBright,
-        polygons = stages,
-    )
+    if (rememberReduceMotion()) {
+        // A continuous morph never reaches an end state, so reduce motion gets the
+        // resting silhouette of the stage instead — it still changes when one lands.
+        Box(
+            Modifier
+                .size(38.dp)
+                .clip(stages[stageIndex.coerceIn(stages.indices)].toShape())
+                .background(colors.sparkBright),
+        )
+    } else {
+        LoadingIndicator(color = colors.sparkBright, polygons = stages)
+    }
 }
 
 /** Phone → hairline → TV. Decorative: the copy below it carries the meaning. */
@@ -304,8 +326,17 @@ private val CastFrameHeight = 86.dp
 private val CastFrameCompactWidth = 104.dp
 private val CastFrameCompactHeight = 59.dp
 
-// Card, diagram, copy, indicator and Cancel cost roughly 430 dp at full spacing, and
-// the status pill claims the bottom band; below this the centred column would start
-// clipping its own terminal control.
-private val RoomyColumnHeight = 520.dp
-private const val HandshakeSteps = 4f
+// Card, diagram, copy, indicator and Cancel cost roughly 430 dp at full spacing AT
+// SCALE 1, and the status pill claims the bottom band; below this the centred column
+// would start clipping its own terminal control.
+private const val RoomyColumnHeightDp = 520f
+
+/**
+ * Whether the window can still afford the full-spacing stack. The figure it is compared
+ * against is type-scaled because every line in that stack grows with the user's type
+ * size while the dp budget does not: a 540 dp window is roomy at scale 1 and cannot
+ * carry the same column at 1.5. A scale below 1 buys nothing back — the spacing is the
+ * design's, not the viewport's.
+ */
+internal fun connectingIsRoomy(viewportHeightDp: Float, fontScale: Float): Boolean =
+    viewportHeightDp >= RoomyColumnHeightDp * fontScale.coerceAtLeast(1f)

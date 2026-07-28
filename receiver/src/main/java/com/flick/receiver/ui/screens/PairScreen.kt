@@ -150,24 +150,42 @@ private fun pairStageProgress(progress: Float, index: Int): Float {
  * Entrance for one staged child. `graphicsLayer` only, and the driver is read
  * inside the layer block: the overscan containment tests measure semantics
  * bounds, and a layout offset would move them.
+ *
+ * [settled] drops the layer once the column has finished arriving. A layer at
+ * alpha 1 and zero translation still costs a render node per staged child for as
+ * long as the pair screen is up, and this screen is the one the TV sits on for
+ * hours — the entrance may not be a permanent tax on the surface it introduced.
  */
 private fun Modifier.pairStage(
     progress: () -> Float,
     index: Int,
+    settled: Boolean,
     rise: Dp = PairStageRise,
-): Modifier = graphicsLayer {
-    val stage = pairStageProgress(progress(), index)
-    alpha = stage
-    translationY = (1f - stage) * rise.toPx()
+): Modifier = if (settled) {
+    this
+} else {
+    graphicsLayer {
+        val stage = pairStageProgress(progress(), index)
+        alpha = stage
+        translationY = (1f - stage) * rise.toPx()
+    }
 }
 
 /** The QR plate's entrance — the same stage clock, scaling instead of rising. */
-private fun Modifier.pairStageScaled(progress: () -> Float, index: Int): Modifier = graphicsLayer {
-    val stage = pairStageProgress(progress(), index)
-    alpha = stage
-    val scale = PairQrEnterScale + (1f - PairQrEnterScale) * stage
-    scaleX = scale
-    scaleY = scale
+private fun Modifier.pairStageScaled(
+    progress: () -> Float,
+    index: Int,
+    settled: Boolean,
+): Modifier = if (settled) {
+    this
+} else {
+    graphicsLayer {
+        val stage = pairStageProgress(progress(), index)
+        alpha = stage
+        val scale = PairQrEnterScale + (1f - PairQrEnterScale) * stage
+        scaleX = scale
+        scaleY = scale
+    }
 }
 
 /**
@@ -232,8 +250,10 @@ fun PairScreen(
     // it inside a graphicsLayer.
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
+    var entranceSettled by remember { mutableStateOf(false) }
     LaunchedEffect(reducedMotion) {
         if (reducedMotion) entrance.snapTo(1f) else entrance.animateTo(1f, entranceSpec)
+        entranceSettled = true
     }
     val stage = { entrance.value }
 
@@ -288,7 +308,7 @@ fun PairScreen(
                     text = stringResource(R.string.pair_title),
                     style = FlickType.display(sizeSp = 40),
                     color = Color.White,
-                    modifier = Modifier.pairStage(stage, index = 0),
+                    modifier = Modifier.pairStage(stage, index = 0, settled = entranceSettled),
                 )
                 Text(
                     text = highlightedInstructions(),
@@ -296,7 +316,7 @@ fun PairScreen(
                     color = FlickColor.OnSurfaceDim,
                     modifier = Modifier
                         .widthIn(max = PairBodyMaxWidth)
-                        .pairStage(stage, index = 1),
+                        .pairStage(stage, index = 1, settled = entranceSettled),
                 )
 
                 // `transitionSpec` is not a composable lambda, so the scheme specs
@@ -322,10 +342,10 @@ fun PairScreen(
                                 spacedCode = spacedCode,
                                 locked = locked,
                                 codeExpiresAtElapsedMs = codeExpiresAtElapsedMs,
-                                modifier = Modifier.pairStage(stage, index = 2),
+                                modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
                             )
                             Row(
-                                modifier = Modifier.pairStage(stage, index = 3),
+                                modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
@@ -338,14 +358,14 @@ fun PairScreen(
                             }
                         }
                     } else {
-                        WaitingForNetworkCard(modifier = Modifier.pairStage(stage, index = 2))
+                        WaitingForNetworkCard(modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled))
                     }
                 }
 
                 // The two actions are one beacon group, so the ring slides across
                 // rather than jumping. The host carries the stage layer, so the
                 // ring fades and rises with the row it belongs to.
-                FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 3)) {
+                FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md)) {
                         // Gated off while the enlarged-code overlay is up so they are
                         // not focusable behind the scrim (clickable(enabled=false)
@@ -385,7 +405,7 @@ fun PairScreen(
                     bindUptimeSec = bindUptimeSec,
                     rebindCount = rebindCount,
                     lastTeardown = lastTeardown,
-                    modifier = Modifier.pairStageScaled(stage, index = 4),
+                    modifier = Modifier.pairStageScaled(stage, index = 4, settled = entranceSettled),
                 )
             }
         }
@@ -659,7 +679,18 @@ private fun QrColumn(
             quietZonePadding = 18.dp,
             contentDescription = stringResource(R.string.pair_qr_content_description),
             shape = FlickShape.Hero,
-            centerOverlay = { markSize -> BrandMark(size = markSize, tint = FlickColor.Primary) },
+            // All three finder eyes are now one dark ink so the symbol binarizes,
+            // which leaves the mark's streaks as the only amber in the code. They
+            // are pinned here rather than inherited: the plate sits inside the area
+            // the error correction already spends, so it is the one place amber can
+            // live without costing a scanner the symbol.
+            centerOverlay = { markSize ->
+                BrandMark(
+                    size = markSize,
+                    tint = FlickColor.Primary,
+                    streakTint = FlickColor.Spark,
+                )
+            },
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,

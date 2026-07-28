@@ -43,14 +43,48 @@ object FlickColor {
     /** Opaque twin of [Surface] — for rows that must not stack translucency. */
     val SurfaceRaisedAlt = Color(0xFF09112A)
 
-    /** Top-chrome pills floating over video: `#09112A` @ 13 %. */
-    val Glass = Color(0x2109112A)
+    /**
+     * Top-chrome pills floating over video: `#09112A` @ **34 %**.
+     *
+     * The design's 13 % was measured against its own dark still. The film is not
+     * ours: over a white frame the top scrim has already thinned to ~0.45 by the
+     * bottom of the pill row, and 13 % left `OnChrome` at 3.3:1 there. 34 % is the
+     * least body that keeps that ink at 4.5:1 at the pill row's lowest edge.
+     */
+    val Glass = Color(0x5709112A)
 
-    /** Bottom transport panel + side chrome: `#163A8C` @ 13 %. */
-    val GlassChrome = Color(0x21163A8C)
+    /**
+     * Bottom transport panel + side chrome: `#163A8C` @ **34 %**.
+     *
+     * Same correction, and it is the panel's own top edge that forces it: the
+     * transport is ~210 dp tall, so its header row sits barely inside the bottom
+     * scrim's ramp. 13 % put the now-playing title at 2.8:1 over a white frame.
+     */
+    val GlassChrome = Color(0x57163A8C)
 
-    /** Subtitles / metrics panels: `#163A8C` @ 50 % — denser text needs more body. */
-    val GlassPanel = Color(0x80163A8C)
+    /**
+     * Subtitles / metrics panels: `#0F2A66` @ **88 %**.
+     *
+     * These are bottom-anchored above the transport and reach up through the band
+     * that neither scrim covers, so nothing but their own fill is between dense
+     * telemetry and an arbitrary frame. The design's `#163A8C` @ 50 % composited
+     * to 0.33 luminance over white — titles at 2.7:1. Carried down toward
+     * [CanvasPlayback] and thickened, the same blue holds white at 9.6:1 and
+     * [OnPanelLabel] at 4.7:1 with no scrim under it at all.
+     */
+    val GlassPanel = Color(0xE00F2A66)
+
+    /**
+     * The plate a **state overlay** carries: `#09112A` @ **82 %**.
+     *
+     * Between the two playback scrims there is a band with no scrim at all, and
+     * that band is deliberate — the film is the point. So the contract is the
+     * other way round: anything that lands there owns its backdrop. At 82 % (the
+     * same density as [ScrimVeil], which is what the handshake card already puts
+     * behind a far less urgent message) white holds 13.8:1 and [Spark] 7.8:1 over
+     * a white frame.
+     */
+    val GlassState = Color(0xD109112A)
 
     /** 1 dp hairline on glass, `rgba(255,255,255,.14)`. */
     val GlassBorder = Color(0x24FFFFFF)
@@ -158,6 +192,18 @@ object FlickColor {
     /** The detached focus ring — amber on every surface… */
     val FocusRing = Spark
 
+    /**
+     * The dark contour the detached ring wears on its outer edge.
+     *
+     * Amber measures 1.8:1 against a white frame — 1.2:1 against the part-scrimmed
+     * one under the END SESSION pill — and the ring is the one thing a D-pad user
+     * navigates by. On the playback screen it is also the only decoration drawn
+     * OUTSIDE its control, i.e. on the film itself. The contour is invisible on
+     * every dark surface in the system and is the whole read on a bright one,
+     * where it stands at 7.2:1 from the frame and carries amber at 8.5:1.
+     */
+    val FocusRingContour = Color(0xCC02040A)
+
     /** …except on an amber fill, where amber-on-amber would vanish. */
     val FocusRingOnSpark = Color(0xFFFFFFFF)
 
@@ -179,6 +225,32 @@ object FlickColor {
 
     /** Bottom playback scrim end, `#02040A` @ 92 %. */
     val ScrimEnd = Color(0xEB02040A)
+
+    /**
+     * Bottom playback scrim knee, `#02040A` @ 66 %.
+     *
+     * A single transparent → 92 % ramp over the bottom 56 % of the frame reaches
+     * only ~0.20 where the transport panel's own top edge is, which is where the
+     * panel's title and eyebrow live. The knee front-loads the ramp so the scrim
+     * is dense by the time it meets the chrome it exists for, without widening the
+     * band it covers — the film above it is untouched, and the whole scrim is
+     * chrome-gated anyway.
+     */
+    val ScrimKnee = Color(0xA802040A)
+
+    /**
+     * The ±10 s burst's bed, `#02040A` @ 70 %.
+     *
+     * The burst used to be amber @ 16 % alone, which LIGHTENS a bright frame —
+     * measurably: the wash came out *brighter* than the film under it and left the
+     * white glyph and label at 2.4:1. The amber survives as the accent over this
+     * bed; it just can no longer be the only thing there.
+     *
+     * Nothing may scale this. `seekAccentIntensity` is the speed level and it
+     * belongs to the amber alone: applied to the whole wash it took the bed under
+     * a single tap down to 0.43 and put the glyph back at 2.4:1.
+     */
+    val SeekWashBed = Color(0xB302040A)
 
     /** Top playback scrim start, `#02040A` @ 78 %. */
     val ScrimTop = Color(0xC702040A)

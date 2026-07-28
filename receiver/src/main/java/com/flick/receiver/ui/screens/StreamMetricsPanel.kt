@@ -21,7 +21,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,13 +97,14 @@ private val StatsColumnGap: Dp = FlickSpace.Sm
 private val StatsRowGap: Dp = FlickSpace.Xs
 
 /**
- * The readout stagger — the throughput block, then the three stat rows.
+ * The readout stagger — the throughput block, then the rows [packStatRows]
+ * produces: four of them, because the DECODER cell takes a row to itself.
  *
  * Four stages, not one per cell: nine leads would leave the last number most of a
  * second behind the first, and a nine-step cascade read from 3 m looks like the
  * panel struggling to fill itself rather than like an order of reading. The lead
- * is clamped in [metricsStageProgress] so adding a fourth stat row lengthens the
- * grid without lengthening the tail.
+ * is clamped in [metricsStageProgress], so the fourth row arrives WITH the third
+ * rather than lengthening the tail — and a fifth would too.
  *
  * This is the panel's CONTENTS resolving, not a second arrival: the playback
  * chrome still owns the panel's own enter and exit (`animateEntrance = false`
@@ -125,11 +128,24 @@ private fun metricsStageProgress(progress: Float, index: Int): Float {
  * layer block so a stat never recomposes to arrive. Alpha takes the CLAMPED stage:
  * the driver is a spatial spring and settles past 1, which geometry may do and an
  * opacity may not.
+ *
+ * [settled] drops the layer the moment the readout has filled in. This panel sits
+ * over a live decoder, so a finished entrance that keeps a render node per staged
+ * readout — and, while alpha is under 1, an offscreen buffer per node — is exactly
+ * the cost the film cannot afford to keep paying.
  */
-private fun Modifier.metricsStage(progress: () -> Float, index: Int): Modifier = graphicsLayer {
-    val stage = metricsStageProgress(progress(), index)
-    alpha = stage
-    translationY = (1f - stage) * MetricsStageRise.toPx()
+private fun Modifier.metricsStage(
+    progress: () -> Float,
+    index: Int,
+    settled: Boolean,
+): Modifier = if (settled) {
+    this
+} else {
+    graphicsLayer {
+        val stage = metricsStageProgress(progress(), index)
+        alpha = stage
+        translationY = (1f - stage) * MetricsStageRise.toPx()
+    }
 }
 
 /** A measured bar never collapses to nothing — the design floors it at 6 %. */
@@ -139,11 +155,19 @@ private const val MIN_BAR_FRACTION = 0.06f
 private const val LOW_BAR_THRESHOLD = 0.5f
 
 /**
- * One cell of the 3 × 3 stats grid. [value] is already resolved — an unmeasurable
- * field arrives here as `metrics_unavailable` ("—"), never as a plausible-looking
+ * One cell of the stats grid. [value] is already resolved — an unmeasurable field
+ * arrives here as `metrics_unavailable` ("—"), never as a plausible-looking
  * placeholder.
+ *
+ * [span] is in grid columns. One value on this panel is an identifier rather than
+ * a number and cannot be read from its head: see the DECODER cell.
  */
-private data class StatCell(val label: String, val value: String, val tint: Color)
+internal data class StatCell(
+    val label: String,
+    val value: String,
+    val tint: Color,
+    val span: Int = 1,
+)
 
 /**
  * What the health pill is allowed to claim.
@@ -198,13 +222,16 @@ fun StreamMetricsPanel(
     val reducedMotion = LocalReducedMotion.current
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
+    var entranceSettled by remember { mutableStateOf(false) }
     LaunchedEffect(entryKey, reducedMotion) {
+        entranceSettled = false
         if (reducedMotion) {
             entrance.snapTo(1f)
         } else {
             entrance.snapTo(0f)
             entrance.animateTo(1f, entranceSpec)
         }
+        entranceSettled = true
     }
     val stage = { entrance.value }
 
@@ -282,9 +309,13 @@ fun StreamMetricsPanel(
                 throughput = throughput,
                 liveBitrateBps = diagnostics.bitrateEstimateBps,
                 unavailable = unavailable,
-                modifier = Modifier.metricsStage(stage, index = 0),
+                modifier = Modifier.metricsStage(stage, index = 0, settled = entranceSettled),
             )
-            StatsGrid(cells = statCells(diagnostics, unavailable), stage = stage)
+            StatsGrid(
+                cells = statCells(diagnostics, unavailable),
+                stage = stage,
+                settled = entranceSettled,
+            )
         }
     }
 }
@@ -434,7 +465,7 @@ private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StatsGrid(cells: List<StatCell>, stage: () -> Float) {
+private fun StatsGrid(cells: List<StatCell>, stage: () -> Float, settled: Boolean) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(StatsRowGap),
@@ -442,18 +473,18 @@ private fun StatsGrid(cells: List<StatCell>, stage: () -> Float) {
         // Staged a ROW at a time. The grid reads left-to-right then down, so the
         // row is the unit the eye already follows; nine independently arriving
         // cells would read as scatter.
-        cells.chunked(STATS_COLUMNS).forEachIndexed { index, row ->
+        packStatRows(cells).forEachIndexed { index, row ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .metricsStage(stage, index = index + 1),
+                    .metricsStage(stage, index = index + 1, settled = settled),
                 horizontalArrangement = Arrangement.spacedBy(StatsColumnGap),
             ) {
                 row.forEach { cell ->
-                    StatCellView(cell = cell, modifier = Modifier.weight(1f))
+                    StatCellView(cell = cell, modifier = Modifier.weight(cell.span.toFloat()))
                 }
                 // Keep the last row's columns aligned with the rows above it.
-                repeat(STATS_COLUMNS - row.size) { Box(Modifier.weight(1f)) }
+                repeat(STATS_COLUMNS - row.sumOf { it.span }) { Box(Modifier.weight(1f)) }
             }
         }
     }
@@ -484,6 +515,28 @@ private fun StatCellView(cell: StatCell, modifier: Modifier = Modifier) {
 
 private const val STATS_COLUMNS = 3
 
+/**
+ * Fills rows left to right, breaking before a cell that will not fit the columns
+ * left in the current one. A cell wider than the grid would otherwise be packed
+ * against cells it cannot share a row with.
+ */
+internal fun packStatRows(cells: List<StatCell>): List<List<StatCell>> {
+    val rows = mutableListOf<List<StatCell>>()
+    var row = mutableListOf<StatCell>()
+    var filled = 0
+    cells.forEach { cell ->
+        if (filled > 0 && filled + cell.span > STATS_COLUMNS) {
+            rows += row
+            row = mutableListOf()
+            filled = 0
+        }
+        row += cell
+        filled += cell.span
+    }
+    if (row.isNotEmpty()) rows += row
+    return rows
+}
+
 /** Buffer window below this reads as pressure rather than headroom. */
 private const val BUFFER_WARN_MS = 2_000L
 
@@ -491,8 +544,9 @@ private const val BUFFER_WARN_MS = 2_000L
 private const val LATENCY_WARN_MS = 80L
 
 /**
- * The nine grid cells, in the spec's reading order. Every unmeasurable field
- * resolves to [unavailable] — the panel never invents a number.
+ * The nine grid cells, in the spec's reading order but for DECODER, which trades
+ * places with TRANSPORT to reach the full-width row it needs. Every unmeasurable
+ * field resolves to [unavailable] — the panel never invents a number.
  */
 @Composable
 private fun statCells(s: DiagnosticsSnapshot, unavailable: String): List<StatCell> {
@@ -547,7 +601,18 @@ private fun statCells(s: DiagnosticsSnapshot, unavailable: String): List<StatCel
             value = stringResource(R.string.metrics_value_dropped, s.droppedFrames),
             tint = if (s.droppedFrames == 0L) FlickColor.Live else FlickColor.Caution,
         ),
-        StatCell(stringResource(R.string.metrics_label_decoder), s.decoderName ?: unavailable, ink),
         StatCell(stringResource(R.string.metrics_label_transport), transport, ink),
+        // Last, and the full width of the grid. This is the one stat whose value is
+        // an identifier rather than a number, and the identifying half is its TAIL:
+        // the decoders this project ships against are `c2.mtk.avc.decoder` (18) and
+        // `c2.mtk.dvhe.sth.decoder` (23), while a 144.7 dp column holds about 15
+        // glyphs of the 16 sp mono advance — every one of them ellipsised away the
+        // codec and kept the vendor prefix.
+        StatCell(
+            label = stringResource(R.string.metrics_label_decoder),
+            value = s.decoderName ?: unavailable,
+            tint = ink,
+            span = STATS_COLUMNS,
+        ),
     )
 }
