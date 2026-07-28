@@ -33,13 +33,13 @@ class VolumeSliderSemanticsTest {
         composeRule.setContent {
             FlickTheme(darkTheme = true, dynamicColor = false) {
                 VolumeSlider(
-                    value = value.floatValue,
+                    value = { value.floatValue },
                     onValueChange = { target ->
                         value.floatValue = target
                         received += target
                     },
                     accessibilityLabel = "TV volume",
-                    valueDescription = "30 percent",
+                    valueDescription = { "$it percent" },
                     adjustableActionLabel = "Adjust TV volume",
                 )
             }
@@ -63,11 +63,11 @@ class VolumeSliderSemanticsTest {
         composeRule.setContent {
             FlickTheme(darkTheme = true, dynamicColor = false) {
                 VolumeSlider(
-                    value = 0.62f,
+                    value = { 0.62f },
                     onValueChange = {},
-                    percentLabel = "62%",
+                    percentLabel = { "$it%" },
                     accessibilityLabel = "TV volume",
-                    valueDescription = "62 percent",
+                    valueDescription = { "$it percent" },
                     adjustableActionLabel = "Adjust TV volume",
                 )
             }

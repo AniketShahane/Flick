@@ -27,9 +27,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -133,8 +135,13 @@ private fun metricsStageProgress(progress: Float, index: Int): Float {
  *
  * [settled] drops the layer the moment the readout has filled in. This panel sits
  * over a live decoder, so a finished entrance that keeps a render node per staged
- * readout — and, while alpha is under 1, an offscreen buffer per node — is exactly
- * the cost the film cannot afford to keep paying.
+ * readout is exactly the cost the film cannot afford to keep paying.
+ *
+ * `ModulateAlpha` is explicit for the same reason it is on the resting pause key:
+ * the default strategy buys an offscreen buffer per staged row the moment alpha
+ * leaves 1 — four of them, at panel width, on the frames the panel is arriving.
+ * Nothing inside a readout overlaps anything else inside it, so modulating per
+ * draw op composites to the same pixels.
  */
 private fun Modifier.metricsStage(
     progress: () -> Float,
@@ -147,6 +154,7 @@ private fun Modifier.metricsStage(
         val stage = metricsStageProgress(progress(), index)
         alpha = stage
         translationY = (1f - stage) * MetricsStageRise.toPx()
+        compositingStrategy = CompositingStrategy.ModulateAlpha
     }
 }
 
@@ -442,15 +450,20 @@ private fun ThroughputBlock(
  * would overshoot and draw, for a few frames, a throughput the receiver never
  * measured. A slot's first real sample snaps — `animateFloatAsState` starts at its
  * target — so an empty slot never grows up out of the floor.
+ *
+ * Both drivers are held as State and read inside the layer / draw lambdas. A
+ * sample lands every half second and marches the whole ring along, so reading
+ * either one here recomposed FORTY of these per frame for the length of every
+ * transition — on the panel a viewer opens over a running decoder.
  */
 @Composable
 private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
-    val fraction by animateFloatAsState(
+    val fraction = animateFloatAsState(
         targetValue = ratio.coerceAtLeast(MIN_BAR_FRACTION),
         animationSpec = FlickMotion.stateEffects(),
         label = "histogramBar",
     )
-    val tint by animateColorAsState(
+    val tint = animateColorAsState(
         targetValue = if (ratio < LOW_BAR_THRESHOLD) FlickColor.HistogramBarLow
         else FlickColor.HistogramBar,
         animationSpec = FlickMotion.stateEffects(),
@@ -463,11 +476,11 @@ private fun HistogramBar(ratio: Float, modifier: Modifier = Modifier) {
             // this panel sits over a live decoder, so a bar may never relayout.
             // The 2 dp cap squashes by the same factor and stays sub-pixel.
             .graphicsLayer {
-                scaleY = fraction
+                scaleY = fraction.value
                 transformOrigin = TransformOrigin(0.5f, 1f)
             }
             .clip(HistogramBarShape)
-            .background(tint),
+            .drawBehind { drawRect(tint.value) },
     )
 }
 

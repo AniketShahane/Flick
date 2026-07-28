@@ -2,25 +2,26 @@ package com.flick.sender.ui.theme
 
 import android.animation.ValueAnimator
 import android.os.SystemClock
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.DurationBasedAnimationSpec
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Indication
 import androidx.compose.foundation.interaction.InteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -28,6 +29,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.util.lerp
+import kotlinx.coroutines.launch
 
 /**
  * Motion and feedback for the surfaces Flick draws itself. Flick's controls are
@@ -131,6 +134,46 @@ object Motion {
 fun rememberReduceMotion(): Boolean = !ValueAnimator.areAnimatorsEnabled()
 
 /**
+ * How far a press has got: 0 at rest, 1 held down.
+ *
+ * The press flag is collected off composition and driven straight into an [Animatable]
+ * rather than observed as state. A `@Composable` Modifier factory has no restart scope of
+ * its own — its body runs in the CALLER's — so `collectIsPressedAsState` here invalidated
+ * the whole control twice on every touch: the dock bar with its four texts and its decoded
+ * thumbnail, a library tile, a remote segment. Nothing below reaches composition; every
+ * consumer reads [Animatable.value] inside a layer or draw block.
+ *
+ * [spec] is a parameter because geometry and opacity do not answer a touch the same way:
+ * a scale or a corner takes the scheme's spatial spring and is allowed to overshoot, a
+ * press wash takes an effects spring and must not.
+ */
+@Composable
+internal fun rememberPressAmount(
+    interactionSource: InteractionSource,
+    spec: FiniteAnimationSpec<Float> = MaterialTheme.motionScheme.fastSpatialSpec(),
+): Animatable<Float, AnimationVector1D> {
+    val reduceMotion = rememberReduceMotion()
+    val amount = remember { Animatable(0f) }
+    val current = rememberUpdatedState(Motion.orSnap(reduceMotion, spec))
+    LaunchedEffect(interactionSource) {
+        val presses = mutableListOf<PressInteraction.Press>()
+        interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is PressInteraction.Press -> presses += interaction
+                is PressInteraction.Release -> presses -= interaction.press
+                is PressInteraction.Cancel -> presses -= interaction.press
+                else -> return@collect
+            }
+            // Launched rather than awaited: a release that lands mid-swell has to retarget
+            // the spring from the velocity it already carries instead of queueing behind
+            // it. Animatable's own mutex ends the run this one replaces.
+            launch { amount.animateTo(if (presses.isEmpty()) 0f else 1f, current.value) }
+        }
+    }
+    return amount
+}
+
+/**
  * Press response for rows, cards, buttons and the FAB. The scale is read inside the
  * layer block, so a press repaints without recomposing the caller.
  */
@@ -139,17 +182,11 @@ internal fun Modifier.pressScale(
     interactionSource: InteractionSource,
     target: Float = Motion.PressRow,
 ): Modifier {
-    val pressed by interactionSource.collectIsPressedAsState()
-    val reduceMotion = rememberReduceMotion()
-    val spec = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
-    val scale = animateFloatAsState(
-        targetValue = if (pressed) target else 1f,
-        animationSpec = Motion.orSnap(reduceMotion, spec),
-        label = "press scale",
-    )
+    val press = rememberPressAmount(interactionSource)
     return this.graphicsLayer {
-        scaleX = scale.value
-        scaleY = scale.value
+        val scale = lerp(1f, target, press.value)
+        scaleX = scale
+        scaleY = scale
     }
 }
 
@@ -160,6 +197,10 @@ internal fun Modifier.pressScale(
  * that already carries its own rounder shape would morph nothing. The radius is
  * read inside the layer block, so the morph repaints without recomposing the
  * caller.
+ *
+ * It rides the same spring [pressScale] does. On a tile the two answer one touch
+ * together, and a corner still travelling after the scale had landed read as the shape
+ * lagging the finger.
  */
 @Composable
 internal fun Modifier.pressMorph(
@@ -167,19 +208,20 @@ internal fun Modifier.pressMorph(
     restRadius: Dp,
     pressedRadius: Dp,
 ): Modifier {
-    val pressed by interactionSource.collectIsPressedAsState()
-    val reduceMotion = rememberReduceMotion()
-    val spec = MaterialTheme.motionScheme.defaultSpatialSpec<Dp>()
-    val radius = animateDpAsState(
-        targetValue = if (pressed) pressedRadius else restRadius,
-        animationSpec = Motion.orSnap(reduceMotion, spec),
-        label = "press corner radius",
-    )
+    val press = rememberPressAmount(interactionSource)
     return this.graphicsLayer {
         clip = true
-        shape = RoundedCornerShape(radius.value)
+        shape = RoundedCornerShape(pressRadius(restRadius, pressedRadius, press.value))
     }
 }
+
+/**
+ * The corner one frame of a press morph is drawn at. Clamped, unlike the scale: the
+ * spatial spring overshoots by design and a radius past either end is a corner the
+ * surface never has — under zero it is not a shape at all.
+ */
+internal fun pressRadius(restRadius: Dp, pressedRadius: Dp, amount: Float): Dp =
+    restRadius + (pressedRadius - restRadius) * amount.coerceIn(0f, 1f)
 
 /**
  * Material's ripple, remembered so a press does not allocate a fresh factory on

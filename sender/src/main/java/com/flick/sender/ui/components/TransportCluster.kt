@@ -131,11 +131,14 @@ fun PrimaryPlayButton(
         animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.defaultSpatialSpec<Float>()),
         label = "fab container morph",
     )
-    // One buffer per silhouette: the two glow rings and the clip outline are all alive
-    // within a single frame, so they cannot share a path between them.
-    val glowOuter = remember(morph) { MorphSilhouette(morph) }
-    val glowInner = remember(morph) { MorphSilhouette(morph) }
-    val clipOutline = remember(morph) { MorphSilhouette(morph) }
+    // The morph itself is evaluated once per frame and stamped three times. One buffer per
+    // stamp, because the two glow rings and the clip outline are all alive within a single
+    // frame and cannot share a path between them — but the cubic evaluation behind them is
+    // the expensive half, and this control is the one the remote gets hammered on.
+    val frame = remember(morph) { MorphFrame(morph) }
+    val glowOuter = remember(frame) { MorphStamp(frame) }
+    val glowInner = remember(frame) { MorphStamp(frame) }
+    val clipOutline = remember(frame) { MorphStamp(frame) }
     Box(
         modifier = modifier
             .size(size)
@@ -286,23 +289,43 @@ fun TransportCluster(
 }
 
 /**
- * One frame of a [Morph], rebuilt into a path and matrix it owns for the lifetime of the
- * control. Material's own polygon shapes are normalised to a unit box, so the path is
- * scaled to the drawn size and re-centred on it.
+ * The morph's silhouette at one progress value, in the unit box Material's polygon shapes
+ * are normalised to. The interpolated cubics are the expensive half and every stamp taken
+ * from them is identical, so the evaluation is held until the progress itself moves.
+ */
+private class MorphFrame(private val morph: Morph) {
+    private val source = Path()
+
+    // NaN so the first call can never match, whatever progress it arrives with.
+    private var built = Float.NaN
+
+    fun at(progress: Float): Path {
+        if (progress != built) {
+            // Progress is not clamped to 0..1: the spatial spring overshoots and the lobes
+            // are a plain interpolation of matched cubics, so the container bounces with
+            // the glyph in it rather than parking at the end state while the glyph is
+            // still travelling.
+            morph.toPath(progress, source)
+            built = progress
+        }
+        return source
+    }
+}
+
+/**
+ * One stamp of a [MorphFrame], scaled to the drawn size and re-centred on it, in a path
+ * and matrix it owns for the lifetime of the control.
  *
- * A returned path is only valid until the next [outlineOf] on the same instance, so a
+ * A returned path is only valid until the next [outlineOf] on the same stamp, so a
  * silhouette that has to survive alongside another one needs its own.
  */
-private class MorphSilhouette(private val morph: Morph) {
+private class MorphStamp(private val frame: MorphFrame) {
     private val path = Path()
     private val matrix = Matrix()
 
     fun outlineOf(progress: Float, size: Size, spread: Float, dy: Float): Path {
-        // Progress is not clamped to 0..1: the spatial spring overshoots and the lobes
-        // are a plain interpolation of matched cubics, so the container bounces with the
-        // glyph in it rather than parking at the end state while the glyph is still
-        // travelling.
-        morph.toPath(progress, path)
+        path.rewind()
+        path.addPath(frame.at(progress))
         matrix.reset()
         matrix.scale(size.width * spread, size.height * spread)
         path.transform(matrix)
@@ -313,7 +336,7 @@ private class MorphSilhouette(private val morph: Morph) {
 }
 
 /** A [Shape] over one frame of a morph, backed by [silhouette]'s reused path. */
-private class MorphShape(private val silhouette: MorphSilhouette, private val progress: Float) : Shape {
+private class MorphShape(private val silhouette: MorphStamp, private val progress: Float) : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
@@ -326,7 +349,7 @@ private class MorphShape(private val silhouette: MorphSilhouette, private val pr
  * is neither, so the FAB's amber lift is drawn as two oversized copies of the very
  * silhouette that is morphing — the glow cannot fall out of step with the shape.
  */
-private fun DrawScope.drawFabBloom(outer: MorphSilhouette, inner: MorphSilhouette, progress: Float) {
+private fun DrawScope.drawFabBloom(outer: MorphStamp, inner: MorphStamp, progress: Float) {
     val drop = 6.dp.toPx()
     drawPath(outer.outlineOf(progress, size, 1.16f, drop), FabShadow.copy(alpha = 0.22f))
     drawPath(inner.outlineOf(progress, size, 1.07f, drop * 0.6f), FabShadow.copy(alpha = 0.34f))

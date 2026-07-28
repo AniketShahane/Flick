@@ -54,6 +54,7 @@ import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.TvOriginReveal
+import com.flick.receiver.ui.components.flickPlate
 import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.FlickColor
@@ -549,24 +550,27 @@ private fun ToggleGlyph(enabled: Boolean) {
     val reducedMotion = LocalReducedMotion.current
     // Fills and inks take the effects spec: a colour that overshot its target
     // would read as a flash rather than as a state change.
-    val fill by animateColorAsState(
+    // All four are held as State and read in the layer / draw lambdas below, so a
+    // flick of the toggle repaints the toggle instead of recomposing it once a
+    // frame for the length of the throw.
+    val fill = animateColorAsState(
         targetValue = if (enabled) FlickColor.SelectedFill else FlickColor.ControlFill,
         animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
         label = "toggleFill",
     )
-    val border by animateColorAsState(
+    val border = animateColorAsState(
         targetValue = if (enabled) FlickColor.SelectedBorder else FlickColor.Outline,
         animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
         label = "toggleBorder",
     )
     // The knob is geometry, so it takes the spatial spring and is allowed to
     // arrive with a settle at the end of its travel.
-    val knobTravel by animateFloatAsState(
+    val knobTravel = animateFloatAsState(
         targetValue = if (enabled) 1f else 0f,
         animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.flickSettleSpatial(),
         label = "toggleKnob",
     )
-    val knobColor by animateColorAsState(
+    val knobColor = animateColorAsState(
         targetValue = if (enabled) FlickColor.Spark else FlickColor.OnSurfaceFaint,
         animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
         label = "toggleKnobColor",
@@ -575,11 +579,11 @@ private fun ToggleGlyph(enabled: Boolean) {
         modifier = Modifier
             .size(width = 45.dp, height = 24.dp)
             .clip(FlickShape.Pill)
-            .background(fill)
-            .border(
-                FlickDimens.Hairline,
-                border,
-                FlickShape.Pill,
+            .flickPlate(
+                shape = FlickShape.Pill,
+                fill = fill,
+                stroke = border,
+                strokeWidth = FlickDimens.Hairline,
             ),
     ) {
         // The knob keeps its 18 dp layout box and 21 dp of travel; the throw and
@@ -590,12 +594,13 @@ private fun ToggleGlyph(enabled: Boolean) {
                 .padding(start = 3.dp)
                 .size(18.dp)
                 .graphicsLayer {
-                    translationX = knobTravel * ToggleKnobTravel.toPx()
-                    val speed = sin(knobTravel.coerceIn(0f, 1f) * PI).toFloat()
+                    val travel = knobTravel.value
+                    translationX = travel * ToggleKnobTravel.toPx()
+                    val speed = sin(travel.coerceIn(0f, 1f) * PI).toFloat()
                     scaleX = 1f + (ToggleKnobStretch - 1f) * speed
                 }
                 .drawBehind {
-                    drawCircle(knobColor)
+                    drawCircle(knobColor.value)
                 },
         )
     }

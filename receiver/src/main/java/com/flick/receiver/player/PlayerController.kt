@@ -45,6 +45,49 @@ import com.flick.receiver.util.WifiTelemetry
 import java.io.IOException
 
 /**
+ * Everything `SessionController` is allowed to do to the player, and nothing
+ * else. It is an interface because the cast transaction's rules — what arms the
+ * startup deadline, what may replace the ExoPlayer instance, which failures are
+ * startup failures — decide the outcome of a cast, and none of them need a
+ * decoder, a surface or a LAN to be exercised.
+ */
+interface SessionPlayer {
+    fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?)
+    fun recordProbeLatency(latencyMs: Long)
+
+    /** Cold start: adopts a NEW player instance and reports the exact first frame. */
+    fun playStartup(
+        url: String,
+        startMs: Long,
+        mediaId: String,
+        subtitle: ExternalSubtitle?,
+        onFirstFrame: () -> Unit,
+        onError: (PlaybackException) -> Unit,
+    )
+
+    /**
+     * Re-prepare the LIVE player against a changed sideloaded subtitle. False
+     * means there was no live player to reload, which leaves the caller a full
+     * load as the only honest option.
+     */
+    fun reloadInPlace(
+        url: String,
+        positionMs: Long,
+        mediaId: String,
+        subtitle: ExternalSubtitle?,
+    ): Boolean
+
+    fun clearStartupListener()
+    fun stop()
+    fun resume()
+    fun pause()
+    fun seekTo(posMs: Long)
+    fun seekBy(deltaMs: Long)
+    fun setVolume(level: Float)
+    fun readPlaybackState(): PlaybackFrame
+}
+
+/**
  * Owns the ExoPlayer lifecycle and all playback instrumentation for the
  * Phase 0 direct-play spike.
  *
@@ -62,7 +105,7 @@ import java.io.IOException
  * The exposed [player] is Compose state so the [androidx.media3.ui.PlayerView]
  * rebinds automatically each time the instance is recreated.
  */
-class PlayerController(context: Context) {
+class PlayerController(context: Context) : SessionPlayer {
 
     private val appContext = context.applicationContext
 
@@ -726,7 +769,7 @@ class PlayerController(context: Context) {
     }
 
     /** Installs both startup callbacks before setting media or calling prepare. */
-    fun playStartup(
+    override fun playStartup(
         url: String,
         startMs: Long,
         mediaId: String,
@@ -762,14 +805,65 @@ class PlayerController(context: Context) {
         exo.playWhenReady = true
     }
 
-    fun clearStartupListener() { startupCallbacks = null; firstFrameGate.clear() }
+    /**
+     * A subtitle change on a cast that is already playing. Everything that makes
+     * the picture is deliberately left alone — the ExoPlayer instance, the output
+     * surface it is already presenting to, the MediaSession that owns platform
+     * media buttons, and the user's track selection all survive; only the media
+     * item is rebuilt and re-prepared where the film already is.
+     *
+     * No startup callback is installed and no first-frame gate is armed. A reload
+     * has no first frame to wait for, so an error here must reach the ordinary
+     * steady-state path rather than a startup transaction that already completed.
+     */
+    override fun reloadInPlace(
+        url: String,
+        positionMs: Long,
+        mediaId: String,
+        subtitle: ExternalSubtitle?,
+    ): Boolean {
+        val exo = player ?: return false
+        startupCallbacks = null
+        firstFrameGate.clear()
+        // A recovery queued against the old media would seek and re-prepare on
+        // top of this one.
+        cancelPendingRecovery()
+        // The live player's own clock, not the frame's: the phone's startMs is the
+        // TV's confirmed position sampled at 10 Hz and already a tick stale.
+        val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+            ?: positionMs.coerceAtLeast(0L)
+        val resumePlayWhenReady = exo.playWhenReady
+        currentUrl = url
+        savedPositionMs = resumeMs
+        pendingPlayWhenReady = resumePlayWhenReady
+        lastGoodPositionMs = resumeMs
+        stableReadySinceMs = 0L
+        resetSubtitleState(subtitle, mediaId)
+        // A sideloaded track arrives under SELECTION_FLAG_DEFAULT, which both the
+        // panel's Off row and any earlier per-group override outrank. A fresh
+        // player used to lose those along with everything else, so reusing one
+        // must not turn the subtitle just attached into a track that draws nothing.
+        if (subtitle != null) {
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .build()
+        }
+        exo.setMediaItem(mediaItemFor(url, mediaId, subtitle), /* resetPosition = */ false)
+        if (resumeMs > 0L) exo.seekTo(resumeMs)
+        exo.prepare()
+        exo.playWhenReady = resumePlayWhenReady
+        return true
+    }
+
+    override fun clearStartupListener() { startupCallbacks = null; firstFrameGate.clear() }
 
     /** Delivers the exact Media3 failure to the session while it is still actionable. */
-    fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
+    override fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
         playbackFailureListener = listener
     }
 
-    fun stop() {
+    override fun stop() {
         clearStartupListener()
         pendingPlayWhenReady = false
         cancelPendingRecovery()
@@ -795,12 +889,12 @@ class PlayerController(context: Context) {
     }
 
     /** Record the pre-flight probe round-trip so the overlay can surface it. */
-    fun recordProbeLatency(latencyMs: Long) {
+    override fun recordProbeLatency(latencyMs: Long) {
         probeLatencyMs = latencyMs
     }
 
     /** Seek relative to the current position, clamped to [0, duration). Main-thread only. */
-    fun seekBy(deltaMs: Long) {
+    override fun seekBy(deltaMs: Long) {
         val exo = player ?: return
         if (currentUrl == null) return
         val duration = exo.duration
@@ -821,18 +915,18 @@ class PlayerController(context: Context) {
     // pre-flight guarantees.
 
     /** WS `play`: resume only if a session is loaded (never re-prepares from Idle). */
-    fun resume() {
+    override fun resume() {
         if (currentUrl == null) return
         player?.let { it.playWhenReady = true }
     }
 
     /** WS `pause`. */
-    fun pause() {
+    override fun pause() {
         player?.let { it.playWhenReady = false }
     }
 
     /** WS `seek`: absolute (optimistic target), clamped to [0, duration). */
-    fun seekTo(posMs: Long) {
+    override fun seekTo(posMs: Long) {
         val exo = player ?: return
         if (currentUrl == null) return
         val duration = exo.duration
@@ -843,7 +937,7 @@ class PlayerController(context: Context) {
     }
 
     /** WS `setVolume`: 0..1. Persisted so it survives player rebuilds. */
-    fun setVolume(level: Float) {
+    override fun setVolume(level: Float) {
         lastVolume = level.coerceIn(0f, 1f)
         player?.volume = lastVolume
     }
@@ -892,7 +986,7 @@ class PlayerController(context: Context) {
      * The confirmed playback frame streamed to the phone at ~10 Hz. Cheap,
      * main-thread only (reads live ExoPlayer getters).
      */
-    fun readPlaybackState(): PlaybackFrame {
+    override fun readPlaybackState(): PlaybackFrame {
         val exo = player
         val pos = (exo?.currentPosition ?: 0L).coerceAtLeast(0L)
         val duration = exo?.duration?.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L

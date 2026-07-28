@@ -10,7 +10,6 @@ import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,7 +19,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -131,6 +129,7 @@ import com.flick.sender.ui.theme.PrimaryShadow
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -944,7 +943,6 @@ private fun Chip(
     val reduceMotion = rememberReduceMotion()
     val motionScheme = MaterialTheme.motionScheme
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
 
     // The label rides the travelling fill, so its ink must not resolve before the fill
     // has arrived under it — a slower effects spec, never a spatial one.
@@ -956,12 +954,9 @@ private fun Chip(
     // Material's ripple dilutes whatever ink it is handed, and on this palette that
     // lands on a pill as a grey blob. The chip answers a touch with the brand tint that
     // reads against its own fill instead: the pale blue on the selected chip's dark
-    // pill, the saturated one on the pale rest pill.
-    val wash = animateFloatAsState(
-        targetValue = if (pressed) ChipPressWashAlpha else 0f,
-        animationSpec = Motion.orSnap(reduceMotion, motionScheme.fastEffectsSpec<Float>()),
-        label = "chip press wash",
-    )
+    // pill, the saturated one on the pale rest pill. An effects spring rather than the
+    // spatial one the kick takes: this is opacity and must not ring past its range.
+    val wash = rememberPressAmount(interaction, motionScheme.fastEffectsSpec())
     val washColor = if (active) colors.primaryFixed else colors.primary
     val label = remember(ink) { ColorProducer { ink.value } }
 
@@ -979,7 +974,7 @@ private fun Chip(
                 scaleY = chipSquashY(p)
             }
             .drawBehind {
-                val alpha = wash.value
+                val alpha = wash.value * ChipPressWashAlpha
                 if (alpha > 0f) {
                     drawRoundRect(
                         color = washColor,

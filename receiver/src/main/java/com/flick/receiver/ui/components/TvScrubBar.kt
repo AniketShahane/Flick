@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -301,7 +302,14 @@ fun TvScrubBar(
                     // so the one control where they are not says so.
                     focused -> stateDescription = seekHint
                 }
-            },
+            }
+            // The bar's own render node. The wave repaints this canvas on EVERY
+            // frame the film is running, and without a layer here that repaint
+            // invalidates the transport panel's draw instead — re-recording the
+            // display list of the title, both timecodes, the chips and both side
+            // cards, sixty times a second, to move a sine. `clip` stays false: the
+            // knob's halo and the focus ring are painted outside these 20 dp.
+            .graphicsLayer(),
     ) {
         val cy = size.height / 2f
         val barH = 6.dp.toPx()

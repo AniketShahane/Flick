@@ -6,8 +6,6 @@ import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -26,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +37,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusEventModifierNode
 import androidx.compose.ui.focus.FocusRequester
@@ -47,6 +47,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -173,8 +174,10 @@ fun flickBorderWidth(containerColor: Color?): Dp =
  * their own outline.
  */
 private data class GrownCornerSize(val base: CornerSize, val grow: Dp) : CornerSize {
+    // [grow] is negative where a stroke is inset inside its own outline, and
+    // `CornerBasedShape.createOutline` throws on a negative resolved radius.
     override fun toPx(shapeSize: Size, density: Density): Float =
-        base.toPx(shapeSize, density) + with(density) { grow.toPx() }
+        (base.toPx(shapeSize, density) + with(density) { grow.toPx() }).coerceAtLeast(0f)
 }
 
 /** Element radius + [offset] (spec §3). Percent corners still resolve as percent. */
@@ -276,6 +279,72 @@ fun Modifier.flickFocusRing(
                 alpha = presence,
                 style = Stroke(width = stroke),
             )
+        }
+    }
+}
+
+/**
+ * A control's fill and hairline, PAINTED from animated state rather than composed
+ * from animated values.
+ *
+ * `background(color)` and `border(width, color, shape)` take their colours and
+ * their shape as parameters, so an animated fill or an easing corner has to be
+ * read during composition. That recomposed the control once a frame, rebuilt its
+ * whole modifier chain, re-cut the clip layer's outline and republished its focus
+ * beacon — and a republished beacon redraws the entire group its host owns. All
+ * three values arrive here as [State] instead and are read in the draw phase, so a
+ * focus change costs one repaint of one control.
+ *
+ * Draw order is `background`'s then `border`'s: the fill under the content, the
+ * stroke over it, inset half its own width and half a width off its radius, which
+ * is `Modifier.border`'s own inset. A PERCENT corner lands another half-stroke
+ * rounder than `border` resolved it, because the percent is taken against the
+ * inset box — a quarter of a dp at TV density, on a hairline.
+ *
+ * The outline is rebuilt only when the size or the corner actually moves.
+ */
+internal fun Modifier.flickPlate(
+    shape: Shape,
+    fill: State<Color>,
+    stroke: State<Color>,
+    strokeWidth: Dp,
+    cornerGrowth: State<Dp>? = null,
+): Modifier = this.drawWithCache {
+    val strokePx = strokeWidth.toPx()
+    val halfStroke = strokePx / 2f
+    val insetSize = Size(
+        (size.width - strokePx).coerceAtLeast(0f),
+        (size.height - strokePx).coerceAtLeast(0f),
+    )
+    // One outline per corner value, held across frames: the ease settles within a
+    // few frames and then never allocates again.
+    var cachedGrowthPx = Float.NaN
+    var fillOutline: Outline? = null
+    var strokeOutline: Outline? = null
+    onDrawWithContent {
+        val growth = cornerGrowth?.value ?: 0.dp
+        val growthPx = growth.toPx()
+        if (growthPx != cachedGrowthPx) {
+            cachedGrowthPx = growthPx
+            val grown = if (growth == 0.dp) shape else shape.grownBy(growth)
+            fillOutline = grown.createOutline(size, layoutDirection, this)
+            strokeOutline = if (strokePx > 0f && insetSize.minDimension > 0f) {
+                shape.grownBy(growth - strokeWidth / 2f)
+                    .createOutline(insetSize, layoutDirection, this)
+            } else {
+                null
+            }
+        }
+        fillOutline?.let { drawOutline(outline = it, color = fill.value) }
+        drawContent()
+        strokeOutline?.let { outline ->
+            translate(left = halfStroke, top = halfStroke) {
+                drawOutline(
+                    outline = outline,
+                    color = stroke.value,
+                    style = Stroke(width = strokePx),
+                )
+            }
         }
     }
 }
@@ -444,7 +513,15 @@ fun FocusBeaconHost(
                             style = Stroke(width = stroke),
                         )
                     }
-                },
+                }
+                // The group's own render node. Without it the ring's flight and its
+                // bloom invalidate the draw ABOVE the group, and every frame of
+                // either re-records the display list of everything inside it —
+                // every glyph and every line of type in a panel, once a frame, for
+                // an animation that touches two stroked outlines. With it the same
+                // frame costs one `drawRenderNode`. It carries no transform and no
+                // alpha, so it buys a display list and never an offscreen buffer.
+                .graphicsLayer(),
         ) { content() }
     }
 }
@@ -592,26 +669,36 @@ fun FlickTvButton(
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "buttonRingPresence",
     )
-    // Corners open up while focused. Kept a CornerBasedShape all the way through
-    // so `grownBy` still finds corners to make the ring concentric with.
-    val cornerGrowth by animateDpAsState(
+    // Corners open up while focused. Held as State and resolved by [flickPlate] in
+    // the draw phase: read here it produced a NEW shape object every frame, and
+    // that shape reached the clip, the border and the beacon — so an easing corner
+    // recomposed the control, re-cut its layer outline, rebuilt the border's cache
+    // and republished the beacon, once a frame, for four dp of radius.
+    val cornerGrowth = animateDpAsState(
         targetValue = if (ringVisible && !reducedMotion) FocusCornerGrowth else 0.dp,
         animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
         label = "buttonFocusCorner",
     )
-    val focusShape = if (cornerGrowth == 0.dp) shape else shape.grownBy(cornerGrowth)
+    // The ring is concentric with the SETTLED focused corner rather than with
+    // whichever frame the ease is on. A ring shape that changed per frame is what
+    // the beacon host redraws its whole group for, and the few frames the ease is
+    // still travelling are also the frames the ring is still blooming — there is
+    // no settled state in which the two disagree.
+    val ringShape = remember(shape, reducedMotion) {
+        if (reducedMotion) shape else shape.grownBy(FocusCornerGrowth)
+    }
 
     val baseFill = containerColor ?: if (selected) FlickColor.SelectedFill else FlickColor.ControlFill
     val baseStroke = borderColor ?: if (selected) FlickColor.SelectedBorder else FlickColor.Outline
     // Selection persists as a fill/border state; press is a brief physical
     // acknowledgement. Neither changes layout, so the detached focus ring stays
-    // inside the caller's overscan reserve.
-    val fill by animateColorAsState(
+    // inside the caller's overscan reserve. Both are read in the draw phase.
+    val fill = animateColorAsState(
         targetValue = if (pressed && !selected && containerColor == null) FlickColor.ControlFillStrong else baseFill,
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "buttonFill",
     )
-    val stroke by animateColorAsState(
+    val stroke = animateColorAsState(
         targetValue = baseStroke,
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "buttonSelectionStroke",
@@ -631,7 +718,7 @@ fun FlickTvButton(
                 if (!enabled) disabled()
                 if (contentDescription != null) this.contentDescription = contentDescription
             }
-            .focusBeacon(focusShape, ringColor)
+            .focusBeacon(ringShape, ringColor)
             .graphicsLayer {
                 val lift = scale.value
                 scaleX = lift
@@ -640,13 +727,21 @@ fun FlickTvButton(
             }
             .flickFocusRing(
                 visible = ringVisible && !hosted,
-                shape = focusShape,
+                shape = ringShape,
                 ringColor = ringColor,
                 progress = { ringPresence.value },
             )
-            .clip(focusShape)
-            .background(fill)
-            .border(borderWidth, stroke, focusShape)
+            // The base shape, not the eased one: growing a corner only makes the
+            // silhouette rounder, so it never reaches past this clip — and a clip
+            // that changed per frame re-cut its layer outline for nothing.
+            .clip(shape)
+            .flickPlate(
+                shape = shape,
+                fill = fill,
+                stroke = stroke,
+                strokeWidth = borderWidth,
+                cornerGrowth = cornerGrowth,
+            )
             .clickable(
                 interactionSource = interaction,
                 indication = null,

@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -117,7 +118,7 @@ fun PhoneScrubBar(
     targetFraction: () -> Float,
     ghostFraction: () -> Float?,
     syncing: Boolean,
-    framePreview: ImageBitmap?,
+    framePreview: () -> ImageBitmap?,
     previewLabel: () -> String?,
     onScrubStart: () -> Unit,
     onScrub: (Float) -> Unit,
@@ -460,11 +461,18 @@ private fun TimeRow(
     }
 }
 
-/** Isolated so the running clock recomposes one Text, never the instrument. */
+/**
+ * Isolated so the running clock recomposes one Text, never the instrument — and derived
+ * so that it recomposes on the SECOND rather than on the frame. The clock is written at
+ * pointer rate under a drag while a timecode has one-second resolution, so a value read
+ * straight off the lambda re-ran text layout on every pointer sample to print the same
+ * eight glyphs.
+ */
 @Composable
 private fun PositionTime(modifier: Modifier, positionMs: () -> Long) {
     val colors = LocalFlickColors.current
-    val text = Format.timecode(positionMs())
+    val current = rememberUpdatedState(positionMs)
+    val text by remember { derivedStateOf { Format.timecode(current.value()) } }
     val description = stringResource(R.string.a11y_scrub_target, text)
     Text(
         text = text,
@@ -476,15 +484,16 @@ private fun PositionTime(modifier: Modifier, positionMs: () -> Long) {
 @Composable
 private fun RemainingTime(modifier: Modifier, positionMs: () -> Long, durationMs: () -> Long) {
     val colors = LocalFlickColors.current
-    val position = positionMs()
-    val duration = durationMs()
+    val position = rememberUpdatedState(positionMs)
+    val duration = rememberUpdatedState(durationMs)
     // The visible form carries the U+2212 sign; the spoken form does not.
-    val description = stringResource(
-        R.string.a11y_np_remaining,
-        Format.timecode((duration - position).coerceAtLeast(0L)),
-    )
+    val text by remember { derivedStateOf { Format.remaining(position.value(), duration.value()) } }
+    val spoken by remember {
+        derivedStateOf { Format.timecode((duration.value() - position.value()).coerceAtLeast(0L)) }
+    }
+    val description = stringResource(R.string.a11y_np_remaining, spoken)
     Text(
-        text = Format.remaining(position, duration),
+        text = text,
         style = FlickText.monoValue.copy(color = colors.onSurfaceFaint),
         modifier = modifier.semantics { contentDescription = description },
     )
@@ -526,9 +535,13 @@ private fun SyncChip(modifier: Modifier) {
     )
 }
 
-/** The decoded frame at the drag position, with the target timecode beneath it. */
+/**
+ * The decoded frame at the drag position, with the target timecode beneath it. The still
+ * arrives as a lambda so the decode — up to ten a second under a fast drag — lands on this
+ * card alone and not on the transport region that hosts the bar.
+ */
 @Composable
-private fun FramePreview(bitmap: ImageBitmap?, label: () -> String?) {
+private fun FramePreview(bitmap: () -> ImageBitmap?, label: () -> String?) {
     val colors = LocalFlickColors.current
     val shape = RoundedCornerShape(FlickCorners.previewThumb)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -540,25 +553,34 @@ private fun FramePreview(bitmap: ImageBitmap?, label: () -> String?) {
                 .background(colors.surfaceRaisedAlt)
                 .border(2.5.dp, colors.onSurface, shape),
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+            PreviewStill(bitmap)
         }
         Spacer(Modifier.height(7.dp))
         PreviewTimecode(label)
     }
 }
 
-/** Only this chip follows the drag clock; the frame card above it stays put. */
+/** Isolated so a landing still repaints the card without recomposing its chip or border. */
+@Composable
+private fun PreviewStill(bitmap: () -> ImageBitmap?) {
+    val still = bitmap() ?: return
+    Image(
+        bitmap = still,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
+    )
+}
+
+/**
+ * Only this chip follows the drag clock; the frame card above it stays put. Derived, so
+ * the chip recomposes once per second of media rather than once per pointer sample.
+ */
 @Composable
 private fun PreviewTimecode(label: () -> String?) {
     val colors = LocalFlickColors.current
-    val text = label() ?: return
+    val current = rememberUpdatedState(label)
+    val text = remember { derivedStateOf { current.value() } }.value ?: return
     Text(
         text = text,
         // The amber chip is palette-independent, so it carries the fixed navy the FAB

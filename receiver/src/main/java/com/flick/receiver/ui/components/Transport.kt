@@ -467,7 +467,10 @@ fun VolumeCells(
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "volumeRingPresence",
     )
-    val fill by animateColorAsState(
+    // Painted by [flickPlate] rather than read here: engaging the control used to
+    // recompose a row of ten cells once a frame, over a live decoder, to cross-fade
+    // one plate.
+    val fill = animateColorAsState(
         targetValue = when {
             engaged && enabled -> FlickColor.SelectedFill
             pressed -> FlickColor.ControlFill
@@ -476,7 +479,7 @@ fun VolumeCells(
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "volumeStateFill",
     )
-    val stroke by animateColorAsState(
+    val stroke = animateColorAsState(
         targetValue = if (engaged && enabled) FlickColor.SelectedBorder else FlickColor.Outline,
         animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
         label = "volumeStateStroke",
@@ -499,8 +502,12 @@ fun VolumeCells(
                 progress = { ringPresence.value },
             )
             .clip(shape)
-            .background(fill)
-            .border(FlickDimens.Hairline, stroke, shape)
+            .flickPlate(
+                shape = shape,
+                fill = fill,
+                stroke = stroke,
+                strokeWidth = FlickDimens.Hairline,
+            )
             .padding(horizontal = 13.dp, vertical = 10.dp)
             .onKeyEvent { event ->
                 if (!enabled) return@onKeyEvent false

@@ -115,9 +115,11 @@ fun BottomSheet(
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val rise = rememberSheetRise()
-    // The dim runs on an effects spring and the sheet on a spatial one, so the room
-    // darkens before the surface arrives on it rather than the two moving as one slab.
-    val scrim = rememberScrimFade()
+    // The dim runs on an effects spring and the sheet's geometry on a spatial one, so the
+    // room darkens before the surface arrives on it rather than the two moving as one
+    // slab. The surface's own fade takes the dim's clock, not the rise's: one animation
+    // for every opacity in the entrance, and none of them on a spring that rings.
+    val scrim = rememberSheetFade()
     val scrimColor = colors.scrim
     val scrollState = rememberScrollState()
     val layoutDirection = LocalLayoutDirection.current
@@ -158,7 +160,7 @@ fun BottomSheet(
                 // scrolling can bring it back.
                 .statusBarsPadding()
                 .heightIn(max = 640.dp)
-                .sheetRiseTransform(rise)
+                .sheetRiseTransform(rise, scrim)
                 .clip(SheetShape)
                 .background(colors.surfaceRaised)
                 .clickable(interactionSource = sheetSource, indication = null, onClick = {})
@@ -246,9 +248,9 @@ fun SheetGrabber(color: Color = LocalFlickColors.current.outlineSoft) {
 internal fun rememberSheetRise(): () -> Float =
     rememberEntranceProgress(MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
 
-/** The scrim is alpha, so it takes an effects spring and must not overshoot. */
+/** Every alpha in a sheet's entrance: an effects spring, which must not overshoot. */
 @Composable
-private fun rememberScrimFade(): () -> Float =
+internal fun rememberSheetFade(): () -> Float =
     rememberEntranceProgress(MaterialTheme.motionScheme.fastEffectsSpec<Float>())
 
 @Composable
@@ -261,11 +263,17 @@ private fun rememberEntranceProgress(spec: FiniteAnimationSpec<Float>): () -> Fl
     return remember(progress) { { progress.value } }
 }
 
-/** Translate + scale + fade a sheet up from its own bottom edge. */
-internal fun Modifier.sheetRiseTransform(progress: () -> Float): Modifier = graphicsLayer {
+/**
+ * Translate + scale + fade a sheet up from its own bottom edge, all of it in the draw
+ * phase. [progress] is the spatial clock and carries the geometry; [fade] is the effects
+ * clock and carries the opacity alone. The two are separate because the spatial spring
+ * rings through its end state by design, and a surface whose transparency rings with it
+ * flickers against the scrim on the way in.
+ */
+internal fun Modifier.sheetRiseTransform(progress: () -> Float, fade: () -> Float): Modifier = graphicsLayer {
     val p = progress()
     val scale = Motion.SheetRiseScale + (1f - Motion.SheetRiseScale) * p
-    alpha = p
+    alpha = fade()
     scaleX = scale
     scaleY = scale
     translationY = Motion.SheetRiseOffsetDp.dp.toPx() * (1f - p)

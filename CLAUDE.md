@@ -20,6 +20,55 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:assembleDebug :receiver
 - Android SDK location comes from `local.properties` (`sdk.dir=...`, gitignored) —
   create it on a fresh machine.
 - Always build both modules before committing.
+- **The first build on a machine must have network access**, even for plain
+  `:sender:assembleDebug`. Gradle resolves plugin markers and their full classpath at
+  configuration time under `apply false` too, so the baseline-profile and `com.android.test`
+  chains are fetched before any task runs. None of the following is in a stock Gradle cache;
+  all of it resolves from Google's Maven except where noted. Configuration time — a cold
+  cache fails *every* invocation without these:
+  `androidx.baselineprofile:androidx.baselineprofile.gradle.plugin:1.5.0-alpha07`,
+  `androidx.benchmark:benchmark-baseline-profile-gradle-plugin:1.5.0-alpha07`,
+  `com.google.testing.platform:core-proto:0.0.8-alpha08`,
+  `com.android.test:com.android.test.gradle.plugin:9.3.0`. Only when `:baselineprofile:*`
+  itself compiles: `androidx.benchmark:benchmark-macro-junit4` and its `benchmark-macro` /
+  `benchmark-common` / `benchmark-traceprocessor` siblings at `1.5.0-alpha07`,
+  `androidx.test.uiautomator:uiautomator:2.4.0`, `androidx.test:rules:1.5.0`, and
+  `com.squareup.wire:wire-runtime:6.4.0` (Maven Central). Once fetched, `--offline` works
+  again.
+
+### Build types
+
+| Type | Minified | Debuggable | Signed with | Purpose |
+| --- | --- | --- | --- | --- |
+| `debug` | no | yes | debug | day-to-day development; interpreted/JIT, no baseline profile |
+| `release` | **yes** (R8 + resource shrinking) | no | debug keystore | the real shape of the app; carries the baseline profile |
+| `benchmark` | no | no | debug keystore | macrobenchmark measurement target — AOT-compiled but symbol-readable |
+| `nonMinifiedRelease`, `benchmarkRelease` | synthesized by the baseline-profile plugin | | | profile generation and comparison |
+
+The `release` signing config is deliberately the **debug** keystore. That is a
+local-testing identity so `installRelease` works on a developer machine; it is not a
+distribution identity, and no keystore, password or credential belongs in this repo.
+
+### Performance builds
+
+Debug builds are interpreted/JIT-compiled with no profile, which is a large part of why
+animation feels choppy on the TV's MediaTek CPU. Measure on `release`:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:installRelease :receiver:installRelease
+```
+
+Regenerating the baseline profiles needs the matching device attached (a phone for
+`:sender`, the TV for `:receiver`) and writes back into `src/release/generated/baselineProfiles/`:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:generateReleaseBaselineProfile
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :receiver:generateReleaseBaselineProfile
+```
+
+Generation is never part of `assemble*` (`automaticGenerationDuringBuild = false`), so a
+build with no device attached still succeeds — it just packages the profile already
+committed.
 
 ## Working agreements
 

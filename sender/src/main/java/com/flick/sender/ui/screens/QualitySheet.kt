@@ -21,12 +21,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -56,6 +60,9 @@ private val FactRowTint = Color.White.copy(alpha = 0.05f)
 
 /** Seconds of reserve the buffer gauge treats as a full bar. */
 private const val BufferFullSeconds = 12.0
+
+/** The gauge's own rule. Clipped to a pill, so the fill is drawn at the same radius. */
+private val GaugeBarHeight = 8.dp
 
 /**
  * S10 — the quality sheet. Two gauges and four facts, all of them this phone's
@@ -129,7 +136,7 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
                 value = if (serving) gaugeReading(throughputMbps) else unknown,
                 unit = stringResource(R.string.quality_unit_mbps),
                 known = serving,
-                fraction = if (serving) throughputFraction else 0f,
+                fraction = { if (serving) throughputFraction else 0f },
                 barColor = signalColor,
             )
             BufferGauge(playbackState = playbackState, casting = item != null)
@@ -203,19 +210,29 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
 @Composable
 private fun RowScope.BufferGauge(playbackState: State<PlaybackUiState>, casting: Boolean) {
     val colors = LocalFlickColors.current
-    val state = playbackState.value
-    val hasReserve = casting && state.durationMs > 0L
-    val reserveSeconds = (state.bufferedMs - state.confirmedMs).coerceAtLeast(0L) / 1000.0
+    // Null is "there is no reserve to report", which is not the same claim as zero.
+    val reserve = remember(playbackState, casting) {
+        derivedStateOf {
+            val state = playbackState.value
+            if (!casting || state.durationMs <= 0L) {
+                null
+            } else {
+                (state.bufferedMs - state.confirmedMs).coerceAtLeast(0L) / 1000.0
+            }
+        }
+    }
+    // The clock ticks ten times a second and the reading has a tenth of a second of
+    // resolution, so the label is derived: the card recomposes when the printed figure
+    // moves, not when the clock does.
+    val reading by remember(reserve) { derivedStateOf { reserve.value?.let(::gaugeReading) } }
     GaugeCard(
         eyebrow = stringResource(R.string.quality_buffer),
-        value = if (hasReserve) gaugeReading(reserveSeconds) else stringResource(R.string.media_unknown),
+        value = reading ?: stringResource(R.string.media_unknown),
         unit = stringResource(R.string.quality_unit_seconds),
-        known = hasReserve,
-        fraction = if (hasReserve) {
-            (reserveSeconds / BufferFullSeconds).coerceIn(0.0, 1.0).toFloat()
-        } else {
-            0f
-        },
+        known = reading != null,
+        // A lambda: the bar is the only thing here that genuinely follows the clock, and
+        // it follows it in the draw phase.
+        fraction = { ((reserve.value ?: 0.0) / BufferFullSeconds).coerceIn(0.0, 1.0).toFloat() },
         barColor = colors.link,
     )
 }
@@ -241,7 +258,7 @@ private fun RowScope.GaugeCard(
     value: String,
     unit: String,
     known: Boolean,
-    fraction: Float,
+    fraction: () -> Float,
     barColor: Color,
 ) {
     val colors = LocalFlickColors.current
@@ -270,24 +287,31 @@ private fun RowScope.GaugeCard(
     }
 }
 
+/**
+ * The filled span is drawn rather than laid out. A width the layout owns put the buffer
+ * gauge's ~10 Hz reading through a measure pass of the whole sheet — including every
+ * frame the sheet's own radial reveal was still travelling on.
+ */
 @Composable
-private fun GaugeBar(fraction: Float, barColor: Color) {
+private fun GaugeBar(fraction: () -> Float, barColor: Color) {
     val colors = LocalFlickColors.current
     Box(
         Modifier
             .fillMaxWidth()
-            .height(8.dp)
+            .height(GaugeBarHeight)
             .clip(PillShape)
-            .background(colors.fillTrack),
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth(fraction)
-                .height(8.dp)
-                .clip(PillShape)
-                .background(barColor),
-        )
-    }
+            .background(colors.fillTrack)
+            .drawBehind {
+                val filled = size.width * fraction().coerceIn(0f, 1f)
+                if (filled > 0f) {
+                    drawRoundRect(
+                        color = barColor,
+                        size = Size(filled, size.height),
+                        cornerRadius = CornerRadius(size.height / 2f),
+                    )
+                }
+            },
+    )
 }
 
 @Composable

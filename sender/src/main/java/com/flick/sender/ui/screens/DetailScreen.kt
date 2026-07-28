@@ -111,6 +111,9 @@ fun DetailScreen(
     val unplayable by controller.unplayableFiles.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val rise = rememberSheetRise()
+    // Geometry and opacity on separate clocks: the sheet's own scrim is fixed here, so its
+    // transparency is the only thing standing between the frame and the copy over it.
+    val fade = rememberSheetFade()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, item.name, tvName)
     val dismissDescription = stringResource(R.string.a11y_back_to_library)
@@ -162,7 +165,7 @@ fun DetailScreen(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .heightIn(max = 640.dp)
-                .sheetRiseTransform(rise)
+                .sheetRiseTransform(rise, fade)
                 .clip(SheetShape)
                 .background(colors.surface)
                 .clickable(interactionSource = sheetSource, indication = null, onClick = {})

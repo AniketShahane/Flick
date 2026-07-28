@@ -3,11 +3,9 @@ package com.flick.sender.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +54,7 @@ import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
 
@@ -196,17 +195,15 @@ private fun NavItem(
     // No haptic here: the shell decides whether a tap moved at all — a re-tap of the
     // seat already carrying the fill is silent. FlickApp fires the pulse from onSelect.
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
     // Material's ripple dilutes whatever ink it is handed, and on this palette
     // onSurface is near-white — which lands on the glass as a grey blob. The seat
     // answers a touch by pressing in under it instead, washed in the same brand tint
     // the selection itself travels in. Never a neutral one, and never on the seat that
     // already carries the fill: there the travelling pill is the wash.
-    val wash = animateFloatAsState(
-        targetValue = if (pressed && !active) NavPressWashAlpha else 0f,
-        animationSpec = Motion.orSnap(reduceMotion, motionScheme.fastEffectsSpec<Float>()),
-        label = "navPressWash",
-    )
+    //
+    // An effects spring, not the spatial one the scale takes: this is opacity and must
+    // not ring past either end of its range.
+    val wash = rememberPressAmount(interaction, motionScheme.fastEffectsSpec())
     val washColor = colors.primary
 
     Column(
@@ -217,7 +214,7 @@ private fun NavItem(
             .drawBehind {
                 // Read in the draw scope, so a press repaints one seat rather than
                 // recomposing the bar it sits in.
-                val alpha = wash.value
+                val alpha = if (active) 0f else wash.value * NavPressWashAlpha
                 if (alpha > 0f) {
                     drawRoundRect(
                         color = washColor,

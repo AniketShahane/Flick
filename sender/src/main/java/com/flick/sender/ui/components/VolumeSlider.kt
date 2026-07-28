@@ -15,6 +15,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -45,21 +47,32 @@ import kotlin.math.roundToInt
 
 /**
  * Continuous TV volume. A 13dp track with a bright fill and the amber blade thumb;
- * the trailing [percentLabel] is fixed-width so the digits never shift the track.
+ * the trailing percent readout is fixed-width so the digits never shift the track.
  * The visual band is short, but the gesture/semantics box stays a legal target.
  *
  * Track and blade swell under the finger, on the same spec and in the same direction
  * as the scrub bar's grab — one remote must not speak two slider languages.
+ *
+ * [value] arrives as a lambda and is consumed in the draw scope, the gesture and the
+ * semantics block. It shares its state object with the ~10 Hz session clock and is
+ * itself written at pointer rate, so a value read at this scope rebuilt the whole row
+ * on every tick of a clock this control does not show — and on every frame of a scrub
+ * happening elsewhere on the remote.
+ *
+ * [percentLabel] and [valueDescription] are formatters rather than resolved strings for
+ * the same reason: a string built by the caller is a value read at the caller's scope,
+ * which is the recomposition this defers. Both are spent where `stringResource` cannot
+ * reach anyway — one inside a leaf, one inside a semantics block.
  */
 @Composable
 fun VolumeSlider(
-    value: Float,
+    value: () -> Float,
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = LocalFlickColors.current.onSurfaceDim,
-    percentLabel: String? = null,
+    percentLabel: ((Int) -> String)? = null,
     accessibilityLabel: String? = null,
-    valueDescription: String? = null,
+    valueDescription: ((Int) -> String)? = null,
     adjustableActionLabel: String? = null,
 ) {
     val colors = LocalFlickColors.current
@@ -92,9 +105,12 @@ fun VolumeSlider(
                 .weight(1f)
                 .height(48.dp)
                 .semantics {
-                    progressBarRangeInfo = ProgressBarRangeInfo(value.coerceIn(0f, 1f), 0f..1f)
+                    // Read through the lambda here too: the level reaches the semantics
+                    // phase without ever passing through composition.
+                    val level = value().coerceIn(0f, 1f)
+                    progressBarRangeInfo = ProgressBarRangeInfo(level, 0f..1f)
                     accessibilityLabel?.let { contentDescription = it }
-                    valueDescription?.let { stateDescription = it }
+                    valueDescription?.let { stateDescription = it(volumePercent(level)) }
                     setProgress(adjustableActionLabel) { target ->
                         onValueChange(target.coerceIn(0f, 1f))
                         true
@@ -106,7 +122,7 @@ fun VolumeSlider(
                         val w = { size.width.toFloat().coerceAtLeast(1f) }
                         // Seeded from the level before the gesture: a tap on the thumb
                         // must stay silent, one that jumps the level must tick once.
-                        var step = stepOf(currentValue.value)
+                        var step = stepOf(currentValue.value())
                         val report = { fraction: Float ->
                             val next = stepOf(fraction)
                             if (next != step) {
@@ -151,7 +167,7 @@ fun VolumeSlider(
                     size = Size(size.width, track),
                     cornerRadius = CornerRadius(r, r),
                 )
-                val fillW = value.coerceIn(0f, 1f) * size.width
+                val fillW = value().coerceIn(0f, 1f) * size.width
                 if (fillW > 0f) {
                     drawRoundRect(
                         color = colors.onSurface,
@@ -175,14 +191,29 @@ fun VolumeSlider(
         }
         if (percentLabel != null) {
             Spacer(Modifier.width(14.dp))
-            Text(
-                text = percentLabel,
-                style = FlickText.monoSmall.copy(color = tint, textAlign = TextAlign.End),
-                modifier = Modifier.width(36.dp),
-            )
+            VolumePercent(value = value, tint = tint, label = percentLabel)
         }
     }
 }
+
+/**
+ * The trailing readout, isolated and derived. The level is continuous but the digits are
+ * not, so this recomposes at most once per whole percent instead of once per pointer
+ * sample — and it is the only node in the row that recomposes at all during a drag.
+ */
+@Composable
+private fun VolumePercent(value: () -> Float, tint: Color, label: (Int) -> String) {
+    val current = rememberUpdatedState(value)
+    val percent by remember { derivedStateOf { volumePercent(current.value()) } }
+    Text(
+        text = label(percent),
+        style = FlickText.monoSmall.copy(color = tint, textAlign = TextAlign.End),
+        modifier = Modifier.width(36.dp),
+    )
+}
+
+/** The level as whole percent, which is the only resolution anything reads it at. */
+internal fun volumePercent(level: Float): Int = (level.coerceIn(0f, 1f) * 100f).roundToInt()
 
 private val TrackHeight = 13.dp
 private val ThumbWidth = 6.dp

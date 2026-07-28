@@ -79,6 +79,80 @@ or a Media3 hardware decoder. The connected Compose results above cover only the
 scope. Earlier manual direct-play measurements remain a transport/tuning baseline, not current
 cross-device acceptance evidence.
 
+### Build types, R8, and baseline profiles
+
+Both apps declare three authored build types plus two synthesized by the baseline-profile
+plugin.
+
+| Type | `isMinifyEnabled` | `isDebuggable` | Signing | Role |
+| --- | --- | --- | --- | --- |
+| `debug` | false | true | debug | development; interpreted/JIT, no profile |
+| `release` | **true** (+ `isShrinkResources`) | false | debug keystore | shipped shape; packages the baseline profile |
+| `benchmark` | false | false | debug keystore | macrobenchmark target: AOT-compiled but symbol-readable |
+| `nonMinifiedRelease` | false | false | debug keystore | plugin-synthesized profile-capture target |
+| `benchmarkRelease` | inherits `release` | false | debug keystore | plugin-synthesized comparison target |
+
+The `release` signing config points at the **debug** keystore. That is a local-testing
+identity so a release APK can be installed for performance measurement; it is not a
+distribution identity, and no keystore file, password, or credential is stored in the
+repository.
+
+Everything the project previously exercised was a debug build, which ART never compiles
+ahead of time. Both apps now depend on `androidx.profileinstaller` so a packaged profile is
+actually handed to ART on first run, and `:baselineprofile:sender` / `:baselineprofile:receiver`
+(`com.android.test` modules on `androidx.benchmark:benchmark-macro-junit4`) generate those
+profiles. One test module can name exactly one `targetProjectPath`, which is why there are
+two of them.
+
+Declaring those plugins costs one online build. Gradle resolves a plugin marker and the
+whole classpath behind it at configuration time even under `apply false`, so the
+`androidx.baselineprofile` and `com.android.test` chains are fetched before any task is
+selected — a cold cache therefore fails `:sender:assembleDebug` as surely as it fails a
+profile run. The configuration-time set is
+`androidx.baselineprofile:androidx.baselineprofile.gradle.plugin:1.5.0-alpha07`,
+`androidx.benchmark:benchmark-baseline-profile-gradle-plugin:1.5.0-alpha07`,
+`com.google.testing.platform:core-proto:0.0.8-alpha08` and
+`com.android.test:com.android.test.gradle.plugin:9.3.0`; the marker's own
+`com.android.tools.build:gradle:9.3.0` is already present because the application plugin
+pulls it. Compiling `:baselineprofile:*` additionally needs `benchmark-macro-junit4`,
+`benchmark-macro`, `benchmark-common` and `benchmark-traceprocessor` at `1.5.0-alpha07`,
+`androidx.test.uiautomator:uiautomator:2.4.0`, `androidx.test:rules:1.5.0`, and
+`com.squareup.wire:wire-runtime:6.4.0` — the one coordinate here that comes from Maven
+Central rather than Google's Maven. All of it is current and resolvable; nothing is
+yanked. After the first successful resolve the build is `--offline`-clean again.
+
+The generators exercise the journeys that dominate first-run cost: on the phone, cold start,
+the library grid fling, the film detail sheet, the Now Playing remote, and the metrics and
+subtitles sheets; on the TV, cold start, the idle/pair focus graph, Settings, playback chrome
+show/hide, and the subtitles and metrics panels. Every interaction is best-effort — the TV's
+playback routes only exist while a phone is casting, and a generator run cannot arrange that,
+so those steps are attempted and skipped silently rather than failing the run.
+
+Generation is off the assemble path (`automaticGenerationDuringBuild = false`), so
+`assembleDebug` and `assembleRelease` never require a connected device; they package whatever
+profile is committed under `src/release/generated/baselineProfiles/`. Refreshing a profile is
+an explicit, device-attached task:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:generateReleaseBaselineProfile
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :receiver:generateReleaseBaselineProfile
+```
+
+`dexLayoutOptimization = true` is set on both consumers so R8 lays startup classes
+contiguously. The sibling `baselineProfileRulesRewrite` flag is deliberately left unset:
+it writes the `android.experimental.art-profile-r8-rewriting` module property, which AGP
+9.3.0 no longer defines.
+
+Turning R8 on made two name-based dependencies load-bearing. `PlaybackFailureClassifier`
+compares `cause.javaClass.name` against the literal
+`androidx.media3.exoplayer.source.UnrecognizedInputFormatException`, so the receiver's
+`proguard-rules.pro` pins that name; renaming it would silently reclassify every container
+rejection as `MALFORMED_MEDIA`. Both modules also keep all `Throwable` names, because
+`FlickLog` records `e.javaClass.simpleName` and the phone's Diagnostics sheet shows those
+lines to the user. The remaining rules keep Ktor, kotlinx-coroutines, the slf4j-simple
+service provider, ML Kit's bundled barcode runtime, and ZXing, and silence the JVM-only
+classpath references that Guava, CameraX, Coil/OkHttp and ML Kit drag in.
+
 ## Architecture
 
 ```text
@@ -124,7 +198,11 @@ The subtitle `(uri, token)` pair lives **inside** the same atomically published 
 
 The receiver validates `subUrl` through the same `MediaUrlValidator` rules as the media URL (same host, same port, no redirect, no scheme change) and fails the cast on a bad one rather than silently fetching or dropping it. It attaches the file as a real Media3 `SubtitleConfiguration`, so it surfaces as an ordinary text track that the existing `subtitleTracksFrom` mapping and the TV subtitles panel already handle. A subtitle that fails to load degrades to no subtitles and never fails the video.
 
-Selecting or clearing a subtitle mid-cast re-arms the capability and re-issues `loadMedia` for the **same** `castId` at the position the TV last confirmed. Control ownership classifies a repeat of the live cast as a duplicate, which is otherwise answered from the retained result; the receiver therefore compares the frame's validated subtitle triple against what the running session was prepared with and, only when it differs, re-prepares the same media at the frame's `startMs` with the new (or removed) `SubtitleConfiguration` instead of replaying. An identical repeat still replays, so an ordinary retransmit never costs a re-buffer, and a reload is only ever taken from the lease that already owns the cast. The swap therefore costs a re-buffer and nothing else, and the previous player keeps rendering until the new prepare replaces it. Only a generation that still owns the socket may repoint the capability, so a late intent from a superseded cast cannot re-arm a revoked one.
+Selecting or clearing a subtitle mid-cast re-arms the capability and re-issues `loadMedia` for the **same** `castId` at the position the TV last confirmed. Control ownership classifies a repeat of the live cast as a duplicate, which is otherwise answered from the retained result; the receiver therefore compares the frame's validated subtitle triple against what the running session was prepared with and, only when it differs, re-prepares with the new (or removed) `SubtitleConfiguration` instead of replaying. An identical repeat still replays, so an ordinary retransmit never costs a re-buffer, and a reload is only ever taken from the lease that already owns the cast. Only a generation that still owns the socket may repoint the capability, so a late intent from a superseded cast cannot re-arm a revoked one.
+
+**A reload of a cast that is already Active is not a load transaction.** `SessionController.onReloadMedia` holds the stage at `Active` and calls `PlayerController.reloadInPlace`, which re-prepares the **same** ExoPlayer instance — `setMediaItem(item, resetPosition = false)`, seek to the player's own current position, `prepare()` — and restores `playWhenReady`. The instance, the surface it is presenting to, the `MediaSession` that owns platform media buttons and the track-selection parameters all survive, so the swap costs a re-buffer and nothing else. The one selection state it does overrule is a suppressed text renderer: a sideloaded track arrives under `SELECTION_FLAG_DEFAULT`, which the panel's Off row and any earlier per-group override both outrank, so attaching a subtitle clears text overrides and re-enables the text track type — a fresh player used to discard those along with everything else, and reusing one must not turn a just-attached subtitle into a track that draws nothing.
+
+Routing that through `beginLoad` instead is what made attaching *or removing* a subtitle kill the cast, reproduced on a Google TV Streamer. `beginLoad` arms the 18 s startup deadline and sets the stage to `Checking`, which `playerSurfaceMode` maps to `CoveredConnecting` — so the UI rebuilt the `PlayerView`'s `SurfaceView` (four surface handles inside 250 ms) at the same moment `playStartup` released the player that was presenting. The replacement's video renderer landed on a surface that never presented, `onRenderedFirstFrame` never fired at all, and since that frame is the deadline's **only** disarm path, a healthy cast died 18 s later reporting `startup_timeout`. Staying `Active` is therefore the fix rather than an optimisation: the surface mode never leaves `VisiblePlayback` and no deadline is armed. It also fixes the taxonomy — a reload installs no startup callback, so a reload that genuinely fails reaches the ordinary steady-state error path (bounded auto-recovery, then a classified `error` frame with `beforeReady=false`) and a cast that has already started can never report a startup code. The full load stays reserved for a genuinely new cast, and for the contradictory case of a reload arriving with no live player at all, where the startup transaction is the correct one.
 
 A sideloaded subtitle belongs to the title it was picked for. A live cast owns the file it is serving, so browsing the library mid-cast cannot clear the selection; the sender instead re-checks that ownership when the next cast starts and drops a selection made for a different item, rather than attaching one film's cues to another under `SELECTION_FLAG_DEFAULT`.
 
@@ -225,7 +303,7 @@ The current cast/generation first-frame callback is installed before media/prepa
 
 After first frame, the existing player tuning remains: 15/180-second min/max forward buffer, 2.5-second initial threshold, five-second post-rebuffer threshold, 30-second back buffer, 256 MiB byte target, up to 20 load retries with five-second capped backoff, and four bounded fatal-transient recovery attempts at 2/4/8/15 seconds.
 
-Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. The one state that neither pins nor releases at once is the **handshake**: a cast arriving over a running film (the next episode, or the same film re-prepared because a subtitle was attached) passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
+Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. The one state that neither pins nor releases at once is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
 
 Playback chrome is a glass transport panel anchored inside the 5% TV-safe inset, not a full-width bottom bar: the media title is a single ellipsized 34sp line, timecode is 20sp tabular mono, transport targets are 52dp/66dp with 26dp/35dp seek and play glyphs, and the movie frame stays visible behind lighter pause/seek/buffering dimming. The top and bottom scrims are gradients that fade in and out with the chrome rather than permanently overlaying the film. Focus is a detached amber ring drawn outside the element bounds, so focusing a control never reflows its row; the play key takes the white ring because amber on amber would vanish, and the scrub bar draws its ring around the knob rather than around a 700dp span. **The control row is traversed the way it is drawn**: left/right step through `subtitles → back-10 → play → forward-10 → volume → stream metrics`, up from any of them reaches the scrub bar, down from the scrub bar returns to the row, and up from the scrub bar reaches `END SESSION`. Revealing the chrome still lands focus on play; after a side panel closes it lands on the card that opened it. Because both handoffs compose the arriving surface in the same frame that removes the departing one, entry focus is requested across several frames (`landTvFocus`) rather than once — a `FocusRequester` whose node has not been placed yet throws, and there would be nothing else on screen to steer with.
 

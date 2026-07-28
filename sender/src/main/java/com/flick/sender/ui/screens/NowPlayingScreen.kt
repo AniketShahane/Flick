@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
@@ -41,6 +42,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -57,6 +60,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -460,13 +464,23 @@ private fun ColumnScope.RemoteContent(
     Spacer(Modifier.weight(1f))
 
     // --- transport region ---
-    val preview = rememberScrubFrame(item?.uri, { playbackState.value.targetMs }, scrubbing)
+    // A still lands as often as ten times a second under a drag, and a composable that
+    // returns a value has no restart scope of its own — calling rememberScrubFrame inline
+    // put the whole transport region behind that decode. The pump owns the subscription;
+    // only the preview card inside the bar reads what it publishes.
+    val preview = remember { mutableStateOf<ImageBitmap?>(null) }
+    ScrubFramePump(
+        uri = item?.uri,
+        positionMs = { playbackState.value.targetMs },
+        enabled = scrubbing,
+        sink = preview,
+    )
 
     PhoneScrubBar(
         targetFraction = { playbackState.value.targetFraction },
         ghostFraction = { playbackState.value.confirmedFraction },
         syncing = syncing,
-        framePreview = preview,
+        framePreview = { preview.value },
         previewLabel = { Format.timecode(playbackState.value.targetMs) },
         onScrubStart = { controller.scrubStart() },
         onScrub = { controller.scrubTo(it) },
@@ -532,6 +546,22 @@ private fun ColumnScope.RemoteContent(
 }
 
 /**
+ * Holds the scrub decode's own subscription so nothing above it carries one, and hands
+ * the result on as plain state the preview card can read for itself. The write lands in
+ * the apply phase, never during composition.
+ */
+@Composable
+private fun ScrubFramePump(
+    uri: Uri?,
+    positionMs: () -> Long,
+    enabled: Boolean,
+    sink: MutableState<ImageBitmap?>,
+) {
+    val frame = rememberScrubFrame(uri, positionMs, enabled)
+    SideEffect { sink.value = frame }
+}
+
+/**
  * Isolated as its own scope: the press state a scale response reads would otherwise
  * recompose the whole transport tree on every touch down and up.
  */
@@ -564,18 +594,31 @@ private fun ColumnScope.StopCastControl(onStop: () -> Unit) {
     }
 }
 
-/** Isolated: a volume drag writes the optimistic level at pointer rate. */
+/**
+ * Isolated, and now inert: every reader of the level is a lambda consumed in the draw,
+ * layout or semantics phase, so a volume drag — and the 10 Hz clock that shares its state
+ * object — recomposes nothing here at all.
+ */
 @Composable
 private fun VolumeRow(playbackState: State<PlaybackUiState>, onVolume: (Float) -> Unit) {
-    val level = playbackState.value.volume.coerceIn(0f, 1f)
-    val percent = (level * 100f).roundToInt()
+    val context = LocalContext.current
+    val level: () -> Float = remember(playbackState) { { playbackState.value.volume } }
+    // Formatters, not strings: building either here would put this scope back behind the
+    // level it exists to keep out of composition. One is spent inside a leaf that reads
+    // the level for itself, the other inside a semantics block.
+    val readout: (Int) -> String = remember(context) {
+        { percent -> context.getString(R.string.np_volume_percent, percent) }
+    }
+    val spokenValue: (Int) -> String = remember(context) {
+        { percent -> context.getString(R.string.a11y_volume_value, percent) }
+    }
     VolumeSlider(
         value = level,
         onValueChange = onVolume,
         modifier = Modifier.fillMaxWidth(),
-        percentLabel = stringResource(R.string.np_volume_percent, percent),
+        percentLabel = readout,
         accessibilityLabel = stringResource(R.string.a11y_volume),
-        valueDescription = stringResource(R.string.a11y_volume_value, percent),
+        valueDescription = spokenValue,
         adjustableActionLabel = stringResource(R.string.a11y_adjust_volume),
     )
 }

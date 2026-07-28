@@ -24,6 +24,14 @@ tvMaterial = "1.1.0"
 # Media3 is pinned by contract; declared here for module convenience only.
 media3 = "1.10.1"
 
+# --- AOT compilation: baseline profiles ---
+# The 1.5.0 line is required rather than preferred: the 1.4.1 baseline-profile
+# plugin declares 9.0.0-alpha01 as its exclusive maximum AGP, and this build is
+# on AGP 9.3.0. 1.5.0-alpha07 raises that ceiling to 10.0.0-alpha01. The plugin
+# and the macrobenchmark library must stay on the same version.
+androidxBenchmark = "1.5.0-alpha07"
+profileinstaller = "1.4.1"
+
 [libraries]
 # Minimal, widely-used baseline libraries. Module agents own their own
 # dependency lists; these are here so the baseline module builds resolve.
@@ -41,8 +49,16 @@ androidx-material3 = { group = "androidx.compose.material3", name = "material3" 
 androidx-material3-expressive = { group = "androidx.compose.material3", name = "material3", version.ref = "material3Expressive" }
 androidx-tv-material = { group = "androidx.tv", name = "tv-material", version.ref = "tvMaterial" }
 
+# Ships the ProfileInstaller receiver that hands the packaged baseline profile to
+# ART on first run; without it a bundled profile is inert below API 31.
+androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
+# Consumed only by the :baselineprofile producer modules.
+androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "androidxBenchmark" }
+
 [plugins]
 # These aliases are referenced by the root build.gradle.kts (apply false) and
 # by each module's build.gradle.kts via alias(libs.plugins.*).
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+android-test = { id = "com.android.test", version.ref = "agp" }
+androidx-baselineprofile = { id = "androidx.baselineprofile", version.ref = "androidxBenchmark" }

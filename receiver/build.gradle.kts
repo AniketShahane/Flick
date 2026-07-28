@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.androidx.baselineprofile)
 }
 
 android {
@@ -19,11 +20,32 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Local-testing signing identity only: reusing the debug keystore is
+            // what makes `installRelease` possible on a developer machine. It is
+            // NOT a distribution identity and no keystore/credential is stored
+            // in this repository.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+
+        // Macrobenchmark measurement target: release-shaped and non-debuggable
+        // (debuggable code is never AOT-compiled, which invalidates timings) but
+        // unminified, so profiles and traces map to real symbol names. The
+        // baseline-profile plugin treats any `benchmark*` / `nonMinified*` name
+        // as one of its own, so this type is deliberately left out of profile
+        // wiring — `benchmarkRelease` is the variant that carries a profile.
+        create("benchmark") {
+            initWith(getByName("release"))
+            isMinifyEnabled = false
+            isShrinkResources = false
+            isDebuggable = false
+            matchingFallbacks += listOf("release")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -66,10 +88,28 @@ kotlin {
     }
 }
 
+baselineProfile {
+    from(project(":baselineprofile:receiver"))
+    // Generation needs a connected TV, so it must stay off the assemble path:
+    // `assembleRelease` uses whatever profile is already checked in.
+    automaticGenerationDuringBuild = false
+    saveInSrc = true
+    // The plugin hides its own build types from the Studio variant picker by
+    // default, which would also hide the hand-written `benchmark` type.
+    hideSyntheticBuildTypesInAndroidStudio = false
+    // Lays startup classes contiguously in the dex. The sibling
+    // `baselineProfileRulesRewrite` flag is deliberately left unset: it writes
+    // the `android.experimental.art-profile-r8-rewriting` module property, which
+    // AGP 9.3.0 no longer defines.
+    dexLayoutOptimization = true
+}
+
 dependencies {
     // --- Baseline (from Foundation's version catalog; not module-owned) ---
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // Installs the packaged baseline profile into ART on first run.
+    implementation(libs.androidx.profileinstaller)
 
     // --- Compose (BOM-aligned; explicit coordinates owned by this module) ---
     val composeBom = platform(libs.androidx.compose.bom)

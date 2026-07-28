@@ -23,6 +23,7 @@ import androidx.compose.ui.geometry.center
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -195,7 +196,16 @@ fun TvOriginReveal(
                         if (cover > 0f) drawRect(color = color, alpha = cover)
                     }
                 }
-            },
+            }
+            // The revealed surface's own render node, and the reason this wipe is
+            // affordable at all. The clip above is re-cut on every frame of the
+            // travel, and without a layer under it each of those frames re-records
+            // the display list of everything the panel draws — every glyph, every
+            // rule, every icon — to change one circle. With it the frame costs a
+            // single `drawRenderNode`. No transform and no alpha here, so it is a
+            // display list and never an offscreen buffer, and `clip` stays false so
+            // a focused child's detached ring still paints outside its bounds.
+            .graphicsLayer(),
         content = content,
     )
 }

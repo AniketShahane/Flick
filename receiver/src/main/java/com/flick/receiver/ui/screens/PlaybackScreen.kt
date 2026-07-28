@@ -1599,6 +1599,12 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .size(40.dp)
+                // The arc turns once a second on its own render node. The plate
+                // around it carries no layer of its own, so without this the sweep
+                // re-records the buffering card's type — and the scrims above it —
+                // on every frame of the one state with the least headroom in the
+                // app.
+                .graphicsLayer()
                 .drawBehind {
                     val stroke = Stroke(width = 3.dp.toPx())
                     drawArc(

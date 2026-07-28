@@ -39,7 +39,7 @@ class PhoneScrubBarSemanticsTest {
                     targetFraction = { target.floatValue },
                     ghostFraction = { 0.20f },
                     syncing = false,
-                    framePreview = null,
+                    framePreview = { null },
                     previewLabel = { null },
                     onScrubStart = { starts++ },
                     onScrub = { fraction ->
@@ -86,7 +86,7 @@ class PhoneScrubBarSemanticsTest {
                         targetFraction = { 0.25f },
                         ghostFraction = { null },
                         syncing = false,
-                        framePreview = null,
+                        framePreview = { null },
                         previewLabel = { null },
                         onScrubStart = { starts++ },
                         onScrub = {},
@@ -123,7 +123,7 @@ class PhoneScrubBarSemanticsTest {
                     // and an animation that never ends keeps waitForIdle from returning
                     // on any device whose animator scale is not zero.
                     syncing = false,
-                    framePreview = null,
+                    framePreview = { null },
                     previewLabel = { "0:30" },
                     onScrubStart = { starts++ },
                     onScrub = { fraction ->
