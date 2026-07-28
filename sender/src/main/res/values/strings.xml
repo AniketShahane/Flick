@@ -403,4 +403,70 @@
     <string name="np_segment_metrics">Metrics</string>
     <!-- Voiced instead of the visible label, so it has to contain it. -->
     <string name="a11y_np_metrics">Stream metrics</string>
+
+    <!-- ===== Unplayable files & honest failures ===== -->
+    <!-- ===== S3 · the tile's two honest states ===== -->
+    <!-- Both render in a mono badge style, which applies no transform and is tracked:
+         the copy has to arrive uppercase. "UNKNOWN" is the withheld claim (MediaStore
+         told us nothing); "DIDN'T PLAY" is the remembered fact (this TV refused it),
+         and it stays in the past tense because one refusal is all we ever witnessed. -->
+    <string name="library_badge_unknown">UNKNOWN</string>
+    <string name="library_badge_unplayable">DIDN\'T PLAY</string>
+    <string name="a11y_tile_unplayable">Your TV couldn\'t play this file</string>
+    <!-- ===== S4 · Detail ===== -->
+    <!-- Every body below continues "Your TV couldn't play this file." — the subject is the
+         TV throughout, so a phone-side fault has no sentence here and must never reach
+         this card. -->
+    <string name="detail_resolution_unknown">RESOLUTION UNKNOWN</string>
+    <string name="detail_hdr_checking">CHECKING…</string>
+    <string name="detail_unplayable_title">Your TV couldn\'t play this file.</string>
+    <string name="detail_unplayable_container">It reached the file but couldn\'t read the container it\'s wrapped in — the video inside may be perfectly fine.</string>
+    <string name="detail_unplayable_video">It read the file but its decoder doesn\'t handle this video track.</string>
+    <string name="detail_unplayable_hdr">It read the file but doesn\'t support the dynamic-range profile it uses.</string>
+    <string name="detail_unplayable_damaged">It couldn\'t read enough of the file to start — it may be incomplete or damaged.</string>
+    <string name="detail_unplayable_generic">It stopped before the first frame.</string>
+    <string name="detail_unplayable_note">That was one attempt, on one TV. Flick it again whenever you want.</string>
+    <!-- ===== S12 · the faces a diagnosed failure earns ===== -->
+    <!-- Every body names what was actually established and nothing more. Where the fault
+         is the file, the TV is not accused; where it is permanent, no copy invites a retry
+         (the screen offers none). -->
+    <string name="error_container_title">This TV can\'t open this file</string>
+    <string name="error_container_body">%1$s reached the video but couldn\'t read the container it\'s wrapped in. The film inside may be perfectly fine — a copy remuxed to MP4 usually plays.</string>
+    <string name="error_container_pill">Container unsupported</string>
+    <string name="error_video_title">This TV can\'t decode this video</string>
+    <string name="error_video_body">%1$s read the file, but its decoder doesn\'t handle this video track. Nothing about the network will change that answer.</string>
+    <string name="error_video_pill">Video unsupported</string>
+    <string name="error_hdr_title">This TV can\'t decode this HDR profile</string>
+    <string name="error_hdr_body">%1$s read the file but doesn\'t support the dynamic-range profile it uses. An SDR or HDR10 copy of the same film will play.</string>
+    <string name="error_hdr_pill">HDR profile unsupported</string>
+    <string name="error_damaged_title">This file looks damaged</string>
+    <string name="error_damaged_body">%1$s couldn\'t read enough of it to start. The file is probably incomplete or corrupted rather than unsupported.</string>
+    <string name="error_damaged_pill">File unreadable</string>
+    <string name="error_source_title">Flick can\'t read this file</string>
+    <string name="error_source_body">This phone couldn\'t open the file to serve it. It may have moved, or your gallery may no longer be sharing it with Flick.</string>
+    <string name="error_source_pill">File unavailable</string>
+    <string name="error_decoder_title">The TV couldn\'t start a decoder</string>
+    <string name="error_decoder_body">%1$s has a decoder for this video but couldn\'t start it — usually something else on the TV is still holding it.</string>
+    <string name="error_decoder_pill">Decoder unavailable</string>
+    <string name="error_tvclosed_title">The TV app closed</string>
+    <string name="error_tvclosed_body">Flick is no longer in front on %1$s. Open it there and this will work again.</string>
+    <string name="error_tvclosed_pill">Receiver closed</string>
+    <string name="error_busy_title">%1$s is already casting</string>
+    <string name="error_busy_body">Another Flick session owns this TV. Stop that one and this file is yours to send.</string>
+    <string name="error_busy_pill">TV busy</string>
+    <string name="error_update_title">The TV app is out of date</string>
+    <string name="error_update_body">Update Flick on %1$s — this phone speaks a newer version of the control channel than that receiver understands.</string>
+    <string name="error_update_pill">Receiver out of date</string>
+    <string name="error_timeout_title">The TV didn\'t start in time</string>
+    <string name="error_timeout_body">%1$s accepted the cast but never reached its first frame.</string>
+    <string name="error_timeout_pill">Startup timed out</string>
+    <!-- The generic face, split: the shipped body ends in "Try again", which is a lie on
+         a failure that offers no retry. -->
+    <string name="error_generic_body_permanent">Flick couldn\'t start this cast, and the TV didn\'t say why.</string>
+    <string name="error_generic_pill">Cast failed</string>
+    <string name="error_nolan_pill">No Wi-Fi</string>
+    <string name="error_action_play_here">Play on this phone</string>
+    <!-- Not every face on this screen is a network fault, and the pill under a container
+         rejection is not a network reading. -->
+    <string name="a11y_cast_status">Cast status: %1$s</string>
 </resources>

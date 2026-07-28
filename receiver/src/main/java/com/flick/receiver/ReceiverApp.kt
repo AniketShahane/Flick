@@ -109,7 +109,10 @@ import com.flick.receiver.ui.screens.PlaybackScreen
 import com.flick.receiver.ui.screens.QualityInfo
 import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.screens.SubtitleSize
+import com.flick.receiver.ui.screens.VideoResolutionClass
 import com.flick.receiver.ui.screens.formatMbps
+import com.flick.receiver.ui.screens.videoResolutionClass
+import com.flick.receiver.ui.screens.videoResolutionLines
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
@@ -166,14 +169,23 @@ private const val STANDBY_PUNCH_IN_SCALE = 0.92f
 private const val STANDBY_PUNCH_OUT_SCALE = 1.04f
 
 /**
- * The Activity owns physical playback gestures, except while a visible child
- * control has explicitly engaged its own horizontal adjustment mode.
+ * Whether the Activity-level remote policy is in play at all.
+ *
+ * An open side panel owns the whole D-pad: it is the only surface on screen with
+ * focusables, its rows run horizontally, and nothing on it is a playback gesture.
+ * The policy is handed `playbackActive = false` there and consumes nothing, which
+ * is what lets Compose route every key inside the panel.
+ *
+ * There is no longer a volume latch here. Volume's engage-to-adjust mode reads
+ * left/right through its own `onKeyEvent` while it holds focus, and horizontal
+ * keys only bypass Compose when the scrub bar holds focus — so the two can no
+ * longer both claim the same key, and the latch that used to arbitrate them was
+ * one more piece of state that could be left set.
  */
 internal fun receiverPlaybackGesturesEnabled(
     playbackActive: Boolean,
     panelOpen: Boolean,
-    volumeEngaged: Boolean,
-): Boolean = playbackActive && !panelOpen && !volumeEngaged
+): Boolean = playbackActive && !panelOpen
 
 /** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
 private const val DIAGNOSTICS_VISIBLE = 14
@@ -280,9 +292,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
-    // Volume's engage-to-adjust mode owns horizontal D-pad input. Keep that
-    // ownership at the Activity boundary so a physical seek cannot bypass it.
-    var volumeEngaged by remember { mutableStateOf(false) }
+    // The scrub bar's focus is what promotes physical left/right from a focus move
+    // to a seek. It is read at the Activity boundary, so it is owned here rather
+    // than inside the chrome that draws it.
+    var scrubFocused by remember { mutableStateOf(false) }
     var capturedRemoteButton by remember { mutableStateOf<TvRemoteButton?>(null) }
     var remoteSeekDeltaMs by remember { mutableStateOf<Long?>(null) }
     var remoteSeekSpeedLevel by remember { mutableStateOf(1) }
@@ -468,7 +481,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         throughput = ThroughputSnapshot.EMPTY
         subtitleTracks = emptyList()
         openPanel = PlaybackPanel.None
-        volumeEngaged = false
+        scrubFocused = false
     }
 
     // The size choice multiplies the viewport-relative caption size the receiver
@@ -497,7 +510,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             remoteSeekHeld = false
             remoteSeekGestureActive = false
             remoteSeekVisible = false
-            volumeEngaged = false
+            scrubFocused = false
         }
     }
 
@@ -515,21 +528,47 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         }
     }
 
-    // Hiding the chrome disposes the volume control, so a latched engagement would
-    // keep routing physical left/right to a widget that is no longer on screen and
-    // deaden seeking until the next reveal.
-    LaunchedEffect(chromeVisible) { if (!chromeVisible) volumeEngaged = false }
+    // Hiding the chrome disposes the scrub bar, and its focus-loss callback races
+    // the disposal. A stale `true` here would leave horizontal keys seeking over a
+    // bar that is no longer on screen.
+    //
+    // The burst carries the mirrored invariant. It is the feedback for a BLIND
+    // seek, but a crossing up/down pressed during a hold still pokes the chrome —
+    // deliberately, so the remote never looks dead mid-gesture — and the chrome can
+    // therefore arrive on top of a burst that began over bare film. Once the scrub
+    // bar is drawing the target, the ghost and both timecodes, the burst is a
+    // second account of one gesture.
+    LaunchedEffect(chromeVisible) {
+        if (chromeVisible) remoteSeekVisible = false else scrubFocused = false
+    }
 
-    // Chrome reveal + auto-hide (chromeFade). Re-armed on every poke / state change.
-    // An open side panel suspends the countdown: hiding the chrome force-closes the
-    // panel underneath it, and the metrics histogram spans 40 s while a track list
-    // has to be scannable. With no panel open the timing is unchanged.
-    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel) {
-        chromeVisible = true
-        if (frame.phase == PlaybackPhase.Playing && !session.seeking && openPanel == PlaybackPanel.None) {
-            delay(4000L)
-            chromeVisible = false
-        }
+    // What reveals the chrome: a remote poke, or the film's own state changing
+    // under the viewer (a phone-side pause, the end of the film, a rebuffer).
+    //
+    // Split out from the countdown below, and deliberately NOT keyed on
+    // `session.seeking`. A blind left/right over bare film does not summon the
+    // chrome — see the key handler — and while the two lived in one effect the
+    // seek flag flipping true summoned it anyway, one frame later, on the app's
+    // behalf.
+    LaunchedEffect(session.chromePoke, frame.phase) { chromeVisible = true }
+
+    // Auto-hide (chromeFade), re-armed on every poke and state change.
+    //
+    // Paused counts now. A viewer who pauses and walks away used to be left with
+    // the full transport panel across the bottom of a frozen frame for as long as
+    // the pause lasted; the resting play key `PlaybackScreen` leaves behind is the
+    // whole signal that state needs.
+    //
+    // An open side panel still suspends the countdown — the metrics histogram
+    // spans 40 s and a track list has to be scannable — and now it must: the panel
+    // has replaced the transport, so a countdown firing underneath it would take
+    // away the bar the viewer expects to come back to.
+    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel, chromeVisible) {
+        if (!chromeVisible) return@LaunchedEffect
+        val resting = frame.phase == PlaybackPhase.Playing || frame.phase == PlaybackPhase.Paused
+        if (!resting || session.seeking || openPanel != PlaybackPanel.None) return@LaunchedEffect
+        delay(4000L)
+        chromeVisible = false
     }
 
     // Refresh-rate matching, best-effort and derived from the CURRENT stage rather
@@ -573,15 +612,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             else -> TvRemoteEventType.Other
         }
         val active = stage is MediaStage.Active
-        // An open side panel owns the whole D-pad: the policy captures physical
-        // left/right as ±10 s seeks before it ever consults chrome visibility, so
-        // the panel's own horizontal rows (the caption size cells) are only
-        // reachable while the receiver declines the playback gesture. The policy
-        // itself is untouched — this is the state we hand it.
         val playbackGestures = receiverPlaybackGesturesEnabled(
             playbackActive = active,
             panelOpen = openPanel != PlaybackPanel.None,
-            volumeEngaged = volumeEngaged,
         )
         val capturedBefore = capturedRemoteButton
         val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
@@ -591,6 +624,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             repeatCount = event.repeatCount,
             playbackActive = playbackGestures,
             chromeVisible = chromeVisible,
+            scrubFocused = scrubFocused,
             capturedButton = capturedRemoteButton,
         )
         if (playbackGestures && eventType == TvRemoteEventType.Down && seekButton &&
@@ -601,19 +635,35 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 remoteSeekSpeedLevel = 1
                 remoteSeekHeld = event.repeatCount > 0
                 remoteSeekGestureActive = true
-                remoteSeekVisible = true
+                // The burst is the feedback for a BLIND seek. With the chrome up
+                // the scrub bar is already drawing the target, the ghost and both
+                // timecodes, and a 38 %-wide wash over the panel would be a second
+                // account of one gesture — and a full-height layer over the film
+                // to give it.
+                remoteSeekVisible = !chromeVisible
             } else if (event.repeatCount > 0) {
                 remoteSeekHeld = true
             }
         }
         if (decision.capture) capturedRemoteButton = button
         if (decision.releaseCapture) capturedRemoteButton = null
-        if (decision.releaseCapture &&
-            (capturedBefore == TvRemoteButton.Left || capturedBefore == TvRemoteButton.Right)
-        ) {
-            remoteSeekGestureActive = false
+        // The burst belongs to whichever gesture holds the remote, so it is derived
+        // from the capture rather than credited to the key that released one. Read
+        // the other way round — "this release ended a horizontal hold" — any path
+        // that ends a seek on a different button leaves the burst frozen over the
+        // film with nothing behind it, and only the next seek clears it.
+        if (decision.capture || decision.releaseCapture) {
+            remoteSeekGestureActive = capturedRemoteButton == TvRemoteButton.Left ||
+                capturedRemoteButton == TvRemoteButton.Right
         }
-        if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other) {
+        // A seek over bare film deliberately does NOT summon the chrome. Quick-seek
+        // without bringing up UI is the convention on every TV player, and it is
+        // also what keeps the gesture self-consistent: revealing the chrome here
+        // would make the second tap of a double-tap a focus move rather than
+        // another ten seconds. Center/up/down still reveal, so nothing is
+        // unreachable.
+        val blindSeek = seekButton && !chromeVisible && playbackGestures
+        if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other && !blindSeek) {
             session.pokeChrome()
         }
         when (val command = decision.command) {
@@ -700,8 +750,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         subtitleTracks = subtitleTracks,
                         subtitleSize = subtitleSize,
                         openPanel = openPanel,
-                        onVolumeEngagementChanged = { volumeEngaged = it },
                         onOpenPanel = { openPanel = it },
+                        onScrubFocusChanged = { scrubFocused = it },
                         onSelectSubtitleTrack = { id ->
                             controller.selectSubtitleTrack(id)
                             // Media3 confirms the selection asynchronously; show the
@@ -1263,14 +1313,19 @@ internal fun rootFocusCatcherEnabled(stage: MediaStage, chromeVisible: Boolean):
 private fun qualityInfo(s: DiagnosticsSnapshot): QualityInfo {
     val unavailable = stringResource(R.string.metrics_unavailable)
     // Honest quality read: real resolution + the HDR class actually being decoded
-    // (never a hardcoded "Dolby Vision" for every stream).
-    val resolution = when {
-        s.width >= 3840 || s.height >= 2160 -> stringResource(R.string.quality_resolution_4k)
-        s.height >= 1440 -> stringResource(R.string.quality_resolution_1440p)
-        s.height >= 1080 -> stringResource(R.string.quality_resolution_1080p)
-        s.height >= 720 -> stringResource(R.string.quality_resolution_720p)
-        s.height > 0 -> stringResource(R.string.quality_resolution_lines, s.height)
-        else -> null
+    // (never a hardcoded "Dolby Vision" for every stream). The class comes from
+    // the one shared classifier, so this card and the transport's spec chip can
+    // never disagree about the same frame — see [videoResolutionClass].
+    val resolution = when (videoResolutionClass(s.width, s.height)) {
+        VideoResolutionClass.Uhd -> stringResource(R.string.quality_resolution_4k)
+        VideoResolutionClass.Qhd -> stringResource(R.string.quality_resolution_1440p)
+        VideoResolutionClass.Fhd -> stringResource(R.string.quality_resolution_1080p)
+        VideoResolutionClass.Hd -> stringResource(R.string.quality_resolution_720p)
+        VideoResolutionClass.Sd -> stringResource(
+            R.string.quality_resolution_lines,
+            videoResolutionLines(s.width, s.height),
+        )
+        VideoResolutionClass.Unknown -> null
     }
     val hdr = when (s.hdrType) {
         HdrType.DOLBY_VISION -> stringResource(R.string.quality_dolby_vision)

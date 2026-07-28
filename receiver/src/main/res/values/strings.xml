@@ -249,4 +249,12 @@
     <string name="quality_resolution_720p">720p</string>
     <!-- Anything shorter than 720 lines is named by its own height. -->
     <string name="quality_resolution_lines">%1$dp</string>
+
+    <!-- ===== TV interaction — D-pad, panels, paused rest ===== -->
+    <!--
+      Announced while the scrub bar holds D-pad focus. Left/right move focus
+      everywhere else on the playback chrome, so the one control where they do
+      something else has to say so.
+    -->
+    <string name="scrub_focus_hint">LEFT OR RIGHT TO SEEK</string>
 </resources>

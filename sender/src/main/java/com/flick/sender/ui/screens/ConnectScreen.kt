@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -43,9 +44,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -348,6 +356,41 @@ internal fun isConnectedDevice(
 }
 
 /**
+ * Whether the code typed for a TV picked out of the discovered list may be sent now.
+ *
+ * [connecting] belongs in the guard rather than beside it: the sheet is held open
+ * through an attempt, and a second submit arriving during one tears the first down and
+ * dials again. A button can be tapped twice; a return key can be held down.
+ */
+internal fun canSubmitDiscoveredPair(code: String, connecting: Boolean): Boolean =
+    !connecting && PairLaunch.isCode(code)
+
+/**
+ * Whether the manually entered endpoint may be dialled.
+ *
+ * All three fields are judged together because the endpoint is an untrusted prefill
+ * however it was filled in — typed, deep-linked or scanned — and the code read off the
+ * TV is the only thing that authorises it. There is deliberately no shape of this form
+ * that connects without one. The host is trimmed before it is judged because a paste is
+ * the one way it acquires surrounding space, and the trimmed value is what is sent.
+ */
+internal fun canSubmitManualPair(
+    host: String,
+    port: String,
+    code: String,
+    connecting: Boolean,
+): Boolean =
+    !connecting && PairLaunch.isCanonicalIpv4(host.trim()) &&
+        PairLaunch.isCanonicalPort(port) && PairLaunch.isCode(code)
+
+/**
+ * Return, from either keyboard. An external keyboard's numeric pad sends its own key
+ * rather than the main one, and the code is typed on a numeric layout.
+ */
+private fun isSubmitKey(event: KeyEvent): Boolean =
+    event.type == KeyEventType.KeyDown && (event.key == Key.Enter || event.key == Key.NumPadEnter)
+
+/**
  * The camera route into pairing. It ends where the QR deep link ends — at the manual
  * sheet with the address filled in and the code still to type.
  */
@@ -497,7 +540,36 @@ private fun CodeSheet(
     val colors = LocalFlickColors.current
     var code by remember { mutableStateOf("") }
     LaunchedEffect(codeRevision) { code = "" }
-    BottomSheet(onDismiss = onDismiss) {
+    // One submit behind both the button and the keyboard's return key: the guard that
+    // decides whether a code may leave the phone cannot be allowed to differ between
+    // the two ways of asking for it.
+    val submit: () -> Unit = { if (canSubmitDiscoveredPair(code, connecting)) onSubmit(code) }
+    BottomSheet(
+        onDismiss = onDismiss,
+        footer = {
+            // The outcome travels with the action it belongs to: the sheet is held open
+            // through the attempt so the result shows, and a result that scrolled off
+            // under a raised keyboard would not have shown.
+            if (error != null) {
+                Text(
+                    error,
+                    style = FlickText.bodySmall.copy(color = colors.trouble),
+                    modifier = Modifier.padding(bottom = 14.dp),
+                )
+            }
+            if (connecting) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    PairingIndicator()
+                }
+            } else {
+                FlickPrimaryButton(
+                    text = stringResource(R.string.pair_connect),
+                    onClick = submit,
+                    enabled = canSubmitDiscoveredPair(code, connecting),
+                )
+            }
+        },
+    ) {
         SheetGrabber()
         Text(
             stringResource(R.string.pair_code_heading, tvName),
@@ -515,27 +587,25 @@ private fun CodeSheet(
             style = FlickText.monoSmall.copy(color = colors.onSurfaceDim),
             modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
         )
-        PairCodeField(code = code, onCodeChange = { code = it })
-        if (error != null) {
-            Text(
-                error,
-                style = FlickText.bodySmall.copy(color = colors.trouble),
-                modifier = Modifier.padding(top = 14.dp),
-            )
-        }
-        Spacer(Modifier.height(18.dp))
-        if (connecting) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                PairingIndicator()
-            }
-        } else {
-            FlickPrimaryButton(
-                text = stringResource(R.string.pair_connect),
-                onClick = { onSubmit(code) },
-                enabled = PairLaunch.isCode(code),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
+        PairCodeField(
+            code = code,
+            onCodeChange = { code = it },
+            // PairCodeField fixes its own KeyboardOptions and is not singleLine, so a
+            // return that reaches it is committed as text and buzzes off the digit
+            // filter — it has to be caught ahead of the field. That is also the whole of
+            // what a call site can do: advertising no ImeAction, the field's soft
+            // keyboard routes its action key through performEditorAction and sends no key
+            // event, so until PairCodeField carries ImeAction.Go itself only a hardware
+            // return submits here.
+            modifier = Modifier.onPreviewKeyEvent { event ->
+                if (isSubmitKey(event)) {
+                    submit()
+                    true
+                } else {
+                    false
+                }
+            },
+        )
     }
 }
 
@@ -562,7 +632,37 @@ private fun ManualSheet(
     val codeFocus = remember { FocusRequester() }
     LaunchedEffect(codeRevision) { code = "" }
     LaunchedEffect(Unit) { runCatching { codeFocus.requestFocus() } }
-    BottomSheet(onDismiss = onDismiss) {
+    // Stay open — the connect result (spinner → error) shows here; a successful connect
+    // changes the route, which unmounts the sheet. One lambda for the button and the
+    // keyboard's action key, so neither can submit what the other would have refused.
+    val submit: () -> Unit = {
+        if (canSubmitManualPair(host, port, code, connecting)) onConnect(host.trim(), port, code)
+    }
+    BottomSheet(
+        onDismiss = onDismiss,
+        footer = {
+            // Pinned with the action: the sheet is held open through the attempt so the
+            // result shows, which it cannot do from under a raised keyboard.
+            if (error != null) {
+                Text(
+                    error,
+                    style = FlickText.bodySmall.copy(color = colors.trouble),
+                    modifier = Modifier.padding(bottom = 14.dp),
+                )
+            }
+            if (connecting) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    PairingIndicator()
+                }
+            } else {
+                FlickPrimaryButton(
+                    text = stringResource(R.string.manual_connect),
+                    onClick = submit,
+                    enabled = canSubmitManualPair(host, port, code, connecting),
+                )
+            }
+        },
+    ) {
         SheetGrabber()
         Text(
             stringResource(if (fromQr) R.string.manual_heading_qr else R.string.manual_heading),
@@ -576,11 +676,15 @@ private fun ManualSheet(
             )
         }
         Spacer(Modifier.height(14.dp))
+        // The address is entered before the port and the port before the code, so Next
+        // walks the form the way it is read. Only the code field ends it: it is the
+        // secret that authorises the endpoint above it, so nothing earlier may connect.
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
             label = { Text(stringResource(R.string.manual_host_label)) },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
             shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth(),
         )
@@ -590,7 +694,10 @@ private fun ManualSheet(
             onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
             label = { Text(stringResource(R.string.manual_port_label)) },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Next,
+            ),
             shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth(),
         )
@@ -600,34 +707,13 @@ private fun ManualSheet(
             onValueChange = { code = it.filter { c -> c.isDigit() }.take(4) },
             label = { Text(stringResource(R.string.manual_code_label)) },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.NumberPassword,
+                imeAction = ImeAction.Go,
+            ),
+            keyboardActions = KeyboardActions(onGo = { submit() }),
             shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.fillMaxWidth().focusRequester(codeFocus),
         )
-        if (error != null) {
-            Text(
-                error,
-                style = FlickText.bodySmall.copy(color = colors.trouble),
-                modifier = Modifier.padding(top = 14.dp),
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        if (connecting) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                PairingIndicator()
-            }
-        } else {
-            FlickPrimaryButton(
-                text = stringResource(R.string.manual_connect),
-                onClick = {
-                    // Stay open — the connect result (spinner → error) shows here; a
-                    // successful connect changes the route, which unmounts the sheet.
-                    if (host.isNotBlank()) onConnect(host.trim(), port, code)
-                },
-                enabled = PairLaunch.isCanonicalIpv4(host) &&
-                    PairLaunch.isCanonicalPort(port) && PairLaunch.isCode(code),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
     }
 }

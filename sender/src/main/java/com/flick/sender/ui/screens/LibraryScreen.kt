@@ -157,6 +157,9 @@ fun LibraryScreen(
     val mediaAccess by controller.mediaAccess.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
+    // Empty until a receiver actually refuses a file, and back to empty on the next
+    // launch: this is a witness list, not a verdict the library carries around.
+    val unplayable by controller.unplayableFiles.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     // State, not a value: the 2 s telemetry poll must stop at the pill that shows it
     // rather than rebuilding the whole grid.
@@ -298,6 +301,7 @@ fun LibraryScreen(
                 item = item,
                 imageLoader = imageLoader,
                 compact = compactTiles,
+                unplayable = unplayable.containsKey(item.uriKey),
                 onClick = { controller.openDetail(item) },
                 sharedScope = sharedScope,
                 animatedScope = animatedScope,
@@ -1080,6 +1084,7 @@ private fun LibraryTile(
     item: MediaItem,
     imageLoader: ImageLoader,
     compact: Boolean,
+    unplayable: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
@@ -1099,6 +1104,7 @@ private fun LibraryTile(
         hdr = hdr,
         imageLoader = imageLoader,
         compact = compact,
+        unplayable = unplayable,
         onClick = onClick,
         modifier = modifier,
         sharedScope = sharedScope,

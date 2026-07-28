@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import com.flick.sender.CastServerService
+import com.flick.sender.MediaMeta
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
@@ -21,12 +22,14 @@ import com.flick.sender.model.TvAvailability
 import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
@@ -56,6 +59,58 @@ sealed interface CastStartState { data object Idle : CastStartState; data class 
 internal fun castRetryOffered(retryable: Boolean, hasCastRecord: Boolean): Boolean =
     retryable && hasCastRecord
 
+/**
+ * Terminal codes that indict the FILE rather than the link, the TV's state or this
+ * phone's server — the only ones allowed to mark an item unplayable. Every member is a
+ * verdict a receiver reached with the bytes in front of it: the badge they raise says a
+ * TV refused this file, so nothing may enter that a TV cannot emit.
+ *
+ * `decoder_init` is deliberately absent: the TV has the decoder and failed to start it,
+ * which is usually another app still holding it, and a file marked on that evidence would
+ * be libelled for something that was never about it. `http_rejected`, `media_unreachable`
+ * and their neighbours are the network having a bad minute. `source_unavailable` is not a
+ * receiver code at all — `CastFailureCode` has no such constant and this phone raises it in
+ * `startCast` before a byte leaves, so marking on it would badge a file for a TV that was
+ * never asked.
+ */
+private val FileFaultCodes = setOf(
+    "unsupported_container",
+    "unsupported_video_codec",
+    "unsupported_video_format",
+    "unsupported_hdr_profile",
+    "malformed_media",
+)
+
+internal fun marksFileUnplayable(code: String): Boolean = code in FileFaultCodes
+
+/**
+ * Files a receiver refused, held for the life of the process and no longer.
+ *
+ * Persisting this would be a much larger promise than the evidence supports: one bad
+ * container read, one TV, one moment — and the file would wear the badge on every launch
+ * forever, including after the user remuxed it or bought a different TV. A relaunch is
+ * the cheapest amnesty there is. [limit] bounds a library the user could cast at all day;
+ * the oldest verdict is the one worth forgetting first.
+ */
+internal class UnplayableMemory(private val limit: Int = 64) {
+    private val marks = LinkedHashMap<String, String>()
+
+    fun mark(key: String, code: String): Map<String, String> {
+        marks.remove(key)
+        marks[key] = code
+        while (marks.size > limit) marks.remove(marks.keys.first())
+        return snapshot()
+    }
+
+    /** Proof the verdict is stale — a cast of this file that reached the first frame. */
+    fun clear(key: String): Map<String, String> {
+        marks.remove(key)
+        return snapshot()
+    }
+
+    fun snapshot(): Map<String, String> = LinkedHashMap(marks)
+}
+
 /** Application-scoped owner of pairing, control, service state and cast generations. */
 class CastCoordinator(private val appContext: Context, private val scope: CoroutineScope) {
     val nsd = NsdDiscovery(appContext)
@@ -80,6 +135,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var pendingCast: MediaItem? = null
     private var retryItem: MediaItem? = null
     private var loadSentCastId: String? = null
+    private val unplayableMemory = UnplayableMemory()
 
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
     val route: StateFlow<Route> = _route.asStateFlow()
@@ -99,6 +155,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _castingItem = MutableStateFlow<MediaItem?>(null); val castingItem = _castingItem.asStateFlow()
     private val _castStart = MutableStateFlow<CastStartState>(CastStartState.Idle); val castStart = _castStart.asStateFlow()
     private val _castFailure = MutableStateFlow<CastFailure?>(null); val castFailure = _castFailure.asStateFlow()
+    // The failed cast's item outlives the cast record the terminal tears down: the error
+    // face offers to play it here, and both the tile and the detail sheet remember it.
+    private val _failureItem = MutableStateFlow<MediaItem?>(null); val failureItem = _failureItem.asStateFlow()
+    private val _unplayableFiles = MutableStateFlow<Map<String, String>>(emptyMap()); val unplayableFiles = _unplayableFiles.asStateFlow()
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val playback = session.state; val pulses = session.pulses
 
@@ -486,6 +546,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
         _castFailure.value = null
+        _failureItem.value = null
         // openDetail cannot drop a selection while a cast is live — that cast owns the
         // file it is serving — so a film browsed to mid-cast reaches here still carrying
         // the previous film's subtitle. Casting it must not inherit those cues, which
@@ -499,10 +560,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             try {
                 val endpoint = control.authenticatedEndpoint() ?: throw CastStartupFailure("control_unreachable")
                 if (!com.flick.sender.NetworkUtils.isOwnedLanIpv4(endpoint.peerIp)) throw CastStartupFailure("no_compatible_lan")
-                if (item.uri.scheme != "content" || item.sizeBytes <= 0L) throw CastStartupFailure("source_unavailable")
+                if (item.uri.scheme != "content") throw CastStartupFailure("source_unavailable")
+                // MediaStore leaves SIZE null for files its scanner never finished, and
+                // MediaHttpServer stats the descriptor for its own range math regardless —
+                // so refusing on the missing column would kill a cast of a file that is
+                // sitting right there. Only a URI that will not open is genuinely gone,
+                // which is the one thing `source_unavailable` is allowed to mean.
+                val sizeBytes = item.sizeBytes.takeIf { it > 0L }
+                    ?: withContext(Dispatchers.IO) { MediaMeta.resolveSize(appContext.contentResolver, item.uri) }
+                if (sizeBytes <= 0L) throw CastStartupFailure("source_unavailable")
                 publishCastStart(CastStartState.StartingSource(castId))
                 ServerStateHolder.beginStarting(castId)
-                CastServerService.start(appContext, castId, item.uri, item.name, item.sizeBytes, endpoint.peerIp, subtitle?.uri)
+                CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)
                 val server = withTimeoutOrNull(9_000) { ServerStateHolder.state.first { it.castId == castId && (it.status == ServerStatus.RUNNING || it.status == ServerStatus.ERROR) } }
                     ?: throw CastStartupFailure("startup_timeout")
                 val videoUrl = server.videoUrl
@@ -526,6 +595,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
                 readyCommit = true; publishCastStart(CastStartState.Active(castId)); _route.value = Route.NowPlaying
+                // A first frame is the only thing that can outrank a previous refusal.
+                _unplayableFiles.value = unplayableMemory.clear(item.uriKey)
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
               catch (_: Exception) { terminal(castId, "unknown") }
             finally { if (!readyCommit) cleanup(castId) }
@@ -562,6 +633,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val item = _castingItem.value
         val offerRetry = castRetryOffered(retryable, item != null)
         retryItem = item.takeIf { offerRetry }
+        _failureItem.value = item
+        // Only ever the file's own fault, and only ever for the file that was on the
+        // wire: a marked item stays castable, so this is a memory, not a gate.
+        if (item != null && marksFileUnplayable(code)) {
+            _unplayableFiles.value = unplayableMemory.mark(item.uriKey, code)
+        }
         FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$offerRetry httpStatus=$httpStatus")
         _castFailure.value = CastFailure(code, offerRetry, httpStatus)
         publishCastStart(CastStartState.Failed(castId, code))
@@ -605,6 +682,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         if (item != null) {
             retryItem = item
+            _failureItem.value = item
             _castFailure.value = CastFailure(code, retryable = true)
             _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
         } else _pairError.value = PairErrorKind.UNREACHABLE
@@ -626,6 +704,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun publishBusyFailure() {
         retryItem = pendingCast
+        _failureItem.value = pendingCast ?: _castingItem.value
         pendingCast = null
         _castFailure.value = CastFailure("active_cast_busy", retryable = retryItem != null)
         _route.value = Route.Failure(errorKind("active_cast_busy"), _castFailure.value!!)

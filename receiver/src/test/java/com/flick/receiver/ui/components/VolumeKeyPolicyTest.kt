@@ -1,7 +1,7 @@
 package com.flick.receiver.ui.components
 
 import androidx.compose.ui.input.key.Key
-import com.flick.receiver.receiverPlaybackGesturesEnabled
+import com.flick.receiver.tvRemoteHorizontalSeeks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -26,12 +26,15 @@ class VolumeKeyPolicyTest {
             enabled = true,
         )
         assertEquals(VolumeKeyAction.ConsumeRepeat, held)
-        assertFalse(
-            receiverPlaybackGesturesEnabled(
-                playbackActive = true,
-                panelOpen = false,
-                volumeEngaged = true,
-            ),
-        )
+    }
+
+    @Test
+    fun engagedVolumeNoLongerNeedsALatchToKeepItsHorizontalKeys() {
+        // Volume used to publish an engagement latch to the Activity, because the
+        // policy captured physical left/right before Compose could see them. It no
+        // longer does: with the chrome up, horizontal keys are the focus system's
+        // unless the scrub bar holds focus, and volume can only be engaged while
+        // volume holds it.
+        assertFalse(tvRemoteHorizontalSeeks(chromeVisible = true, scrubFocused = false))
     }
 }

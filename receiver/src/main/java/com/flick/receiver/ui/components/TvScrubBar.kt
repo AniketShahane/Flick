@@ -5,6 +5,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -17,6 +20,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -121,6 +127,14 @@ private const val WAVE_SAMPLES_PER_WAVELENGTH = 12
  * permanently trailing the film. Only a discontinuity — a seek landing, i.e. a
  * jump larger than [RECONCILE_JUMP_MS] of media — reconciles on
  * [FlickMotion.syncSpring], which is what "snap on release" reads as.
+ *
+ * **The bar is a focus target** while [interactive], and it is the one control on
+ * the chrome that owns physical left/right: `TvRemoteKeyPolicy` reads
+ * [onFocusChanged] through the app and turns horizontal keys into seeks only while
+ * this bar holds focus. Focus is drawn on the KNOB rather than around the bar —
+ * the §3 detached ring and the 1.06 lift are sized for a control, and on a 700 dp
+ * span they would stretch the timeline itself — so the knob swells and takes the
+ * ring, which is also the only part of the bar left/right actually moves.
  */
 @Composable
 fun TvScrubBar(
@@ -131,6 +145,9 @@ fun TvScrubBar(
     targetMs: Long = confirmedMs,
     seeking: Boolean = false,
     playing: Boolean = true,
+    interactive: Boolean = false,
+    focusRequester: FocusRequester? = null,
+    onFocusChanged: (Boolean) -> Unit = {},
 ) {
     val confirmedFrac = frac(confirmedMs, durationMs)
     val targetFrac = frac(targetMs, durationMs)
@@ -139,9 +156,15 @@ fun TvScrubBar(
     val targetLabel = stringResource(R.string.scrub_target, clock(targetMs))
     val confirmedLabel = stringResource(R.string.scrub_confirmed, clock(confirmedMs))
     val syncingLabel = stringResource(R.string.syncing)
+    val seekHint = stringResource(R.string.scrub_focus_hint)
     val accessibilityLabel = if (lagging) "$targetLabel, $confirmedLabel" else confirmedLabel
 
     val reducedMotion = LocalReducedMotion.current
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // Reported to the app, which is what lets the Activity-level policy hand
+    // physical left/right to this bar instead of to the focus system.
+    LaunchedEffect(focused) { onFocusChanged(focused) }
     val headFrac = if (seeking) targetFrac else confirmedFrac
     val playhead = remember { Animatable(headFrac) }
     val liveFrac = rememberUpdatedState(headFrac)
@@ -237,12 +260,17 @@ fun TvScrubBar(
         }
     }
 
-    // Seeking is the one moment the viewer is steering rather than watching, so
-    // the knob is the only thing on screen that grows to meet them.
+    // Steering rather than watching — the bar holding focus, or a seek in flight
+    // — is the one moment the knob grows to meet the viewer.
     val swell = animateFloatAsState(
-        targetValue = if (seeking) 1f else 0f,
+        targetValue = if (seeking || focused) 1f else 0f,
         animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
         label = "scrubSeekSwell",
+    )
+    val ringPresence = animateFloatAsState(
+        targetValue = if (focused) 1f else 0f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "scrubFocusRing",
     )
     val ghost = animateFloatAsState(
         targetValue = if (lagging) 1f else 0f,
@@ -262,9 +290,17 @@ fun TvScrubBar(
             // The resting halo is the tallest thing laid out here: 18 dp across.
             // The seeking halo is deliberately NOT budgeted for — see the swell.
             .height(20.dp)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .focusProperties { canFocus = interactive }
+            .focusable(interactionSource = interaction)
             .semantics {
                 contentDescription = accessibilityLabel
-                if (lagging) stateDescription = syncingLabel
+                when {
+                    lagging -> stateDescription = syncingLabel
+                    // Left/right are a focus move everywhere else on this chrome,
+                    // so the one control where they are not says so.
+                    focused -> stateDescription = seekHint
+                }
             },
     ) {
         val cy = size.height / 2f
@@ -356,6 +392,30 @@ fun TvScrubBar(
 
         drawCircle(FlickColor.FocusRingSoft, radius = haloR, center = Offset(head, cy))
         drawCircle(Color.White, radius = knobR, center = Offset(head, cy))
+
+        // The §3 ring, concentric with the knob and read in the draw phase like
+        // everything else here. It carries the same dark contour the detached ring
+        // wears elsewhere: part of this circle lands on the film, where amber
+        // alone measures 1.2:1.
+        val lit = ringPresence.value
+        if (lit > 0.01f) {
+            val ringR = knobR + FlickFocusRingOffset.toPx() * lit
+            val stroke = FlickFocusRingWidth.toPx()
+            drawCircle(
+                color = FlickColor.FocusRingContour,
+                radius = ringR,
+                center = Offset(head, cy),
+                alpha = lit,
+                style = Stroke(width = stroke + FlickFocusRingContourWidth.toPx() * 2f),
+            )
+            drawCircle(
+                color = FlickColor.FocusRing,
+                radius = ringR,
+                center = Offset(head, cy),
+                alpha = lit,
+                style = Stroke(width = stroke),
+            )
+        }
     }
 }
 

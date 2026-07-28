@@ -18,6 +18,24 @@ data class MediaItem(
     val bucket: String?,
 ) {
     val resolutionLabel: String get() = resolutionLabelFor(width, height)
+
+    /**
+     * Whether MediaStore reported pixels at all. A 4 GB 2160p remux it has no row for
+     * reads here exactly like a 320×240 clip does, so every surface that would state a
+     * resolution has to ask this first: the difference between "SD" and "we never got
+     * told" is the difference between a claim and a lie.
+     */
+    val knowsResolution: Boolean get() = width > 0 || height > 0
+
+    /** Zero is MediaStore's silence, never a zero-length film. */
+    val knowsDuration: Boolean get() = durationMs > 0L
+
+    /**
+     * The identity the process-lifetime unplayable memory is keyed by. The MediaStore
+     * row id is reassigned when a file is removed and re-indexed; the content URI is
+     * what both the server and the receiver were actually handed.
+     */
+    val uriKey: String get() = uri.toString()
 }
 
 /**
@@ -25,8 +43,13 @@ data class MediaItem(
  * chips and the library's two quality filters all match on. Extracted from [MediaItem]
  * so the filters' exact-string dependency on [FourKLabel] and [FullHdLabel] is
  * testable without a `Uri`.
+ *
+ * No dimensions at all returns [UnknownResolutionLabel] rather than falling through to
+ * the smallest bucket: the bottom of a ladder is a verdict, and nothing here measured
+ * anything. It matches neither quality filter for the same reason.
  */
 fun resolutionLabelFor(width: Int, height: Int): String = when {
+    width <= 0 && height <= 0 -> UnknownResolutionLabel
     height >= 2160 || width >= 3840 -> FourKLabel
     height >= 1080 || width >= 1920 -> FullHdLabel
     height >= 720 -> "HD"
@@ -35,6 +58,14 @@ fun resolutionLabelFor(width: Int, height: Int): String = when {
 
 const val FourKLabel = "4K"
 const val FullHdLabel = "1080p"
+
+/**
+ * What a resolution reads as when there is none to read. The same em dash `Format`
+ * already prints for an unknown size, so surfaces that only have room for the bare
+ * label stay honest without a string lookup; the library tile and the detail sheet
+ * withhold more deliberately than this.
+ */
+const val UnknownResolutionLabel = "—"
 
 /** Best-effort HDR classification of a video track (design badges). */
 enum class HdrType { NONE, HDR10, DOLBY_VISION }

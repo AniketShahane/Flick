@@ -31,11 +31,26 @@ internal data class TvRemoteDecision(
 /**
  * Playback remote policy at the Activity boundary.
  *
- * Left/right are playback gestures regardless of Compose focus: a tap is an
- * exact ten-second seek, while a hold emits gated 1x/2x/3x pulses capped at
- * thirty seconds per pulse. Center/up/down keep the existing hidden-chrome
- * behavior; visible chrome owns those focus events. Dedicated media keys are
- * deliberately absent and continue to MediaSession.
+ * **Horizontal keys seek only where there is nothing to navigate.** That is either
+ * of two states: the chrome is down, so the film is the whole screen; or the scrub
+ * bar itself holds focus, which is the one control on the chrome whose axis IS the
+ * timeline. Everywhere else left/right are ordinary Compose focus navigation, and
+ * the transport row — which is laid out horizontally — is traversed the way it is
+ * drawn. A tap is an exact ten-second seek; a held key emits every fourth repeat
+ * and progresses through capped 10/20/30-second pulses.
+ *
+ * Center/up/down keep the hidden-chrome behavior; visible chrome owns those focus
+ * events. Dedicated media keys are deliberately absent and continue to
+ * MediaSession.
+ *
+ * [capturedButton] is the gesture in flight. It outranks every other input,
+ * including [scrubFocused] and [chromeVisible]: once a key-down has been claimed
+ * as a seek, the whole hold belongs to it through its own key-up, so a chrome
+ * auto-hide or a focus move landing mid-hold cannot split one physical press into
+ * two different meanings. No other D-pad key may take the capture while it is
+ * held — only the holder's key-up releases it — which also means a capture that
+ * outlives its key-up (a window-focus loss swallows the release) is cleared by
+ * pressing that same button again, not left to be stolen by a different one.
  */
 internal fun tvRemoteDecision(
     button: TvRemoteButton,
@@ -43,6 +58,7 @@ internal fun tvRemoteDecision(
     repeatCount: Int,
     playbackActive: Boolean,
     chromeVisible: Boolean,
+    scrubFocused: Boolean,
     capturedButton: TvRemoteButton?,
 ): TvRemoteDecision {
     if (capturedButton == button) {
@@ -64,25 +80,31 @@ internal fun tvRemoteDecision(
     }
 
     val horizontal = button == TvRemoteButton.Left || button == TvRemoteButton.Right
-    if (capturedButton != null && horizontal && eventType == TvRemoteEventType.Down) {
-        // One gesture owns horizontal input until its matching key-up. An
-        // opposite key pressed during the hold must not steal that capture.
+    if (capturedButton != null && button != TvRemoteButton.Other) {
+        // One gesture owns the whole D-pad until its own key-up — not just the
+        // axis it started on. A thumb rocking the ring mid-hold delivers a second
+        // key-down, and letting that key take the capture leaves the held key's
+        // key-up matching nothing: the gesture never ends, so whatever it put on
+        // screen never comes down. Both halves of the crossing press are
+        // swallowed so Compose never sees a key-up without its key-down either.
+        // `Other` is excluded because dedicated media keys are never ours to hold.
         return TvRemoteDecision(consume = true)
     }
 
     if (!playbackActive) return TvRemoteDecision(consume = false)
 
-    // Consume unmatched horizontal key-up events as well. They may belong to a
-    // crossing key-down intentionally ignored above and must not reach Compose.
+    val seekGesture = tvRemoteHorizontalSeeks(chromeVisible, scrubFocused)
+
+    // Nothing holds the capture here, so a horizontal key-up follows whoever
+    // would have owned its key-down. While left/right are navigation the whole
+    // event pair belongs to the focus system.
     if (horizontal && eventType == TvRemoteEventType.Up) {
-        return TvRemoteDecision(consume = true)
+        return TvRemoteDecision(consume = seekGesture)
     }
 
     if (eventType != TvRemoteEventType.Down) return TvRemoteDecision(consume = false)
 
-    // Physical left/right are always playback gestures. Consume at the Activity
-    // boundary before Compose can move focus or handle the same key a second time.
-    if (horizontal) {
+    if (horizontal && seekGesture) {
         return TvRemoteDecision(
             consume = true,
             command = tvRemoteSeekCommand(button, repeatCount),
@@ -106,6 +128,16 @@ internal fun tvRemoteDecision(
         else -> TvRemoteDecision(consume = false)
     }
 }
+
+/**
+ * Whether physical left/right are a seek rather than a focus move.
+ *
+ * Hidden chrome has nothing to navigate, and the focused scrub bar is the control
+ * whose own axis is the timeline. Everything else on the chrome is reached by
+ * moving through it.
+ */
+internal fun tvRemoteHorizontalSeeks(chromeVisible: Boolean, scrubFocused: Boolean): Boolean =
+    !chromeVisible || scrubFocused
 
 /** Null means consume this repeat but wait for the next bounded seek pulse. */
 private fun tvRemoteSeekCommand(button: TvRemoteButton, repeatCount: Int): TvRemoteCommand.SeekBy? {

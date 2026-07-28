@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -35,9 +37,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.isTraversalGroup
@@ -53,6 +58,12 @@ import com.flick.sender.ui.theme.rememberReduceMotion
 
 /** Padding of a sheet's content column: tight above the grabber, generous below. */
 private val SheetPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp)
+
+/** Clear air between the scrolling region and the first control of a pinned footer. */
+private val SheetFooterGap = 16.dp
+
+/** The line a pinned footer draws while it still has content hidden beneath it. */
+private val SheetFooterEdge = 1.dp
 
 /**
  * How many sheets are raised UNDERNEATH the floating chrome.
@@ -77,11 +88,18 @@ internal val LocalSheetDepth = staticCompositionLocalOf<MutableIntState> { mutab
  * sheet (S10) and diagnostics. Tapping the scrim dismisses; taps on the sheet are
  * swallowed. The surface colour comes from the enclosing theme, so wrapping a caller in
  * `FlickCinematicTheme` turns the sheet cinematic without changing anything here.
+ *
+ * [footer] is the sheet's terminal action, pinned outside the scrolling region. A form
+ * whose fields and submit button together outgrow the space a raised keyboard leaves —
+ * manual pairing on a tall phone — must not put that button behind a scroll: it is the
+ * only way out of the sheet the user came for. Sheets that carry no action leave it null
+ * and are laid out exactly as before.
  */
 @Composable
 fun BottomSheet(
     onDismiss: () -> Unit,
     contentPadding: PaddingValues = SheetPadding,
+    footer: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -101,6 +119,20 @@ fun BottomSheet(
     // darkens before the surface arrives on it rather than the two moving as one slab.
     val scrim = rememberScrimFade()
     val scrimColor = colors.scrim
+    val scrollState = rememberScrollState()
+    val layoutDirection = LocalLayoutDirection.current
+    // A pinned footer keeps the space under the last field itself, so the region above
+    // it sheds a bottom padding that would only ever read as a second gap.
+    val scrollPadding = if (footer == null) {
+        contentPadding
+    } else {
+        PaddingValues(
+            start = contentPadding.calculateStartPadding(layoutDirection),
+            top = contentPadding.calculateTopPadding(),
+            end = contentPadding.calculateEndPadding(layoutDirection),
+            bottom = 0.dp,
+        )
+    }
     // UNION, never sum: a raised IME's inset already spans the navigation bar, so
     // adding the two would reserve a second bar of dead space under the keyboard.
     val safeBottom = WindowInsets.ime.union(WindowInsets.navigationBars)
@@ -134,17 +166,53 @@ fun BottomSheet(
                     paneTitle = sheetTitle
                     isTraversalGroup = true
                 }
-                // Outside the scroll, so the inset shrinks the scrolling VIEWPORT
-                // instead of riding inside it: the viewport's bottom edge is then the
-                // safe edge in every state, and no scroll offset — including a stale
-                // one left behind by a collapsing keyboard — can put the submit button
-                // under the bar. It stays inside the background above, so the surface
-                // still reaches the bottom screen edge with no scrim gap under it.
-                .windowInsetsPadding(safeBottom)
-                .verticalScroll(rememberScrollState())
-                .padding(contentPadding),
-            content = content,
-        )
+                // Outside the scroll and above the footer, so the inset shrinks the
+                // scrolling VIEWPORT instead of riding inside it: the viewport's bottom
+                // edge is then the safe edge in every state, and no scroll offset —
+                // including a stale one left behind by a collapsing keyboard — can put
+                // the terminal action under the bar. It stays inside the background
+                // above, so the surface still reaches the bottom screen edge with no
+                // scrim gap under it.
+                .windowInsetsPadding(safeBottom),
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    // fill = false, or the region would stretch to whatever the window
+                    // allows and strand the footer at the foot of a mostly empty sheet.
+                    .weight(1f, fill = false)
+                    .verticalScroll(scrollState)
+                    .padding(scrollPadding),
+                content = content,
+            )
+            if (footer != null) {
+                val edge = colors.outlineSoft
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .drawBehind {
+                            // Read in the draw phase: a scroll must repaint this line
+                            // without recomposing the action under it. The line is a
+                            // claim that content continues beneath the footer, so it is
+                            // drawn only while there is some left to reach.
+                            if (scrollState.canScrollForward) {
+                                drawRect(
+                                    color = edge,
+                                    topLeft = Offset.Zero,
+                                    size = Size(size.width, SheetFooterEdge.toPx()),
+                                )
+                            }
+                        }
+                        .padding(
+                            start = contentPadding.calculateStartPadding(layoutDirection),
+                            top = SheetFooterGap,
+                            end = contentPadding.calculateEndPadding(layoutDirection),
+                            bottom = contentPadding.calculateBottomPadding(),
+                        ),
+                    content = footer,
+                )
+            }
+        }
     }
 }
 

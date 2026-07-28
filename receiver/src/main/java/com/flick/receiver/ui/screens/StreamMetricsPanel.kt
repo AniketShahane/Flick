@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -50,6 +51,7 @@ import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.LiveDot
+import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
@@ -211,9 +213,13 @@ fun StreamMetricsPanel(
 
     // Focus enters on the close button, so the panel reads as entered and its own
     // Back handling below is reachable — `onKeyEvent` only sees keys while the
-    // subtree holds focus.
+    // subtree holds focus. Opening this panel takes the transport bar off screen,
+    // so the close button is the only focusable left; the request is retried
+    // across frames rather than made once, because a `FocusRequester` whose node
+    // is not yet placed throws and would strand the D-pad entirely.
     val closeFocus = remember { FocusRequester() }
-    LaunchedEffect(entryKey) { runCatching { closeFocus.requestFocus() } }
+    val entered = remember { mutableStateOf(false) }
+    LaunchedEffect(entryKey) { landTvFocus(closeFocus, closeFocus) { entered.value } }
 
     // One driver for the whole readout stagger, restarted per open so a reopened
     // panel fills in again rather than appearing already complete. Keyed on
@@ -238,6 +244,7 @@ fun StreamMetricsPanel(
     GlassPanel(
         modifier = modifier
             .width(StreamMetricsPanelWidth)
+            .onFocusChanged { entered.value = it.hasFocus }
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
                     onDismiss()

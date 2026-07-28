@@ -12,6 +12,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -107,14 +108,18 @@ fun DetailScreen(
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val castStart by controller.castStart.collectAsState()
+    val unplayable by controller.unplayableFiles.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val rise = rememberSheetRise()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, item.name, tvName)
     val dismissDescription = stringResource(R.string.a11y_back_to_library)
-    val hdr by produceState(initialValue = HdrType.NONE, item.uri) {
+    // Null until the probe answers. Starting at NONE would print "SDR" — a verdict — for
+    // every file in the window between opening this sheet and reading its container.
+    val hdr by produceState<HdrType?>(initialValue = null, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
+    val refusal = unplayable[item.uriKey]
 
     val request = rememberVideoFrameRequest(item.uri, item.durationMs)
     val scrimSource = remember { MutableInteractionSource() }
@@ -214,16 +219,19 @@ fun DetailScreen(
                 verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 // Resolution, dynamic range and size are the only source facts the
-                // phone can read; codec and frame rate never leave MediaStore.
+                // phone can read; codec and frame rate never leave MediaStore. A fact it
+                // did not read takes the outlined chip: same seat, same type, no claim.
                 DetailChip(
                     text = resolutionText(item),
-                    containerColor = colors.inverseSurface,
-                    contentColor = colors.onInverseSurface,
+                    containerColor = if (item.knowsResolution) colors.inverseSurface else Color.Transparent,
+                    contentColor = if (item.knowsResolution) colors.onInverseSurface else colors.onSurfaceDim,
+                    outlineColor = colors.outline.takeIf { !item.knowsResolution },
                 )
                 DetailChip(
                     text = hdrChipLabel(hdr),
-                    containerColor = colors.primaryContainer,
-                    contentColor = colors.onPrimaryContainer,
+                    containerColor = if (hdr != null) colors.primaryContainer else Color.Transparent,
+                    contentColor = if (hdr != null) colors.onPrimaryContainer else colors.onSurfaceDim,
+                    outlineColor = colors.outline.takeIf { hdr == null },
                 )
                 DetailChip(
                     text = Format.bytes(item.sizeBytes),
@@ -233,29 +241,13 @@ fun DetailScreen(
             }
 
             Spacer(Modifier.height(17.dp))
-            val promiseLead = stringResource(R.string.detail_directplay_title)
-            val promiseBody = stringResource(R.string.detail_directplay_body)
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(FlickCorners.qualityCard))
-                    .background(colors.spark)
-                    .padding(15.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(
-                    imageVector = FlickIcons.CheckCircle,
-                    contentDescription = null,
-                    tint = colors.onSpark,
-                    modifier = Modifier.size(21.dp),
-                )
-                Text(
-                    text = buildAnnotatedString {
-                        withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) { append(promiseLead) }
-                        append(" ")
-                        append(promiseBody)
-                    },
-                    style = FlickText.bodySmall.copy(color = colors.onSpark),
-                )
+            // One card, two truths, never both: "will direct-play at full quality" is a
+            // promise this TV has already broken for this file, and printing it above the
+            // refusal would make the sheet argue with itself.
+            if (refusal != null) {
+                RefusalCard(refusal)
+            } else {
+                DirectPlayCard()
             }
 
             Spacer(Modifier.height(17.dp))
@@ -296,6 +288,95 @@ fun DetailScreen(
         }
     }
 }
+
+/** The amber direct-play promise: what happens when nothing has gone wrong. */
+@Composable
+private fun DirectPlayCard() {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(FlickCorners.qualityCard))
+            .background(colors.spark)
+            .padding(15.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            imageVector = FlickIcons.CheckCircle,
+            contentDescription = null,
+            tint = colors.onSpark,
+            modifier = Modifier.size(21.dp),
+        )
+        Text(
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) {
+                    append(stringResource(R.string.detail_directplay_title))
+                }
+                append(" ")
+                append(stringResource(R.string.detail_directplay_body))
+            },
+            style = FlickText.bodySmall.copy(color = colors.onSpark),
+        )
+    }
+}
+
+/**
+ * The promise card's seat when a receiver has refused this file, in the app's advisory
+ * vocabulary rather than its failure one: caution amber, the same geometry, and the CTA
+ * below it untouched. Crimson would read as a blocked file, and this file is not blocked
+ * — the user may have remuxed it, or be standing in front of a different TV.
+ */
+@Composable
+private fun RefusalCard(code: String) {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(FlickCorners.qualityCard))
+            .background(colors.caution)
+            .padding(15.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            imageVector = FlickIcons.Warning,
+            contentDescription = null,
+            tint = colors.onCaution,
+            modifier = Modifier.size(21.dp),
+        )
+        Column {
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) {
+                        append(stringResource(R.string.detail_unplayable_title))
+                    }
+                    append(" ")
+                    append(stringResource(refusalBody(code)))
+                },
+                style = FlickText.bodySmall.copy(color = colors.onCaution),
+            )
+            Text(
+                text = stringResource(R.string.detail_unplayable_note),
+                style = FlickText.bodySmall.copy(color = colors.onCaution.copy(alpha = RefusalNoteAlpha)),
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The receiver's own diagnosis, in the sheet's voice. Every branch continues the card's
+ * "Your TV couldn't play this file" opener, so only codes a TV can reach belong here —
+ * an unrecognised one, from a newer receiver or a category this build has never seen,
+ * says only what is certain: it stopped.
+ */
+private fun refusalBody(code: String): Int = when (code) {
+    "unsupported_container" -> R.string.detail_unplayable_container
+    "unsupported_video_codec", "unsupported_video_format" -> R.string.detail_unplayable_video
+    "unsupported_hdr_profile" -> R.string.detail_unplayable_hdr
+    "malformed_media" -> R.string.detail_unplayable_damaged
+    else -> R.string.detail_unplayable_generic
+}
+
+/** The note is a second register, not a second paragraph of the same weight. */
+private const val RefusalNoteAlpha = 0.82f
 
 /**
  * The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected.
@@ -411,6 +492,7 @@ private fun DetailChip(
     containerColor: Color,
     contentColor: Color,
     modifier: Modifier = Modifier,
+    outlineColor: Color? = null,
 ) {
     Text(
         text = text,
@@ -420,24 +502,35 @@ private fun DetailChip(
         modifier = modifier
             .clip(PillShape)
             .background(containerColor)
+            .then(if (outlineColor != null) Modifier.border(1.dp, outlineColor, PillShape) else Modifier)
             .padding(horizontal = 12.dp, vertical = 9.dp),
     )
 }
 
-/** `4K · 3840 × 2160` when MediaStore knew the pixels, otherwise the class alone. */
+/**
+ * `4K · 3840 × 2160` when MediaStore knew the pixels. When it knew none of them the chip
+ * says that instead of naming the smallest bucket: a 4 GB remux with no scanned row is
+ * not an SD file, it is a file nobody measured.
+ */
 @Composable
 private fun resolutionText(item: MediaItem): String =
-    if (item.width > 0 && item.height > 0) {
-        stringResource(R.string.sheet_resolution_pixels, item.resolutionLabel, item.width, item.height)
+    if (item.knowsResolution) {
+        if (item.width > 0 && item.height > 0) {
+            stringResource(R.string.sheet_resolution_pixels, item.resolutionLabel, item.width, item.height)
+        } else {
+            item.resolutionLabel
+        }
     } else {
-        item.resolutionLabel
+        stringResource(R.string.detail_resolution_unknown)
     }
 
+/** Null is the probe still reading the container — "SDR" is a result, not a default. */
 @Composable
-private fun hdrChipLabel(hdr: HdrType): String = when (hdr) {
+private fun hdrChipLabel(hdr: HdrType?): String = when (hdr) {
     HdrType.DOLBY_VISION -> stringResource(R.string.media_dolby_vision_badge)
     HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
     HdrType.NONE -> stringResource(R.string.media_sdr)
+    null -> stringResource(R.string.detail_hdr_checking)
 }
 
 /**
@@ -453,10 +546,18 @@ private fun CastStartState.isCommitting(): Boolean = when (this) {
     CastStartState.Idle, is CastStartState.Active, is CastStartState.Failed -> false
 }
 
-/** Duration plus the MediaStore bucket, which is the only provenance we hold. */
+/**
+ * Duration plus the MediaStore bucket, which is the only provenance we hold. An unscanned
+ * duration is the em dash, never `durationHuman`'s "0s" — a two-hour film is not zero
+ * seconds long because nothing measured it.
+ */
 @Composable
 private fun detailMeta(item: MediaItem): String {
-    val duration = Format.durationHuman(item.durationMs)
+    val duration = if (item.knowsDuration) {
+        Format.durationHuman(item.durationMs)
+    } else {
+        stringResource(R.string.media_unknown)
+    }
     val bucket = item.bucket?.takeIf { it.isNotBlank() } ?: return duration
     return stringResource(R.string.quality_playing_value, duration, bucket)
 }

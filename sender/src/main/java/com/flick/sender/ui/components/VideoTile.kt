@@ -7,17 +7,21 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,12 +32,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +56,7 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
+import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
@@ -161,6 +169,11 @@ fun Modifier.flickSharedFrame(
  * resolution + dynamic-range chip top-left, the duration bottom-right, then the
  * title and a size/length caption. The frame itself is the hero — tapping the tile
  * expands these pixels into DetailScreen's backdrop.
+ *
+ * [unplayable] is a fact this app witnessed — a receiver refused these exact bytes —
+ * and it is the only state here allowed to read as a fault. A file MediaStore simply
+ * never scanned is a different thing entirely: the badge withholds the claim it cannot
+ * make, and nothing about the tile says the file is broken.
  */
 @Composable
 fun VideoTile(
@@ -168,6 +181,7 @@ fun VideoTile(
     hdr: HdrType?,
     imageLoader: ImageLoader,
     onClick: () -> Unit,
+    unplayable: Boolean = false,
     compact: Boolean = false,
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
@@ -177,6 +191,13 @@ fun VideoTile(
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
     val request = rememberVideoFrameRequest(item.uri, item.durationMs, crossfade = true)
+    val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
+    // The still is held back rather than dimmed: a scrim on top would fight the one the
+    // badges already read against, and a frame at full chroma beside a refusal chip reads
+    // as an unrelated decoration stuck to it.
+    val frameFilter = remember(unplayable) {
+        if (unplayable) ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(RefusedSaturation) }) else null
+    }
 
     Column(
         modifier = modifier
@@ -185,7 +206,12 @@ fun VideoTile(
             // caption sits outside any rounded shape, and clipping this column would
             // cut the poster's deliberately unclipped shadow.
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .semantics { role = Role.Button },
+            .semantics {
+                role = Role.Button
+                // The chip is decorative to TalkBack — the tile speaks its own state, so
+                // the refusal is never announced as a second, tappable thing.
+                if (unplayable) stateDescription = refusedDescription
+            },
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
         Box(
@@ -209,23 +235,23 @@ fun VideoTile(
                 contentDescription = item.name,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
+                colorFilter = frameFilter,
                 modifier = Modifier
                     .flickSharedFrame(sharedScope, animatedScope, posterKey(item.id))
                     .fillMaxSize(),
             )
             Box(Modifier.fillMaxSize().background(FlickGradients.posterScrim))
-            Text(
-                text = badgeLabel(hdr, item.resolutionLabel),
-                style = FlickText.monoBadge.copy(color = colors.onSurface),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .clip(PillShape)
-                    .background(colors.canvas)
-                    .padding(horizontal = 9.dp, vertical = 6.dp),
-            )
+            // Stacked, not swapped: the two chips answer different questions, and a file
+            // the TV refused still has whatever metadata it always had.
+            Column(
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                MetadataBadge(hdr = hdr, item = item)
+                if (unplayable) RefusedBadge()
+            }
             // A zero duration means MediaStore had no value, not a zero-length film.
-            if (item.durationMs > 0L) {
+            if (item.knowsDuration) {
                 Text(
                     text = Format.timecode(item.durationMs),
                     style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
@@ -257,27 +283,80 @@ fun VideoTile(
 }
 
 /**
- * "4K DV" / "4K HDR10" / "4K" — the dynamic range is only claimed once probed, which is
- * why null (still probing) and [HdrType.NONE] (probed, no HDR) render the same badge:
- * the resolution is all this tile knows in either case.
+ * The tile's metadata claim, and never more of one than MediaStore supplied. With no
+ * pixels reported the badge states the dynamic range alone if the probe found one, and
+ * otherwise says so outright — the solid pill is reserved for a fact, so the withheld
+ * form loses the fill and takes the dim ink and a hairline instead. It stays the same
+ * pill in the same seat: a missing badge would read as a tile that failed to draw.
  */
 @Composable
-private fun badgeLabel(hdr: HdrType?, resolutionLabel: String): String = when (hdr) {
-    HdrType.DOLBY_VISION -> stringResource(
-        R.string.library_tile_badge,
-        resolutionLabel,
-        stringResource(R.string.media_dv_badge),
+private fun MetadataBadge(hdr: HdrType?, item: MediaItem) {
+    val colors = LocalFlickColors.current
+    val range = hdrBadge(hdr)
+    val withheld = !item.knowsResolution && range == null
+    val text = if (range != null) {
+        // A probed dynamic range is a fact on its own, and the only one left to state
+        // when MediaStore reported no pixels to pair it with.
+        if (item.knowsResolution) {
+            stringResource(R.string.library_tile_badge, item.resolutionLabel, range)
+        } else {
+            range
+        }
+    } else {
+        if (item.knowsResolution) item.resolutionLabel else stringResource(R.string.library_badge_unknown)
+    }
+    Text(
+        text = text,
+        style = FlickText.monoBadge.copy(color = if (withheld) colors.onSurfaceDim else colors.onSurface),
+        modifier = Modifier
+            .clip(PillShape)
+            .background(if (withheld) colors.canvas.copy(alpha = WithheldFill) else colors.canvas)
+            .then(if (withheld) Modifier.border(1.dp, colors.outline, PillShape) else Modifier)
+            .padding(horizontal = 9.dp, vertical = 6.dp),
     )
-    HdrType.HDR10 -> stringResource(
-        R.string.library_tile_badge,
-        resolutionLabel,
-        stringResource(R.string.media_hdr10_badge),
-    )
-    HdrType.NONE, null -> resolutionLabel
+}
+
+/**
+ * The remembered refusal. Crimson is the app's failure role and this is a failure that
+ * genuinely happened — but it is one attempt on one TV, so the copy stays in the past
+ * tense and the tile stays tappable: the sheet behind it still offers to cast.
+ */
+@Composable
+private fun RefusedBadge() {
+    val colors = LocalFlickColors.current
+    Row(
+        modifier = Modifier
+            .clip(PillShape)
+            .background(colors.trouble)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Warning,
+            contentDescription = null,
+            // FlickColors pairs no ink with `trouble`; this is the one role that clears
+            // it in both sets — white on the light crimson, near-black on the dark one.
+            tint = colors.onPrimary,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = stringResource(R.string.library_badge_unplayable),
+            style = FlickText.monoBadge.copy(color = colors.onPrimary),
+        )
+    }
+}
+
+/** DV / HDR10 only once probed: null is "nobody has looked", never "no HDR". */
+@Composable
+private fun hdrBadge(hdr: HdrType?): String? = when (hdr) {
+    HdrType.DOLBY_VISION -> stringResource(R.string.media_dv_badge)
+    HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
+    HdrType.NONE, null -> null
 }
 
 private fun metaLabel(item: MediaItem, unknown: String): String {
-    val length = if (item.durationMs > 0L) Format.durationHuman(item.durationMs) else unknown
+    val length = if (item.knowsDuration) Format.durationHuman(item.durationMs) else unknown
     val size = if (item.sizeBytes > 0L) Format.bytes(item.sizeBytes) else unknown
     return "$length · $size"
 }
@@ -286,3 +365,11 @@ private fun metaLabel(item: MediaItem, unknown: String): String {
 // poster does not eat the row on a landscape phone.
 private const val PosterRatio = 179f / 122f
 private const val CompactPosterRatio = 16f / 9f
+
+// A withheld badge is the same pill with its confidence taken out: enough fill to keep
+// mono type legible over any frame, not enough to read as the solid claim beside it.
+private const val WithheldFill = 0.62f
+
+// Held back, not greyed out. Far enough down that the tile reads as answered-for at a
+// glance, far enough up that the frame is still the film.
+private const val RefusedSaturation = 0.45f

@@ -100,8 +100,8 @@ internal val TransportClusterGap = 16.dp
  * The amber play key (spec §5.3 row 3) — an opaque `Spark` fill, ink in `OnSpark`,
  * an amber drop shadow, and a WHITE focus ring because amber on amber vanishes.
  *
- * It is the only focusable in the cluster, so the fill no longer animates between
- * states: it was already `Spark` in every one of them.
+ * The fill does not animate between states: it is already `Spark` in every one of
+ * them, and focus is carried by the ring and the lift.
  */
 @Composable
 private fun TransportPlayKey(
@@ -180,39 +180,68 @@ private fun TransportPlayKey(
 }
 
 /**
- * A ±10 s seek glyph, drawn as what it is: a **mark for a remote gesture**, not a
- * key you can land on.
+ * A ±10 s seek key (spec §5.3 row 3) — the §3 unfocused vocabulary: the denser
+ * `ControlFillStrong` plate, the `Outline` hairline, a 24 dp glyph, and the
+ * detached amber ring while it holds focus.
  *
- * `TvRemoteKeyPolicy` consumes physical Left/Right as ±10 s seeks at the Activity
- * boundary, so these two can never take D-pad focus while the film is running —
- * yet they used to wear the §3 unfocused vocabulary (`ControlFillStrong` plus the
- * `Outline` hairline), which in this system means exactly one thing: *this is a
- * focus target*. Two full-size affordances promised a landing that ~95 % of the
- * time did not exist, and the one time it did (a side panel open, horizontal keys
- * handed back to Compose) it was an accident of state, not a feature.
- *
- * So the plate and the hairline are gone and the glyph is all that is left. It
- * keeps its 48 dp box — the box is the row's rhythm, and the interaction test
- * measures it — and it keeps its click action and `contentDescription`, so an
- * accessibility service can still reach the action even though the D-pad never
- * will.
- *
- * It carries no `graphicsLayer`: the §3 disabled alpha would buy two more render
- * nodes over a live decoder for a state that is not a user state here. `enabled`
- * is false only while the chrome is leaving, and the chrome's own fade covers it.
+ * It is a real focus target again. It stopped being one while `TvRemoteKeyPolicy`
+ * captured every physical Left/Right at the Activity boundary — a key the D-pad
+ * could never land on may not wear the vocabulary that means *this is a focus
+ * target*, so the plate came off and only the glyph was left. Horizontal keys now
+ * traverse this row the way it is drawn, so the promise the plate makes is one the
+ * remote can keep, and the design's own metrics come back with it.
  */
 @Composable
-private fun TransportGestureMark(
+private fun TransportSecondaryKey(
     onClick: () -> Unit,
     contentDescription: String?,
     enabled: Boolean,
     content: @Composable () -> Unit,
 ) {
+    val shape = FlickShape.Lg
     val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val reducedMotion = LocalReducedMotion.current
+    val hosted = beaconHosted()
+    val ringVisible = focused && enabled
+    // Held as State and read inside the layer / draw lambdas below — see
+    // [TransportPlayKey]. This key sits directly over the decoder.
+    val scale = animateFloatAsState(
+        targetValue = when {
+            reducedMotion -> 1f
+            pressed && ringVisible -> 1.02f
+            pressed -> FlickMotion.PRESS_SCALE
+            ringVisible -> FlickMotion.FOCUS_SCALE
+            else -> 1f
+        },
+        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        label = "secondaryTransportScale",
+    )
+    val ringPresence = animateFloatAsState(
+        targetValue = if (ringVisible) 1f else 0f,
+        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        label = "secondaryTransportRing",
+    )
     Box(
         modifier = Modifier
             .size(SecondaryTransportTargetSize)
-            .focusProperties { canFocus = false }
+            .focusProperties { canFocus = enabled }
+            .focusBeacon(shape)
+            .graphicsLayer {
+                val lift = scale.value
+                scaleX = lift
+                scaleY = lift
+                alpha = if (enabled) 1f else 0.38f
+            }
+            .flickFocusRing(
+                visible = ringVisible && !hosted,
+                shape = shape,
+                progress = { ringPresence.value },
+            )
+            .clip(shape)
+            .background(FlickColor.ControlFillStrong)
+            .border(FlickDimens.Hairline, FlickColor.Outline, shape)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -304,17 +333,14 @@ fun PlayPauseGlyph(
 /**
  * The transport cluster (spec §5.3 row 3): back-10 / play-pause / fwd-10.
  *
- * Exactly ONE of the three is a focus target, and it is the one focus lands on at
- * entry via [playFocusRequester]. The flanking ±10 s glyphs are
- * [TransportGestureMark]s — the remote's own Left/Right, reported back to the
- * viewer, not keys the D-pad can reach. That asymmetry is the point: the row now
- * reads as one key you press and two marks that tell you what the remote does.
+ * All three are focus targets, traversed left to right the way they are drawn,
+ * and focus lands on the play key at entry via [playFocusRequester].
  *
  * [enabled] is the chrome's gate on the whole cluster. [primaryEnabled] is
- * narrower and belongs to the play key alone: the ±10 s marks still carry a
- * working accessibility action in states where pressing play would do nothing —
- * see `primaryTransportLive`. With it false the caller must also route the row's
- * vertical chain past the key, which can no longer accept focus.
+ * narrower and belongs to the play key alone: the ±10 s keys stay live in states
+ * where pressing play would do nothing — see `primaryTransportLive` — and with it
+ * false the play key is skipped by focus search, which the flanking keys close
+ * over on their own.
  */
 @Composable
 fun TransportCluster(
@@ -335,7 +361,7 @@ fun TransportCluster(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(TransportClusterGap),
     ) {
-        TransportGestureMark(
+        TransportSecondaryKey(
             onClick = onBack10,
             contentDescription = back10ContentDescription,
             enabled = enabled,
@@ -359,7 +385,7 @@ fun TransportCluster(
                 tint = FlickColor.OnSpark,
             )
         }
-        TransportGestureMark(
+        TransportSecondaryKey(
             onClick = onForward10,
             contentDescription = forward10ContentDescription,
             enabled = enabled,
@@ -413,9 +439,10 @@ fun VolumeCells(
         }
     }
     LaunchedEffect(engaged) { onEngagementChanged(engaged) }
-    // Leaving composition while engaged strands the owner's `volumeEngaged` latch
-    // true, which deadens the physical seek keys for the rest of the session. The
-    // effect above cannot cover it: the whole control is gone before it can run.
+    // Leaving composition while engaged strands whatever the owner does with the
+    // engagement — the receiver no longer routes anything off it, but a listener
+    // left holding `true` for a control that is gone is still a lie. The effect
+    // above cannot cover it: the whole control is disposed before it can run.
     val latestEngagementChanged = rememberUpdatedState(onEngagementChanged)
     DisposableEffect(Unit) {
         onDispose { if (engaged) latestEngagementChanged.value(false) }

@@ -15,10 +15,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -41,6 +43,7 @@ import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
+import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
@@ -112,6 +115,10 @@ private val FocusRingBleedVertical: Dp = FlickSpace.Xs
  *
  * Focus enters on the currently selected row so the panel opens where the user
  * left off; `Back` calls [onDismiss], which is also what the close button does.
+ * Opening this panel takes the transport bar off screen, so these rows are the
+ * only focusables left — the request is retried across frames rather than made
+ * once, because a `FocusRequester` whose node is not yet placed throws and would
+ * leave the remote steering nothing at all.
  *
  * The panel must be measured with a **bounded height** — the track list claims
  * the space the header and the size selector do not need, and scrolls inside it.
@@ -128,7 +135,8 @@ fun SubtitlesPanel(
     modifier: Modifier = Modifier,
 ) {
     val entryFocus = remember { FocusRequester() }
-    LaunchedEffect(entryKey) { runCatching { entryFocus.requestFocus() } }
+    val entered = remember { mutableStateOf(false) }
+    LaunchedEffect(entryKey) { landTvFocus(entryFocus, entryFocus) { entered.value } }
 
     val selectedIndex = tracks.indexOfFirst { it.isSelected }
     val offSelected = selectedIndex < 0
@@ -141,6 +149,7 @@ fun SubtitlesPanel(
     GlassPanel(
         modifier = Modifier
             .width(SubtitlesPanelWidth)
+            .onFocusChanged { entered.value = it.hasFocus }
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
                     onDismiss()

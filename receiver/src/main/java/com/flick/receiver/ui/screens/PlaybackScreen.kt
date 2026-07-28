@@ -5,8 +5,8 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.animateBounds
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
@@ -45,12 +45,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -58,6 +61,8 @@ import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,9 +77,13 @@ import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
 import com.flick.receiver.ui.components.FlickTvButton
+import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.GlassPill
+import com.flick.receiver.ui.components.PlayPauseGlyph
+import com.flick.receiver.ui.components.PrimaryTransportGlyphSize
+import com.flick.receiver.ui.components.PrimaryTransportTargetSize
 import com.flick.receiver.ui.components.SpecChip
 import com.flick.receiver.ui.components.TelemetryReveal
 import com.flick.receiver.ui.components.TransportCluster
@@ -82,6 +91,7 @@ import com.flick.receiver.ui.components.TvOriginReveal
 import com.flick.receiver.ui.components.TvRevealOrigin
 import com.flick.receiver.ui.components.TvScrubBar
 import com.flick.receiver.ui.components.VolumeCells
+import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.BOTTOM_SCRIM_FRACTION
@@ -141,13 +151,6 @@ private val TimecodeMinWidth = 60.dp
 private const val CHROME_EXIT_TRAVEL = 0.5f
 
 /**
- * How far the side panel drifts in from its own edge, as a fraction of the chrome
- * width. At 864 dp usable this is ~52 dp — enough for the eye to catch which side
- * the panel belongs to, short enough that it never crosses the transport below it.
- */
-private const val PANEL_ENTRY_DRIFT = 0.06f
-
-/**
  * Subtitles ↔ Metrics is one panel changing anchor and width, not two panels
  * swapping places. Damping 0.8 at the medium-low stiffness is the TV bias: enough
  * settle to carry weight, too little overshoot to wobble at 55 inches. This is a
@@ -190,12 +193,38 @@ private val SeekBurstNudge = 4.dp
 private const val SEEK_BURST_GLYPH_SPIN = 36f
 
 /**
- * The state chip's vertical anchor (§5.3). It is 2 % below where the top scrim
+ * The finished chip's vertical anchor (§5.3). It is 2 % below where the top scrim
  * ends, and it stays there: the chip carries its own plate rather than borrowing
  * a scrim that is already fully transparent at this height — see
  * `UNSCRIMMED_BAND` and `FlickColor.GlassState`.
  */
 private const val STATE_CHIP_TOP_FRACTION = 0.28f
+
+/**
+ * How much amber is left standing while paused with the chrome down.
+ *
+ * The key rests here as a **state signal, not a control**: nothing focusable,
+ * nothing clickable, and centre/up/down bring the whole chrome back. Left and
+ * right do not — they stay the blind seek they are over any hidden chrome, paused
+ * or playing, because a paused film is exactly when a viewer wants to step
+ * through it without a panel in the way.
+ *
+ * The half goes on the FILL and not on the whole key, and that is a measurement
+ * rather than a preference. Put the whole key behind one 50 % layer and the amber
+ * fill and its `OnSpark` glyph composite to **2.72:1** over a dimmed white frame
+ * and **2.32:1** over an undimmed one — under the 3:1 graphical floor, on the one
+ * thing left on screen. Keeping the ink solid puts the read where it survives:
+ *
+ * | frame (with the 0.34 paused dim) | `OnSpark` glyph vs its fill | fill vs frame |
+ * |---|---|---|
+ * | white | **7.29:1** (6.44:1 against the frame) | 1.13:1 |
+ * | black | 2.46:1 | **3.41:1** |
+ *
+ * Whichever way the frame goes, one of the two elements carries at 3:1 or better,
+ * and on the bright frame — the case §5.3 actually worries about — it is the
+ * glyph, by a wide margin. See `PlaybackContrastTest`.
+ */
+private const val PAUSED_REST_ALPHA = 0.5f
 
 /**
  * Where the buffering arc rests under reduced motion — off the vertical so the
@@ -276,8 +305,8 @@ fun PlaybackScreen(
     subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     subtitleSize: SubtitleSize = SubtitleSize.Medium,
     openPanel: PlaybackPanel = PlaybackPanel.None,
-    onVolumeEngagementChanged: (Boolean) -> Unit = {},
     onOpenPanel: (PlaybackPanel) -> Unit = {},
+    onScrubFocusChanged: (Boolean) -> Unit = {},
     onSelectSubtitleTrack: (String?) -> Unit = {},
     onSelectSubtitleSize: (SubtitleSize) -> Unit = {},
     onEndSession: (() -> Unit)? = null,
@@ -288,26 +317,45 @@ fun PlaybackScreen(
     val subtitlesCardFocus = remember { FocusRequester() }
     val metricsCardFocus = remember { FocusRequester() }
     val volumeFocus = remember { FocusRequester() }
+    val scrubFocus = remember { FocusRequester() }
     val endSessionFocus = remember { FocusRequester() }
 
-    // Chrome and its panels are one surface: hiding the transport can never
-    // leave a panel stranded over the film with nothing to dismiss it.
-    LaunchedEffect(chromeVisible) {
-        if (!chromeVisible && openPanel != PlaybackPanel.None) onOpenPanel(PlaybackPanel.None)
+    // A panel REPLACES the transport bar rather than stacking on top of it. The
+    // two are siblings, so the panel outlives the bar and hiding the bar can no
+    // longer force the panel closed.
+    val transportVisible = chromeVisible && openPanel == PlaybackPanel.None
+
+    // Where focus goes when the bar comes back. A panel is summoned from one of
+    // the two side cards, and closing it has to put the remote back on the card
+    // that opened it — with the bar gone there is nothing else to return to.
+    // Cleared when the chrome goes down so an ordinary reveal still lands on the
+    // primary key.
+    var panelReturn by remember { mutableStateOf(PlaybackPanel.None) }
+    LaunchedEffect(openPanel, chromeVisible) {
+        when {
+            openPanel != PlaybackPanel.None -> panelReturn = openPanel
+            !chromeVisible -> panelReturn = PlaybackPanel.None
+        }
     }
 
-    // Closing a panel hands focus back to the card that opened it, so the D-pad
-    // never lands on an unrelated control after Back.
-    var lastPanel by remember { mutableStateOf(PlaybackPanel.None) }
-    LaunchedEffect(openPanel) {
-        if (openPanel == PlaybackPanel.None) {
-            when (lastPanel) {
-                PlaybackPanel.Subtitles -> runCatching { subtitlesCardFocus.requestFocus() }
-                PlaybackPanel.Metrics -> runCatching { metricsCardFocus.requestFocus() }
-                PlaybackPanel.None -> Unit
-            }
-        }
-        lastPanel = openPanel
+    // The panel the slot draws: the live one while it is open, the last one while
+    // its exit is still retained.
+    var retainedPanel by remember { mutableStateOf(PlaybackPanel.None) }
+    LaunchedEffect(openPanel) { if (openPanel != PlaybackPanel.None) retainedPanel = openPanel }
+    val renderedPanel = if (openPanel != PlaybackPanel.None) openPanel else retainedPanel
+
+    // Where each side panel is summoned from. The card publishes its own centre
+    // while it holds focus, and a D-pad OK can only reach a card that does — so
+    // the recorded point is always the control the viewer actually pressed.
+    val subtitlesOrigin = rememberTvRevealOrigin()
+    val metricsOrigin = rememberTvRevealOrigin()
+
+    val primaryLive = primaryTransportLive(phase, onReplay)
+    val chromeEntryFocus = when {
+        panelReturn == PlaybackPanel.Subtitles -> subtitlesCardFocus
+        panelReturn == PlaybackPanel.Metrics -> metricsCardFocus
+        primaryLive -> playFocusRequester
+        else -> subtitlesCardFocus
     }
 
     Box(modifier = modifier.fillMaxSize().background(FlickColor.CanvasPlayback)) {
@@ -383,16 +431,39 @@ fun PlaybackScreen(
             BufferingOverlay(Modifier.align(Alignment.Center))
         }
 
-        // T5 paused / the finished state. One slot, because they are the same
-        // job: the single thing on screen that says the TV has not frozen.
-        if (phase == PlaybackPhase.Paused || phase == PlaybackPhase.Ended) {
+        // T5. Only FINISHED still announces itself in the middle of the frame.
+        // A viewer who has just pressed pause does not need to be told they did;
+        // "the film is over" is the one playback state that carries information
+        // nobody can infer from a still frame, so it keeps its chip — and the
+        // resting key below is what says "paused" instead.
+        if (phase == PlaybackPhase.Ended) {
             Column(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Spacer(Modifier.fillMaxHeight(STATE_CHIP_TOP_FRACTION))
-                PlaybackStateChip(phase = phase)
+                PlaybackFinishedChip()
             }
+        }
+
+        // The paused key at rest. Composed only while the film is paused, and lit
+        // only once the chrome has gone: the same amber key, at the foot of the
+        // frame the transport left, held at [PAUSED_REST_ALPHA].
+        if (phase == PlaybackPhase.Paused) {
+            val restPresence = animateFloatAsState(
+                targetValue = if (chromeVisible) 0f else 1f,
+                animationSpec = if (reducedMotion) tween(durationMillis = 0) else {
+                    FlickMotion.chromeFadeIn()
+                },
+                label = "pausedRestPresence",
+            )
+            RestingPauseKey(
+                presence = { restPresence.value },
+                announced = !chromeVisible,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(safeArea),
+            )
         }
 
         // ±10 s remote-seek feedback, restyled as the design's side burst. The
@@ -461,14 +532,15 @@ fun PlaybackScreen(
                 diagnostics = diagnostics,
                 safeArea = safeArea,
                 interactive = chromeVisible,
+                transportVisible = transportVisible,
                 onEndSession = onEndSession,
                 endSessionFocusRequester = endSessionFocus,
-                subtitlesCardFocusRequester = subtitlesCardFocus,
+                scrubFocusRequester = scrubFocus,
             )
         }
 
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = transportVisible,
             enter = fadeIn(FlickMotion.chromeFadeIn()),
             exit = fadeOut(FlickMotion.fastStateEffects()),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -485,28 +557,123 @@ fun PlaybackScreen(
                 title = title,
                 hdr = hdr,
                 diagnostics = diagnostics,
-                throughput = throughput,
-                subtitleTracks = subtitleTracks,
-                subtitleSize = subtitleSize,
                 openPanel = openPanel,
-                onVolumeEngagementChanged = onVolumeEngagementChanged,
+                selectedSubtitleLabel = selectedSubtitleLabel(subtitleTracks),
                 onOpenPanel = onOpenPanel,
-                onSelectSubtitleTrack = onSelectSubtitleTrack,
-                onSelectSubtitleSize = onSelectSubtitleSize,
                 onBack10 = onBack10,
                 onPlayPause = onPlayPause,
                 onForward10 = onForward10,
                 onSetVolume = onSetVolume,
                 onReplay = onReplay,
+                onScrubFocusChanged = onScrubFocusChanged,
+                entryFocusRequester = chromeEntryFocus,
                 playFocusRequester = playFocusRequester,
+                scrubFocusRequester = scrubFocus,
                 subtitlesCardFocusRequester = subtitlesCardFocus,
                 metricsCardFocusRequester = metricsCardFocus,
                 volumeFocusRequester = volumeFocus,
                 endSessionFocusRequester = if (onEndSession != null) endSessionFocus else null,
+                subtitlesRevealOrigin = subtitlesOrigin,
+                metricsRevealOrigin = metricsOrigin,
                 safeArea = safeArea,
-                interactive = chromeVisible,
+                interactive = transportVisible,
             )
         }
+
+        // The side panel — a SIBLING of the transport, drawn after it so the two
+        // never read as stacked while they exchange. The slot is an empty
+        // full-screen box that bounds the panel's height; only the card itself is
+        // ever animated, so the fade never buys a full-screen scratch layer.
+        LookaheadScope {
+            val panelScope = this
+            Box(modifier = Modifier.fillMaxSize().padding(safeArea)) {
+                AnimatedVisibility(
+                    visible = openPanel != PlaybackPanel.None,
+                    // The origin wipe IS the arrival (§5.4/§5.5): the panel is
+                    // born at the card that summoned it. A fade on top of it
+                    // would be a second entrance and a second compositing layer
+                    // on exactly the frames the panel is most expensive.
+                    enter = EnterTransition.None,
+                    exit = fadeOut(FlickMotion.fastStateEffects()),
+                    modifier = Modifier
+                        .align(
+                            if (renderedPanel == PlaybackPanel.Metrics) Alignment.BottomEnd
+                            else Alignment.BottomStart,
+                        )
+                        // ONE panel container that travels: switching Subtitles →
+                        // Metrics glides it across the screen and resizes it,
+                        // instead of cutting one card out and another in.
+                        .animateBounds(panelScope, boundsTransform = PanelTravel),
+                    label = "playbackSidePanel",
+                ) {
+                    PlaybackSidePanel(
+                        openPanel = openPanel,
+                        renderedPanel = renderedPanel,
+                        diagnostics = diagnostics,
+                        throughput = throughput,
+                        subtitleTracks = subtitleTracks,
+                        subtitleSize = subtitleSize,
+                        subtitlesRevealOrigin = subtitlesOrigin,
+                        metricsRevealOrigin = metricsOrigin,
+                        onOpenPanel = onOpenPanel,
+                        onSelectSubtitleTrack = onSelectSubtitleTrack,
+                        onSelectSubtitleSize = onSelectSubtitleSize,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The paused key at rest (§5.3, T5).
+ *
+ * It is deliberately NOT a control: no focus target, no click action, nothing the
+ * D-pad can land on. Every remote key while the chrome is down is already routed
+ * by `TvRemoteKeyPolicy`, and centre/up/down all bring the full chrome back — this
+ * only has to be the thing on screen that says the TV is paused and not frozen.
+ *
+ * [presence] is the chrome handover, invoked in the layer block rather than read
+ * at the call site: it animates every time the chrome comes and goes, and this
+ * sits over a live decoder. `ModulateAlpha` is explicit because the default
+ * strategy would buy an offscreen buffer for a 56 dp key the moment its alpha left
+ * 1 — and because modulating per draw op is what keeps the composite at rest
+ * exactly what [PAUSED_REST_ALPHA] describes: a half-strength fill under solid
+ * ink, not a half-strength everything.
+ */
+@Composable
+private fun RestingPauseKey(
+    presence: () -> Float,
+    announced: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val label = stringResource(R.string.paused_title)
+    Box(
+        modifier = modifier
+            .size(PrimaryTransportTargetSize)
+            .graphicsLayer {
+                alpha = presence()
+                compositingStrategy = CompositingStrategy.ModulateAlpha
+            }
+            .clip(FlickShape.Play)
+            .background(FlickColor.Spark.copy(alpha = PAUSED_REST_ALPHA))
+            .then(
+                if (announced) {
+                    Modifier.semantics { contentDescription = label }
+                } else {
+                    Modifier.clearAndSetSemantics { }
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        // The key exactly as the transport left it: paused, so it offers play.
+        // Substituting a pause glyph here would invent a second vocabulary for a
+        // state the amber key already carries.
+        PlayPauseGlyph(
+            playing = false,
+            size = PrimaryTransportGlyphSize,
+            tint = FlickColor.OnSpark,
+        )
     }
 }
 
@@ -518,15 +685,21 @@ private fun AnimatedVisibilityScope.TopChrome(
     diagnostics: DiagnosticsSnapshot,
     safeArea: PaddingValues,
     interactive: Boolean,
+    transportVisible: Boolean,
     onEndSession: (() -> Unit)?,
     endSessionFocusRequester: FocusRequester,
-    subtitlesCardFocusRequester: FocusRequester,
+    scrubFocusRequester: FocusRequester,
 ) {
     // The top chrome arrives from beyond the panel edge and retreats halfway back
     // the way it came. The travel is parent-owned so enter and exit are one
     // vocabulary, and it is a graphicsLayer transform so nothing over the decoder
     // is ever re-laid-out while it moves.
-    val slide by transition.animateFloat(
+    //
+    // Held as State and read INSIDE the layer block. Delegating it into a local
+    // (`by`) reads the animated value in composition, which recomposed this whole
+    // subtree once per frame for the length of every reveal — the transform was
+    // already free, the recomposition was not.
+    val slide = transition.animateFloat(
         transitionSpec = {
             if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
             else FlickMotion.focusSpatial()
@@ -541,7 +714,7 @@ private fun AnimatedVisibilityScope.TopChrome(
     }
     Row(
         modifier = Modifier
-            .graphicsLayer { translationY = -slide * size.height }
+            .graphicsLayer { translationY = -slide.value * size.height }
             // AnimatedVisibility retains this subtree for its fade-out; its
             // descendants leave the focus graph and the accessibility tree the
             // moment chrome hides.
@@ -579,7 +752,15 @@ private fun AnimatedVisibilityScope.TopChrome(
                 FlickTvButton(
                     onClick = onEndSession,
                     focusRequester = endSessionFocusRequester,
-                    modifier = Modifier.focusProperties { down = subtitlesCardFocusRequester },
+                    // Down reaches the scrub bar, which is the top of the
+                    // transport's own focus stack. While a panel has replaced the
+                    // transport there is no bar to point at, and a
+                    // `FocusRequester` with no attached node throws when focus
+                    // search resolves it — so the link is only wired while the
+                    // thing it names is on screen.
+                    modifier = Modifier.focusProperties {
+                        down = if (transportVisible) scrubFocusRequester else FocusRequester.Default
+                    },
                     shape = FlickShape.Pill,
                     containerColor = FlickColor.GlassState,
                     borderColor = FlickColor.OutlineSoft,
@@ -658,7 +839,7 @@ private fun netHealthColor(band: String?, rssiDbm: Int): Color {
     return if (congested || weak) FlickColor.Caution else FlickColor.Live
 }
 
-// ── Bottom chrome: side panels + the transport panel (spec §5.3) ────────────
+// ── Bottom chrome: the transport panel (spec §5.3) ──────────────────────────
 
 @Composable
 private fun AnimatedVisibilityScope.BottomChrome(
@@ -673,63 +854,46 @@ private fun AnimatedVisibilityScope.BottomChrome(
     title: String?,
     hdr: HdrType,
     diagnostics: DiagnosticsSnapshot,
-    throughput: ThroughputSnapshot,
-    subtitleTracks: List<SubtitleTrackInfo>,
-    subtitleSize: SubtitleSize,
     openPanel: PlaybackPanel,
-    onVolumeEngagementChanged: (Boolean) -> Unit,
+    selectedSubtitleLabel: String?,
     onOpenPanel: (PlaybackPanel) -> Unit,
-    onSelectSubtitleTrack: (String?) -> Unit,
-    onSelectSubtitleSize: (SubtitleSize) -> Unit,
     onBack10: () -> Unit,
     onPlayPause: () -> Unit,
     onForward10: () -> Unit,
     onSetVolume: (Float) -> Unit,
     onReplay: (() -> Unit)?,
+    onScrubFocusChanged: (Boolean) -> Unit,
+    entryFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
+    scrubFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
     volumeFocusRequester: FocusRequester,
     endSessionFocusRequester: FocusRequester?,
+    subtitlesRevealOrigin: TvRevealOrigin,
+    metricsRevealOrigin: TvRevealOrigin,
     safeArea: PaddingValues,
     interactive: Boolean,
 ) {
-    // On each reveal, land focus on play so there is always exactly one focused
-    // element while chrome is up (design §1.7). When the primary key is not a
-    // live control the subtitles card is the first one that is — and the phase can
-    // reach Ended while the chrome is already up, which takes focus off a key that
-    // has just stopped being focusable.
     val primaryLive = primaryTransportLive(phase, onReplay)
-    LaunchedEffect(interactive, primaryLive) {
+    // The bar is composed by the same state change that takes away whatever held
+    // focus before it — a reveal takes it off the root catcher, a panel close
+    // takes it off the panel — so the entry request is retried across frames
+    // rather than made once. [entryFocusRequester] is normally play (design §1.7);
+    // after a panel it is the card that summoned the panel, and past the end of
+    // the film it is the first control that is still live. The scrub bar is the
+    // last resort because it is the one control this bar always has.
+    var chromeHasFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(interactive, entryFocusRequester, primaryLive) {
         if (!interactive) return@LaunchedEffect
-        val entry = if (primaryLive) playFocusRequester else subtitlesCardFocusRequester
-        runCatching { entry.requestFocus() }
-    }
-    val reducedMotion = LocalReducedMotion.current
-    // Where each side panel is summoned from. The card publishes its own centre
-    // while it holds focus, and a D-pad OK can only reach a card that does — so
-    // the recorded point is always the control the viewer actually pressed.
-    val subtitlesOrigin = rememberTvRevealOrigin()
-    val metricsOrigin = rememberTvRevealOrigin()
-    // Keep the last panel composed through its exit animation. The external state
-    // can already be None (and focus restored to its launcher) without leaving a
-    // focusable, semantically-live panel over the film.
-    var renderedPanel by remember { mutableStateOf(PlaybackPanel.None) }
-    var panelEntryKey by remember { mutableStateOf(0) }
-    LaunchedEffect(openPanel) {
-        if (openPanel != PlaybackPanel.None) {
-            renderedPanel = openPanel
-            // The exit subtree is retained. Incrementing on every open gives a
-            // rapid close/reopen a fresh focus request instead of a stale panel.
-            panelEntryKey++
-        }
+        landTvFocus(entryFocusRequester, scrubFocusRequester) { chromeHasFocus }
     }
 
     // The transport rises the design's `tvRise` distance and sinks half of it back
-    // out. Both are the parent's, so the panel below no longer runs an entrance
-    // latch of its own, and both are graphicsLayer transforms: nothing over the
-    // decoder is re-laid-out while the chrome moves.
-    val rise by transition.animateFloat(
+    // out. Both are the parent's, and both are graphicsLayer transforms: nothing
+    // over the decoder is re-laid-out while the chrome moves. Read inside the
+    // layer block — see the note on `topChromeSlide`.
+    val rise = transition.animateFloat(
         transitionSpec = {
             if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
             else FlickMotion.focusSpatial()
@@ -743,164 +907,166 @@ private fun AnimatedVisibilityScope.BottomChrome(
         }
     }
 
-    LookaheadScope {
-        val panelScope = this
-        Column(
-            modifier = Modifier
-                .graphicsLayer { translationY = rise * FlickMotion.TvRise.toPx() }
-                .focusProperties { canFocus = interactive }
-                .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
-                .fillMaxWidth()
-                .padding(safeArea),
+    Column(
+        modifier = Modifier
+            .graphicsLayer { translationY = rise.value * FlickMotion.TvRise.toPx() }
+            // Aggregates every focus target below it, which is what tells the
+            // entry effect above that its request took. No focus target of its
+            // own: adding one here would terminate the property walk the controls
+            // inside make, and the `canFocus` gate below would stop reaching them.
+            .onFocusChanged { chromeHasFocus = it.hasFocus }
+            .focusProperties { canFocus = interactive }
+            .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
+            .fillMaxWidth()
+            .padding(safeArea),
+    ) {
+        GlassPanel(
+            modifier = Modifier.fillMaxWidth(),
+            shape = FlickShape.Hero,
+            tone = GlassPanelTone.Chrome,
+            // The shared panel inset. Its 18 dp bottom is also what clears the
+            // play key's 18 dp spark shadow, which is painted outside the
+            // button's bounds and would otherwise fall past the panel edge.
+            contentPadding = FlickDimens.PanelPadding,
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
+            // The chrome above owns enter AND exit now; a second entrance latch
+            // here would fight it and leave the panel behind on the way out.
+            animateEntrance = false,
         ) {
-            // The weight belongs on the AnimatedVisibility itself — it is the direct
-            // Column child, so this is what actually makes the transport measure
-            // first and leaves the panel only what the transport does not need. A
-            // ten-track subtitle list scrolls; it never crushes the transport.
-            AnimatedVisibility(
-                visible = openPanel != PlaybackPanel.None,
-                enter = if (reducedMotion) fadeIn(tween(durationMillis = 0)) else {
-                    fadeIn(FlickMotion.chromeFadeIn())
+            TransportHeaderRow(
+                title = title,
+                phase = phase,
+                seeking = seeking,
+                hdr = hdr,
+                diagnostics = diagnostics,
+            )
+            TransportScrubRow(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                bufferedMs = bufferedMs,
+                targetMs = targetMs,
+                seeking = seeking,
+                playing = playing,
+                interactive = interactive,
+                focusRequester = scrubFocusRequester,
+                onFocusChanged = onScrubFocusChanged,
+                upFocusRequester = endSessionFocusRequester,
+                downFocusRequester = if (primaryLive) playFocusRequester else subtitlesCardFocusRequester,
+            )
+            TransportControlRow(
+                playing = playing,
+                phase = phase,
+                volume = volume,
+                openPanel = openPanel,
+                selectedSubtitleLabel = selectedSubtitleLabel,
+                metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
+                    stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
+                } else {
+                    stringResource(R.string.metrics_unavailable)
                 },
-                exit = if (reducedMotion) fadeOut(tween(durationMillis = 0)) else {
-                    fadeOut(FlickMotion.fastStateEffects())
+                onOpenPanel = onOpenPanel,
+                onBack10 = onBack10,
+                onPlayPause = onPlayPause,
+                onForward10 = onForward10,
+                onSetVolume = onSetVolume,
+                onReplay = onReplay,
+                playFocusRequester = playFocusRequester,
+                scrubFocusRequester = scrubFocusRequester,
+                subtitlesCardFocusRequester = subtitlesCardFocusRequester,
+                metricsCardFocusRequester = metricsCardFocusRequester,
+                volumeFocusRequester = volumeFocusRequester,
+                subtitlesRevealOrigin = subtitlesRevealOrigin,
+                metricsRevealOrigin = metricsRevealOrigin,
+                interactive = interactive,
+            )
+        }
+    }
+}
+
+/**
+ * The side panel, now a sibling of the transport rather than a child of it
+ * (§5.4/§5.5).
+ *
+ * Opening a panel takes the control bar off screen: two glass surfaces stacked in
+ * the bottom third read as clutter, and the bar is also the single most expensive
+ * thing this screen draws — a full-width panel, a scrub canvas running a wave
+ * loop, and a row of controls, all recomposing with the 10 Hz position feed. So
+ * the panel does not merely sit above the bar, it replaces it.
+ *
+ * That inverts one hard requirement: with the bar gone the panel holds the ONLY
+ * focusables on screen, so focus MUST land inside it. Each panel asks for the
+ * control it wants — the selected track row, the close button — through
+ * [landTvFocus], which retries across frames rather than once, because a
+ * `FocusRequester` whose node has not been placed yet throws and would strand the
+ * remote entirely.
+ */
+@Composable
+private fun PlaybackSidePanel(
+    openPanel: PlaybackPanel,
+    renderedPanel: PlaybackPanel,
+    diagnostics: DiagnosticsSnapshot,
+    throughput: ThroughputSnapshot,
+    subtitleTracks: List<SubtitleTrackInfo>,
+    subtitleSize: SubtitleSize,
+    subtitlesRevealOrigin: TvRevealOrigin,
+    metricsRevealOrigin: TvRevealOrigin,
+    onOpenPanel: (PlaybackPanel) -> Unit,
+    onSelectSubtitleTrack: (String?) -> Unit,
+    onSelectSubtitleSize: (SubtitleSize) -> Unit,
+) {
+    val open = openPanel != PlaybackPanel.None
+    // Bumped when one panel replaces another, and when a close is reversed before
+    // its exit has finished — the two cases where this subtree is NOT rebuilt by
+    // the open itself and would otherwise keep a settled wipe and a stale focus
+    // request. Seeded from the panel this host was composed for, so the ordinary
+    // open costs no second pass over the panel's contents.
+    var entryKey by remember { mutableStateOf(0) }
+    var previousPanel by remember { mutableStateOf(openPanel) }
+    LaunchedEffect(openPanel) {
+        if (openPanel != previousPanel && openPanel != PlaybackPanel.None) entryKey++
+        previousPanel = openPanel
+    }
+
+    Box(
+        modifier = Modifier
+            .focusProperties { canFocus = open }
+            .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
+    ) {
+        // The panel's glass is born at the card that summoned it — this screen's
+        // one hero moment, and the only reveal on it. Inside the key the latch
+        // only ever goes false → true, so the surface stays fully drawn while the
+        // parent runs the dismissal.
+        key(entryKey) {
+            var revealed by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { revealed = true }
+            TvOriginReveal(
+                visible = revealed,
+                origin = if (renderedPanel == PlaybackPanel.Metrics) {
+                    metricsRevealOrigin
+                } else {
+                    subtitlesRevealOrigin
                 },
-                modifier = Modifier.weight(1f, fill = false),
-                label = "playbackSidePanel",
+                color = FlickColor.GlassPanel,
             ) {
-                // Each panel enters from the edge it belongs to, so the side of the
-                // screen a card lives on is legible before it has finished arriving.
-                val fromRight = renderedPanel == PlaybackPanel.Metrics
-                val drift by transition.animateFloat(
-                    transitionSpec = {
-                        if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
-                        else FlickMotion.focusSpatial()
-                    },
-                    label = "panelDrift",
-                ) { state -> if (state == EnterExitState.Visible) 0f else 1f }
+                when (renderedPanel) {
+                    PlaybackPanel.Subtitles -> SubtitlesPanel(
+                        tracks = subtitleTracks,
+                        size = subtitleSize,
+                        onSelectTrack = onSelectSubtitleTrack,
+                        onSelectSize = onSelectSubtitleSize,
+                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                        entryKey = entryKey,
+                    )
 
-                Box(
-                    modifier = Modifier
-                        .graphicsLayer {
-                            val edge = if (fromRight) 1f else -1f
-                            translationX = drift * size.width * PANEL_ENTRY_DRIFT * edge
-                        }
-                        .focusProperties { canFocus = openPanel != PlaybackPanel.None }
-                        .then(
-                            if (openPanel != PlaybackPanel.None) Modifier
-                            else Modifier.clearAndSetSemantics { },
-                        )
-                        .fillMaxWidth()
-                        .padding(bottom = 10.dp),
-                ) {
-                    // ONE panel container that travels: switching Subtitles →
-                    // Metrics glides it 488 dp across the screen and resizes it,
-                    // instead of cutting one card out and another in.
-                    Box(
-                        modifier = Modifier
-                            .align(if (fromRight) Alignment.BottomEnd else Alignment.BottomStart)
-                            .animateBounds(panelScope, boundsTransform = PanelTravel),
-                    ) {
-                        // The panel's glass is born at the card that summoned it —
-                        // this screen's one hero moment, and the only reveal on it.
-                        //
-                        // `key` restarts the wipe once per open, including a reopen
-                        // that arrives while the previous exit is still retained.
-                        // Inside that key the latch only ever goes false → true, so
-                        // the surface stays fully drawn while the chrome above runs
-                        // the dismissal: the exit is the parent's, in both halves.
-                        key(panelEntryKey) {
-                            var revealed by remember { mutableStateOf(false) }
-                            LaunchedEffect(Unit) { revealed = true }
-                            TvOriginReveal(
-                                visible = revealed,
-                                origin = if (renderedPanel == PlaybackPanel.Metrics) {
-                                    metricsOrigin
-                                } else {
-                                    subtitlesOrigin
-                                },
-                                color = FlickColor.GlassPanel,
-                            ) {
-                                when (renderedPanel) {
-                                    PlaybackPanel.Subtitles -> SubtitlesPanel(
-                                        tracks = subtitleTracks,
-                                        size = subtitleSize,
-                                        onSelectTrack = onSelectSubtitleTrack,
-                                        onSelectSize = onSelectSubtitleSize,
-                                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
-                                        entryKey = panelEntryKey,
-                                    )
+                    PlaybackPanel.Metrics -> StreamMetricsPanel(
+                        diagnostics = diagnostics,
+                        throughput = throughput,
+                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                        entryKey = entryKey,
+                    )
 
-                                    PlaybackPanel.Metrics -> StreamMetricsPanel(
-                                        diagnostics = diagnostics,
-                                        throughput = throughput,
-                                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
-                                        entryKey = panelEntryKey,
-                                    )
-
-                                    PlaybackPanel.None -> Unit
-                                }
-                            }
-                        }
-                    }
+                    PlaybackPanel.None -> Unit
                 }
-            }
-
-            GlassPanel(
-                modifier = Modifier.fillMaxWidth(),
-                shape = FlickShape.Hero,
-                tone = GlassPanelTone.Chrome,
-                // The shared panel inset. Its 18 dp bottom is also what clears the
-                // play key's 18 dp spark shadow, which is painted outside the
-                // button's bounds and would otherwise fall past the panel edge.
-                contentPadding = FlickDimens.PanelPadding,
-                verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
-                // The chrome above owns enter AND exit now; a second entrance latch
-                // here would fight it and leave the panel behind on the way out.
-                animateEntrance = false,
-            ) {
-                TransportHeaderRow(
-                    title = title,
-                    phase = phase,
-                    seeking = seeking,
-                    hdr = hdr,
-                    diagnostics = diagnostics,
-                )
-                TransportScrubRow(
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    bufferedMs = bufferedMs,
-                    targetMs = targetMs,
-                    seeking = seeking,
-                    playing = playing,
-                )
-                TransportControlRow(
-                    playing = playing,
-                    phase = phase,
-                    volume = volume,
-                    openPanel = openPanel,
-                    onVolumeEngagementChanged = onVolumeEngagementChanged,
-                    selectedSubtitleLabel = selectedSubtitleLabel(subtitleTracks),
-                    metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
-                        stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
-                    } else {
-                        stringResource(R.string.metrics_unavailable)
-                    },
-                    onOpenPanel = onOpenPanel,
-                    onBack10 = onBack10,
-                    onPlayPause = onPlayPause,
-                    onForward10 = onForward10,
-                    onSetVolume = onSetVolume,
-                    onReplay = onReplay,
-                    playFocusRequester = playFocusRequester,
-                    subtitlesCardFocusRequester = subtitlesCardFocusRequester,
-                    metricsCardFocusRequester = metricsCardFocusRequester,
-                    volumeFocusRequester = volumeFocusRequester,
-                    endSessionFocusRequester = endSessionFocusRequester,
-                    subtitlesRevealOrigin = subtitlesOrigin,
-                    metricsRevealOrigin = metricsOrigin,
-                    interactive = interactive,
-                )
             }
         }
     }
@@ -979,6 +1145,11 @@ private fun TransportHeaderRow(
     }
 }
 
+/**
+ * Row 2 (§5.3) — and, since the D-pad model was corrected, the one control on
+ * this chrome that owns physical left/right. Up from the transport row reaches it,
+ * Down from it returns; while it holds focus left/right seek instead of moving.
+ */
 @Composable
 private fun TransportScrubRow(
     positionMs: Long,
@@ -987,6 +1158,11 @@ private fun TransportScrubRow(
     targetMs: Long,
     seeking: Boolean,
     playing: Boolean,
+    interactive: Boolean,
+    focusRequester: FocusRequester,
+    onFocusChanged: (Boolean) -> Unit,
+    upFocusRequester: FocusRequester?,
+    downFocusRequester: FocusRequester,
 ) {
     // While seeking the flanking timecodes read the target the user is steering
     // to; the bar itself keeps drawing the confirmed ghost behind it.
@@ -1015,7 +1191,15 @@ private fun TransportScrubRow(
             // which counts a seek landing while paused as the film running — so the
             // wave swells over a frozen frame.
             playing = playing,
-            modifier = Modifier.weight(1f),
+            interactive = interactive,
+            focusRequester = focusRequester,
+            onFocusChanged = onFocusChanged,
+            modifier = Modifier
+                .weight(1f)
+                .focusProperties {
+                    up = upFocusRequester ?: FocusRequester.Default
+                    down = downFocusRequester
+                },
         )
         Text(
             text = stringResource(R.string.scrub_remaining, clock(remainingMs)),
@@ -1036,23 +1220,21 @@ private fun TransportScrubRow(
  * and lets either card ellipsise rather than overflow the panel on a narrow
  * viewport.
  *
- * **The row is laid out horizontally and traversed vertically, and only three of
- * its five items are focusable.** Physical Left/Right are captured by
- * `TvRemoteKeyPolicy` as ±10 s seeks at the Activity boundary and never reach
- * Compose during playback — a deliberate, unit-tested product decision (spec §0
- * forbids changing it, and Left/Right-scrubs is the conventional TV player).
- * Two consequences used to be papered over and are now stated by the design
- * instead:
+ * **The row is traversed the way it is drawn.** Physical left/right used to be
+ * captured as ±10 s seeks at the Activity boundary before Compose could see them,
+ * which left a horizontal row of six controls reachable only by pressing Down — a
+ * model the product owner rejected on the real device. `TvRemoteKeyPolicy` now
+ * hands horizontal keys to focus everywhere except on the scrub bar, so:
  *
- *  - the ±10 s glyphs cannot take focus, so they no longer wear the §3 unfocused
- *    vocabulary that means "focus target" in this system — see
- *    `TransportGestureMark`;
- *  - there is **no `FocusBeaconHost` here**, and that is the point. The beacon is
- *    one ring travelling along a group's own axis; this group's axis of layout is
- *    orthogonal to its axis of traversal, so a Down press sent the ring sideways
- *    across the panel at constant y. Spec §3a already exempts groups where travel
- *    cannot read (top chrome, the metrics panel); this is the same case for a
- *    sharper reason, and each control blooms its own ring in place.
+ *  - the ±10 s keys are focus targets again and wear the §3 unfocused vocabulary
+ *    that means exactly that (`TransportSecondaryKey`);
+ *  - the `FocusBeaconHost` comes back (§3a lists this row first). One ring
+ *    travels along the row's own axis, which is now also its axis of traversal —
+ *    the reason it was pulled was that a Down press sent the ring sideways at
+ *    constant y, and Down no longer moves within this row at all.
+ *
+ * Vertically the row is one rank: every control's Up reaches the scrub bar, which
+ * is where seeking lives.
  */
 @Composable
 private fun TransportControlRow(
@@ -1060,7 +1242,6 @@ private fun TransportControlRow(
     phase: PlaybackPhase,
     volume: Float,
     openPanel: PlaybackPanel,
-    onVolumeEngagementChanged: (Boolean) -> Unit,
     selectedSubtitleLabel: String?,
     metricsSubLabel: String,
     onOpenPanel: (PlaybackPanel) -> Unit,
@@ -1070,10 +1251,10 @@ private fun TransportControlRow(
     onSetVolume: (Float) -> Unit,
     onReplay: (() -> Unit)?,
     playFocusRequester: FocusRequester,
+    scrubFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
     volumeFocusRequester: FocusRequester,
-    endSessionFocusRequester: FocusRequester?,
     subtitlesRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
     interactive: Boolean,
@@ -1081,52 +1262,40 @@ private fun TransportControlRow(
     // Past the end of the film the primary key stops being a play key. It only
     // says so when the caller actually gave it a restart to run: a key relabelled
     // "Watch again" that resumes nothing is a worse lie than the play triangle it
-    // replaced. With no restart wired it is not a key at all, and the vertical
-    // chain below closes over the gap rather than pointing at a control that can
-    // no longer accept focus.
+    // replaced. With no restart wired it is not a key at all, and horizontal
+    // traversal simply steps over it.
     val replay = if (phase == PlaybackPhase.Ended) onReplay else null
     val primaryLive = primaryTransportLive(phase, onReplay)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            PanelCard(
-                glyph = FlickIcons.ClosedCaption,
-                title = stringResource(R.string.subtitles_card_title),
-                state = selectedSubtitleLabel ?: stringResource(R.string.subtitles_state_off),
-                open = openPanel == PlaybackPanel.Subtitles,
-                enabled = interactive,
-                focusRequester = subtitlesCardFocusRequester,
-                onClick = {
-                    onOpenPanel(
-                        if (openPanel == PlaybackPanel.Subtitles) PlaybackPanel.None
-                        else PlaybackPanel.Subtitles,
-                    )
-                },
-                // Applied at exactly one level, outside the button's own focus
-                // target, so the centre it records is the card's layout centre
-                // rather than a point inside the focus lift.
-                modifier = Modifier
-                    .tvRevealSource(subtitlesRevealOrigin)
-                    .focusProperties {
-                        up = when {
-                            openPanel == PlaybackPanel.Subtitles -> FocusRequester.Default
-                            endSessionFocusRequester != null -> endSessionFocusRequester
-                            else -> FocusRequester.Default
-                        }
-                        down = if (primaryLive) playFocusRequester else volumeFocusRequester
-                    },
-            )
-        }
-
-        Box(
-            modifier = Modifier.focusProperties {
-                up = subtitlesCardFocusRequester
-                down = volumeFocusRequester
-            },
+    FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                // One rank: everything in this row answers Up with the scrub bar.
+                .focusProperties { up = scrubFocusRequester },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                PanelCard(
+                    glyph = FlickIcons.ClosedCaption,
+                    title = stringResource(R.string.subtitles_card_title),
+                    state = selectedSubtitleLabel ?: stringResource(R.string.subtitles_state_off),
+                    open = openPanel == PlaybackPanel.Subtitles,
+                    enabled = interactive,
+                    focusRequester = subtitlesCardFocusRequester,
+                    onClick = {
+                        onOpenPanel(
+                            if (openPanel == PlaybackPanel.Subtitles) PlaybackPanel.None
+                            else PlaybackPanel.Subtitles,
+                        )
+                    },
+                    // Applied at exactly one level, outside the button's own focus
+                    // target, so the centre it records is the card's layout centre
+                    // rather than a point inside the focus lift.
+                    modifier = Modifier.tvRevealSource(subtitlesRevealOrigin),
+                )
+            }
+
             TransportCluster(
                 playing = playing,
                 onBack10 = onBack10,
@@ -1145,58 +1314,48 @@ private fun TransportControlRow(
                 ),
                 forward10ContentDescription = stringResource(R.string.transport_forward_10),
             )
-        }
 
-        VolumeCells(
-            level = volume,
-            onChange = onSetVolume,
-            enabled = interactive,
-            onEngagementChanged = onVolumeEngagementChanged,
-            contentDescription = stringResource(R.string.volume),
-            stateDescription = stringResource(
-                R.string.volume_state,
-                (volume.coerceIn(0f, 1f) * 100).toInt(),
-            ),
-            modifier = Modifier
-                .focusRequester(volumeFocusRequester)
-                .focusProperties {
-                    up = if (primaryLive) playFocusRequester else subtitlesCardFocusRequester
-                    down = metricsCardFocusRequester
-                },
-        )
-
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            PanelCard(
-                glyph = FlickIcons.Monitoring,
-                title = stringResource(R.string.metrics_card_title),
-                state = metricsSubLabel,
-                open = openPanel == PlaybackPanel.Metrics,
+            VolumeCells(
+                level = volume,
+                onChange = onSetVolume,
                 enabled = interactive,
-                focusRequester = metricsCardFocusRequester,
-                onClick = {
-                    onOpenPanel(
-                        if (openPanel == PlaybackPanel.Metrics) PlaybackPanel.None
-                        else PlaybackPanel.Metrics,
-                    )
-                },
-                modifier = Modifier
-                    .tvRevealSource(metricsRevealOrigin)
-                    .focusProperties {
-                        up = if (openPanel == PlaybackPanel.Metrics) {
-                            FocusRequester.Default
-                        } else {
-                            volumeFocusRequester
-                        }
-                    },
+                contentDescription = stringResource(R.string.volume),
+                stateDescription = stringResource(
+                    R.string.volume_state,
+                    (volume.coerceIn(0f, 1f) * 100).toInt(),
+                ),
+                modifier = Modifier.focusRequester(volumeFocusRequester),
             )
+
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                PanelCard(
+                    glyph = FlickIcons.Monitoring,
+                    title = stringResource(R.string.metrics_card_title),
+                    state = metricsSubLabel,
+                    open = openPanel == PlaybackPanel.Metrics,
+                    enabled = interactive,
+                    focusRequester = metricsCardFocusRequester,
+                    onClick = {
+                        onOpenPanel(
+                            if (openPanel == PlaybackPanel.Metrics) PlaybackPanel.None
+                            else PlaybackPanel.Metrics,
+                        )
+                    },
+                    modifier = Modifier.tvRevealSource(metricsRevealOrigin),
+                )
+            }
         }
     }
 }
 
 /**
- * A side card in the control row. While its panel is [open] it inverts to an
- * opaque amber fill with `OnSpark` ink — and takes the white ring, because amber
- * on amber vanishes.
+ * A side card in the control row.
+ *
+ * [open] is carried in the semantics only. The amber invert it used to wear is
+ * gone with the reason for it: a panel now REPLACES the control bar, so this card
+ * is never on screen while its own panel is — the panel itself is what says the
+ * panel is open. Three `animateColorAsState`s recomposing this card once a frame,
+ * on precisely the frames the panel is arriving, went with it.
  */
 @Composable
 private fun PanelCard(
@@ -1209,23 +1368,6 @@ private fun PanelCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // The invert dissolves rather than cuts. Ink takes the effects spec: colour
-    // that overshot its target would read as a flash, not as a state change.
-    val glyphTint by animateColorAsState(
-        targetValue = if (open) FlickColor.OnSpark else Color.White,
-        animationSpec = FlickMotion.stateEffects(),
-        label = "panelCardGlyph",
-    )
-    val titleInk by animateColorAsState(
-        targetValue = if (open) FlickColor.OnSpark else Color.White,
-        animationSpec = FlickMotion.stateEffects(),
-        label = "panelCardTitle",
-    )
-    val stateInk by animateColorAsState(
-        targetValue = if (open) FlickColor.OnSparkDim else FlickColor.OnSurfaceDim,
-        animationSpec = FlickMotion.stateEffects(),
-        label = "panelCardState",
-    )
     FlickTvButton(
         onClick = onClick,
         modifier = modifier,
@@ -1233,30 +1375,27 @@ private fun PanelCard(
         enabled = enabled,
         focusRequester = focusRequester,
         shape = FlickShape.Md,
-        ringColor = if (open) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
-        containerColor = if (open) FlickColor.Spark else null,
-        borderColor = if (open) Color.Transparent else null,
         contentPadding = PaddingValues(horizontal = 11.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
         Icon(
             imageVector = glyph,
             contentDescription = null,
-            tint = glyphTint,
+            tint = Color.White,
             modifier = Modifier.size(16.dp),
         )
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = title,
                 style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                color = titleInk,
+                color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = state,
                 style = FlickType.monoEyebrow(trackingEm = 0.14f),
-                color = stateInk,
+                color = FlickColor.OnSurfaceDim,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1377,17 +1516,17 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
 }
 
 /**
- * The paused / finished chip (spec §5.3). It is the design's glass pill on the
- * state plate rather than on the top-chrome [FlickColor.Glass] tone: it hangs at
+ * The finished chip (spec §5.3). It is the design's glass pill on the state plate
+ * rather than on the top-chrome [FlickColor.Glass] tone: it hangs at
  * [STATE_CHIP_TOP_FRACTION], two points BELOW where the top scrim ends, and on a
- * bright frame the pill tone left "Paused" at 3.0:1 and its amber glyph at 1.7:1
- * — on the one indicator that says the TV has not frozen.
+ * bright frame the pill tone left its label at 3.0:1 and its amber glyph at 1.7:1.
  *
- * Finished is not a second kind of paused, so it does not borrow the pause glyph.
+ * Its twin for Paused is deliberately gone. A viewer who has just pressed pause
+ * is being told something they did themselves, in the middle of the frame they
+ * paused to look at; "the film is over" is the state nobody can read off a still.
  */
 @Composable
-private fun PlaybackStateChip(phase: PlaybackPhase, modifier: Modifier = Modifier) {
-    val ended = phase == PlaybackPhase.Ended
+private fun PlaybackFinishedChip(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .glassState(FlickShape.Pill)
@@ -1396,15 +1535,13 @@ private fun PlaybackStateChip(phase: PlaybackPhase, modifier: Modifier = Modifie
         horizontalArrangement = Arrangement.spacedBy(11.dp),
     ) {
         Icon(
-            imageVector = if (ended) FlickIcons.CheckCircle else FlickIcons.Pause,
+            imageVector = FlickIcons.CheckCircle,
             contentDescription = null,
             tint = FlickColor.Spark,
             modifier = Modifier.size(FlickDimens.GlyphMedium),
         )
         Text(
-            text = stringResource(
-                if (ended) R.string.playback_finished_chip else R.string.paused_title,
-            ),
+            text = stringResource(R.string.playback_finished_chip),
             style = FlickType.display(sizeSp = 20),
             color = Color.White,
             maxLines = 1,
@@ -1616,14 +1753,52 @@ private fun specChips(diagnostics: DiagnosticsSnapshot, hdr: HdrType): List<Stri
     return chips
 }
 
-private fun resolutionChipRes(width: Int, height: Int): Int? = when {
-    width >= 3840 || height >= 2160 -> R.string.chip_resolution_4k
-    height >= 1440 -> R.string.chip_resolution_1440p
-    height >= 1080 -> R.string.chip_resolution_1080p
-    height >= 720 -> R.string.chip_resolution_720p
-    height > 0 -> R.string.chip_resolution_sd
-    else -> null
+private fun resolutionChipRes(width: Int, height: Int): Int? =
+    when (videoResolutionClass(width, height)) {
+        VideoResolutionClass.Uhd -> R.string.chip_resolution_4k
+        VideoResolutionClass.Qhd -> R.string.chip_resolution_1440p
+        VideoResolutionClass.Fhd -> R.string.chip_resolution_1080p
+        VideoResolutionClass.Hd -> R.string.chip_resolution_720p
+        VideoResolutionClass.Sd -> R.string.chip_resolution_sd
+        VideoResolutionClass.Unknown -> null
+    }
+
+/** What the receiver is allowed to call the frame it is decoding. */
+internal enum class VideoResolutionClass { Uhd, Qhd, Fhd, Hd, Sd, Unknown }
+
+/**
+ * The frame's resolution class — the ONE place the receiver decides what to call
+ * a picture size, shared by the transport's spec chip and the start-of-cast
+ * quality card.
+ *
+ * **Classified on the long edge, not on height.** A 2.39:1 feature is encoded
+ * 1920 × 804 with the letterbox baked out, and every scope film on the drive
+ * therefore came out as "720p SDR" on the TV while the phone, looking at the same
+ * file, correctly said 1080p — because 804 clears the 720 rung and nothing else.
+ * Width is what actually tracks the format: 1920 is 1080p, 3840 is 4K, and DCI's
+ * 2048 and 4096 land where they should. The short edge is kept as a second test
+ * so a portrait or rotated frame — 720 × 1280 from a phone — is still read by the
+ * dimension that carries its scale, and is not promoted to 1080p by its height.
+ */
+internal fun videoResolutionClass(width: Int, height: Int): VideoResolutionClass {
+    if (width <= 0 || height <= 0) return VideoResolutionClass.Unknown
+    val longEdge = maxOf(width, height)
+    val shortEdge = minOf(width, height)
+    return when {
+        longEdge >= 3840 || shortEdge >= 2160 -> VideoResolutionClass.Uhd
+        longEdge >= 2560 || shortEdge >= 1440 -> VideoResolutionClass.Qhd
+        longEdge >= 1920 || shortEdge >= 1080 -> VideoResolutionClass.Fhd
+        longEdge >= 1280 || shortEdge >= 720 -> VideoResolutionClass.Hd
+        else -> VideoResolutionClass.Sd
+    }
 }
+
+/**
+ * The line count an SD frame is named by — its short edge, which is what "480p"
+ * has always meant. Only [VideoResolutionClass.Sd] needs it; every rung above has
+ * a name of its own.
+ */
+internal fun videoResolutionLines(width: Int, height: Int): Int = minOf(width, height)
 
 /**
  * `HdrType.NONE` means "SDR" only once the video format is actually known —

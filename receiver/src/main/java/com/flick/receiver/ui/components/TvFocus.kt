@@ -34,6 +34,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -188,6 +189,43 @@ fun Shape.grownBy(offset: Dp): Shape =
     } else {
         this
     }
+
+/**
+ * How many frames a surface keeps asking for D-pad focus — see [landTvFocus].
+ * Four frames is ~67 ms at 60 Hz: long enough for a placement pass, short enough
+ * that a requester which never attaches cannot spin.
+ */
+private const val FOCUS_ENTRY_FRAMES = 4
+
+/**
+ * Puts D-pad focus inside a surface that is composed by the same state change
+ * which takes away the surface focus is currently on.
+ *
+ * A [FocusRequester] can only be honoured once its node is attached AND placed,
+ * so a single request issued in the composition that creates the node can arrive
+ * a frame early, throw, and leave the remote steering nothing at all. On the
+ * playback screen both handoffs are exactly that shape — the side panel arrives
+ * as the transport bar leaves, and the bar returns as the panel leaves — so the
+ * request is repeated until [held] reports it took.
+ *
+ * [preferred] is where focus belongs: the primary key, the selected track row.
+ * [fallback] must name a control the surface is CERTAIN to have — it is what the
+ * last attempt aims at when the preferred one has been refused every frame, and
+ * landing somewhere is always better than landing nowhere. Pass the same
+ * requester for both when the surface has only one entry point.
+ */
+suspend fun landTvFocus(
+    preferred: FocusRequester,
+    fallback: FocusRequester,
+    held: () -> Boolean,
+) {
+    repeat(FOCUS_ENTRY_FRAMES) {
+        if (held()) return
+        runCatching { preferred.requestFocus() }
+        withFrameNanos { }
+    }
+    if (!held()) runCatching { fallback.requestFocus() }
+}
 
 /**
  * The amber focus ring (spec §3) — a **detached** stroke drawn [offset] outside
