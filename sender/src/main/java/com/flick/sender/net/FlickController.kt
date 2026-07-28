@@ -12,6 +12,7 @@ import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.media.LibraryFolder
 import com.flick.sender.media.LibraryFolderChoice
+import com.flick.sender.media.LibraryFolderId
 import com.flick.sender.media.LibraryFolderStore
 import com.flick.sender.media.LibraryFolders
 import com.flick.sender.media.LibraryScope
@@ -44,8 +45,20 @@ enum class PairErrorKind {
     CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
     TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED, ENDPOINT_CHANGED,
 }
-/** [host]/[port] are the QR's untrusted prefill hint — never dialed without a typed code. */
-data class PendingPairLaunch(val eventId: Long, val host: String? = null, val port: Int? = null)
+/**
+ * [host]/[port] are the QR's untrusted prefill hint — never dialed without a code.
+ *
+ * [codeInHand] says the scanner also read the four digits off that QR, so the user
+ * confirms a TV instead of typing them. The code itself is deliberately NOT a field here:
+ * this value is published state that any screen may render and any dump may print, and
+ * the secret lives in the coordinator's own memory until a confirmation spends it.
+ */
+data class PendingPairLaunch(
+    val eventId: Long,
+    val host: String? = null,
+    val port: Int? = null,
+    val codeInHand: Boolean = false,
+)
 
 /**
  * The library and everything the folder scope derives from it, published as one value.
@@ -159,6 +172,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var pendingCast: MediaItem? = null
     private var retryItem: MediaItem? = null
     private var loadSentCastId: String? = null
+    // The four digits a scanned v4 QR carried, held here rather than in the published
+    // launch so the only way to reach them is to spend them. Cleared with the launch.
+    private var pendingPairCode: String? = null
     private val unplayableMemory = UnplayableMemory()
 
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
@@ -249,7 +265,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * on it, and the subtitle sidecar folder is a separate grant this never reads.
      */
     fun chooseLibraryFolder(folder: LibraryFolder?) {
-        val choice = folder?.let { LibraryFolderChoice(it.id, it.name) }
+        val choice = folder?.let { LibraryFolderChoice(LibraryFolderId.Path(it.id), it.name) }
         if (choice == libraryFolder) return
         libraryFolder = choice
         // Applied whether or not the write lands: a preference file that refused the
@@ -260,13 +276,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     private fun publishLibrary(items: List<MediaItem>) {
-        val folders = LibraryFolders.derive(items, MediaItem::bucketId, MediaItem::bucket)
+        val folders = LibraryFolders.derive(items, MediaItem::relativePath, MediaItem::bucketId)
         val folderScope = LibraryFolders.scope(libraryFolder, folders, libraryResolved)
+        // A choice stored before the chooser had a tree names a MediaStore bucket and
+        // nothing else. This is the one moment the phone can prove which folder that was,
+        // so the record is rewritten here rather than resolved through the bucket for
+        // ever — the folder the user picked may itself be a parent, which has no bucket.
+        LibraryFolders.migration(libraryFolder, folderScope)?.let { migrated ->
+            libraryFolder = migrated
+            libraryFolderStore.save(migrated)
+        }
         _library.value = LibraryView(
             items = items,
             folders = folders,
             scope = folderScope,
-            scoped = LibraryFolders.scoped(items, folderScope, MediaItem::bucketId),
+            scoped = LibraryFolders.scoped(items, folderScope, MediaItem::relativePath, MediaItem::bucketId),
         )
     }
     fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
@@ -374,12 +398,34 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun toggleQualitySheet(show: Boolean) { _showQualitySheet.value = show }
     fun toggleDiagnostics(show: Boolean) { _showDiagnostics.value = show }
 
-    fun acceptPairLaunch(event: IncomingPairEvent) {
+    /**
+     * A launch this app did not read itself — a deep link from any installed app, or a
+     * browser hand-off. [IncomingPairEvent] has no field a code could arrive in, which is
+     * how this ingress stays incapable of auto-pairing: whatever a v4 QR carried, the
+     * endpoint is a prefill and the user still types the digits off the TV.
+     */
+    fun acceptPairLaunch(event: IncomingPairEvent) =
+        applyPairLaunch(event.eventId, event.result, code = null)
+
+    /**
+     * The in-app scanner's ingress, and the only one that may arrive holding a code: the
+     * camera is in this process, so the payload came off a QR that was in front of the
+     * user rather than out of an Intent any app on the phone can fire.
+     */
+    fun acceptScannedPair(eventId: Long, scanned: ScannedPairLaunch) =
+        applyPairLaunch(eventId, scanned.result, scanned.code)
+
+    private fun applyPairLaunch(eventId: Long, result: PairLaunchParseResult, code: String?) {
         invalidatePairingAttempt()
-        val launch = event.result as? PairLaunchParseResult.Valid
+        val launch = result as? PairLaunchParseResult.Valid
         _pairError.value = if (launch != null) null else PairErrorKind.INVALID_QR
-        _pendingPairLaunch.value = launch?.let { PendingPairLaunch(event.eventId, it.host, it.port) }
-        FlickLog.i("pair", "launch result=${event.result.javaClass.simpleName} hasEndpoint=${launch?.host != null} eventId=${event.eventId}")
+        // A code is only ever held alongside the endpoint it was printed with, so a stale
+        // one cannot outlive its launch and be spent against the next TV.
+        pendingPairCode = code?.takeIf { launch?.host != null && launch.port != null }
+        _pendingPairLaunch.value = launch?.let {
+            PendingPairLaunch(eventId, it.host, it.port, codeInHand = pendingPairCode != null)
+        }
+        FlickLog.i("pair", "launch result=${result.javaClass.simpleName} hasEndpoint=${launch?.host != null} hasCode=${pendingPairCode != null} eventId=$eventId")
         _pairTarget.value = null
         // invalidatePairingAttempt() is already a no-op while authenticated, so a QR
         // scanned mid-cast must not yank the user out of playback either.
@@ -387,11 +433,35 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             _route.value = Route.Connect
         }
     }
+
+    /**
+     * Spend the code the scanned QR carried, against the endpoint it was printed beside.
+     * The confirmation the user tapped is the authorisation, so this goes through the
+     * same submission every typed pairing does rather than around it.
+     *
+     * A failed attempt leaves both in place: the card stays up carrying the reason, and
+     * the one thing that answers "that code is no longer current" is scanning the TV
+     * again — which arrives as a new launch and replaces this one wholesale.
+     */
+    fun confirmScannedPair(eventId: Long) {
+        val launch = _pendingPairLaunch.value?.takeIf { it.eventId == eventId } ?: return
+        val host = launch.host ?: return
+        val port = launch.port ?: return
+        val code = pendingPairCode ?: return
+        submitTvDisplayedPair(eventId, host, port.toString(), code)
+    }
+
     fun dismissPairLaunch(eventId: Long) {
         if (_pendingPairLaunch.value?.eventId == eventId) {
             invalidatePairingAttempt()
-            _pendingPairLaunch.value = null
+            clearPendingLaunch()
         }
+    }
+
+    /** The launch and the code it arrived with are one value; neither outlives the other. */
+    private fun clearPendingLaunch() {
+        pendingPairCode = null
+        _pendingPairLaunch.value = null
     }
 
     /** Discovery is advisory until a stored key completes a proof. */
@@ -409,7 +479,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         _route.value = Route.Connect
     }
     fun cancelPairing() {
-        invalidatePairingAttempt(); _pendingPairLaunch.value = null; _pairTarget.value = null; _pairError.value = null
+        invalidatePairingAttempt(); clearPendingLaunch(); _pairTarget.value = null; _pairError.value = null
     }
 
     /**
@@ -484,13 +554,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             is ControlClient.Result.Paired ->
                 persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)?.let { pairing ->
                     _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
-                    _pendingPairLaunch.value = null; _pairTarget.value = null; _route.value = Route.Library
+                    clearPendingLaunch(); _pairTarget.value = null; _route.value = Route.Library
                 }
             is ControlClient.Result.PairedBusy -> {
                 val pairing = persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)
                 if (pairing != null) {
                     _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
-                    _pendingPairLaunch.value = null; _pairTarget.value = null
+                    clearPendingLaunch(); _pairTarget.value = null
                     if (PairResultPolicy.clearCode(result)) clearEnteredCode()
                     publishBusyFailure()
                 }

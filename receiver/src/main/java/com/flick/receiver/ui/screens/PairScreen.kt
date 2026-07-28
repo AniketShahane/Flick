@@ -1,21 +1,17 @@
 package com.flick.receiver.ui.screens
 
 import android.os.SystemClock
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -45,12 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -81,9 +75,16 @@ import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.pairAmbientBackground
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
-import com.flick.receiver.ui.theme.tvOverscanSafeArea
 import kotlinx.coroutines.delay
 import java.util.Locale
+
+/**
+ * What the shell passes as [PairScreen]'s `code` when no code is live — the
+ * surface is locked, or standing by. It is a cross-file agreement, so it is named
+ * once here rather than spelled at both ends: `ReceiverApp` chooses it and this
+ * screen reads it back to decide whether to render the locked notice.
+ */
+internal const val PairCodePlaceholder = "—"
 
 /**
  * The white code card. It was 310 dp, which spent a third of the 864 dp usable
@@ -202,11 +203,18 @@ private fun Modifier.pairStageScaled(
 fun PairScreen(
     tvName: String,
     code: String,
-    /** Null while no real binding exists; the QR column is then simply not drawn. */
+    /**
+     * The v4 payload for [code], or null when there is no real binding and no live
+     * code to encode — the QR column is then simply not drawn. It carries the code
+     * itself, so the caller must re-derive it on every rotation; a symbol built
+     * against a consumed code is a symbol that fails to pair.
+     */
     qrPayload: String?,
     host: String,
     port: Int,
     onRename: () -> Unit,
+    /** Settings is otherwise unreachable while no phone is paired: this is the only route. */
+    onOpenSettings: () -> Unit,
     networkReady: Boolean,
     bindUptimeSec: Long = 0L,
     rebindCount: Int = 0,
@@ -217,34 +225,31 @@ fun PairScreen(
      * the card then states only that one sender pairs at a time.
      */
     codeExpiresAtElapsedMs: Long? = null,
+    /**
+     * `PairingSurface.Sealed` — the cumulative-failure ceiling has been reached, so
+     * no code exists and none will until someone here presses Resume. It is a
+     * distinct state from the ordinary lockout on purpose: a lockout ends on its
+     * own and a seal does not, and a screen that said the same thing about both
+     * would leave a viewer waiting for a countdown that is never coming.
+     */
+    pairingSealed: Boolean = false,
+    onResumePairing: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
     val reducedMotion = LocalReducedMotion.current
-    var bigCode by remember { mutableStateOf(false) }
-    // Exit content remains composed long enough to fade. Keep the background
-    // hidden from accessibility until that retained modal subtree is gone too.
-    val codeOverlayState = remember { MutableTransitionState(false) }
-    codeOverlayState.targetState = bigCode
-    val codeOverlayBlocking = codeOverlayState.currentState || codeOverlayState.targetState
-    val showBiggerFocus = remember { FocusRequester() }
-    val doneFocus = remember { FocusRequester() }
+    val renameFocus = remember { FocusRequester() }
+    val resumeFocus = remember { FocusRequester() }
     val spacedCode = code.toCharArray().joinToString("  ")
-    val locked = code == "—"
+    val locked = code == PairCodePlaceholder
 
-    // The overlay's LOGICAL state gates input, not the retained exit subtree:
-    // waiting for the fade to finish left the remote doing nothing at all for the
-    // length of a chrome fade after "Done" was pressed.
-    LaunchedEffect(bigCode) {
-        if (bigCode) {
-            runCatching { doneFocus.requestFocus() }
-        } else {
-            runCatching { showBiggerFocus.requestFocus() }
-        }
+    // Exactly one control takes focus on entry, and it is the first in the action
+    // row so the D-pad reads left to right from where the ring lands. A seal puts
+    // Resume in that position, and re-runs this so the ring follows the one control
+    // the screen is now asking for.
+    LaunchedEffect(pairingSealed) {
+        runCatching { (if (pairingSealed) resumeFocus else renameFocus).requestFocus() }
     }
-    // Back stays claimed through the fade as well, so a second press during the
-    // exit cannot fall through to the Activity and background the app.
-    BackHandler(enabled = bigCode || codeOverlayBlocking) { bigCode = false }
 
     // One driver for the whole staged entrance; each child reads its own slice of
     // it inside a graphicsLayer.
@@ -274,12 +279,7 @@ fun PairScreen(
                 // sized to fit the safe area's 486 dp. Above PairScrollFontScale
                 // the enlarged system font is an accessibility request that cannot
                 // be met by shrinking, and scrolling beats starving the action row.
-                .then(if (allowScroll) Modifier.verticalScroll(scrollState) else Modifier)
-                .focusProperties { canFocus = !bigCode }
-                .then(
-                    if (codeOverlayBlocking) Modifier.clearAndSetSemantics { }
-                    else Modifier
-                ),
+                .then(if (allowScroll) Modifier.verticalScroll(scrollState) else Modifier),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(FlickSpace.Xl),
         ) {
@@ -336,25 +336,35 @@ fun PairScreen(
                 ) { ready ->
                     if (ready) {
                         Column(verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm)) {
-                            ManualEntryCard(
-                                host = host,
-                                port = port,
-                                spacedCode = spacedCode,
-                                locked = locked,
-                                codeExpiresAtElapsedMs = codeExpiresAtElapsedMs,
-                                modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
-                            )
-                            Row(
-                                modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                LiveDot(color = FlickColor.Live, size = 7.dp, pulsing = true)
-                                Text(
-                                    text = stringResource(R.string.pair_listening),
-                                    style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                                    color = FlickColor.OnSurfaceSoft,
+                            if (pairingSealed) {
+                                // The manual-entry card and the listening line are
+                                // both withheld here, and both for the same reason:
+                                // there is no code to type into a card that shows
+                                // one, and nothing is listening for one either.
+                                PairingSealedCard(
+                                    modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
                                 )
+                            } else {
+                                ManualEntryCard(
+                                    host = host,
+                                    port = port,
+                                    spacedCode = spacedCode,
+                                    locked = locked,
+                                    codeExpiresAtElapsedMs = codeExpiresAtElapsedMs,
+                                    modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
+                                )
+                                Row(
+                                    modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    LiveDot(color = FlickColor.Live, size = 7.dp, pulsing = true)
+                                    Text(
+                                        text = stringResource(R.string.pair_listening),
+                                        style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                                        color = FlickColor.OnSurfaceSoft,
+                                    )
+                                }
                             }
                         }
                     } else {
@@ -362,33 +372,45 @@ fun PairScreen(
                     }
                 }
 
-                // The two actions are one beacon group, so the ring slides across
-                // rather than jumping. The host carries the stage layer, so the
-                // ring fades and rises with the row it belongs to.
+                // The actions are one beacon group, so the ring slides across rather
+                // than jumping — including onto Resume, which joins the row only
+                // while the surface is sealed. The host carries the stage layer, so
+                // the ring fades and rises with the row it belongs to.
                 FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md)) {
-                        // Gated off while the enlarged-code overlay is up so they are
-                        // not focusable behind the scrim (clickable(enabled=false)
-                        // drops focus).
+                        // The only way back to a live code, and it is here rather
+                        // than on the network on purpose: reopening the surface has
+                        // to cost physical presence in this room.
+                        if (pairingSealed) {
+                            FlickTvButton(
+                                onClick = onResumePairing,
+                                focusRequester = resumeFocus,
+                                contentPadding = FlickDimens.ControlPadding,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.pair_sealed_resume),
+                                    style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                                    color = FlickColor.OnSurface,
+                                )
+                            }
+                        }
                         FlickTvButton(
-                            onClick = { bigCode = true },
-                            enabled = !bigCode,
-                            focusRequester = showBiggerFocus,
+                            onClick = onRename,
+                            focusRequester = renameFocus,
                             contentPadding = FlickDimens.ControlPadding,
                         ) {
                             Text(
-                                text = stringResource(R.string.pair_show_bigger),
+                                text = stringResource(R.string.pair_rename),
                                 style = FlickType.body(sizeSp = 16),
                                 color = FlickColor.OnSurface,
                             )
                         }
                         FlickTvButton(
-                            onClick = onRename,
-                            enabled = !bigCode,
+                            onClick = onOpenSettings,
                             contentPadding = FlickDimens.ControlPadding,
                         ) {
                             Text(
-                                text = stringResource(R.string.pair_rename),
+                                text = stringResource(R.string.pair_settings),
                                 style = FlickType.body(sizeSp = 16),
                                 color = FlickColor.OnSurfaceDim,
                             )
@@ -408,31 +430,6 @@ fun PairScreen(
                     modifier = Modifier.pairStageScaled(stage, index = 4, settled = entranceSettled),
                 )
             }
-        }
-
-        AnimatedVisibility(
-            visibleState = codeOverlayState,
-            enter = if (reducedMotion) fadeIn(tween(durationMillis = 0)) else {
-                fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
-                    initialScale = 0.98f,
-                    animationSpec = FlickMotion.flickSettleSpatial(),
-                )
-            },
-            exit = if (reducedMotion) fadeOut(tween(durationMillis = 0)) else {
-                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
-                    targetScale = 1.01f,
-                    animationSpec = FlickMotion.flickSettleSpatial(),
-                )
-            },
-            label = "pairCodeOverlay",
-        ) {
-            EnlargedCode(
-                spacedCode = spacedCode,
-                locked = locked,
-                doneFocus = doneFocus,
-                interactive = bigCode,
-                onDone = { bigCode = false },
-            )
         }
     }
 }
@@ -615,6 +612,52 @@ private fun FieldDivider() {
 }
 
 /**
+ * The cumulative-failure ceiling, said out loud.
+ *
+ * A surface that simply stopped accepting codes would be indistinguishable from a
+ * broken app to the one person most likely to have caused it — someone who
+ * mistyped. So this states the cause, states that nothing is being accepted, and
+ * names the control that undoes it, which is sitting in the action row directly
+ * below. It draws no endpoint and no code because there is no longer either.
+ */
+@Composable
+private fun PairingSealedCard(modifier: Modifier = Modifier) {
+    GlassPanel(
+        modifier = modifier.fillMaxWidth(),
+        shape = FlickShape.Xl,
+        tone = GlassPanelTone.Solid,
+        contentPadding = FlickDimens.PanelPadding,
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+        // As with the other two cards in this column: `Modifier.pairStage` at the
+        // call site already owns the entrance, and the panel's own latch would
+        // fade it a second time.
+        animateEntrance = false,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                imageVector = FlickIcons.Private,
+                contentDescription = null,
+                tint = FlickColor.Caution,
+                modifier = Modifier.size(FlickDimens.GlyphMedium),
+            )
+            Text(
+                text = stringResource(R.string.pair_sealed_title),
+                style = FlickType.display(sizeSp = 22),
+                color = FlickColor.OnSurface,
+            )
+        }
+        Text(
+            text = stringResource(R.string.pair_sealed_body),
+            style = FlickType.body(sizeSp = 16),
+            color = FlickColor.OnSurfaceDim,
+        )
+    }
+}
+
+/**
  * No LAN address yet (Wi-Fi not associated / DHCP lease changing), so the QR host
  * and port are not reachable — say so instead of showing a dead endpoint.
  */
@@ -719,59 +762,6 @@ private fun QrColumn(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-    }
-}
-
-/** The enlarged-code mode — the one thing a distant viewer might need bigger. */
-@Composable
-private fun EnlargedCode(
-    spacedCode: String,
-    locked: Boolean,
-    doneFocus: FocusRequester,
-    interactive: Boolean,
-    onDone: () -> Unit,
-) {
-    Box(
-        // The scrim covers the panel edge to edge; the code inside it does not.
-        // Four digits spaced out is ten monospaced characters — 576 dp at this
-        // size — which only clears the overscan inset because the inset is here.
-        modifier = Modifier
-            .fillMaxSize()
-            .background(FlickColor.ScrimVeil)
-            .tvOverscanSafeArea()
-            // AnimatedVisibility retains the exit subtree. Once dismissed it may
-            // finish its fade, but it cannot retain D-pad focus or accessibility.
-            .focusProperties { canFocus = interactive }
-            .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { }),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(FlickSpace.Lg),
-        ) {
-            Text(
-                text = spacedCode,
-                style = FlickType.monoTabular(sizeSp = 96, weight = FontWeight.SemiBold),
-                color = FlickColor.Spark,
-            )
-            Text(
-                text = stringResource(if (locked) R.string.pair_locked else R.string.pair_code_hint),
-                style = FlickType.body(sizeSp = 18),
-                color = if (locked) FlickColor.Caution else FlickColor.OnSurfaceDim,
-            )
-            FlickTvButton(
-                onClick = onDone,
-                focusRequester = doneFocus,
-                enabled = interactive,
-                contentPadding = FlickDimens.ControlPadding,
-            ) {
-                Text(
-                    text = stringResource(R.string.pair_hide_bigger),
-                    style = FlickType.body(sizeSp = 16),
-                    color = FlickColor.OnSurface,
-                )
-            }
-        }
     }
 }
 

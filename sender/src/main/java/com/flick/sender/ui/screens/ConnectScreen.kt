@@ -63,7 +63,6 @@ import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.net.FlickController
-import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.net.PairedTv
@@ -97,8 +96,10 @@ fun ConnectScreen(controller: FlickController) {
     val castingItem by controller.castingItem.collectAsState()
     val manualLabel = stringResource(R.string.connect_manual)
     val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
-    var manualOpen by remember { mutableStateOf(false) }
-    var scanOpen by remember { mutableStateOf(false) }
+    // Two states rather than one: a sheet the screen closes has an exit to play before it
+    // may leave the composition. See [SheetSwitch].
+    val manual = rememberSheetSwitch()
+    val scan = rememberSheetSwitch()
     val haptics = rememberFlickTouchHaptics()
 
     // Map the typed pairing outcome to localized copy (never raw exception text).
@@ -145,15 +146,24 @@ fun ConnectScreen(controller: FlickController) {
     // Every accepted QR is a new launch event. Keying the sheet by eventId discards
     // prior host/port/code text before any pairing socket can open.
     LaunchedEffect(pendingPairLaunch?.eventId) {
-        if (pendingPairLaunch != null) {
-            scanOpen = false
-            manualOpen = true
+        val launch = pendingPairLaunch
+        if (launch != null) {
+            // A launch REPLACES the scanner rather than dismissing it: the sheet it hands
+            // over to is what the scan was for, so the two swap in place instead of
+            // playing an exit into an empty screen and then a second entrance over it.
+            scan.gone()
+            // A scanned v4 payload arrives with the code already read, so the form has
+            // nothing left to ask for — the confirmation below is the whole of what
+            // remains. Anything older still opens the form and still gets typed into.
+            if (launch.codeInHand) manual.gone() else manual.open()
         }
     }
     LaunchedEffect(pairError) {
+        // The error belongs to the screen underneath, so both sheets leave rather than
+        // vanish: this is the app closing them, not the user.
         if (pairError == PairErrorKind.INVALID_QR) {
-            scanOpen = false
-            manualOpen = false
+            scan.close()
+            manual.close()
         }
     }
 
@@ -198,7 +208,7 @@ fun ConnectScreen(controller: FlickController) {
             PrivacyPill()
         }
 
-        if (pairErrorText != null && pairTarget == null && !manualOpen) {
+        if (pairErrorText != null && pairTarget == null && !manual.composed) {
             PairErrorCard(pairErrorText)
         }
 
@@ -244,10 +254,10 @@ fun ConnectScreen(controller: FlickController) {
         }
 
         PairQrCard(
-            onScan = { scanOpen = true },
+            onScan = { scan.open() },
             onEnterCode = {
                 val single = devices.singleOrNull { it.tvId != null }
-                if (single != null) controller.selectDevice(single) else manualOpen = true
+                if (single != null) controller.selectDevice(single) else manual.open()
             },
         )
 
@@ -259,7 +269,7 @@ fun ConnectScreen(controller: FlickController) {
             FooterAction(
                 text = stringResource(R.string.connect_manual),
                 accessibilityLabel = manualLabel,
-                onClick = { manualOpen = true },
+                onClick = { manual.open() },
             )
             // The pairing screen is where failures surface, so the log has to be
             // openable from here — the advisories sheet has no reachable trigger.
@@ -272,6 +282,7 @@ fun ConnectScreen(controller: FlickController) {
     }
 
     val target = pairTarget
+    val scanned = pendingPairLaunch?.takeIf { it.codeInHand }
     if (target != null) {
         CodeSheet(
             tvName = target.name,
@@ -284,7 +295,25 @@ fun ConnectScreen(controller: FlickController) {
             onSubmit = { code -> controller.submitDiscoveredPair(target, code) },
             onDismiss = { controller.cancelPairing() },
         )
-    } else if (manualOpen) {
+    } else if (scanned != null) {
+        // The payload names an address, never a TV. Discovery may have heard a name at
+        // that exact endpoint, and that is a hint for the person holding the phone rather
+        // than evidence about who answers there — mDNS is unauthenticated and its records
+        // go stale. So the card has two shapes, one naming the TV and one naming only the
+        // address, instead of one shape with a placeholder standing in for a name Flick
+        // would then be claiming to know.
+        val advertised = devices.firstOrNull { it.host == scanned.host && it.port == scanned.port }?.name
+        ScannedSheet(
+            tvName = advertised,
+            endpoint = "${scanned.host}:${scanned.port}",
+            error = pairErrorText,
+            connecting = connecting,
+            // Only this tap spends the code. The scan proved a QR was in front of the
+            // camera; the confirmation is the user saying it was on their own TV.
+            onPair = { controller.confirmScannedPair(scanned.eventId) },
+            onDismiss = { controller.dismissPairLaunch(scanned.eventId) },
+        )
+    } else if (manual.composed) {
         // Kept open through the attempt so a wrong code / unreachable host on the manual
         // escape-hatch reports the result instead of dismissing silently; a successful
         // connect changes the route, which unmounts this screen (and the sheet).
@@ -292,6 +321,7 @@ fun ConnectScreen(controller: FlickController) {
         val launchId = launch?.eventId
         key(launchId) {
             ManualSheet(
+                visible = manual.visible,
                 initialHost = launch?.host.orEmpty(),
                 initialPort = launch?.port?.toString() ?: PairLaunch.DEFAULT_CONTROL_PORT.toString(),
                 fromQr = launch?.host != null && launch.port != null,
@@ -299,29 +329,37 @@ fun ConnectScreen(controller: FlickController) {
                 connecting = connecting,
                 codeRevision = codeRevision,
                 onConnect = { host, port, code -> controller.submitTvDisplayedPair(launchId ?: 0L, host, port, code) },
+                // Whose dismissal this is, settled on the frame the exit starts. An
+                // INVALID_QR landing during a user's own exit runs `manual.close()`, and
+                // read any later this would call that close the app's — and skip the
+                // cleanup the user's dismissal owed.
+                onLeaving = { manual.leaving() },
                 onDismiss = {
-                    manualOpen = false
-                    if (launchId != null) controller.dismissPairLaunch(launchId) else controller.cancelPairing()
+                    // A close the screen started has already done this bookkeeping, and
+                    // cancelling here would clear the very error it closed to reveal.
+                    val byUser = !manual.closingByApp
+                    manual.gone()
+                    if (byUser) {
+                        if (launchId != null) controller.dismissPairLaunch(launchId) else controller.cancelPairing()
+                    }
                 },
             )
         }
-    } else if (scanOpen) {
+    } else if (scan.composed) {
         ScanSheet(
+            visible = scan.visible,
             onPayload = { raw ->
-                // The scanner is only a second way to obtain the launch string: it goes
-                // through the deep link's parser and the same controller entry point,
-                // under a freshly minted event id. The endpoint it carries stays an
-                // untrusted prefill that the code typed off the TV has to authorize.
-                scanOpen = false
-                controller.acceptPairLaunch(
-                    IncomingPairEvent(PairLaunchEventIds.next(), PairLaunch.parse(raw)),
-                )
+                // The scanner is the one ingress allowed to keep a v4 code: the camera is
+                // in this process, so the payload came off a QR in front of the user
+                // rather than out of an Intent any installed app can fire. The endpoint is
+                // still untrusted — what the code authorises is that address and no other.
+                controller.acceptScannedPair(PairLaunchEventIds.next(), PairLaunch.parseScanned(raw))
             },
             onEnterCode = {
-                scanOpen = false
-                manualOpen = true
+                scan.gone()
+                manual.open()
             },
-            onDismiss = { scanOpen = false },
+            onDismiss = { scan.gone() },
         )
     }
 }
@@ -391,26 +429,33 @@ private fun isSubmitKey(event: KeyEvent): Boolean =
     event.type == KeyEventType.KeyDown && (event.key == Key.Enter || event.key == Key.NumPadEnter)
 
 /**
- * The camera route into pairing. It ends where the QR deep link ends — at the manual
- * sheet with the address filled in and the code still to type.
+ * The camera route into pairing. Where it ends depends on what the QR turned out to
+ * carry: a v4 payload lands on the confirmation card, anything older on the manual sheet
+ * with the address filled in and the code still to type.
  */
 @Composable
 private fun ScanSheet(
+    visible: Boolean,
     onPayload: (String) -> Unit,
     onEnterCode: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
-    BottomSheet(onDismiss = onDismiss) {
-        SheetGrabber()
-        Text(
-            stringResource(R.string.scan_heading),
-            style = FlickText.titleLarge.copy(color = colors.onSurface),
-        )
+    BottomSheet(
+        onDismiss = onDismiss,
+        visible = visible,
+        header = {
+            SheetGrabber()
+            Text(
+                stringResource(R.string.scan_heading),
+                style = FlickText.titleLarge.copy(color = colors.onSurface),
+            )
+        },
+    ) {
         Text(
             stringResource(R.string.scan_sub),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.padding(top = 6.dp, bottom = 16.dp),
+            modifier = Modifier.padding(bottom = 16.dp),
         )
         QrScannerPanel(onPayload = onPayload)
         Spacer(Modifier.height(14.dp))
@@ -421,6 +466,74 @@ private fun ScanSheet(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+/**
+ * The confirmation a scanned v4 QR lands on. The payload carries the code, so the scan
+ * has done the typing — but not the authorising. Nothing is dialled until this card's
+ * action is pressed, because the only thing making the address in it a television is that
+ * the user watched the camera read it off one.
+ *
+ * [tvName] is null whenever discovery has not heard that exact endpoint advertise itself,
+ * and the copy then names the address alone rather than a TV nobody can vouch for.
+ */
+@Composable
+private fun ScannedSheet(
+    tvName: String?,
+    endpoint: String,
+    error: String?,
+    connecting: Boolean,
+    onPair: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    BottomSheet(
+        onDismiss = onDismiss,
+        header = {
+            SheetGrabber()
+            Text(
+                stringResource(R.string.pair_scanned_title),
+                style = FlickText.titleLarge.copy(color = colors.onSurface),
+            )
+        },
+        footer = {
+            // The outcome travels with the action it belongs to: a denial is what tells
+            // the user the TV has moved on and the QR needs scanning again.
+            if (error != null) {
+                Text(
+                    error,
+                    style = FlickText.bodySmall.copy(color = colors.trouble),
+                    modifier = Modifier.padding(bottom = 14.dp),
+                )
+            }
+            if (connecting) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    PairingIndicator()
+                }
+            } else {
+                FlickPrimaryButton(
+                    text = tvName?.let { stringResource(R.string.pair_scanned_action, it) }
+                        ?: stringResource(R.string.pair_scanned_action_unknown),
+                    onClick = onPair,
+                )
+                // Read inside the footer, which is composed within the sheet that
+                // provides it: "Not now" is the same dismissal the scrim is, so it takes
+                // the same exit rather than blinking the card away under the finger.
+                val dismiss = LocalSheetDismiss.current
+                FlickSubtleButton(
+                    text = stringResource(R.string.pair_scanned_dismiss),
+                    onClick = dismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+    ) {
+        Text(
+            text = tvName?.let { stringResource(R.string.pair_scanned_body, it, endpoint) }
+                ?: stringResource(R.string.pair_scanned_body_unknown, endpoint),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+        )
     }
 }
 
@@ -546,6 +659,15 @@ private fun CodeSheet(
     val submit: () -> Unit = { if (canSubmitDiscoveredPair(code, connecting)) onSubmit(code) }
     BottomSheet(
         onDismiss = onDismiss,
+        // Pinned, because the keyboard this sheet raises leaves the code cells needing
+        // most of what is left and the instruction is what the user came here to read.
+        header = {
+            SheetGrabber()
+            Text(
+                stringResource(R.string.pair_code_heading, tvName),
+                style = FlickText.titleLarge.copy(color = colors.onSurface),
+            )
+        },
         footer = {
             // The outcome travels with the action it belongs to: the sheet is held open
             // through the attempt so the result shows, and a result that scrolled off
@@ -570,15 +692,9 @@ private fun CodeSheet(
             }
         },
     ) {
-        SheetGrabber()
-        Text(
-            stringResource(R.string.pair_code_heading, tvName),
-            style = FlickText.titleLarge.copy(color = colors.onSurface),
-        )
         Text(
             stringResource(R.string.pair_code_sub),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            modifier = Modifier.padding(top = 6.dp),
         )
         Text(
             stringResource(R.string.pair_code_endpoint, endpoint),
@@ -616,6 +732,7 @@ private fun CodeSheet(
  */
 @Composable
 private fun ManualSheet(
+    visible: Boolean,
     initialHost: String,
     initialPort: String,
     fromQr: Boolean,
@@ -623,6 +740,7 @@ private fun ManualSheet(
     connecting: Boolean,
     codeRevision: Long,
     onConnect: (String, String, String) -> Unit,
+    onLeaving: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -640,6 +758,19 @@ private fun ManualSheet(
     }
     BottomSheet(
         onDismiss = onDismiss,
+        visible = visible,
+        onLeaving = onLeaving,
+        // Pinned above the scroll: this form focuses its LAST field on arrival, so the
+        // region scrolls to the bottom before the user has touched it and a heading
+        // inside that region would already be gone — which is exactly what "the card is
+        // cut off at the top" was.
+        header = {
+            SheetGrabber()
+            Text(
+                stringResource(if (fromQr) R.string.manual_heading_qr else R.string.manual_heading),
+                style = FlickText.titleLarge.copy(color = colors.onSurface),
+            )
+        },
         footer = {
             // Pinned with the action: the sheet is held open through the attempt so the
             // result shows, which it cannot do from under a raised keyboard.
@@ -663,16 +794,10 @@ private fun ManualSheet(
             }
         },
     ) {
-        SheetGrabber()
-        Text(
-            stringResource(if (fromQr) R.string.manual_heading_qr else R.string.manual_heading),
-            style = FlickText.titleLarge.copy(color = colors.onSurface),
-        )
         if (fromQr) {
             Text(
                 stringResource(R.string.manual_from_qr),
                 style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-                modifier = Modifier.padding(top = 6.dp),
             )
         }
         Spacer(Modifier.height(14.dp))

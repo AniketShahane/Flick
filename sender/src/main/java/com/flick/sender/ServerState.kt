@@ -40,7 +40,6 @@ data class ServerUiState(
     // is no servable path, so the UI must not display a bare host:port link.
     val videoUrl: String? get() =
         if (lanIp != null && token != null) "http://$lanIp:$port/v/$token" else null
-    val pingUrl: String? get() = lanIp?.let { "http://$it:$port/ping" }
 }
 
 /**

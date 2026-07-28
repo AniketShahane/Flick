@@ -1,15 +1,16 @@
 package com.flick.receiver.ui
 
-import androidx.activity.OnBackPressedDispatcher
-import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.PairScreen
 import com.flick.receiver.ui.theme.FlickTvTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
@@ -33,8 +34,13 @@ class PairAndIdleFocusTest {
         composeRule.onNodeWithText("Pair another phone").assertIsFocused()
     }
 
+    /**
+     * The pair screen's whole action row. "Show code bigger" and the enlarged-code
+     * mode it drove are gone; exactly one control still takes focus on entry, and
+     * the D-pad has to reach the other one and come back.
+     */
     @Test
-    fun larger_code_modal_excludes_background_and_restores_focus_on_close() {
+    fun pair_lands_on_rename_and_walks_to_settings() {
         composeRule.setContent {
             FlickTvTheme {
                 PairScreen(
@@ -45,27 +51,31 @@ class PairAndIdleFocusTest {
                     port = 8472,
                     networkReady = true,
                     onRename = {},
+                    onOpenSettings = {},
                 )
             }
         }
 
-        val showBigger = composeRule.onNodeWithText("Show code bigger")
-        showBigger.assertIsFocused().performClick()
-
-        composeRule.onNodeWithText("Done").assertIsFocused()
-        composeRule.onNodeWithText("Show code bigger").assertDoesNotExist()
-        composeRule.onNodeWithText("Rename TV").assertDoesNotExist()
-
-        composeRule.onNodeWithText("Done").performClick()
-        composeRule.onNodeWithText("Show code bigger").assertIsEnabled().assertIsFocused()
+        val rename = composeRule.onNodeWithText("Rename TV")
+        val settings = composeRule.onNodeWithText("Settings")
+        rename.assertIsEnabled().assertIsFocused()
+        rename.performKeyInput { keyDown(Key.DirectionRight); keyUp(Key.DirectionRight) }
+        settings.assertIsEnabled().assertIsFocused()
+        settings.performKeyInput { keyDown(Key.DirectionLeft); keyUp(Key.DirectionLeft) }
+        rename.assertIsFocused()
     }
 
+    /**
+     * Settings is unreachable from anywhere else while no phone is paired — the
+     * router sends a factory-fresh TV to this screen and never to Idle — so this
+     * key is the only route in, and it must fire the caller's handler rather than
+     * the rename beside it.
+     */
     @Test
-    fun system_back_closes_larger_code_and_restores_background_focus() {
-        lateinit var backDispatcher: OnBackPressedDispatcher
-
+    fun pair_actions_fire_their_own_handlers() {
+        var renames = 0
+        var settingsOpens = 0
         composeRule.setContent {
-            backDispatcher = LocalOnBackPressedDispatcherOwner.current!!.onBackPressedDispatcher
             FlickTvTheme {
                 PairScreen(
                     tvName = "Living Room TV",
@@ -74,21 +84,22 @@ class PairAndIdleFocusTest {
                     host = "192.0.2.12",
                     port = 8472,
                     networkReady = true,
-                    onRename = {},
+                    onRename = { renames++ },
+                    onOpenSettings = { settingsOpens++ },
                 )
             }
         }
 
-        val showBigger = composeRule.onNodeWithText("Show code bigger")
-        showBigger.performClick()
-        composeRule.onNodeWithText("Done").assertIsFocused()
-        composeRule.onNodeWithText("Show code bigger").assertDoesNotExist()
-
+        composeRule.onNodeWithText("Settings").performClick()
         composeRule.runOnIdle {
-            backDispatcher.onBackPressed()
+            assertEquals(1, settingsOpens)
+            assertEquals(0, renames)
         }
 
-        composeRule.onNodeWithText("Done").assertDoesNotExist()
-        composeRule.onNodeWithText("Show code bigger").assertIsEnabled().assertIsFocused()
+        composeRule.onNodeWithText("Rename TV").performClick()
+        composeRule.runOnIdle {
+            assertEquals(1, settingsOpens)
+            assertEquals(1, renames)
+        }
     }
 }

@@ -11,12 +11,31 @@ sealed interface StrictJsonValue {
 }
 
 object StrictJson {
+    /**
+     * How deeply containers may nest before a frame is malformed.
+     *
+     * The parser is recursive-descent, so nesting depth is stack depth: a 16 KB
+     * pre-auth frame of nothing but `[` recurses ~16,000 frames and lands as a
+     * `StackOverflowError`. `runCatching` below catches `Throwable`, so that error
+     * *is* absorbed today — but absorbing an SOE raised somewhere inside a Ktor
+     * coroutine is not a property worth resting on: it can unwind out of engine
+     * internals mid-mutation, and where it unwinds is not ours to choose. An
+     * explicit ceiling means the stack is never the thing that says no.
+     *
+     * Every frame this server accepts is a flat object of scalars — `ControlServer`
+     * reads `t`, `v`, `castId`, `url`, `posMs` and friends, and not one command
+     * carries a nested object or array. Depth 1 is the deepest legitimate frame, so
+     * 32 refuses nothing real by a factor of thirty.
+     */
+    private const val MAX_DEPTH = 32
+
     fun objectOnly(input: String): StrictJsonValue.Obj? = runCatching {
         Parser(input).parse().let { it as? StrictJsonValue.Obj ?: throw IllegalArgumentException() }
     }.getOrNull()
 
     private class Parser(private val source: String) {
         private var at = 0
+        private var depth = 0
         fun parse(): StrictJsonValue {
             whitespace()
             val value = value()
@@ -37,7 +56,18 @@ object StrictJson {
                 else -> throw IllegalArgumentException("value")
             }
         }
-        private fun obj(): StrictJsonValue.Obj {
+        /**
+         * Charges one level of nesting for [body], refusing past [MAX_DEPTH]. The
+         * body stays in its own function so the container parsers below are exactly
+         * the loops they always were, with nothing about the ceiling threaded
+         * through them.
+         */
+        private fun <T> nested(body: () -> T): T {
+            require(++depth <= MAX_DEPTH) { "depth" }
+            try { return body() } finally { depth-- }
+        }
+        private fun obj(): StrictJsonValue.Obj = nested(::objBody)
+        private fun objBody(): StrictJsonValue.Obj {
             take('{'); whitespace(); val result = linkedMapOf<String, StrictJsonValue>()
             if (takeIf('}')) return StrictJsonValue.Obj(result)
             while (true) {
@@ -49,7 +79,8 @@ object StrictJson {
                 take(','); whitespace()
             }
         }
-        private fun array(): StrictJsonValue.Arr {
+        private fun array(): StrictJsonValue.Arr = nested(::arrayBody)
+        private fun arrayBody(): StrictJsonValue.Arr {
             take('['); whitespace(); val result = mutableListOf<StrictJsonValue>()
             if (takeIf(']')) return StrictJsonValue.Arr(result)
             while (true) {

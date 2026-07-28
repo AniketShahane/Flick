@@ -8,6 +8,21 @@ import org.json.JSONObject
  * trailing-byte rejection at the transport boundary before schema validation.
  */
 internal object StrictControlJson {
+    /**
+     * How deeply containers may nest before a frame is malformed.
+     *
+     * The lexical pass below is recursive, and so is `org.json`'s parser behind it:
+     * a 16 KB frame of nothing but `[` recurses thousands of levels and lands as a
+     * `StackOverflowError` rather than a rejection. This ceiling is checked in the
+     * lexical pass, which runs BEFORE `JSONObject` is constructed, so the deep
+     * document never reaches the platform parser at all.
+     *
+     * The deepest legitimate receiver frame is the top-level object plus its `cap`
+     * array of capability strings — two levels (`ControlFrameSchema.preAuth`). No
+     * frame in the protocol nests further, so 32 refuses nothing real.
+     */
+    private const val MAX_DEPTH = 32
+
     sealed interface Result {
         data class Object(val value: JSONObject) : Result
         data object Malformed : Result
@@ -35,7 +50,9 @@ internal object StrictControlJson {
             if (!names.add(key.value)) return false
             index = skipWhitespace(text, key.next)
             if (index >= text.length || text[index++] != ':') return false
-            index = skipValue(text, skipWhitespace(text, index)) ?: return false
+            // The top-level object is level 1, so a member value that is itself a
+            // container opens level 2.
+            index = skipValue(text, skipWhitespace(text, index), depth = 1) ?: return false
             index = skipWhitespace(text, index)
             if (index >= text.length) return false
             when (text[index++]) {
@@ -77,12 +94,12 @@ internal object StrictControlJson {
         return null
     }
 
-    private fun skipValue(text: String, start: Int): Int? {
+    private fun skipValue(text: String, start: Int, depth: Int): Int? {
         if (start >= text.length) return null
         return when (text[start]) {
             '"' -> readString(text, start)?.next
-            '{' -> skipContainer(text, start, '{', '}')
-            '[' -> skipContainer(text, start, '[', ']')
+            '{' -> skipContainer(text, start, '{', '}', depth + 1)
+            '[' -> skipContainer(text, start, '[', ']', depth + 1)
             else -> {
                 var index = start
                 while (index < text.length && text[index] !in ",]} \t\r\n") index++
@@ -91,7 +108,10 @@ internal object StrictControlJson {
         }
     }
 
-    private fun skipContainer(text: String, start: Int, open: Char, close: Char): Int? {
+    private fun skipContainer(text: String, start: Int, open: Char, close: Char, depth: Int): Int? {
+        // Over-depth is refused exactly as every other malformed frame is: no
+        // distinct result, no distinct wire answer.
+        if (depth > MAX_DEPTH) return null
         var index = start + 1
         index = skipWhitespace(text, index)
         if (index < text.length && text[index] == close) return index + 1
@@ -100,8 +120,8 @@ internal object StrictControlJson {
                 val key = readString(text, index) ?: return null
                 var afterKey = skipWhitespace(text, key.next)
                 if (afterKey >= text.length || text[afterKey++] != ':') return null
-                skipValue(text, skipWhitespace(text, afterKey)) ?: return null
-            } else skipValue(text, index) ?: return null
+                skipValue(text, skipWhitespace(text, afterKey), depth) ?: return null
+            } else skipValue(text, index, depth) ?: return null
             index = skipWhitespace(text, index)
             if (index >= text.length) return null
             when (text[index++]) {

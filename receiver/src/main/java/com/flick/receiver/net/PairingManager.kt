@@ -34,6 +34,19 @@ sealed interface PairingSurface {
     data class Open(val code: String, val generation: Long, val expiresAtElapsedMs: Long) : PairingSurface
     data class Locked(val generation: Long, val retryAtElapsedMs: Long) : PairingSurface
     data class Success(val deviceLabel: String, val generation: Long) : PairingSurface
+
+    /**
+     * The cumulative-failure ceiling has been reached: the surface is closed, no
+     * code exists, and nothing on the network can reopen it. Only
+     * [PairingManager.resumePairing] does, and only something pressing a button on
+     * this TV can call that.
+     *
+     * It carries no generation on purpose. A generation exists so a success can be
+     * correlated with the code that produced it and so a countdown can be told from
+     * its successor; a seal has neither, and a stable value keeps the snapshot flow
+     * from re-emitting an identical state every time the surface is closed again.
+     */
+    data object Sealed : PairingSurface
 }
 
 sealed interface PairAttemptResult {
@@ -61,9 +74,29 @@ class PairingManager(
     private var lockoutUntilWall = prefs.getLong(KEY_LOCKOUT_UNTIL, 0L)
     private var lockoutUntilElapsed = restoreLockout()
     private var failures = 0
+
+    /**
+     * Wrong codes counted across the WHOLE time this surface has been offering one,
+     * and the seal that trips at [MAX_SURFACE_FAILURES] of them.
+     *
+     * Both are read back from durable storage rather than starting at zero, and
+     * both are written before the in-memory state is trusted. Process death is why:
+     * the escalating lockout alone leaves a steady state of five guesses every eight
+     * minutes, and a ceiling that any restart resets is that same steady state with
+     * an extra step. Nothing on the LAN can restart this app — but Android can, at
+     * any moment, for its own reasons, and a guessing run that has to wait for one
+     * is not meaningfully slowed. The lockout deadline already persists for exactly
+     * this reason; the ceiling above it would be strange not to.
+     */
+    private var surfaceFailures = prefs.getInt(KEY_SURFACE_FAILURES, 0).coerceIn(0, MAX_SURFACE_FAILURES)
+    private var surfaceSealed = prefs.getBoolean(KEY_SEALED, false)
     private data class HostThrottle(var failures: Int, var retryAtElapsedMs: Long)
     private val hostThrottles = LinkedHashMap<String, HostThrottle>(MAX_HOST_THROTTLES, 0.75f, true)
-    private val _snapshot = MutableStateFlow(snapshot(PairingSurface.Standby))
+    // A TV that was sealed when it was last killed comes back sealed, and says so
+    // from its very first frame rather than from whenever something asks for a code.
+    private val _snapshot = MutableStateFlow(
+        snapshot(if (surfaceSealed) PairingSurface.Sealed else PairingSurface.Standby),
+    )
     val snapshot: StateFlow<PairingSnapshot> = _snapshot
 
     var tvName: String
@@ -74,7 +107,23 @@ class PairingManager(
         prefs.edit().putString(KEY_TV_ID, it).commit()
     }
 
+    /**
+     * Ask for a code. Every route that wants one comes through here — the app
+     * returning to the foreground onto the pair screen with nothing paired, leaving
+     * Settings, "Pair another phone" on the idle screen — and a sealed surface
+     * refuses all of them alike. That is the whole point of the ceiling:
+     * [onForeground] calls this with nobody pressing anything, so a seal any request
+     * could lift would be lifted by the app simply being looked at. Clearing it
+     * takes [resumePairing], which nothing on the network can reach.
+     */
     @Synchronized fun requestOpen() {
+        // The seal's whole job is to survive this. All it takes here is refusing to
+        // set [visible] — [publishEligible] then publishes the seal rather than a
+        // code, and no other path sets it either.
+        if (surfaceSealed) {
+            FlickLog.d("pair", "surface=sealed (open refused)")
+            return publishEligible()
+        }
         visible = true
         FlickLog.d("pair", "surface=open")
         publishEligible()
@@ -84,10 +133,67 @@ class PairingManager(
         visible = false
         open = null // a code is never valid when it is not visibly rendered.
         FlickLog.d("pair", "surface=closed")
-        publish(PairingSurface.Standby)
+        // Through the same decision as everything else, so a seal outlives the
+        // close that carried it: entering Settings closes the surface, and a plain
+        // Standby here would stop the screen saying why pairing stopped.
+        publishEligible()
     }
 
-    @Synchronized fun onForeground() { if (storedPhones().isEmpty()) requestOpen() }
+    /**
+     * Clears the ceiling and offers a code again. This is the ONLY way out of
+     * [PairingSurface.Sealed], and it exists to be wired to a control on the TV's
+     * own screen: an attacker who can reach the control socket cannot press a
+     * button on the television, so a remote guessing run ends needing someone in
+     * the room. Returns false when nothing was sealed, or when the durable write
+     * refused — a resume that did not persist must not be reported as one, or a
+     * restart would silently re-seal a surface the user was told is open.
+     *
+     * It deliberately does NOT reset [lockoutRound] or the lockout deadline. Those
+     * are a separate, already-earned restriction, and handing back a fresh
+     * escalation ladder every time someone walked to the TV would make the ladder
+     * meaningless. [publishEligible] republishes a lockout that is still running.
+     */
+    @Synchronized fun resumePairing(): Boolean {
+        if (!surfaceSealed) return false
+        return commitPairing(
+            commit = { prefs.edit().putBoolean(KEY_SEALED, false).putInt(KEY_SURFACE_FAILURES, 0).commit() },
+            afterCommit = {
+                surfaceSealed = false
+                surfaceFailures = 0
+                failures = 0
+                // The per-host throttle is NOT cleared. It is a ten-second
+                // restriction the guessing host has already earned, and a resume is
+                // not a reason to hand it back.
+                visible = true
+                open = null
+                FlickLog.i("pair", "surface resumed on-device")
+                publishEligible()
+            },
+        )
+    }
+
+    /**
+     * The app came back to the foreground. [pairingRendered] is the caller's answer
+     * to the one thing this class cannot see: whether the surface that DRAWS a code
+     * is the surface on screen.
+     *
+     * It is a parameter rather than an assumption because the assumption was wrong.
+     * This used to open a code whenever no phone was paired, on the reasoning that a
+     * TV with nothing paired is a TV showing the pair screen. It is not always: the
+     * pair screen offers a way into Settings — the only one a factory-fresh TV has —
+     * Settings survives a stop/start in the composition, and it outranks Pair in the
+     * router. A screensaver over an idle Settings screen is close to inevitable, and
+     * the app resumed from one straight into a live, rotating, guessable code that
+     * nothing on screen rendered. That is precisely the state [closeSurface] exists
+     * to refuse, and the owner would have believed pairing was shut.
+     *
+     * The store's half of the decision stays here, because it is the store's fact:
+     * only a TV with no phone paired is owed a code nobody asked for. See
+     * `ReceiverApp.pairingSurfaceRendered` for the screen's half.
+     */
+    @Synchronized fun onForeground(pairingRendered: Boolean) {
+        if (pairingRendered && storedPhones().isEmpty()) requestOpen()
+    }
     @Synchronized fun onBackground() = closeSurface()
 
     @Synchronized fun tick() {
@@ -113,9 +219,19 @@ class PairingManager(
         if (!constantTimeEquals(candidate, current.code)) {
             chargeHost(host)
             failures++
-            if (failures >= MAX_FAILURES) {
-                failures = 0
-                beginLockout()
+            surfaceFailures++
+            // The answer stays the ordinary InvalidCode in every branch. Telling the
+            // caller it has just sealed the surface would hand it the one fact the
+            // rest of this class works to withhold, and the next attempt already
+            // gets SurfaceClosed like any other closed surface does.
+            when (failureCharge(surfaceFailures, failures)) {
+                FailureCharge.SEAL -> sealSurface()
+                FailureCharge.LOCKOUT -> {
+                    persistSurfaceFailures()
+                    failures = 0
+                    beginLockout()
+                }
+                FailureCharge.RECORDED -> persistSurfaceFailures()
             }
             return PairAttemptResult.InvalidCode
         }
@@ -130,10 +246,15 @@ class PairingManager(
             commit = {
                 prefs.edit().putStringSet(KEY_RECORDS, records)
                     .putString(KEY_LAST_DEVICE, label).putString(KEY_LAST_DEVICE_ID, keyId)
-                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
+                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L)
+                    // A phone that knew the code spends the budget its mistyping
+                    // ran up: the ceiling exists to bound guessing, and this was
+                    // not guessing.
+                    .putInt(KEY_SURFACE_FAILURES, 0).commit()
             },
             afterCommit = {
                 failures = 0; lockoutRound = 0; lockoutUntilElapsed = 0L; lockoutUntilWall = 0L
+                surfaceFailures = 0
                 hostThrottles.remove(host)
                 open = null
             },
@@ -155,13 +276,21 @@ class PairingManager(
         return commitForgetPairings(
             commit = {
                 prefs.edit().remove(KEY_RECORDS).remove(KEY_LAST_DEVICE).remove(KEY_LAST_DEVICE_ID)
-                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L).commit()
+                    .putInt(KEY_LOCKOUT_ROUND, 0).putLong(KEY_LOCKOUT_UNTIL, 0L)
+                    // Forget all is a control on this TV's own screen, so it carries
+                    // the same physical presence [resumePairing] demands and lifts
+                    // the same ceiling. It must: this is the path a TV reaches zero
+                    // phones by, and leaving it sealed would strand a TV with no
+                    // phones and no code.
+                    .putInt(KEY_SURFACE_FAILURES, 0).putBoolean(KEY_SEALED, false).commit()
             },
             afterCommit = {
                 failures = 0
                 lockoutRound = 0
                 lockoutUntilElapsed = 0L
                 lockoutUntilWall = 0L
+                surfaceFailures = 0
+                surfaceSealed = false
                 hostThrottles.clear()
                 visible = true
                 open = null
@@ -213,7 +342,10 @@ class PairingManager(
                             putString(KEY_LAST_DEVICE_ID, nextLast.keyId)
                         }
                     }
-                    if (emptied) { putInt(KEY_LOCKOUT_ROUND, 0); putLong(KEY_LOCKOUT_UNTIL, 0L) }
+                    if (emptied) {
+                        putInt(KEY_LOCKOUT_ROUND, 0); putLong(KEY_LOCKOUT_UNTIL, 0L)
+                        putInt(KEY_SURFACE_FAILURES, 0); putBoolean(KEY_SEALED, false)
+                    }
                 }.commit()
             },
             afterCommit = {
@@ -223,6 +355,8 @@ class PairingManager(
                     lockoutRound = 0
                     lockoutUntilElapsed = 0L
                     lockoutUntilWall = 0L
+                    surfaceFailures = 0
+                    surfaceSealed = false
                     hostThrottles.clear()
                     visible = true
                     open = null
@@ -230,6 +364,58 @@ class PairingManager(
                 } else {
                     publish(_snapshot.value.surface)
                 }
+            },
+        )
+    }
+
+    /**
+     * Renames exactly one paired phone, durable write first, and returns whether
+     * the name on this TV actually changed. False means it did not — no record
+     * carries [keyId], [label] normalizes to nothing, or `SharedPreferences`
+     * rejected the write — so a caller can never report a rename that did not
+     * happen.
+     *
+     * **A rename touches the label and nothing else.** [recordsRenamed] carries
+     * the key id, the 256-bit key and the pairing date across verbatim, so the
+     * phone stays paired on the credential it already had: [findKey] answers the
+     * same record it answered a moment ago, a live control session authenticated
+     * on that key is unaffected, and an outstanding resume handshake — which
+     * validates against the copy it cached at `resumeInit` — is still valid. That
+     * is why this does NOT go through `ControlServer` the way [forget] must:
+     * there is no session to revoke, and routing it through the server would take
+     * a lock this class must never be called under.
+     *
+     * `last_device` follows only when it names this phone. The Idle screen renders
+     * it as "Paired with …", and a rename that did not reach it would leave
+     * standby naming a phone by a name the Settings list no longer shows.
+     */
+    @Synchronized fun rename(keyId: String, label: String): Boolean {
+        val next = normalizeLabel(label, 80).ifBlank { return false }
+        val records = storedRecords()
+        val current = records.mapNotNull(::decodePairingRecord).firstOrNull { it.keyId == keyId } ?: return false
+        val renamed = recordsRenamed(records, keyId, next) ?: return false
+        val nextLast = lastDeviceAfterRename(
+            renamedKeyId = keyId,
+            oldLabel = current.label,
+            newLabel = next,
+            storedKeyId = prefs.getString(KEY_LAST_DEVICE_ID, null),
+            storedLabel = prefs.getString(KEY_LAST_DEVICE, null),
+        )
+        return commitPairing(
+            commit = {
+                prefs.edit().apply {
+                    putStringSet(KEY_RECORDS, renamed)
+                    if (nextLast != null) {
+                        putString(KEY_LAST_DEVICE, nextLast.label)
+                        putString(KEY_LAST_DEVICE_ID, nextLast.keyId)
+                    }
+                }.commit()
+            },
+            afterCommit = {
+                // Never the label: it is a user-chosen name for a device on this
+                // LAN, and the fingerprint is all a diagnostic needs to correlate.
+                FlickLog.i("pair", "renamed keyIdFp=${FlickLog.fp(keyId)}")
+                publish(_snapshot.value.surface)
             },
         )
     }
@@ -243,19 +429,69 @@ class PairingManager(
     @Synchronized fun pairedLabel(): String? = prefs.getString(KEY_LAST_DEVICE, null)
 
     /**
-     * QR payload v3: a NON-SECRET endpoint so the phone can prefill host and port.
-     * The 4-digit code is never in it — it stays the out-of-band factor the user
-     * reads off the TV, so scanning alone still authorizes nothing. Returns null
-     * rather than a placeholder endpoint when no real binding exists.
+     * QR payload v4: the endpoint **and the live 4-digit code**, so one scan
+     * completes pairing.
+     *
+     * This deliberately reverses v3, which carried only host and port and kept the
+     * code an out-of-band factor read off the screen — under v3 a scan authorized
+     * nothing on its own. It does now: anyone who can photograph the TV screen
+     * holds everything needed to pair, and the code is no longer a second factor
+     * but a second *copy* of the first. That is a product decision, not an
+     * oversight, and the visible code stays on screen because manual entry is
+     * still the fallback when a camera cannot read the plate.
+     *
+     * What still limits the exposure is the code's own life: [CODE_TTL_MS], and
+     * only while the surface is visibly rendered. That makes the payload itself
+     * perishable, so **the QR must be re-encoded whenever the code rotates** — a
+     * QR built against a consumed code is a QR that fails. See `ReceiverApp`,
+     * which keys the payload on the code for exactly that reason.
+     *
+     * Returns null rather than a placeholder whenever any part of the binding is
+     * unreal — no host, no port, or no live code. A drawn symbol is a promise that
+     * scanning it works, and there is no honest QR to draw while the surface is
+     * locked or standing by.
      */
-    fun qrPayload(host: String, port: Int): String? {
-        if (host.isBlank() || port !in 1..65535) return null
-        return "flick://pair?v=3&h=$host&p=$port"
+    fun qrPayload(host: String, port: Int, code: String): String? = pairingQrPayload(host, port, code)
+
+    /** The single place that decides what the surface is showing. */
+    private fun publishEligible() {
+        when (surfaceDecision(surfaceSealed, visible, elapsed() < lockoutUntilElapsed)) {
+            SurfaceDecision.SEALED -> publish(PairingSurface.Sealed)
+            SurfaceDecision.STANDBY -> publish(PairingSurface.Standby)
+            SurfaceDecision.LOCKED -> publish(PairingSurface.Locked(++generation, lockoutUntilElapsed))
+            SurfaceDecision.CODE -> openNewCode()
+        }
     }
 
-    private fun publishEligible() {
-        if (!visible) return publish(PairingSurface.Standby)
-        if (elapsed() < lockoutUntilElapsed) publish(PairingSurface.Locked(++generation, lockoutUntilElapsed)) else openNewCode()
+    /**
+     * The cumulative-failure ceiling. Same state transition [closeSurface] makes —
+     * not visible, no code, therefore no code is valid — plus the durable flag that
+     * stops every reopening path short of [resumePairing].
+     *
+     * The durable write is attempted AFTER the in-memory seal, which inverts the
+     * order [commitPairing] enforces everywhere else, and deliberately. That
+     * discipline exists so this class never *claims* something it did not persist:
+     * a pairing that was not stored, a forget that did not happen. A seal claims
+     * nothing — it withdraws — so a storage failure has to leave the surface shut
+     * for this process rather than open for everyone.
+     */
+    private fun sealSurface() {
+        visible = false
+        open = null
+        surfaceSealed = true
+        failures = 0
+        prefs.edit().putBoolean(KEY_SEALED, true).putInt(KEY_SURFACE_FAILURES, surfaceFailures).commit()
+        // The count, never a code and never the host that spent it.
+        FlickLog.w("pair", "surface sealed failures=$surfaceFailures")
+        publishEligible()
+    }
+
+    /**
+     * Durable on EVERY failure, not only at the ceiling: a budget a restart resets
+     * is not a budget, and Android restarts this app for its own reasons.
+     */
+    private fun persistSurfaceFailures() {
+        prefs.edit().putInt(KEY_SURFACE_FAILURES, surfaceFailures).commit()
     }
     private fun openNewCode() {
         val item = PairingSurface.Open(randomCode(), ++generation, elapsed() + CODE_TTL_MS)
@@ -316,16 +552,86 @@ class PairingManager(
         private const val KEY_LAST_DEVICE_ID = "last_device_key_id"
         private const val KEY_LOCKOUT_ROUND = "lockout_round"
         private const val KEY_LOCKOUT_UNTIL = "lockout_until_epoch_ms"
+        private const val KEY_SURFACE_FAILURES = "surface_failures"
+        private const val KEY_SEALED = "surface_sealed"
         const val DEFAULT_TV_NAME = "Flick TV"
+        /** The QR grammar the sender parses. Bumped from 3 when `c=` was added. */
+        const val QR_VERSION = 4
         private const val CODE_TTL_MS = 5 * 60_000L
         private const val LOCKOUT_BASE_MS = 30_000L
         private const val MAX_LOCKOUT_MS = 8 * 60_000L
         private const val MAX_LOCKOUT_ROUNDS = 5
-        private const val MAX_FAILURES = 5
+
+        /** Wrong codes per escalating lockout round. Internal so the budget arithmetic is testable. */
+        internal const val MAX_FAILURES = 5
+
+        /** The whole four-digit keyspace a guess is drawn from. Named so the ceiling can be argued against it. */
+        internal const val CODE_KEYSPACE = 10_000
+
+        /**
+         * Wrong codes this surface will absorb in total before it seals itself.
+         *
+         * The escalating lockout alone has a steady state, and the steady state is
+         * the problem: five attempts per eight-minute round is 900 a day against a
+         * 10,000-code keyspace — about 9 % a day, so even odds inside roughly a
+         * week. That the rounds get slower does not help, because nothing ever
+         * *stops*.
+         *
+         * Twenty stops it. It is four full rounds of five, so reaching it means
+         * sitting out three complete lockouts first — 30 s, then 60 s, then 120 s,
+         * three and a half minutes of deliberate retrying on top of the
+         * typing. That is far past any honest mistyping of a four-digit code read
+         * off the screen in front of you, and it leaves the escalating lockout in
+         * charge of ordinary fumbling exactly as before. It is also 0.2 % of the
+         * keyspace: an attacker's whole budget, per person who walks to the TV and
+         * presses resume, is one guess in five hundred. There is no steady state
+         * left to grind.
+         */
+        internal const val MAX_SURFACE_FAILURES = 20
         private const val HOST_FAILURES = 3
         private const val HOST_THROTTLE_MS = 10_000L
         private const val MAX_HOST_THROTTLES = 32
     }
+}
+
+/** What the surface should be showing, as a decision separable from the clock. */
+internal enum class SurfaceDecision { SEALED, STANDBY, LOCKED, CODE }
+
+/**
+ * The one ordering rule the pairing surface has, pulled out where it can be
+ * argued with. `PairingManager` needs a `Context` and real `SharedPreferences`,
+ * so this is how the rule gets tested at all — the same reason [recordsWithout]
+ * and [pairingQrPayload] live out here.
+ *
+ * **A seal outranks everything, including [PairingManager.requestOpen].** That is
+ * the whole ceiling: [PairingManager.onForeground] asks for a code with nobody
+ * pressing anything whenever the pair screen is what the app came back to, so a
+ * seal that any request could lift would be lifted by the app being looked at — and
+ * by the app being killed and relaunched, which Android does on its own schedule.
+ * Below it the existing order is unchanged: a surface nobody is rendering shows
+ * nothing, a running lockout shows its countdown, and only then is a code minted.
+ */
+internal fun surfaceDecision(sealed: Boolean, visible: Boolean, lockedOut: Boolean): SurfaceDecision = when {
+    sealed -> SurfaceDecision.SEALED
+    !visible -> SurfaceDecision.STANDBY
+    lockedOut -> SurfaceDecision.LOCKED
+    else -> SurfaceDecision.CODE
+}
+
+/** What a wrong code costs, given the two budgets one attempt spends at once. */
+internal enum class FailureCharge { RECORDED, LOCKOUT, SEAL }
+
+/**
+ * The ceiling outranks the lockout, and it has to: past the ceiling there is no
+ * next round to wait out, so starting one would publish a countdown that ends in
+ * a surface that is still shut. Both counters are read AFTER the failure has been
+ * added to them, so [surfaceFailures] of [PairingManager.MAX_SURFACE_FAILURES] is
+ * the attempt that seals.
+ */
+internal fun failureCharge(surfaceFailures: Int, roundFailures: Int): FailureCharge = when {
+    surfaceFailures >= PairingManager.MAX_SURFACE_FAILURES -> FailureCharge.SEAL
+    roundFailures >= PairingManager.MAX_FAILURES -> FailureCharge.LOCKOUT
+    else -> FailureCharge.RECORDED
 }
 
 /** [pairedAtMs] is null for a v2 record: the date is unknown, never invented. */
@@ -354,8 +660,16 @@ data class PairingRecord(
  */
 private const val RECORD_V3 = "v3"
 
-internal fun encodePairingRecord(keyId: String, key: String, pairedAtMs: Long, label: String): String =
-    "$RECORD_V3|$keyId|$key|$pairedAtMs|$label"
+/**
+ * [pairedAtMs] is null for a record whose date this TV genuinely does not have —
+ * one migrated from v2 — and an empty field is how v3 says so. The decoder below
+ * already reads an unparseable date back as null ("a corrupt date costs the date,
+ * never the credential"), so the two round-trip. A rename has to be able to write
+ * one: it may change the label and nothing else, and stamping "now" on a phone
+ * paired at an unknown time would put a fact in the store that never happened.
+ */
+internal fun encodePairingRecord(keyId: String, key: String, pairedAtMs: Long?, label: String): String =
+    "$RECORD_V3|$keyId|$key|${pairedAtMs ?: ""}|$label"
 
 /**
  * Reads either shape. A v2 record migrates in place with an unknown date rather
@@ -387,8 +701,88 @@ internal fun recordsWithout(records: Collection<String>, keyId: String): Set<Str
     return records.filterNotTo(LinkedHashSet<String>()) { it == doomed }
 }
 
+/**
+ * The stored set with [keyId]'s record re-encoded under [label], or null when no
+ * record carries it — a rename that renamed nothing must say so rather than
+ * report success for a phone this TV has no record of.
+ *
+ * Key id, key and pairing date are carried across verbatim. That is the whole
+ * point: re-minting any of them would silently unpair the phone the user meant to
+ * relabel, and inventing a date for an undated record would put a fact in the
+ * store that never happened — [encodePairingRecord] takes a null date for exactly
+ * this call.
+ *
+ * A record that cannot be decoded is left byte-identical, for the reason
+ * [recordsWithout] leaves it: it authorizes nothing, and rewriting it here would
+ * make renaming one phone quietly rewrite the whole store.
+ */
+internal fun recordsRenamed(records: Collection<String>, keyId: String, label: String): Set<String>? {
+    var renamed = false
+    val next = records.mapTo(LinkedHashSet<String>()) { raw ->
+        val record = decodePairingRecord(raw)
+        if (renamed || record == null || record.keyId != keyId) return@mapTo raw
+        renamed = true
+        encodePairingRecord(record.keyId, record.key, record.pairedAtMs, label)
+    }
+    return if (renamed) next else null
+}
+
 /** Null in both fields means the TV names no phone at all. */
 internal data class LastDevice(val label: String?, val keyId: String?)
+
+/**
+ * What `last_device` must hold once [renamedKeyId] has taken [newLabel], or null
+ * when it names some other phone and may be left exactly as it is.
+ *
+ * The Idle screen renders that value as "Paired with …", so a rename that stopped
+ * at the record would leave standby naming a phone by a name the Settings list no
+ * longer shows. A store written before v3 recorded no last-paired key id, and the
+ * old label is then the only signal it left — the same fallback, and the same cost
+ * when two phones share one name, as [lastDeviceAfterForget].
+ */
+internal fun lastDeviceAfterRename(
+    renamedKeyId: String,
+    oldLabel: String,
+    newLabel: String,
+    storedKeyId: String?,
+    storedLabel: String?,
+): LastDevice? {
+    val names = if (storedKeyId != null) storedKeyId == renamedKeyId else storedLabel == oldLabel
+    return if (names) LastDevice(newLabel, renamedKeyId) else null
+}
+
+/**
+ * Whether [value] is a code this TV could actually have issued: exactly four
+ * ASCII digits, which is the shape `PairingManager` mints and the only shape
+ * `attemptPair` can ever match.
+ *
+ * The QR payload is built from it, so this is also the guard that keeps a
+ * placeholder out of the symbol — the pair screen renders "—" while the surface
+ * is locked or standing by, and encoding that would draw a code that cannot pair.
+ */
+internal fun isPairingCode(value: String): Boolean =
+    value.length == 4 && value.all { it in '0'..'9' }
+
+/**
+ * The v4 QR payload, or null when there is nothing real to encode.
+ *
+ * `flick://pair?v=4&h=<host>&p=<port>&c=<4-digit-code>` — the grammar the sender
+ * parses, in that fixed order. It lives out here as a pure function for the same
+ * reason [recordsWithout] and [lastDeviceAfterForget] do: `PairingManager` needs a
+ * `Context` and real `SharedPreferences`, and the shape of the one string a phone
+ * camera has to read is worth testing without either.
+ *
+ * All three rejections are the same rule — **never draw a symbol that cannot
+ * pair**. A blank host or an out-of-range port is a TV with no binding to hand
+ * out; a code that is not four digits is the pair screen's "—" placeholder, which
+ * would encode a scan that fails at `attemptPair`. Every one of them draws no QR
+ * at all and leaves the manual-entry card as the whole offer.
+ */
+internal fun pairingQrPayload(host: String, port: Int, code: String): String? {
+    if (host.isBlank() || port !in 1..65535) return null
+    if (!isPairingCode(code)) return null
+    return "flick://pair?v=${PairingManager.QR_VERSION}&h=$host&p=$port&c=$code"
+}
 
 /**
  * What `last_device` must hold once [forgottenKeyId] is gone, or null when it

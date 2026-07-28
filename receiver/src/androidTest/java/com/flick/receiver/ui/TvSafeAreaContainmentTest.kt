@@ -12,7 +12,6 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.Density
 import com.flick.receiver.player.DiagnosticsSnapshot
@@ -124,6 +123,7 @@ class TvSafeAreaContainmentTest {
                     networkReady = true,
                     bindUptimeSec = 42L,
                     onRename = {},
+                    onOpenSettings = {},
                     codeExpiresAtElapsedMs = android.os.SystemClock.elapsedRealtime() + 296_000L,
                 )
             }
@@ -144,6 +144,7 @@ class TvSafeAreaContainmentTest {
                     port = 47654,
                     networkReady = true,
                     onRename = {},
+                    onOpenSettings = {},
                     codeExpiresAtElapsedMs = null,
                 )
             }
@@ -163,29 +164,11 @@ class TvSafeAreaContainmentTest {
                     port = -1,
                     networkReady = false,
                     onRename = {},
+                    onOpenSettings = {},
                 )
             }
         }
         assertInsideSafeArea("PairScreen · no network")
-    }
-
-    @Test
-    fun enlarged_pair_code_keeps_text_and_done_inside_the_safe_area() {
-        composeRule.setContent {
-            FlickTvTheme {
-                PairScreen(
-                    tvName = "Living Room TV",
-                    code = "9742",
-                    qrPayload = "flick://192.0.2.2:47654",
-                    host = "192.0.2.2",
-                    port = 47654,
-                    networkReady = true,
-                    onRename = {},
-                )
-            }
-        }
-        composeRule.onNodeWithText("Show code bigger").performClick()
-        assertInsideSafeArea("PairScreen · enlarged code")
     }
 
     @Test
@@ -202,12 +185,16 @@ class TvSafeAreaContainmentTest {
                         port = 47654,
                         networkReady = true,
                         onRename = {},
+                        onOpenSettings = {},
                     )
                 }
             }
         }
-        composeRule.onNodeWithText("Show code bigger").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("Done").assertIsDisplayed()
+        // Both keys of the action row. It is the last child of an unscrolled
+        // column, so it is the first thing an over-tall column starves — which is
+        // how it once shipped as an empty pill.
+        composeRule.onNodeWithText("Rename TV").assertIsDisplayed()
+        composeRule.onNodeWithText("Settings").assertIsDisplayed()
         // The scrolled background may extend past the viewport; essential nodes
         // must still have real bounds, including at this accessibility scale.
         assertInsideSafeArea("PairScreen · large font", allowScrolledContent = true)

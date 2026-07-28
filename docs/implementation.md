@@ -176,7 +176,6 @@ The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/
 | `GET /v/{token}` | Bound-host `Host` check, constant-time token check, identical `404` for absent/wrong session, MIME/length headers, full or single-range streaming, `206`/`416`, malformed-range fallback to full `200`, and at most four concurrent response bodies (`503` beyond the cap). |
 | `HEAD /v/{token}` | Same Host/token and range semantics, headers only, outside the body-transfer cap. |
 | `GET/HEAD /s/{token}` | The sideloaded external subtitle, under a token independent of the video's. Same bound-host `Host` check, same constant-time compare, same identical `404`. Whole-file `200` only — no `Range` support and no range parser. |
-| `GET /ping` | Unauthenticated `ok` liveness response; it exposes no media bytes. |
 
 ### External subtitles
 
@@ -234,12 +233,18 @@ A visibility change (screensaver, Home, a system dialog) no longer tears anythin
 The TV QR payload is
 
 ```text
-flick://pair?v=3&h=<tv-lan-ip>&p=<port>
+flick://pair?v=4&h=<tv-lan-ip>&p=<port>&c=<four-digit-code>
 ```
 
-with exactly the parameter set `{v,h,p}` in any order, no user-info, no URI port, no path and no fragment. **The four-digit code is never in the QR.** It stays a human-verified out-of-band factor read off the TV screen, so a scan alone still authorizes nothing. The QR is emitted only while a real binding exists (host non-blank and port in `1..65535`); there is never an `h=`/`p=` placeholder. The legacy bare `flick://pair?v=2` remains a valid launch-only envelope with no prefill, so an un-updated TV still opens the app.
+with exactly the parameter set `{v,h,p,c}` in any order, no user-info, no URI port, no path and no fragment. **The four-digit code IS in the QR**, as of 2026-07-28 and by the product owner's explicit decision — see `docs/design/control-channel.md` §2 for the reasoning and for what it costs. The short version: the TV already prints the code beside the QR, so line of sight always sufficed; what is new is that a browsable deep link can now hand a live code to a system scanner. The code's five-minute TTL, its validity only while the pairing surface is rendered, and the five-failure lockout are therefore load-bearing.
 
-The sender's `singleTask` activity routes both `onCreate` and `onNewIntent` through one ingress. It copies the URI locally, clears both incoming and stored intent data synchronously, parses only the copy, and publishes an unsaved process-local event. On `v=3` it validates `h` with `isCanonicalIpv4` and `p` with `isCanonicalPort`, treats any failure as an invalid QR, **prefills host and port and focuses the code cell — it does not auto-connect**. The QR-supplied endpoint stays untrusted until the user-typed code proves it.
+Because the payload carries the code, the QR is re-encoded on every code rotation rather than being emitted once. The QR is emitted only while a real binding exists (host non-blank and port in `1..65535`); there is never an `h=`/`p=` placeholder. `flick://pair?v=3` remains valid as an endpoint prefill whose code is still typed, and the bare `flick://pair?v=2` as a launch-only envelope, so neither an un-updated TV nor an un-updated phone is stranded.
+
+**A `c=` is honoured only from Flick's own camera.** The two ingresses are not equivalent and the asymmetry is structural, not a flag: `PairLaunchParseResult.Valid` — what any externally delivered URI resolves to — has no field for a code, and `ScannedPairLaunch`, which does, is built solely by `PairLaunch.parseScanned`, whose only caller is the in-app scanner. See `docs/design/control-channel.md` §2 for the local-impostor attack this closes.
+
+The sender's `singleTask` activity routes both `onCreate` and `onNewIntent` through one ingress on the **untrusted** parser. It copies the URI locally, clears both incoming and stored intent data synchronously, parses only the copy, and publishes an unsaved process-local event. It validates `h` with `isCanonicalIpv4`, `p` with `isCanonicalPort` and `c` as exactly four ASCII digits, treating any failure as an invalid QR — a malformed `v=4` is rejected whole rather than salvaged into a prefill. An Intent-delivered `v=4` is then **demoted to a `v=3` prefill**: host and port fill the manual form, the code is dropped in the parser, and the four digits are typed as before.
+
+Only a payload the in-app scanner read reaches the confirmation card, where the TV is named and **only that explicit action dials** — a scan still never auto-connects. The ingress logs the scheme and host and nothing else: with `c` present, a log line that echoed the URI would be a disclosed credential, and `ScannedPairLaunch` overrides `toString` for the same reason.
 
 Host entry accepts canonical dotted-decimal RFC1918 IPv4 only; port is canonical decimal `1..65535`; code is exactly four ASCII digits. Manual Connect uses the same full form, pre-filled with `47654` as a default only — it is never dialed blind and never overrides a QR- or NSD-supplied port. Unpaired NSD results are advisory and cannot supply a target.
 

@@ -23,6 +23,15 @@ data class MediaItem(
      * never "loose in the gallery": the file is still listed, just not under a folder.
      */
     val bucketId: Long?,
+    /**
+     * Where the file sits under the shared-storage root — `Movies/Marvel/Phase 4/` —
+     * exactly as MediaStore reported it, separators and all. It is the only column that
+     * says which folder CONTAINS which, so it is what the library's folder tree is built
+     * from; [bucketId] names the one leaf the file is in and can say nothing about its
+     * parents. Behind the same API 29 gate as [bucketId], and null on the same terms: no
+     * folder Flick can place this row under, never a claim about where it is.
+     */
+    val relativePath: String?,
 ) {
     val resolutionLabel: String get() = resolutionLabelFor(width, height)
 

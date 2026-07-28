@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <!--
-      Excluded from both transports for the same reason: the library scope is a MediaStore
-      bucket id, an opaque hash of a folder path on the volume it was read from, and it
-      names nothing on the phone it lands on — the library would open on the "that folder
-      isn't there any more" card, permanently so below Q, where no row carries a bucket id
-      to match against. A device transfer is still a different device. The appearance
-      preference is deliberately absent from both lists: a light/dark choice is about the
-      person rather than the hardware, and everything not excluded here is carried over.
+      Excluded from both transports for the same reason: the library scope names a folder
+      of one phone's storage, written since the chooser became a tree as a normalised
+      RELATIVE_PATH ("Movies/Marvel"), with the older MediaStore bucket id only read back.
+      A path is not meaningless on the phone it lands on — which is exactly why it is left
+      behind. It either matches nothing there, and the library opens on the "that folder
+      isn't there any more" card, or it matches a same-named folder holding different
+      films, and the library opens silently narrowed to a scope its owner never chose on
+      that device. A device transfer is still a different device, with different storage.
+
+      The appearance preference is deliberately absent from both lists: a light/dark choice
+      is about the person rather than the hardware, and everything not excluded here is
+      carried over.
     -->
     <cloud-backup>
         <exclude domain="sharedpref" path="flick_pairings.xml" />

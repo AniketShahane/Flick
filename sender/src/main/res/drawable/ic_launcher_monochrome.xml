@@ -6,6 +6,19 @@
   launcher size they close up into a smudge — the same reason FlickMark itself
   drops the bars below 24dp. The triangle alone is re-centred on (54,54) here,
   since it no longer has the bars balancing it on the left.
+
+  The path is the 64-unit grid triangle at 1.15x, one notch above the colour
+  mark's 1.1x so it carries the same weight without the bars. The group applies
+  the same 0.7552083 the colour mark now takes, about (54,54) — translate
+  54 x (1 - 0.7552083) = 13.21875 — so the 1.15/1.1 relationship survives the
+  rescale and the themed icon still reads at the size of the icon it stands in
+  for. Sizing it against the mask instead would leave the tinted mark visibly
+  larger than the coloured one it replaces.
+
+  No disc: the system masks and re-tints this layer itself, and it is that mask,
+  not our r=33 disc, that bounds it. Farthest point is a rear vertex, 19.127 from
+  centre plus the 3.908 scaled stroke half-width = 23.03, well inside the
+  33-unit guaranteed circle.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -13,11 +26,18 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <path
-        android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"
-        android:fillColor="@color/ic_launcher_monochrome"
-        android:strokeColor="@color/ic_launcher_monochrome"
-        android:strokeWidth="10.35"
-        android:strokeLineJoin="round" />
+    <group
+        android:scaleX="0.7552083"
+        android:scaleY="0.7552083"
+        android:translateX="13.21875"
+        android:translateY="13.21875">
 
+        <path
+            android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"
+            android:fillColor="@color/ic_launcher_monochrome"
+            android:strokeColor="@color/ic_launcher_monochrome"
+            android:strokeWidth="10.35"
+            android:strokeLineJoin="round" />
+
+    </group>
 </vector>

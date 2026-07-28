@@ -179,6 +179,11 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
 
         Spacer(Modifier.height(18.dp))
         val doneInteraction = remember { MutableInteractionSource() }
+        // Read inside the sheet that provides it. Flipping the host's state here instead
+        // would leave the removal to the shell's overlay fade — animated, but a dissolve
+        // in place rather than the travel the scrim, Back and a drag all play, so one
+        // sheet would leave two different ways depending on how it was dismissed.
+        val done = LocalSheetDismiss.current
         Text(
             text = stringResource(R.string.quality_done),
             style = FlickText.titleSmall.copy(color = colors.onInverseSurface),
@@ -194,7 +199,7 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
                     // sits on it is visible as a ripple.
                     indication = flickRipple(colors.onInverseSurface),
                     role = Role.Button,
-                    onClick = onDismiss,
+                    onClick = done,
                 )
                 .heightIn(min = 48.dp)
                 .padding(vertical = 17.dp),

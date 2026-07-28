@@ -10,10 +10,12 @@
     <string name="pair_instructions">Open Flick, tap Devices, and point your camera at the code. Everything stays on your Wi-Fi.</string>
     <!-- The one word inside pair_instructions that renders in the amber accent. -->
     <string name="pair_instructions_highlight">Flick</string>
-    <string name="pair_show_bigger">Show code bigger</string>
-    <string name="pair_hide_bigger">Done</string>
     <string name="pair_rename">Rename TV</string>
-    <string name="pair_code_hint">Enter this code on your phone</string>
+    <!-- Its own label rather than idle_settings: the same word on two screens, but a
+         shared string couples them, and one of them being re-worded would silently
+         re-word the other. With nothing paired the TV routes here and never to Idle,
+         so this is the only way into Settings on a factory-fresh device. -->
+    <string name="pair_settings">Settings</string>
     <string name="pair_qr_content_description">QR code for pairing this TV with Flick on your phone</string>
     <!-- Manual-entry escape hatch when the QR can\'t be scanned / discovery fails. -->
     <string name="pair_manual_eyebrow">OR ADD THIS TV BY HAND</string>
@@ -35,6 +37,15 @@
          timer row, and a second line overflows the pair column's vertical budget
          (see PairColumnItemGap) and crushes the action row's labels. -->
     <string name="pair_locked">Pairing locked — try again shortly.</string>
+    <!-- The cumulative-failure seal, distinct from the timed lockout above: that one
+         clears itself, this one does not. The copy has to say so, or a user who mistyped
+         waits for a countdown that never comes and reads the TV as broken. It names the
+         reason the way out is a button on the television — the point of the ceiling is
+         that guessing ends needing someone in the room — and deliberately quotes no
+         attempt count, which would be both an oracle and a number that drifts. -->
+    <string name="pair_sealed_title">Pairing paused</string>
+    <string name="pair_sealed_body">Too many wrong codes were entered. Pairing stays closed until it is resumed here on the TV, so a phone that isn\'t in this room can\'t keep guessing.</string>
+    <string name="pair_sealed_resume">Resume pairing</string>
     <string name="pair_success">Phone paired</string>
     <string name="settings_forget_all">Forget all phones</string>
     <string name="settings_forget_all_summary">Remove every paired phone from this TV</string>
@@ -201,6 +212,14 @@
     <string name="settings_paired_forget">Forget</string>
     <string name="settings_paired_forget_confirm">Press again to forget</string>
     <string name="settings_paired_forget_a11y">Forget %1$s</string>
+    <!-- The phone list is a drill-in, not an inline run of rows: it grows with every
+         phone ever paired, and a Settings column that grows without bound pushes the
+         rows below it off a screen with no scrollbar to say so. -->
+    <string name="settings_paired_open">Manage</string>
+    <string name="settings_paired_list_title">Paired phones</string>
+    <string name="settings_paired_back">Back</string>
+    <string name="settings_phone_rename">Rename</string>
+    <string name="settings_phone_rename_a11y">Rename %1$s</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>
@@ -240,6 +259,18 @@
         <item>Den TV</item>
         <item>Office TV</item>
         <item>Flick TV</item>
+    </string-array>
+
+    <!-- Renaming a paired phone cycles these, for the same reason the TV's own name
+         does: there is no keyboard on a TV remote worth typing a name on. They are
+         places rather than devices, because what the viewer needs to tell apart is
+         whose phone it is, not what model it is. -->
+    <string-array name="phone_name_presets">
+        <item>My phone</item>
+        <item>Second phone</item>
+        <item>Living room phone</item>
+        <item>Guest phone</item>
+        <item>Work phone</item>
     </string-array>
 
     <!-- ===== TV playback — state plate & contrast ===== -->

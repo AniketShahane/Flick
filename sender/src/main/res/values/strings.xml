@@ -218,8 +218,13 @@
     <string name="advisory_band_primary">Switch network</string>
     <string name="advisory_band_secondary">Cast anyway</string>
     <string name="advisory_battery_title">Let Flick serve with the screen off.</string>
-    <string name="advisory_battery_body">Android\'s battery saver can pause the stream mid-movie; exempting Flick keeps it alive to the credits.</string>
-    <string name="advisory_battery_primary">Allow</string>
+    <!-- The button opens Android's own battery list rather than the one-tap exemption
+         dialog: that dialog needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which Play
+         restricts to alarms, VoIP and companion devices, and casting is on none of those
+         lists. So the copy has to name the extra step — a card that says "Allow" and then
+         hands over a list of every app on the phone reads as the button having failed. -->
+    <string name="advisory_battery_body">Android\'s battery saver can pause the stream mid-movie; exempting Flick keeps it alive to the credits. Android only offers this from its own list — find Flick there and choose Don\'t optimise.</string>
+    <string name="advisory_battery_primary">Open battery settings</string>
     <string name="advisory_battery_secondary">Later</string>
     <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
     <string name="advisories_alltuned">You\'re all tuned up.</string>
@@ -392,6 +397,21 @@
 
     <!-- ===== Shell — settings destination & empty library ===== -->
     <string name="nav_settings">Settings</string>
+    <!-- Shown ONLY after Flick's own camera read the QR — never after a deep link, which
+         is demoted to a code-less prefill and lands on the manual form instead. That
+         distinction is the whole security of the flow: any app can fire the URI, but only
+         the in-process scanner proves a QR was physically in front of the user. The QR
+         carries the code, so this card is the authorisation step and nothing is dialled
+         until the primary action is pressed. The TV's name is not in the payload — it
+         comes from discovery when discovery has seen it, and the body falls back to
+         naming only the address rather than claiming a name Flick cannot stand behind. -->
+    <string name="pair_scanned_title">Found a TV</string>
+    <string name="pair_scanned_body">Pair with %1$s at %2$s?</string>
+    <string name="pair_scanned_body_unknown">Pair with the TV at %1$s?</string>
+    <string name="pair_scanned_action">Pair with %1$s</string>
+    <string name="pair_scanned_action_unknown">Pair with this TV</string>
+    <string name="pair_scanned_dismiss">Not now</string>
+
     <string name="settings_heading">Signal\n&amp; setup.</string>
 
     <!-- Appearance. "Match system" is the default because following the platform is what

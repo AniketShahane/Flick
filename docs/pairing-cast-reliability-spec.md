@@ -1,5 +1,16 @@
 # Flick pairing and cast reliability specification
 
+> **Superseded in part — read this first.** This document is the decision record for the
+> **v2** pairing work, accurate as of 2026-07-20. Its QR sections (§1.1, §2.1, §3, §5, and
+> the QR acceptance cases in §14) describe a **launch-only** QR that carries no endpoint and
+> no authorization data, and they were already overtaken once by the `v=3` endpoint-prefill
+> QR and again on 2026-07-28 by the `v=4` QR, which carries the pairing code so that a scan
+> plus one confirmation pairs. **`docs/design/control-channel.md` §2 is the normative QR
+> grammar; this section is history.** It is left unedited on purpose: rewriting a dated
+> record to describe a decision it predates would destroy the reason the decision was
+> reversible. Everything here about the control protocol, the pairing state machine, the
+> lockout and throttle rules, and the logging prohibitions remains current.
+
 Status: **implemented; JVM/build validation green; real-device acceptance pending**
 Audience: maintainers, adversarial reviewer, integrator, and device-test owner
 Scope: `:sender`, `:receiver`, their shared control protocol, tests, and public documentation
@@ -203,6 +214,12 @@ The server transcript is identical except the role field is `server`. Numbers us
 This prevents an unauthenticated NSD impostor from learning the stored key or being committed as the TV endpoint. It does not encrypt the cleartext LAN channel or provide per-frame integrity against a fully on-path attacker; TLS/session framing remains a separately scoped protocol upgrade, and product copy must not call the connection encrypted or secure.
 
 ## 5. QR deep-link specification
+
+> **SUPERSEDED.** Everything in this section describes the `v=2` launch-only QR and its
+> requirement that a payload carrying `host`, `port` or `code` be rejected. Shipped
+> behaviour moved to `v=3` (endpoint prefill) and then, on 2026-07-28, to `v=4`, which
+> carries the four-digit code. See `docs/design/control-channel.md` §2 for the current
+> grammar and for the security reasoning behind the reversal. Kept for the record.
 
 ### 5.1 Canonical app-launch URI
 

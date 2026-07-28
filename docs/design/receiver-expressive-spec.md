@@ -44,8 +44,9 @@ change and say so.
 | `Volume` | volume control `contentDescription` |
 | `Film surface` | playback video surface `contentDescription` |
 | `confirmed %s` / `target %s · snap on release` | `TvScrubBar` semantics |
-| `Pair another phone`, `Show code bigger`, `Rename TV`, `Done` | pair/idle screens |
+| `Pair another phone`, `Rename TV`, `Settings`, `Done` | pair/idle screens |
 | `Playback metrics overlay`, `Diagnostics`, `Forget all phones` | settings |
+| `Paired phones`, `Manage`, `Rename`, `Forget`, `Back` | settings + the paired-phones drill-in |
 | `End session` | error screen |
 
 ---
@@ -277,9 +278,22 @@ Two columns inside the safe area: content `1fr` / QR column **272 dp**, gap **40
 5. **Status row** — pulsing `Live` dot 7 dp + "Listening · no account, nothing
    uploaded" **16 sp** `OnSurfaceSoft`. When `networkReady` is false, show the existing
    `pair_waiting_network_*` copy instead.
-6. Focusables: `Rename TV` and `Show code bigger`, styled per §3. One of them
-   takes initial focus. **Do not add the design's "SIMULATE A PHONE CONNECTING"
-   button — it is a prototype affordance, not a product feature.**
+6. Focusables: **`Rename TV` and `Settings`**, styled per §3, in that order, with
+   `Rename TV` taking initial focus. **Do not add the design's "SIMULATE A PHONE
+   CONNECTING" button — it is a prototype affordance, not a product feature.**
+
+   > **"Show code bigger" and the enlarged-code mode it drove are gone.** The
+   > design gave the pair screen a full-screen 96 sp code behind its own modal —
+   > a scrim, a Back claim, a focus handoff and a second copy of the same four
+   > digits, for a card that already renders them at 20 sp in `Spark` two feet
+   > from the QR. Nothing else on the screen was reachable while it was up.
+   >
+   > `Settings` replaces it, and that is not a swap of equals: with no phone
+   > paired the shell routes to **this** screen and never to Idle, so before this
+   > change Settings was unreachable on a factory-fresh TV. Opening it takes the
+   > pairing surface down and leaving it puts one back — a code may never be live
+   > while something else is rendered over it, which is the rule
+   > `PairingManager.closeSurface` exists to enforce.
 
 **Right column**: a **248 dp** white `QrCode` card centred in the 272 dp column, with
 an 18 dp quiet zone and a 26 dp radius.
@@ -301,6 +315,28 @@ glyph + `flick://<host>:<port>` mono **14 sp** `OnSurfaceMuted`.
 > ~0.27, comfortably on the dark side. **Amber may never carry a module a scanner
 > has to read**; the centre plate is the one place it can live, because the error
 > correction already covers that area.
+
+**The payload is v4 and carries the code**: `flick://pair?v=4&h=<host>&p=<port>&c=<4-digit-code>`,
+so one scan completes pairing. v3 deliberately left the code out and a scan
+authorized nothing on its own; that is no longer true, and the trade is recorded
+in `PairingManager.qrPayload` and in `docs/pairing-cast-reliability-spec.md`.
+
+Two consequences for this column, both load-bearing:
+
+- **The symbol dies with its code.** It must be re-encoded on every rotation
+  (`CODE_TTL_MS`, 5 min) — a QR built against a consumed code is a QR that fails.
+  Re-encoding is a ZXing pass plus a full-card bitmap raster and `ReceiverApp`
+  recomposes at 10 Hz, so the payload is **keyed on the code** and the raster
+  costs one per rotation, not ten a second.
+- **No honest payload, no symbol.** A blank host, an out-of-range port, or the
+  `—` placeholder the card shows while the surface is locked or standing by all
+  yield a null payload and the QR column is simply not drawn. Drawing a code that
+  cannot pair is worse than drawing none; the manual-entry card is the whole
+  offer in that state.
+
+The four-digit code stays on screen regardless. The QR is an addition to manual
+entry, never a replacement for it — a camera that cannot read the plate is the
+case the card exists for.
 
 ### 5.2 Connecting / handshake (`ReceiverApp.ConnectingScreen`)
 
@@ -482,6 +518,39 @@ fixed title and the currently focused control, including the detached ring,
 stay inside the viewport reserve; preceding non-focused rows and diagnostic
 logs remain ordinary scroll context.
 
+**The paired phones are a drill-in.** The column carries one `Paired phones` row —
+title, the count as its summary, `Manage` as its disclosure — which opens a
+second pane listing every phone with its date (or `settings_paired_undated`; a
+v2 record genuinely has none and the app must not invent one) and two keys,
+`Rename` and `Forget`. `Back` closes the run and lands focus on the row that
+opened it. Rendering the phones inline is what this replaces: that list grows
+without bound in a column that also has to reach Done.
+
+It is a **pane swap**, not a `TvOriginReveal`. The reveal is for a disclosure —
+the diagnostics log, born at the row that summoned it and pulled back into it —
+and it may contain no focusables while its wipe runs. A phone list is a place: its
+own heading, its own bounded scroll, its own way out, two focus targets per row.
+Each pane carries its own `FocusBeaconHost` for the §3a reason — the ring may not
+fly between unrelated regions, least of all across a surface that is itself
+sliding — and the drill takes the same from-the-right direction and sixth-of-axis
+travel the shell uses to enter Settings, so it reads as that gesture one level down.
+
+`Rename` cycles `phone_name_presets`, exactly as `Rename TV` cycles
+`tv_name_presets`: there is no keyboard on this TV, so renaming steps through
+neutral names rather than typing, and there is no text field. It goes straight to
+`PairingManager.rename` and **changes the label only** — the key id, the key and
+the pairing date are carried across verbatim, so the phone stays paired on the
+credential it already had and a live session is untouched. It deliberately does
+NOT route through `ControlServer` the way `Forget` must: there is no session to
+revoke, and that path takes the manager monitor before `serverLock`.
+
+`Forget` keeps its two-press confirm, armed per key id and disarmed the moment
+the D-pad leaves it. `Forget all phones` stays on the main column and stays
+hidden below two phones. With **no** phones paired — a real state now that
+Settings is reachable from the pair screen — the `Paired phones` row is not
+focusable at all: a control that opens an empty list does nothing, which is the
+same argument that hides `Forget all phones` at zero.
+
 ---
 
 ## 6. Motion
@@ -602,7 +671,7 @@ the new brand:
   safe zone of the 108 dp canvas), and point the manifest at `@mipmap/ic_launcher`.
   Keep a `@drawable/ic_launcher` fallback for pre-26 tooling paths.
 - The background layer is a **disc, not a plate** — `res/drawable/ic_launcher_disc.xml`,
-  `#04070F` at r = 36 about (54, 54), transparent outside it. Flick is round
+  `#04070F` at r = 33 about (54, 54), transparent outside it. Flick is round
   because it chose to be, not because the device's mask said so.
 - `res/drawable/banner.xml` — 320 × 180 dp leanback banner: the mark plus a real
   "flick" wordmark drawn as paths (not the current grey placeholder bars) on
@@ -611,53 +680,87 @@ the new brand:
 
 Keep everything vector and self-contained; no raster assets.
 
-### 8a. The 36-unit disc
+### 8a. The 33-unit disc
 
 An adaptive layer is 108 × 108. The system reserves the outer 18 on every side for
-parallax and bleed, so only the central 72 × 72 is ever shown and only a 66-unit
-circle is guaranteed. A launcher applying a **circular** mask therefore draws
-exactly r = 36 about (54, 54) — which is the disc. The two edges coincide there,
-and on a squircle, rounded-square or teardrop launcher the corners fall outside
-the disc onto transparency, so a circle is what the user sees either way.
+parallax and bleed, so only the central 72 × 72 is ever shown — a mask reaches
+36 units from (54, 54) at its edge midpoints — and only the inner **66-unit
+circle, r = 33, is guaranteed** to survive whatever mask the launcher applies.
 
-36 is a **ceiling, not a preference**. Every stock mask spans the full 72, so it
-passes 36 units from centre at its edge midpoints: a larger disc is cut flat at
-those four points and reads as a squircle again, and a smaller one leaves a ring
-of wallpaper showing inside a circular mask.
+The disc was r = 36 and is now **r = 33**. 36 is the largest circle the visible
+area can hold, which is precisely the problem: its edge is tangent to every stock
+mask at those four midpoints, with no tolerance whatever. A launcher that scales
+the layer before masking — One UI does this to third-party icons — a mask drawn a
+hair inside the full 72, or plain antialiasing along a boundary two shapes share,
+each cut the disc flat there, and the icon reads as a squircle. That is the
+Galaxy S25 Ultra report: the circle was correct in the artwork and clipped on the
+device.
 
-Clearance of each mark against that 36, measured from the path data with the
-stroke overhang resolved (the outer boundary of a round-join stroke is the shape
-plus a disc of half the stroke width, so the extreme is the farthest vertex plus
-that half-width):
+33 is the largest radius lying **wholly inside** the guaranteed circle, so no
+mask can reach the edge. The 3 units cost diameter, not shape — under a circular
+mask the icon is 91.7% the width of a full-bleed neighbour. They do not cost a
+ring of wallpaper, which was the old objection to any smaller disc: nothing draws
+the mask boundary, so what is left is simply a smaller circle.
 
-- `:receiver` — the group maps the 64-unit grid by `p -> 0.90625p + 25`. Extreme
-  is the triangle's right tip: vertex (56, 32) lands 21.75 from centre, plus the
-  4.5-unit outset scaled to 4.08 = **25.83**. The middle streak's left cap is next
-  at 25.45. Roughly 10 units of canvas in hand.
-- `:sender` — the mark is that grid at 1.1×, so it runs larger: the extreme is the
-  middle bar's left cap at 28.4 + 2.75 = **31.16**, just ahead of the triangle tip
-  at 26.13 + 4.95 = 31.08. Only ~4.8 units in hand, and nothing there may grow.
+Both modules take the same disc. `:receiver`'s icon is barely seen — the TV
+launcher shows `android:banner`, and this drawable surfaces only in Settings and
+the installer — but the two modules have carried one disc file all along, and
+letting them diverge to reclaim 3 units there would trade a real invariant for
+nothing anyone looks at. Their fills stay different: `#04070F` on the TV,
+`#F2F6FF` on the phone with the blue mark and amber streaks.
+
+The mark shrinks with it. `:receiver` held 0.7177 of the old radius and `:sender`
+0.866 — the phone's mark crowded the edge, which is the second half of the same
+report. Both are now the **64-unit grid at 0.8307292**, i.e. `:receiver`'s former
+0.90625 stepped down by the disc's own 33/36, so the TV icon is the drawing it
+always was at 91.7% and the phone icon is rescaled to match that proportion.
+`:sender` reaches it with a `<group>`, since its path data bakes in 1.1×:
+`0.8307292 / 1.1 = 0.7552083` about (54, 54), translate `54 × (1 − 0.7552083) =
+13.21875`. Stroke widths and round caps ride the group matrix, so it is a
+rescale, not a redraw — every internal ratio survives untouched.
+
+Extents after the change, measured from the path data with the stroke overhang
+resolved (the outer boundary of a round-join stroke is the shape plus a disc of
+half the stroke width, so the extreme is the farthest point of the outline plus
+that half-width) — all four against the r = 33 disc:
+
+| Layer | Extreme | Where | Clearance | Of radius |
+| --- | --- | --- | --- | --- |
+| `:receiver` foreground | **23.68** | triangle's right tip, 19.946 + 3.738 | 9.32 | 0.718 |
+| `:sender` foreground | **23.53** | middle bar's left cap, 21.456 + 2.077 | 9.47 | 0.713 |
+| `:receiver` monochrome | **23.03** | rear vertex, 19.127 + 3.908 | 9.97 | 0.698 |
+| `:sender` monochrome | **23.03** | rear vertex, 19.127 + 3.908 | 9.97 | 0.698 |
+
+`:receiver`'s tip lands on 19.946 rather than the vertex's nominal 19.938 because
+that layer draws the outset shape as an explicit outline and its tip arc centres
+on 56.01, not 56 — 0.01 of hand-drawing rounded into the path years before the
+group ever scaled it.
 
 `<monochrome>` never carries the disc — the system masks and re-tints that layer
-itself, so it stays artwork on transparency. It also must not be the colour
-foreground: the launcher keeps the layer's alpha and replaces only its colour, so
-the streaks' 0.5 / 0.85 fills would survive as ghosted bands. Both modules point
-it at a dedicated silhouette, the triangle alone, re-centred on (54, 54) and
-scaled up to hold its weight without the bars balancing it.
+itself, so it stays artwork on transparency, bounded by the mask rather than by
+our disc. It also must not be the colour foreground: the launcher keeps the
+layer's alpha and replaces only its colour, so the streaks' 0.5 / 0.85 fills
+would survive as ghosted bands. Both modules point it at a dedicated silhouette,
+the triangle alone, re-centred on (54, 54) and drawn at 1.15× the grid — one
+notch above the colour mark's 1.1× — to hold its weight without the bars
+balancing it. It takes the same 0.7552083 group as `:sender`'s colour mark so
+that 1.15 / 1.1 relationship survives the rescale: sized against the mask instead
+it would stay at 30.50 and the tinted mark would read visibly larger than the
+coloured one it stands in for.
 
 `@drawable/ic_launcher` — the flat pre-adaptive fallback, unreachable on-device at
-minSdk 26 — is now a `layer-list` of the same two layers rather than its own
-transcription of the grid, so it is circular by construction and cannot drift.
+minSdk 26 — is a `layer-list` of the same two layers rather than its own
+transcription of the grid, so it follows the new radius for free and cannot drift.
 
 The Play Store **listing** icon is none of this. It is a separate 512 × 512
 32-bit PNG uploaded in Play Console — never extracted from the APK — and Play
 masks and rounds it itself, so a disc on transparency is the wrong export: the
 corners are Play's to cut, not ours. Fill the square with the canvas colour and
-centre the mark at the same fraction of the frame that it holds of the disc
-(0.87 for `:sender`, 0.72 for `:receiver`). The store silhouette is then Play's
-rounded square while the launcher stays a circle; that divergence is the
-platform's, and trying to fake a circle into the listing icon only buys a
-dark ring around it.
+centre the mark at the same fraction of the frame that it holds of the disc —
+now **0.72 for both modules**, where it used to be 0.87 on the phone and 0.72 on
+the TV. The store silhouette is then Play's rounded square while the launcher
+stays a circle; that divergence is the platform's, and trying to fake a circle
+into the listing icon only buys a dark ring around it.
 
 ---
 

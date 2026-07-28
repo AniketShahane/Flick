@@ -251,6 +251,10 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
 
         Spacer(Modifier.height(18.dp))
         val doneInteraction = remember { MutableInteractionSource() }
+        // Read inside the sheet that provides it: Done is the same dismissal the scrim,
+        // Back and a drag down are, so it takes the same exit instead of being the one
+        // way out of this sheet that cuts it and its scrim away in a single frame.
+        val done = LocalSheetDismiss.current
         Text(
             text = stringResource(R.string.subs_done),
             style = FlickText.titleSmall.copy(color = colors.onInverseSurface),
@@ -264,7 +268,7 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                     interactionSource = doneInteraction,
                     indication = flickRipple(colors.onInverseSurface),
                     role = Role.Button,
-                    onClick = onDismiss,
+                    onClick = done,
                 )
                 .heightIn(min = 48.dp)
                 .padding(vertical = 17.dp),

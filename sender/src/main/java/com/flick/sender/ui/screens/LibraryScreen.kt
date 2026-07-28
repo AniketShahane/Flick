@@ -21,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -48,10 +49,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
@@ -140,8 +146,10 @@ import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Room the floating nav needs at the foot of the scroll (design §5.4). */
 private val NavClearance = 116.dp
@@ -249,130 +257,170 @@ fun LibraryScreen(
         )
     }
 
+    // The pull's own claim on the indicator, which is not the same claim as `loading`:
+    // the library also reloads on a permission grant and on every return to this screen,
+    // and an indicator that dropped out of the top of the grid unasked would read as the
+    // app deciding to refresh itself.
+    var pulled by remember { mutableStateOf(false) }
+    val pullState = rememberPullToRefreshState()
+    LaunchedEffect(pulled) {
+        if (!pulled) return@LaunchedEffect
+        // The pull owns the indicator until the read it asked for is over, and
+        // `libraryLoading` IS that read: a timer would put the indicator down while
+        // MediaStore was still walking a large gallery, and would raise it again for the
+        // next one. The window bounds only the wait for that read to START — a refresh
+        // with no access to run under raises nothing, and must not leave the indicator up
+        // for ever waiting for it.
+        withTimeoutOrNull(RefreshStartWindowMs) { controller.libraryLoading.first { it } }
+        controller.libraryLoading.first { !it }
+        pulled = false
+    }
+
     Box(Modifier.fillMaxSize()) {
-        LazyVerticalGrid(
-            // Adaptive rather than a fixed pair: rotation and foldables widen the row, and
-            // a fixed two-column split would stretch each 16:9 still into a letterbox sliver.
-            columns = GridCells.Adaptive(minSize = TileMinWidth),
+        PullToRefreshBox(
+            isRefreshing = pulled,
+            onRefresh = {
+                pulled = true
+                // The controller's one load path, gate and all: a refresh that a newer
+                // read overtakes is discarded there rather than publishing behind it.
+                controller.refreshMediaLibrary()
+            },
+            state = pullState,
+            indicator = { LibraryRefreshIndicator(state = pullState, refreshing = pulled) },
+            // The canvas is painted before the inset, as the grid painted it, so it still
+            // reaches under the status bar; the pull region begins below it, which is
+            // where the indicator has to come to rest to be seen at all.
             modifier = Modifier
                 .fillMaxSize()
                 .background(colors.canvas)
-                .statusBarsPadding()
-                .navigationBarsPadding(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
-            horizontalArrangement = Arrangement.spacedBy(13.dp),
-            verticalArrangement = Arrangement.spacedBy(13.dp),
+                .statusBarsPadding(),
         ) {
-            fullWidth {
-                Header(
-                    mediaAction = mediaAction,
-                    onMediaAction = {
-                        when (mediaAction) {
-                            MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
-                            MediaLibraryAction.REFRESH -> controller.refreshMediaLibrary()
-                            MediaLibraryAction.HIDDEN -> Unit
-                        }
-                    },
-                )
-            }
-            fullWidth {
-                LinkPill(
-                    controller = controller,
-                    connectedTv = connectedTv,
-                    castingItem = castingItem,
-                    signal = signal,
-                    wifiLinkUp = wifiLinkUp,
-                )
-            }
-            fullWidth {
-                FilterChips(
-                    filter = filter,
-                    // What "All" would show, which under a folder is that folder — the
-                    // count has to describe the set the chip actually selects.
-                    totalCount = scoped.size,
-                    onSelect = { chosen ->
-                        filter = chosen
-                        // Armed from the tap rather than from the effect that closes it:
-                        // the wave has to be in place for the first composition the new
-                        // set is measured in, or the tiles paint once at rest and only
-                        // then dip.
-                        reflowArmed = !reduceMotion
-                        reflowEpoch++
-                    },
-                    trailing = {
-                        // Below API 29 MediaStore reports no bucket for a video, so no
-                        // folder is ever derived and this seat stays empty — the feature
-                        // is absent there rather than guessed at from a file path. A
-                        // choice made on a later phone cannot arrive to contradict that
-                        // either: the file holding it is excluded from backup, because a
-                        // bucket id names a path on the volume it was read from.
-                        if (LibraryFolders.chooserOffered(library.folders, folderScope)) {
-                            LibraryFolderChip(
-                                scope = folderScope,
-                                onClick = { choosingFolder = true },
-                            )
-                        }
-                    },
-                )
-            }
-            if (on24GHz) {
+            LazyVerticalGrid(
+                // Adaptive rather than a fixed pair: rotation and foldables widen the row, and
+                // a fixed two-column split would stretch each 16:9 still into a letterbox sliver.
+                columns = GridCells.Adaptive(minSize = TileMinWidth),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalArrangement = Arrangement.spacedBy(13.dp),
+            ) {
                 fullWidth {
-                    // The advisory and its fix live on the same surface now: the banner is a
-                    // shortcut to the Settings seat rather than a sheet of its own.
-                    BandAdvisory(onClick = { controller.openSettings() })
+                    Header(
+                        mediaAction = mediaAction,
+                        onMediaAction = {
+                            when (mediaAction) {
+                                MediaLibraryAction.SELECT_MORE -> onRequestVideoPermission()
+                                MediaLibraryAction.REFRESH -> controller.refreshMediaLibrary()
+                                MediaLibraryAction.HIDDEN -> Unit
+                            }
+                        },
+                    )
                 }
-            }
-            when {
-                loading -> fullWidth { Note(stringResource(R.string.library_loading)) }
-                // A folder that is gone and a folder that is showing nothing are
-                // different facts about the same choice, and neither is silence: the
-                // stored choice survives both until the user takes the offered way out.
-                folderScope is LibraryScope.Missing -> fullWidth {
-                    // Under a partial grant the cause is not a mystery and must not be
-                    // reported as one: the folder is outside the selection, so the repair
-                    // is to widen that selection rather than to give the folder up.
-                    if (mediaAccess.canReselect) {
-                        FolderHidden(
-                            name = folderScope.name,
-                            onSelectMore = onRequestVideoPermission,
-                        )
-                    } else {
-                        FolderMissing(
-                            name = folderScope.name,
-                            onShowAll = { controller.chooseLibraryFolder(null) },
-                        )
+                fullWidth {
+                    LinkPill(
+                        controller = controller,
+                        connectedTv = connectedTv,
+                        castingItem = castingItem,
+                        signal = signal,
+                        wifiLinkUp = wifiLinkUp,
+                    )
+                }
+                fullWidth {
+                    FilterChips(
+                        filter = filter,
+                        // What "All" would show, which under a folder is that folder — the
+                        // count has to describe the set the chip actually selects.
+                        totalCount = scoped.size,
+                        onSelect = { chosen ->
+                            filter = chosen
+                            // Armed from the tap rather than from the effect that closes it:
+                            // the wave has to be in place for the first composition the new
+                            // set is measured in, or the tiles paint once at rest and only
+                            // then dip.
+                            reflowArmed = !reduceMotion
+                            reflowEpoch++
+                        },
+                        trailing = {
+                            // Below API 29 MediaStore reports no relative path for a video, so
+                            // no folder is ever derived and this seat stays empty — the
+                            // feature is absent there rather than guessed at from a file path.
+                            // A choice made on a later phone cannot arrive to contradict that
+                            // either: the file holding it is excluded from backup.
+                            if (LibraryFolders.chooserOffered(library.folders, folderScope, library.items.size)) {
+                                LibraryFolderChip(
+                                    scope = folderScope,
+                                    onClick = { choosingFolder = true },
+                                )
+                            }
+                        },
+                    )
+                }
+                if (on24GHz) {
+                    fullWidth {
+                        // The advisory and its fix live on the same surface now: the banner is a
+                        // shortcut to the Settings seat rather than a sheet of its own.
+                        BandAdvisory(onClick = { controller.openSettings() })
                     }
                 }
-                // Reached only through a quality chip — a folder Flick can see holds at
-                // least one video, which is why it is offered at all. It takes the
-                // chips' place because their copy offers everything ON THIS PHONE, which
-                // is not what tapping All would show while a folder is in force.
-                filtered.isEmpty() && folderScope is LibraryScope.Folder ->
-                    fullWidth { FolderEmpty(folderScope.name) }
-                // "All" cannot be empty while the library is not: only a quality chip can
-                // filter every file away.
-                filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
-            }
-            itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
-                LibraryTile(
-                    item = item,
-                    imageLoader = imageLoader,
-                    compact = compactTiles,
-                    unplayable = unplayable.containsKey(item.uriKey),
-                    onClick = { controller.openDetail(item) },
-                    sharedScope = sharedScope,
-                    animatedScope = animatedScope,
-                    // A filter switch reflows the surviving tiles instead of teleporting
-                    // them; placement is geometry and takes the spatial spring.
-                    modifier = Modifier
-                        .animateItem(
-                            fadeInSpec = motionScheme.defaultEffectsSpec(),
-                            placementSpec = motionScheme.defaultSpatialSpec(),
-                            fadeOutSpec = motionScheme.fastEffectsSpec(),
-                        )
-                        .staggeredEntrance(index = index, armed = staggerArmed)
-                        .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
-                )
+                when {
+                    // Silent under a pull: the indicator the finger is holding already
+                    // says a read is running, and a second row inserted above the tiles
+                    // would push the grid down under that same finger. Every other
+                    // refresh still gets the line, because nothing else on screen says
+                    // it. What the row falls through to is what was already showing.
+                    loading && !pulled -> fullWidth { Note(stringResource(R.string.library_loading)) }
+                    // A folder that is gone and a folder that is showing nothing are
+                    // different facts about the same choice, and neither is silence: the
+                    // stored choice survives both until the user takes the offered way out.
+                    folderScope is LibraryScope.Missing -> fullWidth {
+                        // Under a partial grant the cause is not a mystery and must not be
+                        // reported as one: the folder is outside the selection, so the repair
+                        // is to widen that selection rather than to give the folder up.
+                        if (mediaAccess.canReselect) {
+                            FolderHidden(
+                                name = folderScope.name,
+                                onSelectMore = onRequestVideoPermission,
+                            )
+                        } else {
+                            FolderMissing(
+                                name = folderScope.name,
+                                onShowAll = { controller.chooseLibraryFolder(null) },
+                            )
+                        }
+                    }
+                    // Reached only through a quality chip — a folder Flick can see holds at
+                    // least one video, which is why it is offered at all. It takes the
+                    // chips' place because their copy offers everything ON THIS PHONE, which
+                    // is not what tapping All would show while a folder is in force.
+                    filtered.isEmpty() && folderScope is LibraryScope.Folder ->
+                        fullWidth { FolderEmpty(folderScope.name) }
+                    // "All" cannot be empty while the library is not: only a quality chip can
+                    // filter every file away.
+                    filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
+                }
+                itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
+                    LibraryTile(
+                        item = item,
+                        imageLoader = imageLoader,
+                        compact = compactTiles,
+                        unplayable = unplayable.containsKey(item.uriKey),
+                        onClick = { controller.openDetail(item) },
+                        sharedScope = sharedScope,
+                        animatedScope = animatedScope,
+                        // A filter switch reflows the surviving tiles instead of teleporting
+                        // them; placement is geometry and takes the spatial spring.
+                        modifier = Modifier
+                            .animateItem(
+                                fadeInSpec = motionScheme.defaultEffectsSpec(),
+                                placementSpec = motionScheme.defaultSpatialSpec(),
+                                fadeOutSpec = motionScheme.fastEffectsSpec(),
+                            )
+                            .staggeredEntrance(index = index, armed = staggerArmed)
+                            .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
+                    )
+                }
             }
         }
         if (choosingFolder) {
@@ -382,8 +430,9 @@ fun LibraryScreen(
                 // The whole library, because "All videos" is what leaving the folder
                 // restores — the scoped count is the one the chip row already states.
                 allCount = library.items.size,
+                // Only the scope changes here. Removing the sheet is onDismiss's, which
+                // the sheet answers once its exit has actually carried it off the window.
                 onChoose = { folder ->
-                    choosingFolder = false
                     controller.chooseLibraryFolder(folder)
                     // A folder switch re-deals the grid for the same reason a chip tap
                     // does: the new set is the consequence of the tap, not an unrelated
@@ -394,6 +443,49 @@ fun LibraryScreen(
                 onDismiss = { choosingFolder = false },
             )
         }
+    }
+}
+
+/**
+ * What a pull down the library looks like: the same Expressive shape-morph the pairing
+ * handshake and the TV's own loader use, so a wait for MediaStore is not a different kind
+ * of wait from a wait for the TV.
+ *
+ * [state] carries the drag, and the indicator reads it in its own layer — the grid behind
+ * it is not recomposed by a finger moving 40 dp.
+ *
+ * Under reduce motion the morph is replaced rather than merely slowed: it is a continuous
+ * animation that never reaches an end state, which is exactly what that setting is asking
+ * not to be shown. The container still travels with the finger, because that is the
+ * gesture answering rather than a decoration.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BoxScope.LibraryRefreshIndicator(state: PullToRefreshState, refreshing: Boolean) {
+    val colors = LocalFlickColors.current
+    val seat = Modifier.align(Alignment.TopCenter)
+    if (rememberReduceMotion()) {
+        PullToRefreshDefaults.IndicatorBox(
+            state = state,
+            isRefreshing = refreshing,
+            modifier = seat,
+            containerColor = colors.surfaceRaised,
+        ) {
+            Box(
+                Modifier
+                    .size(RefreshRestingSize)
+                    .clip(CircleShape)
+                    .background(colors.primary),
+            )
+        }
+    } else {
+        PullToRefreshDefaults.LoadingIndicator(
+            state = state,
+            isRefreshing = refreshing,
+            modifier = seat,
+            containerColor = colors.surfaceRaised,
+            color = colors.primary,
+        )
     }
 }
 
@@ -1417,6 +1509,15 @@ private const val PillSwapScale = 0.9f
 // be more than one tick apart. Only ever runs while the shared record says there is no
 // link — once it says there is, that answer is proof and this stops.
 private const val WifiLinkRecheckMs = 2_000L
+
+// How long a pull waits for the read it asked for to raise the loading flag. The flag is
+// raised on the calling thread, so this is only ever spent on a read that never ran or
+// one that was over before the effect could look; it is not what ends a refresh.
+private const val RefreshStartWindowMs = 500L
+
+// The resting silhouette the reduce-motion indicator shows instead of the morph, sized
+// to the shape the morphing one settles at.
+private val RefreshRestingSize = 24.dp
 
 // Entrance stagger: one step per tile up to the twelfth, which is roughly two screens
 // on the widest column count — beyond that the sequence reads as loading, not arrival.

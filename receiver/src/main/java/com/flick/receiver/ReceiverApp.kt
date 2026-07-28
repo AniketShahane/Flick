@@ -98,6 +98,7 @@ import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.screens.ErrorScreen
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.MetricsOverlay
+import com.flick.receiver.ui.screens.PairCodePlaceholder
 import com.flick.receiver.ui.screens.PairScreen
 import com.flick.receiver.ui.screens.PlaybackPanel
 import com.flick.receiver.ui.screens.PlaybackScreen
@@ -134,7 +135,70 @@ import kotlinx.coroutines.isActive
 private const val RECONCILE_SAFETY_NET_MS = 10_000L
 
 /** Surfaces that do not contain the decoded video and may safely crossfade. */
-private enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
+internal enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
+
+/**
+ * Which standby surface the router puts on screen — one decision, read both by the
+ * router itself and by [pairingSurfaceRendered].
+ *
+ * It is a shared function rather than a `when` inline in the router precisely
+ * because a pairing code is only legitimate while the surface that DRAWS one is on
+ * screen. Two places deciding that separately is how they come to disagree, and a
+ * disagreement here is a live code nobody can see.
+ *
+ * Settings outranks Pair, which is why opening it from the pair screen has to take
+ * the code down. A sealed surface routes to Pair at ANY paired count: with no
+ * phones the `pairedCount` arm would have caught it anyway; with phones it would
+ * not, and the TV would drop to Idle having silently stopped accepting codes —
+ * which is the one thing the ceiling must never look like.
+ */
+internal fun standbySurfaceFor(
+    showSettings: Boolean,
+    surface: PairingSurface,
+    pairedCount: Int,
+): StandbySurface = when {
+    showSettings -> StandbySurface.Settings
+    surface is PairingSurface.Open ||
+        surface is PairingSurface.Locked ||
+        surface is PairingSurface.Sealed ||
+        pairedCount == 0 -> StandbySurface.Pair
+    surface is PairingSurface.Success -> StandbySurface.PairSuccess
+    else -> StandbySurface.Idle
+}
+
+/**
+ * Whether the surface that RENDERS a pairing code is the one on screen. This is the
+ * single fact `PairingManager` cannot see for itself, and it is what decides whether
+ * the app returning to the foreground may ask it for a code.
+ *
+ * `PairingManager.onForeground` used to decide that alone, from the paired count —
+ * a TV with nothing paired is a TV showing the pair screen. It is not always. The
+ * pair screen is the only route into Settings on a factory-fresh TV, [showSettings]
+ * is composition state that survives a stop/start, and Settings outranks Pair above.
+ * A screensaver over an idle Settings screen therefore resumed the app holding a
+ * live, rotating code with neither the digits nor the QR anywhere on screen, while
+ * the owner believed pairing was closed.
+ *
+ * Two other shapes were weighed. Gating the CALL SITE on [showSettings] shuts this
+ * instance but leaves the manager still guessing at what is on screen for whoever
+ * calls it next. Driving the surface from composition instead — a code open for
+ * exactly as long as the pair screen is drawn — inverts the two places that
+ * deliberately close a surface the pair screen is still drawing: Back over an Open
+ * code, and the trip into Settings, both of which would immediately be undone. So
+ * the decision is the renderer's and the trigger stays the lifecycle's: this asks
+ * [standbySurfaceFor], the router's own answer, and hands it to the manager.
+ *
+ * [stage] is a parameter because standby surfaces render only under
+ * [MediaStage.None]: a cast on screen draws no code whatever the router would
+ * otherwise have chosen.
+ */
+internal fun pairingSurfaceRendered(
+    stage: MediaStage,
+    showSettings: Boolean,
+    surface: PairingSurface,
+    pairedCount: Int,
+): Boolean = stage is MediaStage.None &&
+    standbySurfaceFor(showSettings, surface, pairedCount) == StandbySurface.Pair
 
 /**
  * A standby surface plus the values its screen must keep drawing while it leaves.
@@ -143,11 +207,17 @@ private enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
  * screen whose code has just been consumed would flip to its locked "—" halfway
  * through the fade the viewer is still reading. Snapshotting the pair inputs into
  * the transition state freezes the exiting screen on what it was showing.
+ *
+ * [qrPayload] is in here for the same reason and is now bound to [code]: the v4
+ * payload CARRIES the code, so an exiting pair screen that kept re-deriving it
+ * would swap its symbol mid-fade for one built against a code that has already
+ * been consumed.
  */
 private data class StandbyState(
     val surface: StandbySurface,
     val code: String,
     val codeExpiresAtElapsedMs: Long?,
+    val qrPayload: String?,
 )
 
 /**
@@ -239,6 +309,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val tvNamePresets = remember(context) {
         context.resources.getStringArray(R.array.tv_name_presets)
     }
+    // The same idiom for the phones in Settings: there is no keyboard on this TV,
+    // so a rename cycles presets rather than typing.
+    val phoneNamePresets = remember(context) {
+        context.resources.getStringArray(R.array.phone_name_presets)
+    }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
     // adds a timer of its own.
@@ -266,6 +341,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     var showSettings by remember { mutableStateOf(false) }
+    // Whether leaving Settings owes the viewer a pairing code back.
+    //
+    // Settings outranks Pair in the surface router below, so opening it from the
+    // pair screen has to take the code DOWN — a code left open while Settings is
+    // on top would be live, rotating and accepting attempts with nothing on screen
+    // rendering it, which is exactly the state `PairingManager.closeSurface`
+    // exists to refuse. This latch is what makes that trip reversible: the viewer
+    // asked for a code, and coming back must return them to it rather than to Idle.
+    var reopenPairingOnExit by remember { mutableStateOf(false) }
     var metricsEnabled by rememberSaveable { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -297,7 +381,19 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     lifecycleStarted = true
                     bindingGate.onForeground()
                     controller.onStart()
-                    pairing.onForeground()
+                    // A code may only be minted for a screen that draws one. The
+                    // live snapshot is read from the manager, not from
+                    // `pairingSnapshot`, which is a frame behind this event — the
+                    // same reason `leaveSettings` reads it there.
+                    val live = pairing.snapshot.value
+                    pairing.onForeground(
+                        pairingRendered = pairingSurfaceRendered(
+                            stage = session.stage,
+                            showSettings = showSettings,
+                            surface = live.surface,
+                            pairedCount = live.pairedCount,
+                        ),
+                    )
                     if (boundPort > 0) {
                         FlickLog.i("nsd", "readvertise trigger=on_start port=$boundPort state=${NsdAdvertiser.STATE_READY}")
                         nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
@@ -582,6 +678,34 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
 
+    // The code the surface is actually offering, and the QR built from it.
+    //
+    // v4 puts the code IN the payload, so a rotation invalidates the symbol and it
+    // must be re-encoded — but re-encoding is a ZXing pass plus a full-card bitmap
+    // raster, and this composable recomposes with the 10 Hz position feed. Keying
+    // the payload on the code makes that cost exactly one raster per rotation
+    // (`CODE_TTL_MS`, 5 min) instead of ten a second: `QrCode` itself remembers on
+    // the payload string, so an unchanged code re-uses the bitmap it already has.
+    val pairCode = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: PairCodePlaceholder
+    val qrPayload = remember(pairing, boundHost, boundPort, pairCode) {
+        pairing.qrPayload(boundHost ?: "", boundPort, pairCode)
+    }
+
+    // Every way out of Settings, so the pairing code the pair screen gave up on
+    // the way in comes back on the way out.
+    val leaveSettings = {
+        showSettings = false
+        // Skipped when something inside Settings has already opened a code of its
+        // own: Forget all and forgetting the last phone both reopen the surface
+        // through the manager, and `requestOpen` would rotate that freshly issued
+        // code away before anyone could finish reading it. Read from the manager
+        // rather than from `pairingSnapshot`, which is a frame behind this press.
+        if (reopenPairingOnExit && pairing.snapshot.value.surface is PairingSurface.Standby) {
+            pairing.requestOpen()
+        }
+        reopenPairingOnExit = false
+    }
+
     val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
         val button = event.toTvRemoteButton()
         val eventType = when (event.action) {
@@ -670,7 +794,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             stage is MediaStage.Checking || stage is MediaStage.Preparing || stage is MediaStage.Active || stage is MediaStage.Error,
     ) {
         when {
-            showSettings -> showSettings = false
+            showSettings -> leaveSettings()
             pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
             stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
             // An open side panel is the topmost surface: dismiss it before Back is
@@ -775,19 +899,20 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 )
 
                 MediaStage.None -> {
-                    val standbySurface = when {
-                        showSettings -> StandbySurface.Settings
-                        pairingSnapshot.surface is PairingSurface.Open ||
-                            pairingSnapshot.surface is PairingSurface.Locked ||
-                            pairingSnapshot.pairedCount == 0 -> StandbySurface.Pair
-                        pairingSnapshot.surface is PairingSurface.Success -> StandbySurface.PairSuccess
-                        else -> StandbySurface.Idle
-                    }
+                    // Shared with the foreground gate above, so what the app is
+                    // willing to open a code for and what it actually draws can
+                    // never be two different answers — see [standbySurfaceFor].
+                    val standbySurface = standbySurfaceFor(
+                        showSettings = showSettings,
+                        surface = pairingSnapshot.surface,
+                        pairedCount = pairingSnapshot.pairedCount,
+                    )
                     val standbyState = StandbyState(
                         surface = standbySurface,
-                        code = (pairingSnapshot.surface as? PairingSurface.Open)?.code ?: "—",
+                        code = pairCode,
                         codeExpiresAtElapsedMs =
                             (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
+                        qrPayload = qrPayload,
                     )
                     // Only non-video standby surfaces animate. The outgoing subtree
                     // is immediately removed from focus/semantics while it finishes
@@ -852,8 +977,26 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // behind this press.
                                     onForgetPhone = { keyId ->
                                         val forgotten = server.forget(keyId)
-                                        if (forgotten && pairing.pairedCount() == 0) showSettings = false
+                                        if (forgotten && pairing.pairedCount() == 0) leaveSettings()
                                         forgotten
+                                    },
+                                    // Straight to the manager, NOT through the
+                                    // server: a rename changes the label and
+                                    // nothing else, so there is no session to
+                                    // revoke — and `ControlServer.forget` takes the
+                                    // manager monitor before `serverLock`, so
+                                    // routing a manager write back through the
+                                    // server is the lock order that deadlocks.
+                                    //
+                                    // The current label is read from the store
+                                    // rather than from `pairingSnapshot`, which is
+                                    // a frame behind this press, so two quick
+                                    // presses step two presets rather than
+                                    // computing the same next name twice.
+                                    onRenamePhone = { keyId ->
+                                        pairing.pairedDevices()
+                                            .firstOrNull { it.keyId == keyId }
+                                            ?.let { pairing.rename(keyId, nextName(it.label, phoneNamePresets)) }
                                     },
                                     metricsEnabled = metricsEnabled,
                                     onRename = {
@@ -866,9 +1009,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     },
                                     onToggleMetrics = { metricsEnabled = !metricsEnabled },
                                     onForgetAll = {
-                                        if (server.forgetAllPairings()) showSettings = false
+                                        if (server.forgetAllPairings()) leaveSettings()
                                     },
-                                    onDone = { showSettings = false },
+                                    onDone = leaveSettings,
                                     diagnosticsVisible = showDiagnostics,
                                     diagnostics = remember(logRevision, showDiagnostics) {
                                         if (showDiagnostics) FlickLog.recent().take(DIAGNOSTICS_VISIBLE) else emptyList()
@@ -880,7 +1023,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                 StandbySurface.Pair -> PairScreen(
                                     tvName = tvName,
                                     code = rendered.code,
-                                    qrPayload = pairing.qrPayload(boundHost ?: "", boundPort),
+                                    qrPayload = rendered.qrPayload,
                                     host = boundHost ?: "",
                                     port = boundPort,
                                     networkReady = boundHost != null && boundPort > 0,
@@ -888,6 +1031,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     rebindCount = rebindCount,
                                     lastTeardown = lastTeardown,
                                     codeExpiresAtElapsedMs = rendered.codeExpiresAtElapsedMs,
+                                    // Read from the live snapshot rather than the
+                                    // captured `rendered`, exactly as the Settings
+                                    // branch above reads its paired count: the seal
+                                    // has to show on the frame it lands.
+                                    pairingSealed = pairingSnapshot.surface is PairingSurface.Sealed,
+                                    // The physical-presence half of the ceiling.
+                                    // Nothing reachable over the LAN can call this;
+                                    // it takes a button press in the room.
+                                    onResumePairing = { pairing.resumePairing() },
                                     onRename = {
                                         val next = nextName(tvName, tvNamePresets)
                                         pairing.tvName = next
@@ -895,6 +1047,26 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                         if (boundPort > 0) {
                                             nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                                         }
+                                    },
+                                    // With nothing paired the router never reaches
+                                    // Idle, so this is the only route into Settings
+                                    // on a factory-fresh TV.
+                                    //
+                                    // The pairing surface comes down on the way in
+                                    // and goes back up on the way out. The latch is
+                                    // unconditional because every state that renders
+                                    // this screen is owed one back: an Open code, a
+                                    // Locked countdown that must resume showing
+                                    // itself, and the standby-with-no-phones case
+                                    // this screen exists to resolve. Which of them
+                                    // it is, is the manager's decision, not this
+                                    // lambda's — `requestOpen` republishes the
+                                    // lockout if one is still running, and refuses
+                                    // outright while the surface is sealed.
+                                    onOpenSettings = {
+                                        reopenPairingOnExit = true
+                                        pairing.closeSurface()
+                                        showSettings = true
                                     },
                                 )
 

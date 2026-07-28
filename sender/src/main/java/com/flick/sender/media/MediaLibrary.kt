@@ -32,7 +32,10 @@ object MediaLibrary {
 
     suspend fun query(context: Context): Read = withContext(Dispatchers.IO) {
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val hasBucket = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        // One gate for all three folder columns: they became public API for video in the
+        // same release, and the library's folder feature is absent below it rather than
+        // guessed at from a file path.
+        val hasFolders = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         val projection = buildList {
             add(MediaStore.Video.Media._ID)
             add(MediaStore.Video.Media.DISPLAY_NAME)
@@ -40,9 +43,10 @@ object MediaLibrary {
             add(MediaStore.Video.Media.SIZE)
             add(MediaStore.Video.Media.WIDTH)
             add(MediaStore.Video.Media.HEIGHT)
-            if (hasBucket) {
+            if (hasFolders) {
                 add(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
                 add(MediaStore.Video.Media.BUCKET_ID)
+                add(MediaStore.Video.Media.RELATIVE_PATH)
             }
         }.toTypedArray()
 
@@ -56,13 +60,18 @@ object MediaLibrary {
                 val sizeCol = c.getColumnIndex(MediaStore.Video.Media.SIZE)
                 val wCol = c.getColumnIndex(MediaStore.Video.Media.WIDTH)
                 val hCol = c.getColumnIndex(MediaStore.Video.Media.HEIGHT)
-                val bucketCol = if (hasBucket) {
+                val bucketCol = if (hasFolders) {
                     c.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
                 } else {
                     -1
                 }
-                val bucketIdCol = if (hasBucket) {
+                val bucketIdCol = if (hasFolders) {
                     c.getColumnIndex(MediaStore.Video.Media.BUCKET_ID)
+                } else {
+                    -1
+                }
+                val pathCol = if (hasFolders) {
+                    c.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
                 } else {
                     -1
                 }
@@ -82,6 +91,7 @@ object MediaLibrary {
                         height = pixelColumn(c, hCol),
                         bucket = if (bucketCol >= 0) c.getString(bucketCol) else null,
                         bucketId = bucketColumn(c, bucketIdCol),
+                        relativePath = if (pathCol >= 0) c.getString(pathCol) else null,
                     )
                 }
                 true

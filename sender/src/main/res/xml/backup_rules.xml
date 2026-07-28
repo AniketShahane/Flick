@@ -3,12 +3,22 @@
     <exclude domain="sharedpref" path="flick_pairings.xml" />
     <exclude domain="sharedpref" path="flick_subtitles_online.xml" />
     <!--
-      The library scope is a MediaStore bucket id — an opaque hash of a folder path on the
-      volume it was read from — so it identifies nothing on any other phone. Restored, it
-      resolves to a folder that is not there and the library opens on the card that says
-      so, which on a pre-Q device it can never stop saying: no row there carries a bucket
-      id at all. The appearance preference is deliberately NOT here: a light/dark choice is
-      about the person, not the device, and it should survive the move.
+      The library scope names a folder of THIS phone's storage. Since the chooser became a
+      tree it is written as a normalised RELATIVE_PATH — "Movies/Marvel" — with the older
+      MediaStore bucket id only ever read back, never written.
+
+      A path like that IS meaningful on another phone, and that is the reason to leave it
+      behind rather than an argument for carrying it. Restored, it does one of two things,
+      and the second is worse than the first: it matches nothing, and the library opens on
+      the card saying that folder is not there any more; or it matches a folder of the same
+      name holding entirely different films, and the library opens silently narrowed to a
+      scope its owner never chose on this device — with only a chip naming the folder to
+      say so. A legacy bucket id, being a hash of a path on the volume it was read from,
+      simply names nothing anywhere else. Neither form survives the move usefully.
+
+      The appearance preference is deliberately NOT here, for this reason reversed: a
+      light/dark choice is about the person rather than about one device's storage, and it
+      should survive the move.
     -->
     <exclude domain="sharedpref" path="flick_library.xml" />
 </full-backup-content>

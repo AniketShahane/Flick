@@ -8,7 +8,6 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -194,7 +193,16 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** Intent data is erased before composition has a chance to observe task state. */
+    /**
+     * Intent data is erased before composition has a chance to observe task state.
+     *
+     * This is the UNTRUSTED half of the pairing ingress and takes `PairLaunch.parse`,
+     * whose result type has nowhere to put a code: a v4 payload delivered as an Intent is
+     * demoted to a prefill and the user still types the digits off the TV. Only the
+     * in-app scanner may keep them, because only the camera proves the QR was in the
+     * room. A `flick://` filter cannot be autoVerify'd, so any installed app can claim
+     * the scheme, appear in the chooser, and fire a URI it composed itself.
+     */
     private fun acceptPairIntent(incoming: Intent?) {
         val raw = incoming?.data
         // Validate into an in-memory result FIRST: only the parsed value is carried
@@ -203,8 +211,9 @@ class MainActivity : ComponentActivity() {
         val sanitized = incoming?.let { Intent(it).apply { data = null } }
         if (incoming != null) incoming.data = null
         setIntent(sanitized)
-        // Scheme and host only. A v3 payload is not secret, but logging raw URIs is
-        // a habit that eventually leaks one.
+        // Scheme and host only, and now for a second reason: a v4 URI carries the TV's
+        // live pairing code in its query, so the raw URI is a secret even though the
+        // parse above has already dropped it.
         if (raw != null) FlickLog.i("pair", "launch intent scheme=${raw.scheme} host=${raw.host}")
         if (parsed != null) pairEvents.value = IncomingPairEvent(PairLaunchEventIds.next(), parsed)
     }
@@ -274,14 +283,16 @@ private fun FlickRoot(
         onOpenWifiSettings = {
             runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
         },
+        // The OS list, NOT ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS. That intent
+        // is the one-tap dialog, and it requires the REQUEST_IGNORE_BATTERY_-
+        // OPTIMIZATIONS permission, which Play grants only to alarms/timers, VoIP,
+        // companion-device pairing and task automation. This screen needs no
+        // permission and no Console declaration; it costs the user one extra tap to
+        // pick Flick out of the list. The resume observer above re-reads the real
+        // exemption state either way, so the advisory still clears on its own.
         onRequestBatteryExemption = {
             runCatching {
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        Uri.parse("package:${context.packageName}"),
-                    ),
-                )
+                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         },
     )

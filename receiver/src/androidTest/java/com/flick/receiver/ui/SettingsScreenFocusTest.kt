@@ -17,6 +17,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
@@ -25,6 +26,8 @@ import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.util.FlickLog
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -36,11 +39,12 @@ class SettingsScreenFocusTest {
 
     /**
      * Two phones, because "Forget all phones" is only offered at two or more: at
-     * one it duplicates that row's own Forget, and at none it is a destructive
-     * action with nothing to destroy. Every case below therefore mounts the same
-     * column shape — Device name, the paired heading, two phone rows, then the
-     * rows this file has always walked. One phone is undated, which is how a
-     * pairing written before the TV recorded dates renders.
+     * one it duplicates that phone's own Forget, and at none it is a destructive
+     * action with nothing to destroy. The per-phone rows themselves no longer sit
+     * in this column — they are a drill-in behind the Paired phones row — so the
+     * count reaches the column only through that row's summary and through the
+     * presence of Forget all. One phone is undated, which is how a pairing written
+     * before the TV recorded dates renders.
      */
     private val pairedPhones = listOf(
         PairedPhone(keyId = "test-key-a", label = "Pixel 9 Pro", pairedAtMs = 1_726_000_000_000L),
@@ -56,23 +60,26 @@ class SettingsScreenFocusTest {
         )
     }
 
-    private fun assertTitleInsideSafeArea() {
-        composeRule.onNodeWithText("Settings").assertIsDisplayed()
-        val titleBounds = composeRule.onNodeWithText("Settings").getUnclippedBoundsInRoot()
+    private fun assertTitleInsideSafeArea(title: String = "Settings") {
+        composeRule.onNodeWithText(title).assertIsDisplayed()
+        val titleBounds = composeRule.onNodeWithText(title).getUnclippedBoundsInRoot()
         val rootBounds = composeRule.onRoot().getUnclippedBoundsInRoot()
         val rootHeight = rootBounds.bottom - rootBounds.top
         val safeTop = rootBounds.top + rootHeight * 0.05f
         val safeBottom = rootBounds.bottom - rootHeight * 0.05f
         assertTrue(
-            "Settings title must remain inside the vertical 5% safe area; " +
+            "The pane title must remain inside the vertical 5% safe area; " +
                 "title=$titleBounds, root=$rootBounds",
             titleBounds.top >= safeTop && titleBounds.bottom <= safeBottom,
         )
     }
 
-    private fun assertViewportStartsBelowTitle() {
-        val titleBounds = composeRule.onNodeWithText("Settings").getUnclippedBoundsInRoot()
-        val viewportBounds = composeRule.onNodeWithTag("settings-scroll-viewport").getUnclippedBoundsInRoot()
+    private fun assertViewportStartsBelowTitle(
+        title: String = "Settings",
+        viewport: String = "settings-scroll-viewport",
+    ) {
+        val titleBounds = composeRule.onNodeWithText(title).getUnclippedBoundsInRoot()
+        val viewportBounds = composeRule.onNodeWithTag(viewport).getUnclippedBoundsInRoot()
         assertTrue(
             "The clipped scroll viewport must begin below the fixed title, so visible rows cannot paint into it; " +
                 "title=$titleBounds, viewport=$viewportBounds",
@@ -80,20 +87,31 @@ class SettingsScreenFocusTest {
         )
     }
 
-    private fun assertFocusedTargetIsRingSafe() {
-        val viewportBounds = composeRule.onNodeWithTag("settings-scroll-viewport").getUnclippedBoundsInRoot()
-        // Every paired-phone row carries one shared tag, so the focused node is
-        // resolved by index within its tag rather than by the tag alone.
+    /**
+     * Every tagged focus target on either pane. The paired-phone rows moved into
+     * the drill-in and took two keys each with them, so Rename and Forget are
+     * separate tags now — and the Paired phones row in the column became a focus
+     * target of its own when it became the way in.
+     */
+    private val focusableTags = listOf(
+        "settings-first-row",
+        "settings-paired-row",
+        "settings-phone-rename",
+        "settings-phone-forget",
+        "settings-paired-back-row",
+        "settings-metrics-row",
+        "settings-forget-row",
+        "settings-diagnostics-row",
+        "settings-clear-row",
+        "settings-done-row",
+    )
+
+    private fun assertFocusedTargetIsRingSafe(viewport: String = "settings-scroll-viewport") {
+        val viewportBounds = composeRule.onNodeWithTag(viewport).getUnclippedBoundsInRoot()
+        // Several controls share one tag, so the focused node is resolved by index
+        // within its tag rather than by the tag alone.
         var focused: SemanticsNodeInteraction? = null
-        for (tag in listOf(
-            "settings-first-row",
-            "settings-paired-phone-row",
-            "settings-metrics-row",
-            "settings-forget-row",
-            "settings-diagnostics-row",
-            "settings-clear-row",
-            "settings-done-row",
-        )) {
+        for (tag in focusableTags) {
             val nodes = composeRule.onAllNodesWithTag(tag)
             val index = nodes.fetchSemanticsNodes()
                 .indexOfFirst { it.config.getOrNull(SemanticsProperties.Focused) == true }
@@ -106,8 +124,8 @@ class SettingsScreenFocusTest {
         if (focused != null) {
             val focusedBounds = focused.getUnclippedBoundsInRoot()
             assertTrue(
-                "Focused settings rows need the shared ring reserve within the viewport; " +
-                    "row=$focusedBounds, viewport=$viewportBounds",
+                "Focused settings controls need the shared ring reserve within the viewport; " +
+                    "control=$focusedBounds, viewport=$viewportBounds",
                 focusedBounds.top >= viewportBounds.top + FlickDimens.FocusRingReserve &&
                     focusedBounds.bottom <= viewportBounds.bottom - FlickDimens.FocusRingReserve,
             )
@@ -190,8 +208,7 @@ class SettingsScreenFocusTest {
         assertFocusedTargetIsRingSafe()
 
         val rename = composeRule.onNodeWithText("Device name")
-        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
-        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -199,12 +216,9 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        firstPhone.assertIsFocused().assertIsDisplayed()
+        paired.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
-        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        secondPhone.assertIsFocused().assertIsDisplayed()
-        assertFocusedTargetIsRingSafe()
-        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        paired.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         assertMetricsPaintStaysInsideHorizontalSafeArea()
@@ -230,15 +244,162 @@ class SettingsScreenFocusTest {
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
-        secondPhone.assertIsFocused().assertIsDisplayed()
+        paired.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
-        secondPhone.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
-        firstPhone.assertIsFocused().assertIsDisplayed()
-        assertFocusedTargetIsRingSafe()
-        firstPhone.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        paired.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
         composeRule.onNodeWithText("Device name").assertIsFocused()
         assertFocusedTargetIsRingSafe()
         assertFocusedFirstRowPaintStaysInsideViewport()
+    }
+
+    /**
+     * The drill-in. The phone list is a pane of its own, so the column's D-pad path
+     * no longer grows with the number of paired phones, and the trip has to be
+     * reversible: Back lands on the row that opened it, not at the top of the
+     * column.
+     */
+    @Test
+    fun paired_phones_drill_in_walks_both_keys_and_returns_to_its_own_row() {
+        composeRule.setContent {
+            FlickTvTheme {
+                SettingsScreen(
+                    tvName = "Living Room TV",
+                    pairedSummary = "2 paired",
+                    pairedPhones = pairedPhones,
+                    metricsEnabled = false,
+                    onRename = {},
+                    onToggleMetrics = {},
+                    onForgetAll = {},
+                    onDone = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Device name").assertIsFocused()
+        composeRule.onNodeWithTag("settings-paired-row").performClick()
+
+        // The pane, with its own heading and its own viewport.
+        assertTitleInsideSafeArea(title = "Paired phones")
+        assertViewportStartsBelowTitle(title = "Paired phones", viewport = "settings-paired-viewport")
+        composeRule.onNodeWithText("Pixel 9 Pro").assertIsDisplayed()
+        composeRule.onNodeWithText("Galaxy S24").assertIsDisplayed()
+
+        val renameKeys = composeRule.onAllNodesWithTag("settings-phone-rename")
+        val forgetKeys = composeRule.onAllNodesWithTag("settings-phone-forget")
+        assertEquals(2, renameKeys.fetchSemanticsNodes().size)
+        assertEquals(2, forgetKeys.fetchSemanticsNodes().size)
+
+        // Entry is the first phone's Rename key; Forget is beside it, the next
+        // phone is below, and Back closes the run.
+        renameKeys[0].assertIsFocused()
+        assertFocusedTargetIsRingSafe(viewport = "settings-paired-viewport")
+        renameKeys[0].performKeyInput { keyDown(Key.DirectionRight); keyUp(Key.DirectionRight) }
+        forgetKeys[0].assertIsFocused()
+        assertFocusedTargetIsRingSafe(viewport = "settings-paired-viewport")
+        forgetKeys[0].performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        forgetKeys[1].assertIsFocused()
+        assertFocusedTargetIsRingSafe(viewport = "settings-paired-viewport")
+        forgetKeys[1].performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+
+        val back = composeRule.onNodeWithTag("settings-paired-back-row")
+        back.assertIsFocused()
+        assertFocusedTargetIsRingSafe(viewport = "settings-paired-viewport")
+        back.performClick()
+
+        assertTitleInsideSafeArea()
+        composeRule.onNodeWithTag("settings-paired-row").assertIsFocused()
+        assertFocusedTargetIsRingSafe()
+    }
+
+    /** Forget stays a two-press confirm, and one armed key must not arm its neighbour. */
+    @Test
+    fun a_single_forget_press_arms_only_its_own_phone() {
+        var forgotten: String? = null
+        composeRule.setContent {
+            FlickTvTheme {
+                SettingsScreen(
+                    tvName = "Living Room TV",
+                    pairedSummary = "2 paired",
+                    pairedPhones = pairedPhones,
+                    metricsEnabled = false,
+                    onRename = {},
+                    onToggleMetrics = {},
+                    onForgetAll = {},
+                    onDone = {},
+                    onForgetPhone = { keyId -> forgotten = keyId; true },
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("settings-paired-row").performClick()
+        val forgetKeys = composeRule.onAllNodesWithTag("settings-phone-forget")
+
+        forgetKeys[0].performClick()
+        composeRule.runOnIdle { assertNull(forgotten) }
+        // The armed phone says so; the other keeps its own summary.
+        composeRule.onNodeWithText("Press again to forget").assertIsDisplayed()
+        composeRule.onNodeWithText("Paired before this TV recorded dates").assertIsDisplayed()
+
+        forgetKeys[0].performClick()
+        composeRule.runOnIdle { assertEquals("test-key-a", forgotten) }
+    }
+
+    /** The Rename key reports the phone it belongs to and nothing else. */
+    @Test
+    fun rename_reports_the_phone_whose_key_was_pressed() {
+        val renamed = mutableListOf<String>()
+        composeRule.setContent {
+            FlickTvTheme {
+                SettingsScreen(
+                    tvName = "Living Room TV",
+                    pairedSummary = "2 paired",
+                    pairedPhones = pairedPhones,
+                    metricsEnabled = false,
+                    onRename = {},
+                    onToggleMetrics = {},
+                    onForgetAll = {},
+                    onDone = {},
+                    onRenamePhone = { keyId -> renamed += keyId },
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("settings-paired-row").performClick()
+        val renameKeys = composeRule.onAllNodesWithTag("settings-phone-rename")
+        renameKeys[1].performClick()
+        composeRule.runOnIdle { assertEquals(listOf("test-key-b"), renamed) }
+        renameKeys[0].performClick()
+        composeRule.runOnIdle { assertEquals(listOf("test-key-b", "test-key-a"), renamed) }
+    }
+
+    /**
+     * No phones is a real state now that Settings is reachable from the pair
+     * screen. The heading is then the whole answer, there is nothing to drill into
+     * and no Forget all — so the next stop below Device name is metrics.
+     */
+    @Test
+    fun with_no_phones_the_paired_row_is_not_a_focus_target() {
+        composeRule.setContent {
+            FlickTvTheme {
+                SettingsScreen(
+                    tvName = "Living Room TV",
+                    pairedSummary = "None yet",
+                    pairedPhones = emptyList(),
+                    metricsEnabled = false,
+                    onRename = {},
+                    onToggleMetrics = {},
+                    onForgetAll = {},
+                    onDone = {},
+                )
+            }
+        }
+
+        val rename = composeRule.onNodeWithText("Device name")
+        rename.assertIsFocused()
+        composeRule.onNodeWithText("None yet").assertIsDisplayed()
+        rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        composeRule.onNodeWithText("Playback metrics overlay").assertIsFocused()
+        assertFocusedTargetIsRingSafe()
     }
 
     private fun setExpandedDiagnosticsContent(fontScale: Float) {
@@ -265,8 +426,7 @@ class SettingsScreenFocusTest {
 
     private fun runExpandedDiagnosticsTraversal() {
         val rename = composeRule.onNodeWithText("Device name")
-        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
-        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -275,12 +435,9 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        firstPhone.assertIsFocused().assertIsDisplayed()
+        paired.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
-        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        secondPhone.assertIsFocused().assertIsDisplayed()
-        assertFocusedTargetIsRingSafe()
-        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        paired.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
@@ -341,8 +498,7 @@ class SettingsScreenFocusTest {
         }
 
         val rename = composeRule.onNodeWithText("Device name")
-        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
-        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -351,12 +507,9 @@ class SettingsScreenFocusTest {
         rename.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        firstPhone.assertIsFocused().assertIsDisplayed()
+        paired.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
-        firstPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
-        secondPhone.assertIsFocused().assertIsDisplayed()
-        assertFocusedTargetIsRingSafe()
-        secondPhone.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        paired.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
         metrics.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
         metrics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
@@ -420,8 +573,7 @@ class SettingsScreenFocusTest {
         }
 
         val rename = composeRule.onNodeWithText("Device name")
-        val firstPhone = composeRule.onNodeWithText("Pixel 9 Pro")
-        val secondPhone = composeRule.onNodeWithText("Galaxy S24")
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
         val metrics = composeRule.onNodeWithText("Playback metrics overlay")
         val forgetAll = composeRule.onNodeWithText("Forget all phones")
         val diagnostics = composeRule.onNodeWithText("Diagnostics")
@@ -433,15 +585,9 @@ class SettingsScreenFocusTest {
             keyDown(Key.DirectionDown)
             keyUp(Key.DirectionDown)
         }
-        firstPhone.assertIsFocused().assertIsDisplayed()
+        paired.assertIsFocused().assertIsDisplayed()
         assertFocusedTargetIsRingSafe()
-        firstPhone.performKeyInput {
-            keyDown(Key.DirectionDown)
-            keyUp(Key.DirectionDown)
-        }
-        secondPhone.assertIsFocused().assertIsDisplayed()
-        assertFocusedTargetIsRingSafe()
-        secondPhone.performKeyInput {
+        paired.performKeyInput {
             keyDown(Key.DirectionDown)
             keyUp(Key.DirectionDown)
         }

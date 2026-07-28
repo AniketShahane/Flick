@@ -77,10 +77,10 @@ private fun MacrobenchmarkScope.walkIdleAndPairScreen() {
         KeyEvent.KEYCODE_DPAD_UP,
         KeyEvent.KEYCODE_DPAD_LEFT,
     )
-    // The enlarged pairing code is a separate full-screen composition.
-    if (activateLabelled("Show code bigger")) {
-        pressKeys(KeyEvent.KEYCODE_BACK)
-    }
+    // "Show code bigger" and the full-screen composition behind it are gone; the pair
+    // screen's action row is [Rename TV] [Settings], and the D-pad walk above covers it.
+    // Settings is reached from here as well as from Idle, and it is the same surface, so
+    // it is driven once from [openSettings] rather than twice.
 }
 
 private fun MacrobenchmarkScope.openSettings() {
@@ -90,8 +90,19 @@ private fun MacrobenchmarkScope.openSettings() {
         KeyEvent.KEYCODE_DPAD_DOWN,
         KeyEvent.KEYCODE_DPAD_DOWN,
         KeyEvent.KEYCODE_DPAD_UP,
-        KeyEvent.KEYCODE_BACK,
     )
+    // The paired-phones drill-in is its own pane behind an AnimatedContent, with its own
+    // focus-beacon host and its own row composables — none of which the Settings column
+    // itself compiles. It exists only once a phone is paired, so the generator may find
+    // no such row at all; that is why this is a labelled activation and not a key count.
+    if (activateLabelled("Manage")) {
+        pressKeys(
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_BACK,
+        )
+    }
+    pressKeys(KeyEvent.KEYCODE_BACK)
 }
 
 /** Center shows/hides the transport chrome; down opens it from the bare surface. */

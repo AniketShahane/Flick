@@ -2,14 +2,25 @@
 <!--
   The Flick mark from ui/components/FlickMark.kt, re-centred for the adaptive
   icon. On its own 64-unit grid the mark is not centred: including the 4.5-unit
-  stroke overhang its visual box is x 4..60.5, y 10.5..53.5. Every coordinate
-  below is that grid scaled 1.1x and shifted so the box centres on (54,54), which
-  keeps the farthest point 31.2 from centre — inside the 66dp safe circle.
+  stroke overhang its visual box is x 4..60.5, y 10.5..53.5. Every path
+  coordinate below is that grid scaled 1.1x and shifted so the box centres on
+  (54,54).
 
-  That farthest point is the middle bar's left cap (28.4 + 2.75), just ahead of
-  the triangle's tip at 26.1 + 4.95 = 31.1. Both clear the r=36 background disc
-  by ~4.8, which is all the canvas the mark leaves at its tightest: anything
-  scaled up from here starts landing on transparency.
+  1.1 was too large. It put the farthest point 31.16 out — 87% of the old r=36
+  disc's radius — and the mark crowded the edge. The group brings it to the
+  proportion :receiver carries: 0.90625 (the TV mark's grid scale) x 33/36 (the
+  disc's radius, old to new) = 0.8307292 of the grid, which the baked-in 1.1
+  reaches at 0.8307292 / 1.1 = 0.7552083. The scale is about (54,54), so the
+  translate is 54 x (1 - 0.7552083) = 13.21875 on both axes.
+
+  It is a rescale, not a redraw: stroke widths and round caps ride the group
+  matrix along with the coordinates, so the bars stay exact stadiums and every
+  internal ratio — bar to triangle, gap to stroke, tip to cap — is untouched.
+
+  Farthest point from centre after the group: the middle bar's left cap, centre
+  21.456 out plus its 2.077 scaled cap radius = 23.53. The triangle's tip is next
+  at 19.730 + 3.738 = 23.47. Both clear the r=33 disc by ~9.5, so nothing here
+  lands on transparency.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -17,40 +28,48 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!--
-      The speed bars are 5.5 tall with a 2.75 corner radius, i.e. exact stadiums,
-      so each one is its own centreline stroked with a round cap rather than a
-      rounded-rect outline.
-    -->
-    <path
-        android:pathData="M31.175,46.3 L39.975,46.3"
-        android:strokeColor="@color/ic_launcher_spark"
-        android:strokeAlpha="0.45"
-        android:strokeWidth="5.5"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M25.675,56.2 L32.275,56.2"
-        android:strokeColor="@color/ic_launcher_spark"
-        android:strokeAlpha="0.75"
-        android:strokeWidth="5.5"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M31.175,66.1 L39.975,66.1"
-        android:strokeColor="@color/ic_launcher_spark"
-        android:strokeAlpha="0.45"
-        android:strokeWidth="5.5"
-        android:strokeLineCap="round" />
+    <group
+        android:scaleX="0.7552083"
+        android:scaleY="0.7552083"
+        android:translateX="13.21875"
+        android:translateY="13.21875">
 
-    <!--
-      Fill plus a matching round-join stroke, as in FlickMark: the stroke rides
-      half its width outside the path and is what rounds the silhouette. Drop it
-      and the triangle reads sharp and thin next to the in-app mark.
-    -->
-    <path
-        android:pathData="M49.325,35.3 L80.125,54 L49.325,72.7 Z"
-        android:fillColor="@color/ic_launcher_mark"
-        android:strokeColor="@color/ic_launcher_mark"
-        android:strokeWidth="9.9"
-        android:strokeLineJoin="round" />
+        <!--
+          The speed bars are 5.5 tall with a 2.75 corner radius, i.e. exact
+          stadiums, so each one is its own centreline stroked with a round cap
+          rather than a rounded-rect outline.
+        -->
+        <path
+            android:pathData="M31.175,46.3 L39.975,46.3"
+            android:strokeColor="@color/ic_launcher_spark"
+            android:strokeAlpha="0.45"
+            android:strokeWidth="5.5"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M25.675,56.2 L32.275,56.2"
+            android:strokeColor="@color/ic_launcher_spark"
+            android:strokeAlpha="0.75"
+            android:strokeWidth="5.5"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M31.175,66.1 L39.975,66.1"
+            android:strokeColor="@color/ic_launcher_spark"
+            android:strokeAlpha="0.45"
+            android:strokeWidth="5.5"
+            android:strokeLineCap="round" />
 
+        <!--
+          Fill plus a matching round-join stroke, as in FlickMark: the stroke
+          rides half its width outside the path and is what rounds the
+          silhouette. Drop it and the triangle reads sharp and thin next to the
+          in-app mark.
+        -->
+        <path
+            android:pathData="M49.325,35.3 L80.125,54 L49.325,72.7 Z"
+            android:fillColor="@color/ic_launcher_mark"
+            android:strokeColor="@color/ic_launcher_mark"
+            android:strokeWidth="9.9"
+            android:strokeLineJoin="round" />
+
+    </group>
 </vector>

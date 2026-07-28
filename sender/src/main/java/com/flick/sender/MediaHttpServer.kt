@@ -17,7 +17,6 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.applicationEnvironment
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
@@ -48,7 +47,10 @@ import kotlin.coroutines.cancellation.CancellationException
  *   GET/HEAD /s/{token} — the sideloaded subtitle file, whole-file 200 only, under
  *                         its OWN token and a hard size cap. Same Host pin, same
  *                         constant-time compare, same identical 404.
- *   GET      /ping      — 200 "ok" health check (unauthenticated: exposes no bytes).
+ *
+ * Those are the ONLY routes. There is deliberately no unauthenticated health check:
+ * a route that answers before the Host pin and the token is a "Flick is serving here"
+ * oracle reachable by DNS rebinding, and nothing in either module ever called one.
  *
  * The whole point of the spike is zero-stall direct play: we NEVER copy the file
  * into cache and NEVER transcode — we seek the fd and copy exactly the requested
@@ -195,7 +197,6 @@ class MediaHttpServer(context: Context) {
 
     private fun Application.configureRouting() {
         routing {
-            get("/ping") { call.respondText("ok", status = HttpStatusCode.OK) }
             // Serve GET and HEAD from the same handler; handleVideo() branches on
             // the request method to emit a body (GET) or headers only (HEAD).
             // pathParameters (not the query-merged parameters) so a "?token=" query
@@ -217,10 +218,7 @@ class MediaHttpServer(context: Context) {
 
         // Same anti-DNS-rebinding pin as the video route: the real TV addresses us by
         // the bound LAN IP literal, so anything carrying a DNS name is rejected.
-        val boundIp = boundHost
-        if (boundIp == null ||
-            !call.request.host().trim().equals(boundIp, ignoreCase = true)
-        ) {
+        if (!hostPinned(call)) {
             FlickLog.w("http", "reject reason=host_pin status=403")
             call.respondText("Forbidden", status = HttpStatusCode.Forbidden)
             return
@@ -314,12 +312,8 @@ class MediaHttpServer(context: Context) {
         TransferTelemetry.markRequest()
 
         // Anti-DNS-rebinding: the real TV addresses us by the bound LAN IP literal,
-        // so its Host is "<ip>:8080" and host() == <ip>. A rebinding page carries a
-        // DNS name instead. Reject anything that doesn't pin to the bound IP.
-        val boundIp = boundHost
-        if (boundIp == null ||
-            !call.request.host().trim().equals(boundIp, ignoreCase = true)
-        ) {
+        // so its Host is "<ip>:8080". A rebinding page carries a DNS name instead.
+        if (!hostPinned(call)) {
             FlickLog.w("http", "reject reason=host_pin status=403")
             call.respondText("Forbidden", status = HttpStatusCode.Forbidden)
             return
@@ -422,6 +416,24 @@ class MediaHttpServer(context: Context) {
         } finally {
             transferPermits.release()
         }
+    }
+
+    /**
+     * The anti-DNS-rebinding Host pin, in exactly the shape `ControlServer` uses:
+     * **one** Host header carrying the bound LAN IP literal and this port.
+     *
+     * The count is half the check. `ApplicationRequest.host()` collapses a request
+     * that carries two Host headers down to whichever one the parser kept, so a
+     * duplicated Host would be judged on one value while anything ahead of the
+     * socket routed on the other. Reading them all and demanding a single-element
+     * list removes that disagreement instead of picking a side of it.
+     *
+     * A rebinding page always carries a DNS name here; the TV always carries the
+     * literal it was given in the cast URL.
+     */
+    private fun hostPinned(call: ApplicationCall): Boolean {
+        val boundIp = boundHost ?: return false
+        return call.request.headers.getAll(HttpHeaders.Host) == listOf("$boundIp:$SERVER_PORT")
     }
 
     // --- Byte streaming -----------------------------------------------------
