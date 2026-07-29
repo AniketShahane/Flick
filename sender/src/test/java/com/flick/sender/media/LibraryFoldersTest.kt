@@ -307,4 +307,112 @@ class LibraryFoldersTest {
         assertEquals(emptyList<Long>(), ids(LibraryScope.All, emptyList()))
         assertFalse(LibraryFolders.chooserOffered(emptyList(), LibraryScope.All, 0))
     }
+
+    // --- the collapsing tree ---
+
+    private fun shown(expanded: Set<String>, chosen: LibraryFolderId? = null) =
+        LibraryFolders.rows(folders(), expanded, chosen).filter { it.visible }.map { it.folder.id }
+
+    @Test fun everyProperAncestorIsListedOutermostFirstAndARootHasNone() {
+        assertEquals(listOf("Movies", "Movies/Marvel"), LibraryFolders.ancestorsOf("Movies/Marvel/Phase 4"))
+        assertEquals(listOf("Movies"), LibraryFolders.ancestorsOf("Movies/Marvel"))
+        assertEquals(emptyList<String>(), LibraryFolders.ancestorsOf("Movies"))
+    }
+
+    // Closed, the sheet is the choice the user actually has: two top-level folders.
+    @Test fun aClosedTreeShowsOnlyItsRoots() {
+        assertEquals(listOf("DCIM", "Movies"), shown(emptySet()))
+    }
+
+    @Test fun openingAFolderRevealsItsChildrenAndNothingDeeper() {
+        assertEquals(listOf("DCIM", "Movies", "Movies/Marvel"), shown(setOf("Movies")))
+        assertEquals(
+            listOf("DCIM", "Movies", "Movies/Marvel", "Movies/Marvel/Phase 4"),
+            shown(setOf("Movies", "Movies/Marvel")),
+        )
+    }
+
+    // The one that a per-row "is my parent open" test would get wrong: Marvel is open, so
+    // Phase 4's own parent is open — but Movies above it is not, and the whole branch has
+    // to go with it. Reopening Movies then restores Marvel's open state rather than
+    // starting it flat, which is why a closed branch is not pruned from the set.
+    @Test fun closingAFolderTakesItsWholeSubtreeHoweverDeepAndRestoresItOnReopening() {
+        val remembered = setOf("Movies/Marvel")
+        assertEquals(listOf("DCIM", "Movies"), shown(remembered))
+        assertEquals(
+            listOf("DCIM", "Movies", "Movies/Marvel", "Movies/Marvel/Phase 4"),
+            shown(remembered + "Movies"),
+        )
+    }
+
+    @Test fun onlyAFolderThatHoldsFoldersIsExpandable() {
+        val expandable = LibraryFolders.rows(folders(), emptySet(), null)
+            .filter { it.expandable }
+            .map { it.folder.id }
+        assertEquals(listOf("DCIM", "Movies", "Movies/Marvel"), expandable)
+    }
+
+    // A closed branch must not be the place the current scope goes to hide, so every
+    // ancestor of the choice is marked — and the chosen row itself is not, because it
+    // carries the tick instead.
+    @Test fun theAncestorsOfTheChoiceAreMarkedAndTheChoiceItselfIsNot() {
+        val marked = LibraryFolders
+            .rows(folders(), emptySet(), LibraryFolderId.Path("Movies/Marvel/Phase 4"))
+            .filter { it.holdsChoice }
+            .map { it.folder.id }
+        assertEquals(listOf("Movies", "Movies/Marvel"), marked)
+    }
+
+    // Separator-aware here too: a choice in "Movies HD" must not mark "Movies".
+    @Test fun aSiblingSharingAPrefixIsNotAnAncestorOfTheChoice() {
+        val rows = LibraryFolders.derive(
+            listOf(Row(1L, "Movies/", 1L), Row(2L, "Movies HD/Set/", 2L)),
+            Row::path,
+            Row::bucketId,
+        )
+        val marked = LibraryFolders.rows(rows, emptySet(), LibraryFolderId.Path("Movies HD/Set"))
+            .filter { it.holdsChoice }
+            .map { it.folder.id }
+        assertEquals(listOf("Movies HD"), marked)
+    }
+
+    // Two roots ARE the choice, so they open closed. The ancestors of a stored choice open
+    // with them, or the sheet would raise with its own tick out of sight.
+    @Test fun aTreeWithSeveralRootsOpensClosedExceptAlongTheChoice() {
+        assertEquals(emptySet<String>(), LibraryFolders.initialExpansion(folders(), LibraryScope.All))
+        assertEquals(
+            setOf("Movies", "Movies/Marvel"),
+            LibraryFolders.initialExpansion(folders(), at("Movies/Marvel/Phase 4")),
+        )
+    }
+
+    // A lone root is not a choice, it is the library under another name — collapsing it
+    // would open the sheet on one row holding every decision it exists to offer.
+    @Test fun aLoneRootOpensSoTheSheetIsNeverASingleRow() {
+        val oneRoot = LibraryFolders.derive(
+            listOf(Row(1L, "Movies/", 1L), Row(2L, "Movies/Marvel/", 2L)),
+            Row::path,
+            Row::bucketId,
+        )
+        assertEquals(setOf("Movies"), LibraryFolders.initialExpansion(oneRoot, LibraryScope.All))
+    }
+
+    // A bucket-keyed choice cannot name its own ancestors, and inventing them would open
+    // branches on a guess. It resolves to a path on the first library that can say which
+    // folder it is, and that one opens normally.
+    @Test fun anUnresolvedBucketChoiceOpensNothingOfItsOwn() {
+        val byBucket = LibraryScope.Folder(LibraryFolderId.Bucket(phase4), "Phase 4")
+        assertEquals(emptySet<String>(), LibraryFolders.initialExpansion(folders(), byBucket))
+        assertTrue(LibraryFolders.rows(folders(), emptySet(), LibraryFolderId.Bucket(phase4)).none { it.holdsChoice })
+    }
+
+    // Held across a library reload, so a set may name a folder the reload dropped. It has
+    // to be inert rather than an error, and it must not take a live folder with it.
+    @Test fun anExpandedIdThatIsNoLongerInTheTreeSimplyNeverMatches() {
+        assertEquals(listOf("DCIM", "Movies", "Movies/Marvel"), shown(setOf("Movies", "Gone", "Gone/Deeper")))
+    }
+
+    @Test fun everyFolderHasARowWhetherOrNotItIsOnScreen() {
+        assertEquals(folders().map { it.id }, LibraryFolders.rows(folders(), emptySet(), null).map { it.folder.id })
+    }
 }

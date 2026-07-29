@@ -115,6 +115,42 @@ val CinemaInk = Color(0xFFEAF0FF)
 val CinemaInkDim = Color(0xFFA8B8DC)
 val CinemaInkFaint = Color(0xFF8C9CC4)
 
+// Dark-mode surfaces, which are NOT the cinematic ones. The stops above are a backdrop:
+// they are the bottom of a navy gradient a poster is laid on, and they are that saturated
+// and that dark because a still has to be the brightest thing in the frame. A settings
+// list is not a poster, and reusing them app-wide gave dark mode two faults light mode
+// does not have. Both are visible in the numbers.
+//
+// Elevation ran BACKWARDS: the sheet stop is darker than the surface stop it is raised
+// over (1.017:1, inverted), and the canvas-to-sheet step was 1.051:1 against light mode's
+// 1.082:1 — on a canvas where a dark drop shadow renders nothing at all, so a card had
+// neither a tonal step nor a shadow to separate it. These step 1.141:1 the right way,
+// wider than light because they have to carry the separation alone.
+//
+// And the hue ran hot: the cinematic stops sit at ~80% chroma relative to their own
+// brightness, where the light canvas sits at 5% — light mode is a near-neutral with a
+// breath of brand in it, and dark mode was drowning in the brand. These hold one hue
+// (225°) at half that chroma, so dark reads as the same product rather than a navy one.
+val NightCanvas = Color(0xFF0C0F18)
+val NightRaised = Color(0xFF171D2E)
+val NightRaisedAlt = Color(0xFF212A3C)
+val NightDisabled = Color(0xFF191F2B)
+val NightInk = Color(0xFFE4EAF6)
+val NightInkDim = Color(0xFFA5B0C6)
+val NightInkFaint = Color(0xFF909BB2)
+
+// The action blue for the dark set, lighter than the cinematic one. #4A78FF holds 4.33:1
+// on the sheet stop and 3.45:1 on a filled card, which is under the floor for the label
+// of a text button; this holds 4.64:1 on the worst surface the set paints, and the
+// near-black ink it carries when it is a fill holds 6.6:1 on it.
+val PrimaryOnNight = Color(0xFF6E93FF)
+val OnPrimaryOnNight = Color(0xFF0A1020)
+
+// Deep enough to read as a tinted CONTROL rather than as one more dark box: 1.348:1 above
+// the sheet it sits on, which is the step light mode's #DCE5FF has over white (1.258:1).
+val PrimaryContainerOnNight = Color(0xFF1D306B)
+val OnPrimaryContainerOnNight = Color(0xFFC7D6FF)
+
 // Drop shadows are authored as colors because Compose takes them as ambient/spot
 // tints rather than as a CSS shadow list.
 val PrimaryShadow = Color(0x521240E8)
@@ -122,6 +158,15 @@ val FabShadow = Color(0x6BF5A100)
 val TileShadow = Color(0x2E0A1533)
 val NavShadow = Color(0x260A1533)
 val PosterShadow = Color(0x99000000)
+
+/**
+ * The floating nav pill's shadow on the dark set. A tinted ink shadow is a way of making
+ * a pale canvas darker, and there is nothing darker than a near-black canvas to make it —
+ * [NavShadow] renders as nothing there, which is what left the pill sitting flat on the
+ * page. Black at 55% still darkens this canvas, so the one piece of chrome that has to
+ * float is the one thing given a real shadow in dark.
+ */
+val NavShadowOnNight = Color(0x8C000000)
 
 val LightFlickColors = FlickColors(
     isLight = true,
@@ -225,9 +270,82 @@ val CinematicFlickColors = FlickColors(
 
 /**
  * A dark resolution — chosen outright in Settings, or inherited from the platform while
- * the preference is Match system — lands on the same cinematic set the remote always uses.
+ * the preference is Match system.
+ *
+ * A set of its own, and NOT the cinematic one it used to be an alias for. The two answer
+ * different questions: the cinematic set is what a poster is laid on and is tuned to be
+ * the darkest, most saturated thing on the screen, and this is what a library grid, a
+ * settings list and a folder chooser are laid on. Aliasing them meant every card in the
+ * app was drawn in a palette designed to disappear behind artwork — see the stops above
+ * for the two measurements that made that concrete.
+ *
+ * Nothing here is shared BY REFERENCE with the cinematic set beyond the brand accents,
+ * which are the same colours in both because they are the brand: amber for the media,
+ * cyan for the LAN, and the caution/trouble pair. The surfaces, the ink and the action
+ * blue are this set's own, so tuning one theme can never move the other.
  */
-val DarkFlickColors = CinematicFlickColors
+val DarkFlickColors = FlickColors(
+    isLight = false,
+    canvas = NightCanvas,
+    // One value for both, as in the light set: the canvas IS the surface, and every step
+    // above it is an explicit raise. A separate, slightly different base was the thing
+    // that let the sheet stop end up below it.
+    surface = NightCanvas,
+    surfaceRaised = NightRaised,
+    surfaceRaisedAlt = NightRaisedAlt,
+    surfaceTonal = PrimaryContainerOnNight,
+    surfaceDisabled = NightDisabled,
+    inverseSurface = NightInk,
+    onInverseSurface = NightCanvas,
+    onInverseSurfaceDim = InkDim,
+    // Lighter than every surface of the set, because the pill and the dock float over all
+    // of them; the border comes down with it, since a hairline sized for a near-black
+    // glass rings against one this pale.
+    glass = Color(0xF02A3346),
+    glassBorder = Color(0x2EFFFFFF),
+    onSurface = NightInk,
+    onSurfaceDim = NightInkDim,
+    onSurfaceFaint = NightInkFaint,
+    // Softened with the surfaces they are drawn on: the old pair sat at 24% and 26% white
+    // over a near-black canvas, which is a hairline brighter than the card it borders.
+    outline = Color(0x33DCE6FF),
+    outlineSoft = Color(0x3DE8EEFF),
+    // 10%, matching the light set's own hairline rather than the cinematic 8%: it is
+    // drawn on the raised surfaces, which are no longer nearly black.
+    outlineHairline = Color(0x1AFFFFFF),
+    primary = PrimaryOnNight,
+    onPrimary = OnPrimaryOnNight,
+    // The light set's pale-blue telemetry ink would drop under 3:1 on this lighter
+    // primary, so the muted role stays the dark ink and only loses weight.
+    onPrimaryMuted = Color(0xCC0A1020),
+    primaryContainer = PrimaryContainerOnNight,
+    onPrimaryContainer = OnPrimaryContainerOnNight,
+    primaryFixed = Primary,
+    onPrimaryFixed = Color(0xFFFFFFFF),
+    spark = Spark,
+    onSpark = OnSpark,
+    sparkBright = SparkBright,
+    sparkLight = SparkLight,
+    sparkPale = SparkPale,
+    playheadHi = PlayheadHi,
+    playheadLo = PlayheadLo,
+    link = Link,
+    live = Link,
+    caution = Caution,
+    onCaution = OnCaution,
+    trouble = TroubleOnDark,
+    ghost = Ghost,
+    fillCard = Color(0x14FFFFFF),
+    fillControl = Color(0x1CFFFFFF),
+    fillTrack = Color(0x26FFFFFF),
+    fillTrackAlt = Color(0x29FFFFFF),
+    fillBuffered = Color(0x42FFFFFF),
+    // Heavier than the light set's 50%. A pale canvas under a sheet is dimmed until it
+    // reads as behind; a canvas that is already near-black has to be taken almost to
+    // nothing before the sheet raised over it looks raised rather than adjacent.
+    scrim = Color(0xA6060911),
+    posterScrim = Color(0x9E000000),
+)
 
 object FlickGradients {
     /** 120° HDR/Dolby-Vision badge sheen. */
@@ -262,13 +380,29 @@ object FlickGradients {
         1f to Color(0x9E000000),
     )
 
-    /** 168° sheen laid over the nav-bar glass fill. */
+    /** 168° sheen laid over the nav-bar glass fill on a light surface. */
     val navSheen: Brush = angledGradient(
         168f,
         0f to Color(0x99FFFFFF),
         0.44f to Color(0x14FFFFFF),
         0.62f to Color(0x00FFFFFF),
         1f to Color(0x2996B4FF),
+    )
+
+    /**
+     * The same sheen for a dark glass, at a fraction of the weight.
+     *
+     * 60% white is a gloss on a pale blue fill and a blown highlight on a dark one — the
+     * pill's top edge came out nearly white while everything around it was near-black,
+     * which is the brightest contrast on the screen landing on a decoration. Glass is lit
+     * by what is behind it, and behind this one there is almost nothing.
+     */
+    val navSheenDark: Brush = angledGradient(
+        168f,
+        0f to Color(0x2EFFFFFF),
+        0.44f to Color(0x0AFFFFFF),
+        0.62f to Color(0x00FFFFFF),
+        1f to Color(0x1F96B4FF),
     )
 
     /** The amber pill that runs along the connecting hairline. */

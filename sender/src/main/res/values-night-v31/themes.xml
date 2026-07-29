@@ -7,10 +7,12 @@
       intersection: the night style repeated verbatim plus the two splash
       attributes, so the cold-start frame shows the Flick mark on both palettes.
 
-      The splash background is the cinematic canvas rather than
+      The splash background is the dark canvas rather than
       @color/ic_launcher_background: the pale launcher plate would flash white
       before a near-black app, which is the same reason values-night overrides
-      windowBackground at all.
+      windowBackground at all. It is DarkFlickColors.canvas written out by hand,
+      because a resource the system reads before this process exists cannot be
+      derived from a Kotlin value — the two are kept in step by ThemePlateTest.
 
       Which bucket the system reads this out of is the app's own night mode from API 31,
       because MainActivity sets one through UiModeManager — the splash attributes are
@@ -19,11 +21,11 @@
       choice is made.
     -->
     <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#050C1D</item>
+        <item name="android:windowBackground">#0C0F18</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowSplashScreenBackground">#050C1D</item>
+        <item name="android:windowSplashScreenBackground">#0C0F18</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
     </style>
 </resources>

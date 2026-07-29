@@ -144,6 +144,7 @@ import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
@@ -265,14 +266,30 @@ fun LibraryScreen(
     val pullState = rememberPullToRefreshState()
     LaunchedEffect(pulled) {
         if (!pulled) return@LaunchedEffect
-        // The pull owns the indicator until the read it asked for is over, and
-        // `libraryLoading` IS that read: a timer would put the indicator down while
-        // MediaStore was still walking a large gallery, and would raise it again for the
-        // next one. The window bounds only the wait for that read to START — a refresh
-        // with no access to run under raises nothing, and must not leave the indicator up
-        // for ever waiting for it.
-        withTimeoutOrNull(RefreshStartWindowMs) { controller.libraryLoading.first { it } }
-        controller.libraryLoading.first { !it }
+        coroutineScope {
+            // The floor and the read run TOGETHER and the indicator goes down when the
+            // later of the two is done, so a long read is never cut short and a short one
+            // is never a flash. Started first, so it is counted from the release rather
+            // than from whenever the read happened to finish.
+            //
+            // A warm MediaStore answers a re-query in a frame or two. The indicator was
+            // therefore appearing and being taken away inside the same handful of frames —
+            // long enough to be a flicker at the top of the grid, nowhere near long enough
+            // to read as a loader, so a pull that worked perfectly looked like a pull that
+            // had not registered. The floor is a claim about legibility, not about the
+            // read: it is roughly one beat of the indicator's own shape morph, which is the
+            // shortest showing that resolves as an animation rather than a blink.
+            val floor = launch { delay(RefreshFloorMs) }
+            // The pull owns the indicator until the read it asked for is over, and
+            // `libraryLoading` IS that read: a timer would put the indicator down while
+            // MediaStore was still walking a large gallery, and would raise it again for
+            // the next one. The window bounds only the wait for that read to START — a
+            // refresh with no access to run under raises nothing, and must not leave the
+            // indicator up for ever waiting for it.
+            withTimeoutOrNull(RefreshStartWindowMs) { controller.libraryLoading.first { it } }
+            controller.libraryLoading.first { !it }
+            floor.join()
+        }
         pulled = false
     }
 
@@ -1514,6 +1531,11 @@ private const val WifiLinkRecheckMs = 2_000L
 // raised on the calling thread, so this is only ever spent on a read that never ran or
 // one that was over before the effect could look; it is not what ends a refresh.
 private const val RefreshStartWindowMs = 500L
+
+// The shortest a released pull keeps the indicator up, whatever the read does. Long
+// enough for the shape morph to turn once, so the answer to "did that work" is a loader
+// that ran rather than something that flickered at the top of the grid.
+private const val RefreshFloorMs = 700L
 
 // The resting silhouette the reduce-motion indicator shows instead of the morph, sized
 // to the shape the morphing one settles at.

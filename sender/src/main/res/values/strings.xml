@@ -105,6 +105,9 @@
     <string name="library_folder_sheet_body">Flick lists only the folder you pick here. Casting, subtitles and the TV are unaffected.</string>
     <string name="library_folder_all_summary">Every video this phone has shared with Flick</string>
     <string name="library_folder_count">%1$d</string>
+    <string name="library_folder_expand">Show the folders inside %1$s</string>
+    <string name="library_folder_collapse">Hide the folders inside %1$s</string>
+    <string name="library_folder_a11y_holds_choice">Holds the folder you\'re showing</string>
     <!-- The chosen folder is gone: the card names it and offers the only repair, rather
          than silently widening the library back to everything. -->
     <string name="library_folder_missing_title">%1$s isn\'t there any more</string>

@@ -29,6 +29,27 @@ data class LibraryFolder(
 )
 
 /**
+ * One line of the chooser as it currently stands.
+ *
+ * [visible] is whether the line is on screen — false while any folder above it is closed.
+ * There is a row for every folder either way, because a line has to keep describing itself
+ * for the frames it spends animating out; a list of only the visible ones would have
+ * nothing to draw during its own exit.
+ *
+ * [expandable] is a fact about the tree and [expanded] a fact about the user, so a leaf is
+ * never drawn with a control that would do nothing. [holdsChoice] is true only for a
+ * PROPER ancestor of the chosen folder — the row that would otherwise be the one place a
+ * collapsed tree can hide the answer to "which folder am I on".
+ */
+data class LibraryFolderRow(
+    val folder: LibraryFolder,
+    val visible: Boolean,
+    val expandable: Boolean,
+    val expanded: Boolean,
+    val holdsChoice: Boolean,
+)
+
+/**
  * How a remembered folder names the place it points at.
  *
  * The two forms are not interchangeable and are not a preference: [Path] is what Flick
@@ -164,6 +185,69 @@ internal object LibraryFolders {
             i++
         }
         a.size - b.size
+    }
+
+    /** Every proper ancestor of a path, outermost first: `a/b/c` → `a`, `a/b`. */
+    fun ancestorsOf(id: String): List<String> {
+        val segments = id.split('/')
+        if (segments.size < 2) return emptyList()
+        return (1 until segments.size).map { segments.take(it).joinToString("/") }
+    }
+
+    /**
+     * The chooser's lines, given which folders the user has opened.
+     *
+     * A line is visible only when every ancestor of it is open, so a closed branch takes
+     * its whole subtree with it however deep that goes — one row is never left behind
+     * because its own parent happened to be open. [folders] arrives in depth-first order
+     * and that order is preserved, so a child is always drawn directly under the folder
+     * that holds it.
+     *
+     * [expanded] is not pruned when a branch closes: reopening it restores the shape the
+     * user last left it in rather than starting flat again. That also means the set may
+     * name folders no longer in the tree — a stale id simply never matches, which is what
+     * makes it safe to hold one across a library reload.
+     */
+    fun rows(
+        folders: List<LibraryFolder>,
+        expanded: Set<String>,
+        chosen: LibraryFolderId?,
+    ): List<LibraryFolderRow> {
+        val parents = folders.mapNotNullTo(HashSet()) {
+            it.id.substringBeforeLast('/', "").takeIf(String::isNotEmpty)
+        }
+        val chosenPath = (chosen as? LibraryFolderId.Path)?.path
+        return folders.map { folder ->
+            LibraryFolderRow(
+                folder = folder,
+                visible = ancestorsOf(folder.id).all { it in expanded },
+                expandable = folder.id in parents,
+                expanded = folder.id in expanded,
+                holdsChoice = chosenPath != null &&
+                    folder.id != chosenPath &&
+                    holds(folder.id, chosenPath),
+            )
+        }
+    }
+
+    /**
+     * Which folders a freshly opened chooser starts with open.
+     *
+     * The ancestors of the chosen folder, so the row carrying the tick is on screen
+     * without the user having to go looking for the choice they already made.
+     *
+     * And the single root, when there is one. A lone top-level folder is not a choice —
+     * it is the library under another name — so collapsing it would open the sheet on one
+     * row that hides every decision the sheet exists to offer. Two or more roots ARE a
+     * choice, and those start closed, which is the whole point of the control.
+     */
+    fun initialExpansion(folders: List<LibraryFolder>, scope: LibraryScope): Set<String> {
+        val open = HashSet<String>()
+        val roots = folders.filter { it.depth == 0 }
+        if (roots.size == 1) open += roots.first().id
+        val chosen = (scope as? LibraryScope.Folder)?.id as? LibraryFolderId.Path
+        chosen?.let { open += ancestorsOf(it.path) }
+        return open
     }
 
     /**

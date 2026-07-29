@@ -13,9 +13,14 @@
       window; the navigation-bar ones are owned by FlickApp's insets controller instead of
       this theme, because they also have to invert per-route on the forced-cinematic
       screens.
+
+      windowBackground is DarkFlickColors.canvas written out by hand — a resource the
+      system reads before this process exists cannot be derived from a Kotlin value.
+      ThemePlateTest holds the two together; retune the palette without this and the cold
+      start opens on a band of the old colour.
     -->
     <style name="Theme.FlickSender" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#050C1D</item>
+        <item name="android:windowBackground">#0C0F18</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>

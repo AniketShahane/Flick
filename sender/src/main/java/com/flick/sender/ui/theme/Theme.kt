@@ -146,11 +146,18 @@ fun Modifier.flickGlass(
         elevation = 20.dp,
         shape = shape,
         clip = false,
-        ambientColor = NavShadow,
-        spotColor = NavShadow,
+        // Both halves of the treatment are a claim about light, and a dark canvas has a
+        // different amount of it: the tinted shadow is invisible against near-black and
+        // the sheen is a blown highlight on it. Read from the palette rather than from
+        // the platform's night mode, so a forced-cinematic screen gets the dark pair too.
+        ambientColor = if (colors.isLight) NavShadow else NavShadowOnNight,
+        spotColor = if (colors.isLight) NavShadow else NavShadowOnNight,
     )
     .background(color = colors.glass, shape = shape)
-    .background(brush = FlickGradients.navSheen, shape = shape)
+    .background(
+        brush = if (colors.isLight) FlickGradients.navSheen else FlickGradients.navSheenDark,
+        shape = shape,
+    )
     .border(width = 1.dp, color = colors.glassBorder, shape = shape)
 
 fun Modifier.flickRaised(
