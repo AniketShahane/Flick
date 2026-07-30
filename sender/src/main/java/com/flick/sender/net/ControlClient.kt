@@ -63,6 +63,21 @@ class ControlClient(private val scope: CoroutineScope) {
     private var reader: Job? = null
     private var endpoint: AuthenticatedEndpoint? = null
 
+    /**
+     * What phase 1 of a first-time pairing produced — the negotiated nonce pair, or
+     * its own terminal answer.
+     *
+     * It exists because pairing now has two budgets rather than one. Everything up to
+     * and including putting the `pair` frame on the wire keeps the original six-second
+     * window, so a TV that is off or on another subnet is still called unreachable in
+     * six seconds. Only the answer to that frame may take longer, and only because the
+     * receiver is asking a person.
+     */
+    private sealed interface PairHandshake {
+        data class Negotiated(val clientNonce: String, val serverNonce: String) : PairHandshake
+        data class Aborted(val result: Result) : PairHandshake
+    }
+
     /** Optional external-subtitle fields, published as one value for [send]'s thread. */
     private data class LoadSubtitle(val castId: String, val url: String, val label: String?, val language: String?)
 
@@ -73,23 +88,45 @@ class ControlClient(private val scope: CoroutineScope) {
         if (!PairLaunch.isCanonicalIpv4(host) || port !in 1..65535 || !ControlProtocolV2.code(code)) return Result.ProtocolError()
         _connection.value = ConnectionStatus.CONNECTING
         var codeSent = false
-        val result = open(host, port) { socket ->
+        val result = open(
+            host,
+            port,
+            decisionBudgetMs = controlDecisionBudgetMs(firstTimePairing = true),
+        ) { socket, handshakeBudgetMs ->
             _connection.value = ConnectionStatus.PAIRING
             val clientNonce = ControlProtocolV2.randomId()
-            socket.send(Frame.Text(frame("negotiate", "v" to 2, "minV" to 2, "maxV" to 2, "clientNonce" to clientNonce)))
-            val negotiated = receive(socket).objectOrNull()
-                ?: run { FlickLog.w("ws", "pair abort stage=negotiate reason=schema"); return@open Result.UpdateRequired }
-            if (!ControlFrameSchema.preAuth(asMap(negotiated)) ||
-                negotiated.optString("t") != "negotiated" || negotiated.optInt("v", -1) != 2 ||
-                negotiated.optString("clientNonce") != clientNonce || negotiated.optString("serverNonce") == clientNonce || !ControlProtocolV2.id(negotiated.optString("serverNonce")) ||
-                !ControlProtocolV2.id(negotiated.optString("tvId")) || !caps(negotiated.optJSONArray("cap"))) {
-                FlickLog.w("ws", "pair abort stage=negotiate reason=schema")
-                return@open Result.UpdateRequired
+            // Phase 1 — whatever is left of the original six seconds after the dial.
+            // Nothing in here waits on a human, so nothing in here is allowed to spend
+            // the decision budget: a receiver that upgrades and then never negotiates
+            // is a broken or hostile peer, not a viewer walking to the TV.
+            val handshake = withTimeoutOrNull(handshakeBudgetMs) {
+                socket.send(Frame.Text(frame("negotiate", "v" to 2, "minV" to 2, "maxV" to 2, "clientNonce" to clientNonce)))
+                val negotiated = receive(socket).objectOrNull()
+                    ?: run { FlickLog.w("ws", "pair abort stage=negotiate reason=schema"); return@withTimeoutOrNull PairHandshake.Aborted(Result.UpdateRequired) }
+                if (!ControlFrameSchema.preAuth(asMap(negotiated)) ||
+                    negotiated.optString("t") != "negotiated" || negotiated.optInt("v", -1) != 2 ||
+                    negotiated.optString("clientNonce") != clientNonce || negotiated.optString("serverNonce") == clientNonce || !ControlProtocolV2.id(negotiated.optString("serverNonce")) ||
+                    !ControlProtocolV2.id(negotiated.optString("tvId")) || !caps(negotiated.optJSONArray("cap"))) {
+                    FlickLog.w("ws", "pair abort stage=negotiate reason=schema")
+                    return@withTimeoutOrNull PairHandshake.Aborted(Result.UpdateRequired)
+                }
+                val serverNonce = negotiated.getString("serverNonce")
+                // A write failure can occur after bytes leave the phone; do not offer a possibly consumed code again.
+                codeSent = true
+                socket.send(Frame.Text(frame("pair", "v" to 2, "clientNonce" to clientNonce, "serverNonce" to serverNonce, "code" to code, "device" to (ControlProtocolV2.normalizedLabel(device, 80) ?: "Phone"))))
+                PairHandshake.Negotiated(clientNonce, serverNonce)
+            } ?: run {
+                FlickLog.w("ws", "pair abort stage=negotiate reason=handshake_timeout")
+                return@open Result.TimedOut(pairCodeSent = codeSent)
             }
-            val serverNonce = negotiated.getString("serverNonce")
-            // A write failure can occur after bytes leave the phone; do not offer a possibly consumed code again.
-            codeSent = true
-            socket.send(Frame.Text(frame("pair", "v" to 2, "clientNonce" to clientNonce, "serverNonce" to serverNonce, "code" to code, "device" to (ControlProtocolV2.normalizedLabel(device, 80) ?: "Phone"))))
+            val serverNonce = when (handshake) {
+                is PairHandshake.Aborted -> return@open handshake.result
+                is PairHandshake.Negotiated -> handshake.serverNonce
+            }
+            // Phase 2 — the receiver has the code and is asking the room. A wrong code
+            // is denied here in milliseconds; a right one waits on a person, so the
+            // phone says which of those it is doing rather than spinning silently.
+            _connection.value = ConnectionStatus.CONFIRM_ON_TV
             val paired = receive(socket).objectOrNull() ?: return@open Result.Unreachable(pairCodeSent = true)
             if (ControlFrameSchema.preAuth(asMap(paired)) && paired.optString("t") == "denied") {
                 val reason = deniedReason(paired)
@@ -130,7 +167,14 @@ class ControlClient(private val scope: CoroutineScope) {
     suspend fun resume(pairing: PairingStore.Pairing, host: String = pairing.host, port: Int = pairing.port): Result {
         if (pairing.needsRepair || !PairLaunch.isCanonicalIpv4(host) || port !in 1..65535) return Result.Unreachable()
         _connection.value = ConnectionStatus.CONNECTING
-        return open(host, port) { socket ->
+        // No decision budget: resume must stay silent and instant. It never reaches a
+        // prompt — the receiver's confirmation lives only on the `pair` path — so the
+        // whole handshake keeps exactly the one six-second window it always had.
+        return open(
+            host,
+            port,
+            decisionBudgetMs = controlDecisionBudgetMs(firstTimePairing = false),
+        ) { socket, _ ->
             val clientNonce = ControlProtocolV2.randomId()
             socket.send(Frame.Text(frame("resumeInit", "v" to 2, "tvId" to pairing.tvId, "keyId" to pairing.keyId, "clientNonce" to clientNonce)))
             val challenge = receive(socket).objectOrNull()
@@ -237,7 +281,22 @@ class ControlClient(private val scope: CoroutineScope) {
     fun shutdown() { close(); client.close() }
     fun authenticatedEndpoint(): AuthenticatedEndpoint? = endpoint
 
-    private suspend fun open(host: String, port: Int, action: suspend (DefaultClientWebSocketSession) -> Result): Result {
+    /**
+     * Dials [host]:[port] and runs [action] on the session.
+     *
+     * The window is split rather than widened. [OPEN_TIMEOUT_MS] still bounds the
+     * upgrade absolutely, and the action is handed what is LEFT of it so that its own
+     * pre-decision phase fits inside exactly the budget the whole handshake used to
+     * have. [decisionBudgetMs] is extra time on top, and it is nonzero only where the
+     * action is waiting on a person rather than on software — that is what keeps a TV
+     * that is off, asleep or on another subnet reported as unreachable in six seconds.
+     */
+    private suspend fun open(
+        host: String,
+        port: Int,
+        decisionBudgetMs: Long,
+        action: suspend (DefaultClientWebSocketSession, Long) -> Result,
+    ): Result {
         FlickLog.d("ws", "dial $host:$port")
         // Distinguishes "the upgrade never completed" from "the receiver upgraded and
         // then closed on us" — the latter is an ACTIVE pre-auth rejection and must
@@ -248,16 +307,33 @@ class ControlClient(private val scope: CoroutineScope) {
             // withTimeoutOrNull, not withTimeout: null means OUR window elapsed, while a
             // cancellation from an enclosing timeout still propagates as a
             // CancellationException and must not be reported as a TV that timed out.
-            withTimeoutOrNull(OPEN_TIMEOUT_MS) {
-                val socket = client.webSocketSession(host = host, port = port, path = "/control")
-                upgraded = true
-                session = socket
-                val result = action(socket)
-                if (result !is Result.Paired && result !is Result.Resumed) {
-                    _connection.value = ConnectionStatus.DISCONNECTED
-                    closeInternal()
+            withTimeoutOrNull(OPEN_TIMEOUT_MS + decisionBudgetMs) {
+                val dialStartedAtMs = System.nanoTime() / 1_000_000L
+                // The dial keeps the ORIGINAL six seconds of its own, whatever the
+                // action is allowed to wait for afterwards. A null here is a dial that
+                // never completed, and it falls through to exactly the TimedOut this
+                // method has always answered with rather than being absorbed by the
+                // wider window.
+                val socket = withTimeoutOrNull(OPEN_TIMEOUT_MS) {
+                    client.webSocketSession(host = host, port = port, path = "/control")
                 }
-                result
+                if (socket == null) {
+                    null
+                } else {
+                    upgraded = true
+                    session = socket
+                    // What is left of those six seconds. The action's own pre-decision
+                    // phase has to fit inside it, so upgrade plus handshake together
+                    // are still bounded by exactly the budget they had before.
+                    val handshakeBudgetMs =
+                        (OPEN_TIMEOUT_MS - (System.nanoTime() / 1_000_000L - dialStartedAtMs)).coerceAtLeast(0L)
+                    val result = action(socket, handshakeBudgetMs)
+                    if (result !is Result.Paired && result !is Result.Resumed) {
+                        _connection.value = ConnectionStatus.DISCONNECTED
+                        closeInternal()
+                    }
+                    result
+                }
             } ?: run {
                 FlickLog.w("ws", "connect timed out $host:$port upgraded=$upgraded")
                 _connection.value = ConnectionStatus.DISCONNECTED
@@ -415,8 +491,26 @@ class ControlClient(private val scope: CoroutineScope) {
     private fun deniedReason(frame: JSONObject): String? =
         frame.optString("reason").takeIf { it.isNotEmpty() }
 
-    private companion object {
+    internal companion object {
         const val OPEN_TIMEOUT_MS = 6_000L
+
+        /**
+         * Extra time a FIRST-TIME pairing may spend waiting for the answer to its
+         * `pair` frame, on top of [OPEN_TIMEOUT_MS].
+         *
+         * The receiver's on-TV confirmation window is 30 s
+         * (`PairingManager.CONFIRM_WINDOW_MS`). This is deliberately longer, and the
+         * five seconds are not slack — they decide which of the two ends gets to
+         * explain what happened. The receiver's own expiry answers `denied(expired)`,
+         * which the phone turns into "that code expired, a new one is on the TV"; a
+         * sender that gave up first would replace that with a bare "the TV didn't
+         * answer in time", which is both less true and less useful. So this must
+         * outlast the receiver's deadline by more than a LAN round trip.
+         *
+         * It buys nothing on any other path: resume passes no decision budget at all.
+         */
+        internal const val PAIR_DECISION_TIMEOUT_MS = 35_000L
+
         // P2 residual: without a wire-level ready acknowledgement, silence in this fixed window cannot prove availability.
         const val BUSY_DISPOSITION_MS = 250L
 
@@ -443,3 +537,15 @@ class ControlClient(private val scope: CoroutineScope) {
         const val PING_INTERVAL_MS = 15_000L
     }
 }
+
+/**
+ * The extra window a control handshake may spend waiting on a PERSON, by mode.
+ *
+ * Resume gets zero, and that is the whole rule worth testing: a phone reconnecting to
+ * a TV it has already paired with must never stop on a prompt, so it keeps exactly the
+ * single six-second budget it has always had and a TV that has gone is still reported
+ * as unreachable in six seconds. Only a first-time pairing can reach the receiver's
+ * "Allow this phone?" card, and only because it presented a correct code to get there.
+ */
+internal fun controlDecisionBudgetMs(firstTimePairing: Boolean): Long =
+    if (firstTimePairing) ControlClient.PAIR_DECISION_TIMEOUT_MS else 0L

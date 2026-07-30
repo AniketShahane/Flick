@@ -126,8 +126,9 @@ import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.LibraryFolderChip
 import com.flick.sender.ui.components.LibraryFolderSheet
 import com.flick.sender.ui.components.LiveDot
-import com.flick.sender.ui.components.NowPlayingDockClearance
+import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.VideoTile
+import com.flick.sender.ui.components.navBottomClearance
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
@@ -151,9 +152,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-
-/** Room the floating nav needs at the foot of the scroll (design §5.4). */
-private val NavClearance = 116.dp
 
 /** S3 — the library. A gallery, not a file browser: real MediaStore videos. */
 @Composable
@@ -188,8 +186,12 @@ fun LibraryScreen(
     val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
 
     // The dock docks above the nav while a cast is live, so the last row of the grid
-    // has to clear both of them, not just the nav.
-    val bottomClearance = NavClearance + if (castingItem != null) NowPlayingDockClearance else 0.dp
+    // has to clear both of them, not just the nav — and the nav's own height is measured
+    // rather than assumed, because the label's line box grows with the font scale.
+    val bottomClearance = navBottomClearance(
+        barHeight = LocalNavMetrics.current.height,
+        dockLive = castingItem != null,
+    )
 
     var filter by remember { mutableStateOf(LibFilter.ALL) }
     var choosingFolder by remember { mutableStateOf(false) }

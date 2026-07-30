@@ -14,6 +14,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -265,6 +267,11 @@ private class AmbientWash(val brush: Brush, val topLeft: Offset, val size: Size)
  * before it starts feathering. A two-stop radial is at its nominal alpha only at
  * the centre pixel, which is fine for an ambient field and wrong for a bed that
  * ink stands on — see [SEEK_WASH_PLATEAU].
+ *
+ * [footprintRadius] widens the drawn rectangle without touching the gradient, for the
+ * one caller whose wash MOVES: a drifting bed is drawn through a canvas transform so
+ * its shader is never rebuilt, and the rectangle it is clipped to has to cover every
+ * position the drift reaches rather than only the resting one.
  */
 private fun ambientWash(
     color: Color,
@@ -272,11 +279,12 @@ private fun ambientWash(
     radius: Float,
     panel: Size,
     plateau: Float = 0f,
+    footprintRadius: Float = radius,
 ): AmbientWash {
-    val left = (center.x - radius).coerceIn(0f, panel.width)
-    val top = (center.y - radius).coerceIn(0f, panel.height)
-    val right = (center.x + radius).coerceIn(0f, panel.width)
-    val bottom = (center.y + radius).coerceIn(0f, panel.height)
+    val left = (center.x - footprintRadius).coerceIn(0f, panel.width)
+    val top = (center.y - footprintRadius).coerceIn(0f, panel.height)
+    val right = (center.x + footprintRadius).coerceIn(0f, panel.width)
+    val bottom = (center.y + footprintRadius).coerceIn(0f, panel.height)
     val brush = if (plateau > 0f) {
         Brush.radialGradient(
             0f to color,
@@ -331,20 +339,83 @@ fun Modifier.pairAmbientBackground(): Modifier = this
         }
     }
 
+/** The idle bed's resting geometry, shared by the static and drifting variants. */
+private const val IDLE_WASH_ALPHA = 0.22f
+private const val IDLE_WASH_CENTRE_X = 0.5f
+private const val IDLE_WASH_CENTRE_Y = -0.10f
+private const val IDLE_WASH_RADIUS = 0.65f
+
+/**
+ * How far the idle bed's centre and radius wander, as fractions of the viewport and
+ * of [IDLE_WASH_RADIUS]'s reach respectively. Idle is the one deliberate ambient loop
+ * in the system — see `IdleScreen`.
+ */
+private const val IDLE_DRIFT_CENTRE = 0.06f
+private const val IDLE_DRIFT_RADIUS = 0.08f
+
 /**
  * The idle bed: `Canvas` plus one soft brand-blue radial hanging off the top
- * edge. Quieter than [pairAmbientBackground] — idle is a resting state.
+ * edge. Quieter than [pairAmbientBackground] — idle is a resting state. This is the
+ * still variant, held under reduced motion and by Settings; [idleAmbientDrift] is the
+ * same geometry in motion.
  */
 fun Modifier.idleAmbientBackground(): Modifier = this
     .background(FlickColor.Canvas)
     .drawWithCache {
         val wash = ambientWash(
-            color = FlickColor.Primary.copy(alpha = 0.22f),
-            center = Offset(size.width * 0.5f, -size.height * 0.10f),
-            radius = max(size.width, size.height) * 0.65f,
+            color = FlickColor.Primary.copy(alpha = IDLE_WASH_ALPHA),
+            center = Offset(size.width * IDLE_WASH_CENTRE_X, size.height * IDLE_WASH_CENTRE_Y),
+            radius = max(size.width, size.height) * IDLE_WASH_RADIUS,
             panel = size,
         )
         onDrawBehind { drawWash(wash) }
+    }
+
+/**
+ * The drifting idle bed, for a [phase] in −1..1.
+ *
+ * The drift is a canvas transform over ONE cached gradient, not a gradient rebuilt per
+ * frame. A `ShaderBrush` caches its platform shader against the size it was built for,
+ * so constructing `Brush.radialGradient(...)` inside the draw lambda — which is what a
+ * moving centre and radius invite — makes the driver regenerate the gradient on every
+ * frame of a permanent loop, full-screen, for the hours a standby screen is up. A
+ * translate plus a scale about the gradient's own centre reaches exactly the same
+ * geometry: the pivot fixes the centre so the scale is purely the radius, and the
+ * shader is uploaded once per size.
+ *
+ * The footprint covers the drift's full envelope so the clip cannot crop a crest at
+ * the extremes of the loop. At 16:9 that envelope is the whole viewport — this wash
+ * hangs off the top edge and its resting footprint already fills the screen — so the
+ * clip is not what saves anything here; the shader is.
+ */
+fun Modifier.idleAmbientDrift(phase: () -> Float): Modifier = this
+    .background(FlickColor.Canvas)
+    .drawWithCache {
+        val reach = max(size.width, size.height)
+        val centre = Offset(size.width * IDLE_WASH_CENTRE_X, size.height * IDLE_WASH_CENTRE_Y)
+        val radius = reach * IDLE_WASH_RADIUS
+        val wash = ambientWash(
+            color = FlickColor.Primary.copy(alpha = IDLE_WASH_ALPHA),
+            center = centre,
+            radius = radius,
+            panel = size,
+            // Both drift terms at their extreme, against the longer edge for each: one
+            // scalar has to cover all four sides, so it covers the worst of them.
+            footprintRadius = radius + reach * (IDLE_DRIFT_RADIUS + IDLE_DRIFT_CENTRE),
+        )
+        val driftX = size.width * IDLE_DRIFT_CENTRE
+        val driftY = size.height * IDLE_DRIFT_CENTRE
+        // The radius drift expressed as the scale that reaches it, so the pivot can do
+        // the work: (0.65 + 0.08p) / 0.65 = 1 + (0.08 / 0.65)p.
+        val radiusGain = IDLE_DRIFT_RADIUS / IDLE_WASH_RADIUS
+        onDrawBehind {
+            val p = phase()
+            translate(left = driftX * p, top = driftY * p) {
+                scale(scale = 1f + radiusGain * p, pivot = centre) {
+                    drawWash(wash)
+                }
+            }
+        }
     }
 
 /**

@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -91,12 +92,34 @@ class ControlServer(
         @Volatile var revoked = false
     }
 
+    /**
+     * What one pass of [authenticate] produced, and therefore whether the six-second
+     * absolute deadline above it is the end of the story.
+     *
+     * The deadline wraps [authenticate] and nothing else, which is the whole shape of
+     * the confirmation feature: every frame a peer can send WITHOUT a correct pairing
+     * code is read inside that deadline and killed by it exactly as before, so the
+     * slowloris property is untouched. [AwaitingConfirmation] is the only value that
+     * leaves the window, and the only way to produce it is a `pair` frame whose code
+     * survived [PairingManager.attemptPair]'s constant-time comparison.
+     */
+    private sealed interface Handshake {
+        /** A resume, complete and proven. Nothing further is owed before the lease. */
+        data class Authenticated(val auth: Auth) : Handshake
+        /** A correct code. The TV is now asking the room; no key exists yet. */
+        data class AwaitingConfirmation(
+            val ticket: PairConfirmation,
+            val clientNonce: String,
+            val serverNonce: String,
+        ) : Handshake
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private val serverLock = Any()
     private val counter = AtomicLong()
     private val sequence = AtomicLong()
     private val ownership = ControlOwnership()
-    private val preAuthConnections = ConnectionPermitGate(MAX_PREAUTH_CONNECTIONS)
+    private val preAuthConnections = ConnectionPermitGate(MAX_PREAUTH_CONNECTIONS, MAX_PREAUTH_CONNECTIONS_PER_PEER)
     // Only handshakes that have read a credential and not yet been granted or
     // refused a lease, so it is bounded by MAX_PREAUTH_CONNECTIONS: the session
     // that adds a ticket removes it as soon as its lease decision is taken, and
@@ -351,7 +374,15 @@ class ControlServer(
         if (port !in 1..65535) return closePolicy("port_unbound port=$port")
         if (hosts != listOf("$host:$port")) return closePolicy("host_pin got=${hosts?.joinToString(",") ?: "none"} want=$host:$port")
         if (!MediaUrlValidator.isPrivateIpv4(peer)) return closePolicy("peer_not_private peer=$peer")
-        if (!preAuthConnections.tryAcquire()) return closePolicy("preauth_limit")
+        // Keyed on the same non-resolving peer identity the gate above accepted, so
+        // one host cannot hold every pre-auth permit and lock the owner's own phone
+        // out of both pairing and resume. The wire answer is the generic policy
+        // close either way; only this device-local reason says which cap was hit.
+        val permit = when (val decision = preAuthConnections.tryAcquire(peer)) {
+            is ConnectionPermit.Granted -> decision.permit
+            ConnectionPermit.PeerLimit -> return closePolicy("preauth_limit scope=peer peer=$peer")
+            ConnectionPermit.GlobalLimit -> return closePolicy("preauth_limit scope=global peer=$peer")
+        }
 
         val emitLock = Mutex()
         val emit: suspend (String) -> Unit = { payload -> emitLock.withLock { send(Frame.Text(payload)) } }
@@ -361,8 +392,19 @@ class ControlServer(
         // net for every other exit, including the auth timeout's cancellation.
         val resume = AtomicReference<ResumeTicket?>()
         try {
-            val auth = try { withTimeoutOrNull(AUTH_TIMEOUT_MS) { authenticate(emit, peer, host, port, resume) } } finally { preAuthConnections.release() }
+            val handshake = try { withTimeoutOrNull(AUTH_TIMEOUT_MS) { authenticate(emit, peer, host, port, resume) } } finally { permit.release() }
                 ?: return closePolicy("auth_timeout_or_denied")
+            // Phase 2, and deliberately OUTSIDE the deadline above: the only way to
+            // arrive here is with a code this TV minted, and what is being waited on
+            // is a person walking to the television. A peer that cannot produce such
+            // a code never reaches this line at all. The pre-auth permit has already
+            // been released in the finally above, so a decision in progress does not
+            // hold a slot against anyone else's phone.
+            val auth = when (handshake) {
+                is Handshake.Authenticated -> handshake.auth
+                is Handshake.AwaitingConfirmation ->
+                    confirmPairing(emit, handshake, peer, host, port) ?: return closePolicy("pair_not_confirmed")
+            }
             FlickLog.i("auth", "ok mode=${if (auth.resumed) "resume" else "pair"} keyIdFp=${FlickLog.fp(auth.record.keyId)} peer=$peer")
 
             // The session itself is the lease token, so an atomic idle replacement can
@@ -375,8 +417,8 @@ class ControlServer(
                 // PairingManager: the forget path acquires the manager monitor and
                 // then [serverLock], so reaching back for the store from inside this
                 // block would invert that order. The `pair` path installs a record
-                // [PairingManager.attemptPair] has just committed and carries no
-                // ticket at all, so it can never be refused here.
+                // [PairingManager.commitConfirmedPair] has just committed and carries
+                // no ticket at all, so it can never be refused here.
                 val decision = leaseAdmission(
                     resumeRevoked = resume.get()?.revoked == true,
                     busy = ownership.isBusy(),
@@ -452,7 +494,7 @@ class ControlServer(
         host: String,
         port: Int,
         resume: AtomicReference<ResumeTicket?>,
-    ): Auth? {
+    ): Handshake? {
         var malformed = 0
         var negotiation: Pair<String, String>? = null
         var challenge: Auth? = null
@@ -496,14 +538,26 @@ class ControlServer(
                         if (ownership.isBusy()) null else pairing.attemptPair(obj.string("code")!!.value, obj.string("device")!!.value, peer)
                     }
                     FlickLog.i("pair", "attempt result=${pairResult?.let { it::class.simpleName } ?: "Busy"} peer=$peer")
-                    return when (pairResult) {
-                        is PairAttemptResult.Success -> {
-                            val auth = Auth(PairingRecord(pairResult.keyId, pairResult.key, pairResult.deviceLabel), peer, negotiated.first, negotiated.second, pairing.tvName, false)
-                            emit(paired(auth, host, port))
-                            auth
-                        }
-                        else -> { emit(deniedFrame(deniedReasonFor(pairResult))); null }
+                    // Every refusal is answered HERE, inside the six-second window,
+                    // before any confirmation exists — so the bytes a wrong code
+                    // receives, and the moment it receives them, are what they were
+                    // before this feature. Only a proven code opens the window below,
+                    // which is what keeps the prompt from being an oracle for one.
+                    //
+                    // Both conditions have to hold. [pairOutcomePhase] is the rule the
+                    // tests pin, rather than the shape of a `when` in here, and the
+                    // cast is the reason the value can be used at all; requiring the
+                    // two to agree means a divergence fails closed into a denial.
+                    val confirming = pairResult as? PairAttemptResult.NeedsConfirmation
+                    if (confirming == null || pairOutcomePhase(pairResult) != PairOutcomePhase.CONFIRM) {
+                        emit(deniedFrame(deniedReasonFor(pairResult)))
+                        return null
                     }
+                    return Handshake.AwaitingConfirmation(
+                        ticket = confirming.ticket,
+                        clientNonce = negotiated.first,
+                        serverNonce = negotiated.second,
+                    )
                 }
                 "resumeInit" -> {
                     if (challenge != null || negotiation != null || !obj.exactly(RESUME_INIT_FIELDS) || obj.integer("v") != 2L || !id(obj.string("tvId")?.value) || !id(obj.string("keyId")?.value) || !id(obj.string("clientNonce")?.value)) {
@@ -541,12 +595,77 @@ class ControlServer(
                         return null
                     }
                     challenge = null
-                    return value
+                    return Handshake.Authenticated(value)
                 }
                 else -> if (overBudget("unknown_type")) return null
             }
         }
         return null
+    }
+
+    /**
+     * Phase 2 of a first-time pairing: the TV asks the room, and this waits for the
+     * answer. Returns null for every answer that is not an allow.
+     *
+     * There is no absolute deadline above this call, and that is safe for exactly one
+     * reason — the code has already been proven. What bounds it instead is three
+     * independent clocks on the same single-shot decision: this window, the manager's
+     * own tick past the ticket's deadline, and the peer hanging up. Whichever lands
+     * first is the answer all three then read back, so the screen and the wire cannot
+     * disagree.
+     *
+     * Expiry resolves to a DENIAL. Nothing here can produce an allow that a person
+     * did not press.
+     */
+    private suspend fun DefaultWebSocketServerSession.confirmPairing(
+        emit: suspend (String) -> Unit,
+        awaiting: Handshake.AwaitingConfirmation,
+        peer: String,
+        host: String,
+        port: Int,
+    ): Auth? {
+        val ticket = awaiting.ticket
+        val outcome = coroutineScope {
+            // A phone that hangs up is no longer asking, so the TV must stop asking
+            // the room about it — otherwise the card sits there for the rest of the
+            // window naming a device that has gone, and the owner is answering a
+            // question about nothing.
+            val hangup = launch {
+                runCatching { closeReason.await() }
+                // A cancelled watcher means the decision has already landed, and
+                // `runCatching` catches its own cancellation, so the check is what
+                // stops this proposing a withdrawal after the answer.
+                if (isActive) pairing.resolvePendingPair(ticket, PairConfirmationOutcome.WITHDRAWN)
+            }
+            val settled = withTimeoutOrNull(PairingManager.CONFIRM_WINDOW_MS) { ticket.await() }
+                ?: pairing.resolvePendingPair(ticket, PairConfirmationOutcome.EXPIRED)
+            hangup.cancel()
+            settled
+        }
+        FlickLog.i("pair", "confirmation outcome=$outcome peer=$peer")
+        if (outcome != PairConfirmationOutcome.ALLOWED) {
+            // WITHDRAWN is usually the peer's own hang-up, so there may be nothing
+            // left to answer. The other refusals are ordinary and must still be told.
+            runCatching { emit(deniedFrame(deniedReasonForConfirmation(outcome))) }
+            return null
+        }
+        val committed = pairing.commitConfirmedPair(ticket)
+        return when (committed) {
+            is PairAttemptResult.Success -> {
+                val auth = Auth(
+                    PairingRecord(committed.keyId, committed.key, committed.deviceLabel),
+                    peer,
+                    awaiting.clientNonce,
+                    awaiting.serverNonce,
+                    pairing.tvName,
+                    false,
+                )
+                emit(paired(auth, host, port))
+                auth
+            }
+            // A rejected durable write is the same `storage` denial it always was.
+            else -> { runCatching { emit(deniedFrame(deniedReasonFor(committed))) }; null }
+        }
     }
 
     private fun authenticatedCommand(o: StrictJsonValue.Obj, connection: Connection, peer: String, pings: PingGate): Boolean {
@@ -772,6 +891,18 @@ class ControlServer(
         private const val MAX_FRAME = 16 * 1024
         private const val MAX_MS = 604_800_000L
         private const val MAX_PREAUTH_CONNECTIONS = 4
+
+        /**
+         * Pre-auth sockets ONE remote address may hold at once.
+         *
+         * An honest phone opens exactly one: `ControlClient` closes the prior
+         * session before it dials. Two is that one plus an overlapping retry from
+         * the same phone — a reconnect arriving while the previous socket is still
+         * inside its six-second authentication window — and no honest sender has a
+         * third. Half of [MAX_PREAUTH_CONNECTIONS] is also the point of the number:
+         * whatever one host is doing, two permits remain for everyone else.
+         */
+        private const val MAX_PREAUTH_CONNECTIONS_PER_PEER = 2
         private const val MAX_PREAUTH_FRAMES = 3
         private const val AUTH_TIMEOUT_MS = 6_000L
         // A socket accepted between listen() and the binding being published waits
@@ -891,7 +1022,64 @@ internal fun deniedReasonFor(result: PairAttemptResult?): String = when (result)
     is PairAttemptResult.SurfaceClosed -> DENIED_SURFACE
     is PairAttemptResult.LockedOut -> DENIED_LOCKED
     is PairAttemptResult.PersistenceFailed -> DENIED_STORAGE
+    // Neither is a denial: both are outcomes no caller may reach this function with,
+    // and `unknown` is what a mistake here says on the wire rather than a guess.
     is PairAttemptResult.Success -> DENIED_UNKNOWN
+    is PairAttemptResult.NeedsConfirmation -> DENIED_UNKNOWN
+}
+
+/** Whether a `pair` frame's outcome may outlive the six-second authentication window. */
+internal enum class PairOutcomePhase {
+    /** Answered on the spot, in the bytes and at the moment it always was. */
+    REFUSED,
+
+    /** The user-decision window opens. Reachable only with a proven code. */
+    CONFIRM,
+}
+
+/**
+ * The gate between the two phases, and the reason a wrong code cannot use the prompt
+ * as an oracle: exactly one outcome opens the long window, and
+ * [PairingManager.attemptPair] produces it only after `constantTimeEquals` succeeds.
+ * Everything else — a wrong code, an expired one, a closed or sealed surface, a
+ * lockout, a busy TV, a failed write — is refused inside the deadline.
+ *
+ * Pulled out as its own rule because it is the security claim of the whole change,
+ * and a claim that lives only in the shape of a `when` is a claim nothing tests.
+ */
+internal fun pairOutcomePhase(result: PairAttemptResult?): PairOutcomePhase =
+    if (result is PairAttemptResult.NeedsConfirmation) PairOutcomePhase.CONFIRM else PairOutcomePhase.REFUSED
+
+/**
+ * The `denied` reason for a confirmation that did not end in an allow.
+ *
+ * The v2 vocabulary is frozen and **none of the eight honestly names "someone at the
+ * television declined"**, so this picks the least misleading rather than inventing a
+ * ninth:
+ *
+ * - Expiry is `expired`. The phone's copy — "that code expired, a new one is on the
+ *   TV" — is true in every part: the window ran out, the code was consumed proving
+ *   itself, and a fresh one is on screen by the time the frame lands.
+ * - An explicit deny and a withdrawn prompt are both `surface`, which is the only
+ *   name that says something true about the receiver without asserting a cause that
+ *   did not happen: this TV's pairing surface did not authorize you. `code` was
+ *   rejected because it tells the user their digits were wrong and to retype them,
+ *   when they were right; `unknown` was rejected because it maps to "start again,
+ *   this pairing could not be completed", which is the phrasing that costs a stored
+ *   pairing its trust on the resume path.
+ *
+ * A deny is therefore distinguishable on the wire from a wrong code. That is
+ * deliberate and costs nothing: reaching a human takes seconds and a wrong code is
+ * refused in milliseconds, so the timing already says it far louder than any reason
+ * string could, and what it reveals — that a single-use code which has now been
+ * consumed was correct — is worth nothing to whoever learns it.
+ */
+internal fun deniedReasonForConfirmation(outcome: PairConfirmationOutcome): String = when (outcome) {
+    PairConfirmationOutcome.EXPIRED -> DENIED_EXPIRED
+    PairConfirmationOutcome.DENIED, PairConfirmationOutcome.WITHDRAWN -> DENIED_SURFACE
+    // Not a denial at all; the caller checks for it first. Saying `unknown` here
+    // keeps a defect from being reported as a plausible cause.
+    PairConfirmationOutcome.ALLOWED -> DENIED_UNKNOWN
 }
 
 internal fun deniedFrameFields(reason: String): LinkedHashMap<String, Any?> = linkedMapOf(

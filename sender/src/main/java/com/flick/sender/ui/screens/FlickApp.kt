@@ -46,7 +46,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
 import com.flick.sender.net.FlickController
@@ -54,7 +53,10 @@ import com.flick.sender.net.Route
 import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.ui.components.FlickBottomNav
+import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
+import com.flick.sender.ui.components.NavMetrics
+import com.flick.sender.ui.components.NavShellMargin
 import com.flick.sender.ui.components.NowPlayingDock
 import com.flick.sender.ui.components.RevealOrigin
 import com.flick.sender.ui.components.RevealTarget
@@ -135,6 +137,9 @@ fun FlickApp(
     // controls on the remote open. The diagnostics log's own openers publish nothing, and
     // the binding is what guarantees they cannot inherit a remote's origin for it.
     val qualityRevealOrigin = remember { RevealOrigin(RevealTarget.QUALITY) }
+    // Owned here because the bar and the routes that reserve room for it are siblings: the
+    // shell is the only composition both of them are inside.
+    val navMetrics = remember { NavMetrics() }
 
     val destination = SenderShellPolicy.destinationOf(route)
     val dockLive = castingItem != null
@@ -226,6 +231,7 @@ fun FlickApp(
     CompositionLocalProvider(
         LocalSheetDepth provides sheetDepth,
         LocalQualityRevealOrigin provides qualityRevealOrigin,
+        LocalNavMetrics provides navMetrics,
     ) {
         SharedTransitionLayout {
             val sharedScope = this
@@ -375,7 +381,8 @@ fun FlickApp(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(16.dp)
+                        // The same margin the routes' own clearance is derived from.
+                        .padding(NavShellMargin)
                         .then(routeSemantics),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {

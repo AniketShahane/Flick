@@ -1,8 +1,46 @@
+// Imported rather than written as `java.util.Properties`: inside a Kotlin build script
+// `java` resolves to Gradle's own java extension, not to the package root, so the
+// qualified name does not compile here.
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.androidx.baselineprofile)
 }
+
+/**
+ * The OpenSubtitles "API Consumer" key, which identifies the APP and not the user:
+ * quota attaches to whichever account is signed in, so this value is an app
+ * identifier rather than a credential of anyone's. It ships inside the APK and is
+ * extractable from it, exactly as it is in every other OpenSubtitles client — the
+ * reason it must not be committed is that THIS REPOSITORY IS PUBLIC, not that
+ * packaging could hide it.
+ *
+ * Put it in `local.properties` (already gitignored) as `opensubtitles.apiKey=...`,
+ * or in the `OPENSUBTITLES_API_KEY` environment variable for CI. The default is
+ * empty and that is the normal state of a clone: every path in the app has to
+ * compile, run and degrade honestly with no key at all. Nothing here prints the
+ * value — a key echoed into build output is a key published to CI logs.
+ */
+val openSubtitlesApiKey: String = run {
+    val local = rootProject.file("local.properties")
+    val fromProperties = if (local.isFile) {
+        Properties()
+            .apply { local.inputStream().use { load(it) } }
+            .getProperty("opensubtitles.apiKey")
+    } else {
+        null
+    }
+    (fromProperties ?: System.getenv("OPENSUBTITLES_API_KEY")).orEmpty().trim()
+}
+
+/** Java string-literal escaping: BuildConfig is generated source, not a resource. */
+fun javaStringLiteral(value: String): String = value
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\n", "")
+    .replace("\r", "")
 
 android {
     namespace = "com.flick.sender"
@@ -16,6 +54,12 @@ android {
         versionName = "0.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField(
+            "String",
+            "OPENSUBTITLES_API_KEY",
+            "\"${javaStringLiteral(openSubtitlesApiKey)}\"",
+        )
     }
 
     buildTypes {

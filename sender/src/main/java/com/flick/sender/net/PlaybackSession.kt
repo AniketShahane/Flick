@@ -3,13 +3,13 @@ package com.flick.sender.net
 import android.os.SystemClock
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONObject
-import kotlin.math.abs
 
 /**
  * The hero's brain (design Part 4 + control-channel.md §4): one session clock held
@@ -21,8 +21,17 @@ import kotlin.math.abs
  *
  * Commands go out through [ControlClient]; absolute-valued verbs (`seek posMs`,
  * `setVolume level`) are idempotent so reordering can't corrupt the position.
+ *
+ * The scope carries the one thing here that waits: the quiet period a run of ±10s taps
+ * commits on. It is the caller's application scope — main-confined, which is what makes
+ * every plain field below safe to touch from both a tap and a frame, and outliving the
+ * remote screen, which is what lets a run land after the user has left it.
  */
-class PlaybackSession(private val control: ControlClient, private val fallbackTitle: String = GENERIC_TITLE) {
+class PlaybackSession(
+    private val control: ControlClient,
+    scope: CoroutineScope,
+    private val fallbackTitle: String = GENERIC_TITLE,
+) {
     private var castId: String? = null
 
     private val _state = MutableStateFlow(PlaybackUiState())
@@ -50,6 +59,12 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
     private var playPendingSinceMs = 0L
     private var playCommanded = false
 
+    // A run of ±10s taps is one intent, so the head accumulates locally and exactly one
+    // absolute seek leaves when the tapping stops. One seek per tap made the TV flush its
+    // decoder and refill from a new byte offset for every tap — three fills to move thirty
+    // seconds, each of them the buffering face over the transport the user was reaching for.
+    private val skipBurst = SkipBurstTimer(scope) { commitSkipBurst() }
+
     // --- commands ----------------------------------------------------------
 
     /**
@@ -67,6 +82,9 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
         lastSeq = -1L
         seekPending = false
         playPending = false
+        // A queued seek belongs to the cast it was tapped on and must never land against
+        // this one; the fresh state below drops the run's head with it.
+        skipBurst.cancel()
         _state.value = PlaybackUiState(
             title = safeTitle,
             durationMs = durationMs,
@@ -94,25 +112,45 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
         haptics.tryEmit(HapticCue.CONFIRM)
     }
 
+    /**
+     * One ±10s tap. It moves the head and the timecode and nothing else — the wire waits
+     * for the tapping to stop ([SeekPolicy.QUIET_WINDOW_MS]), so the user can keep tapping
+     * to wherever they meant and pay for one refill instead of one per tap.
+     */
     fun skip(deltaMs: Long) {
         val s = _state.value
-        // With an unknown duration (durationMs == 0 — MediaStore had none and no
-        // state frame with dur>0 has arrived yet), clamp only at the low end; the
-        // receiver clamps the high end to the real duration. Without this, +10s
-        // would coerceIn(0,0) → seek 0 and restart playback from the start.
-        val next = if (s.durationMs > 0L) {
-            (s.targetMs + deltaMs).coerceIn(0L, s.durationMs)
-        } else {
-            (s.targetMs + deltaMs).coerceAtLeast(0L)
-        }
-        // Absolute seek (idempotent) carries the ±10s intent; the TV also accepts
-        // the relative `skip` verb, but the absolute form survives reordering.
-        beginSeek(next)
+        val next = SeekPolicy.skipTarget(s.targetMs, deltaMs, s.durationMs)
+        _state.update { it.copy(targetMs = next, skipping = true) }
+        skipBurst.arm()
         haptics.tryEmit(HapticCue.CONFIRM)
     }
 
+    /**
+     * The end of a tap run: one absolute seek (idempotent, so it survives reordering) for
+     * wherever the head ended up, issued through the same [beginSeek] every other seek
+     * takes so no part of reconcile is special-cased for this path.
+     *
+     * The state is the authority on whether a seek is still owed: a window that elapses
+     * after a scrub, a new cast or a stop has nothing left to commit.
+     */
+    private fun commitSkipBurst() {
+        if (!_state.value.skipping) return
+        _state.update { it.copy(skipping = false) }
+        beginSeek(_state.value.targetMs)
+    }
+
+    /**
+     * Land a run that is still accumulating, now. The remote spends this when it leaves the
+     * screen: those taps were already paid out on a head the user watched move, so the seek
+     * is owed either way — this only keeps it from arriving after the screen it was made on.
+     */
+    fun commitPendingSkip() = skipBurst.commitNow()
+
     fun scrubStart() {
-        _state.update { it.copy(scrubbing = true) }
+        // A drag supersedes a tap run: without cancelling here, both mechanisms would send
+        // a seek for what the user experienced as one gesture.
+        skipBurst.cancel()
+        _state.update { it.copy(scrubbing = true, skipping = false) }
         lastDetentBucket = _state.value.targetMs / DETENT_MS
         haptics.tryEmit(HapticCue.GRIP)
     }
@@ -159,6 +197,7 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
         castId = null
         seekPending = false
         playPending = false
+        skipBurst.cancel()
         lastSeq = -1L
         _state.value = PlaybackUiState()
     }
@@ -211,20 +250,35 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
                 newSyncing = (SystemClock.elapsedRealtime() - lastConfirmedAtMs) > SYNC_GRACE_MS
                 reconcileNow = false
             }
+            prev.skipping -> {
+                // A tap run the user may still be adding to: the head is theirs, exactly as
+                // under a drag. Ahead of `seekPending` deliberately — a second run can start
+                // while an earlier seek is still outstanding, and that branch would adopt
+                // `pos` and drag the bar off the position the thumb is building. SYNCING
+                // stays down because nothing is in flight yet to be out of sync with; it
+                // reads staleness only (control-channel.md §4: healthy sync is invisible),
+                // and lastConfirmedAtMs was just stamped, so a fresh frame reads not-stale.
+                newTarget = prev.targetMs
+                newPlaying = prev.playing
+                newSyncing = (SystemClock.elapsedRealtime() - lastConfirmedAtMs) > SYNC_GRACE_MS
+                reconcileNow = false
+            }
             seekPending -> {
-                val collapsed = abs(prev.targetMs - pos) <= RECONCILE_MS
-                val timedOut = SystemClock.elapsedRealtime() - seekPendingSinceMs > SEEK_TIMEOUT_MS
-                if (collapsed || timedOut) {
-                    seekPending = false
-                    newTarget = pos
-                    newPlaying = framePlaying
-                    newSyncing = false
-                    reconcileNow = collapsed
-                } else {
+                val outstandingMs = SystemClock.elapsedRealtime() - seekPendingSinceMs
+                val outcome = SeekPolicy.pending(prev.targetMs, pos, phase, outstandingMs)
+                if (outcome == SeekPolicy.Pending.WAITING) {
                     newTarget = prev.targetMs
                     newPlaying = prev.playing
                     newSyncing = true
                     reconcileNow = false
+                } else {
+                    // Arrived, or given up on: either way the TV's position is now the
+                    // honest one. Only an arrival is a reconcile, so only it pulses.
+                    seekPending = false
+                    newTarget = pos
+                    newPlaying = framePlaying
+                    newSyncing = false
+                    reconcileNow = outcome == SeekPolicy.Pending.ARRIVED
                 }
             }
             else -> {
@@ -291,8 +345,6 @@ class PlaybackSession(private val control: ControlClient, private val fallbackTi
         const val DETENT_MS = 10_000L        // haptic tick every 10s of film
         const val SEEK_THROTTLE_MS = 50L      // ≤ ~20 seeks/s (control-channel §4)
         const val SYNC_GRACE_MS = 250L        // hiccup threshold
-        const val RECONCILE_MS = 400L         // "collapsed" window
-        const val SEEK_TIMEOUT_MS = 3_000L    // don't get stuck if TV never catches up
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
         const val GENERIC_TITLE = "Video"
     }

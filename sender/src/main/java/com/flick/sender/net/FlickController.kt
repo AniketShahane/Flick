@@ -151,7 +151,7 @@ internal class UnplayableMemory(private val limit: Int = 64) {
 class CastCoordinator(private val appContext: Context, private val scope: CoroutineScope) {
     val nsd = NsdDiscovery(appContext)
     val control = ControlClient(scope)
-    val session = PlaybackSession(control, appContext.getString(R.string.media_title_generic))
+    val session = PlaybackSession(control, scope, appContext.getString(R.string.media_title_generic))
     private val haptics = FlickHaptics(appContext)
     private val store = PairingStore(appContext)
     private val libraryFolderStore = LibraryFolderStore(appContext)
@@ -576,25 +576,36 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
-    /** Same-host-only rebind sweep, bounded in both candidate count and wall time. */
-    private suspend fun retryAtSameHost(host: String, typedPort: Int, code: String): ControlClient.Result? =
-        withTimeoutOrNull(PAIR_REBIND_BUDGET_MS) {
-            var ports = rebindPorts(host, typedPort)
-            if (ports.isEmpty()) {
-                withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
-                    devices.first { list -> list.any { it.host == host && it.port != typedPort } }
-                }
-                ports = rebindPorts(host, typedPort)
+    /**
+     * Same-host-only rebind sweep, bounded in both candidate count and wall time.
+     *
+     * The budget gates STARTING another candidate rather than wrapping the whole sweep,
+     * and the difference is load-bearing now that a first pair can stop on a person: a
+     * candidate that reached the receiver is no longer a search, it is the attempt, and
+     * an enclosing wall clock would cancel it mid-confirmation and report the TV as
+     * unreachable while its own screen was still asking about this phone. Each candidate
+     * carries its own six-second dial bound inside `ControlClient.open`, so the sweep
+     * stays bounded either way — it just no longer cuts across an attempt that landed.
+     */
+    private suspend fun retryAtSameHost(host: String, typedPort: Int, code: String): ControlClient.Result? {
+        val deadlineMs = System.nanoTime() / 1_000_000L + PAIR_REBIND_BUDGET_MS
+        var ports = rebindPorts(host, typedPort)
+        if (ports.isEmpty()) {
+            withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
+                devices.first { list -> list.any { it.host == host && it.port != typedPort } }
             }
-            var last: ControlClient.Result? = null
-            for (candidate in ports) {
-                val outcome = control.pair(host, candidate, deviceLabel, code)
-                FlickLog.i("ws", "pair candidate $host:$candidate -> ${outcome.javaClass.simpleName}")
-                last = outcome
-                if (outcome !is ControlClient.Result.Unreachable || outcome.pairCodeSent) return@withTimeoutOrNull outcome
-            }
-            last
+            ports = rebindPorts(host, typedPort)
         }
+        var last: ControlClient.Result? = null
+        for (candidate in ports) {
+            if (System.nanoTime() / 1_000_000L >= deadlineMs) break
+            val outcome = control.pair(host, candidate, deviceLabel, code)
+            FlickLog.i("ws", "pair candidate $host:$candidate -> ${outcome.javaClass.simpleName}")
+            last = outcome
+            if (outcome !is ControlClient.Result.Unreachable || outcome.pairCodeSent) return outcome
+        }
+        return last
+    }
 
     private fun rebindPorts(host: String, typedPort: Int): List<Int> =
         devices.value.filter { it.host == host && it.port != typedPort && it.port in 1..65535 }
@@ -813,7 +824,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
     private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
-    fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
+    fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
     fun retryCast() { retryItem?.let { item -> retryItem = null; flickToTv(item) } }
     private fun requestRemoteStop(castId: String) { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId)) }
     private fun failPendingResume(code: String) {

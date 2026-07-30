@@ -2,11 +2,12 @@ package com.flick.receiver.player
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Display
 import android.view.KeyEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -262,6 +263,7 @@ class PlayerController(context: Context) : SessionPlayer {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            reportUnplayableVideoTrack(tracks)
             var selected = false
             var selectedMimeType: String? = null
             for (group in tracks.groups) {
@@ -414,6 +416,7 @@ class PlayerController(context: Context) : SessionPlayer {
             format.colorInfo?.colorTransfer?.takeIf { it != Format.NO_VALUE }?.let {
                 instrumentation.colorTransfer = it
             }
+            logPresentationShortfalls()
         }
 
         override fun onAudioInputFormatChanged(
@@ -483,6 +486,110 @@ class PlayerController(context: Context) : SessionPlayer {
         }
     }
 
+    // --- Unplayable video -----------------------------------------------------
+
+    /**
+     * One report per media item. `onTracksChanged` fires again for every text-track
+     * change and for an in-place subtitle reload, and a capability verdict must not be
+     * re-raised over a diagnosis screen the viewer is already reading.
+     */
+    private var videoShortfallReported = false
+
+    /**
+     * Turn "the video track was not selected" into the terminal failure Media3 never
+     * raises for it — see [videoTrackShortfall].
+     *
+     * Routed exactly like [Player.Listener.onPlayerError] except that the transient
+     * recovery path is skipped outright: no amount of re-preparing gives this TV a
+     * decoder it does not have, and the 2/4/8/15 s recovery budget would only spend
+     * 29 s before showing the same answer.
+     */
+    private fun reportUnplayableVideoTrack(tracks: Tracks) {
+        if (videoShortfallReported) return
+        val supports = mutableListOf<Int>()
+        var anySelected = false
+        var mimeType: String? = null
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            for (index in 0 until group.length) {
+                supports += group.getTrackSupport(index)
+                if (group.isTrackSelected(index)) anySelected = true
+                if (mimeType == null) mimeType = group.getTrackFormat(index).sampleMimeType
+            }
+        }
+        val shortfall = videoTrackShortfall(supports, anySelected, mimeType) ?: return
+        videoShortfallReported = true
+        FlickLog.w(
+            "player",
+            "videoUnplayable shortfall=$shortfall mime=${mimeType ?: "unknown"} " +
+                "support=${supports.joinToString(",")} decoderPolicy=hardwareOnly",
+        )
+        val error = PlaybackException(
+            "video track unplayable",
+            UnplayableVideoTrackException(shortfall),
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        )
+        recordPlaybackError(error)
+        startupCallbacks?.let { callbacks ->
+            startupCallbacks = null
+            callbacks.onError(error)
+            return
+        }
+        playbackFailureListener?.invoke(error)
+    }
+
+    // --- Panel capability ----------------------------------------------------
+
+    /**
+     * The panel's advertised HDR types and its physical mode, read once. Neither
+     * changes for the life of the process on a TV, and `DisplayManager` is not free
+     * to query from a per-format callback.
+     *
+     * The **physical** mode is deliberate: a display whose logical size has been
+     * overridden (`wm size`) is a developer action, not a hardware limit, and must not
+     * report a shortfall. `HdrCapabilities.getSupportedHdrTypes()` is deprecated at
+     * API 34 in favour of the per-mode list, but it is the only reading available
+     * across minSdk 26, and an empty array is treated as "unknown" downstream anyway.
+     */
+    private val panel: PanelCapability by lazy {
+        runCatching {
+            val manager = appContext.getSystemService(DisplayManager::class.java)
+            val display = manager?.getDisplay(Display.DEFAULT_DISPLAY) ?: return@runCatching null
+            @Suppress("DEPRECATION")
+            val hdrTypes = display.hdrCapabilities?.supportedHdrTypes ?: IntArray(0)
+            val mode = display.mode
+            PanelCapability(hdrTypes, mode?.physicalWidth ?: 0, mode?.physicalHeight ?: 0)
+        }.getOrNull() ?: PanelCapability(IntArray(0), 0, 0)
+    }
+
+    private class PanelCapability(val hdrTypes: IntArray, val width: Int, val height: Int)
+
+    /**
+     * Records what this panel cannot present about the format now decoding.
+     *
+     * Diagnosis only, and that is the whole design: there is no transcode and no
+     * downscale here, so the alternative to presenting it anyway is refusing the film,
+     * and `Display.HdrCapabilities` is under-reported often enough on Android TV that
+     * refusing on it would break films that play correctly today.
+     */
+    private fun logPresentationShortfalls() {
+        val shortfalls = presentationShortfalls(
+            videoWidth = instrumentation.videoWidth,
+            videoHeight = instrumentation.videoHeight,
+            videoMimeType = instrumentation.videoMimeType,
+            colorTransfer = instrumentation.colorTransfer,
+            supportedHdrTypes = panel.hdrTypes,
+            displayWidth = panel.width,
+            displayHeight = panel.height,
+        )
+        if (shortfalls.isEmpty()) return
+        FlickLog.i(
+            "player",
+            "panelShortfall ${shortfalls.joinToString(" ")} " +
+                "panelHdr=${panel.hdrTypes.joinToString(",")} panel=${panel.width}x${panel.height}",
+        )
+    }
+
     // --- Bounded auto-recovery ----------------------------------------------
 
     /**
@@ -531,21 +638,33 @@ class PlayerController(context: Context) : SessionPlayer {
     // --- Player construction -------------------------------------------------
 
     private fun createPlayer(): ExoPlayer {
-        // Generous 4K-sized allocator + load control. Time thresholds are
-        // prioritized over the byte target so that, on a fast LAN, buffering is
-        // driven by the min/max buffer *durations* rather than starving early.
+        // The allocator holds its segments on the Java heap, so every number below
+        // is a fraction of THIS device's grant rather than of the one the tuning was
+        // measured on — see [bufferBudgetFor]. Read at construction because the
+        // grant is a property of the process, and logged because the buffer is the
+        // whole anti-buffering thesis and a silently shrunken one must be visible.
+        val budget = bufferBudgetFor(Runtime.getRuntime().maxMemory())
+        FlickLog.i(
+            "player",
+            "loadControl targetMiB=${budget.targetBufferBytes / (1024 * 1024)} " +
+                "minMs=${budget.minBufferMs} backMs=${budget.backBufferMs} maxMs=${budget.maxBufferMs} " +
+                // Ride-out in seconds at two real 4K rates, because the byte target is
+                // what bounds 4K and maxMs is not reachable there.
+                "rideOut60MbpsSec=${budget.protectionSecondsAt(60_000_000L).toInt()} " +
+                "rideOut100MbpsSec=${budget.protectionSecondsAt(PLANNED_PEAK_BITRATE_BPS).toInt()}",
+        )
         val allocator = DefaultAllocator(/* trimOnReset = */ true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
         val loadControl = DefaultLoadControl.Builder()
             .setAllocator(allocator)
             .setBufferDurationsMs(
-                MIN_BUFFER_MS,
-                MAX_BUFFER_MS,
-                BUFFER_FOR_PLAYBACK_MS,
-                BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                budget.minBufferMs,
+                budget.maxBufferMs,
+                budget.bufferForPlaybackMs,
+                budget.bufferForPlaybackAfterRebufferMs,
             )
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .setTargetBufferBytes(TARGET_BUFFER_BYTES)
-            .setBackBuffer(BACK_BUFFER_MS, /* retainBackBufferFromKeyframe = */ true)
+            .setPrioritizeTimeOverSizeThresholds(budget.prioritizeTimeOverSizeThresholds)
+            .setTargetBufferBytes(budget.targetBufferBytes)
+            .setBackBuffer(budget.backBufferMs, /* retainBackBufferFromKeyframe = */ true)
             .build()
 
         // Byte-range aware HTTP source. Cross-protocol redirects OFF (we only
@@ -558,9 +677,10 @@ class PlayerController(context: Context) : SessionPlayer {
         )
 
         // Generous LAN direct-play retry policy replacing Media3's default (3
-        // tries). With the 15-180s buffer, ~100s of quiet capped-backoff retrying
-        // rides out router blips, phone roams and brief peer-block episodes with
-        // zero visible stall — every byte-range retry is a perfect resume. 4xx
+        // tries). ~100s of quiet capped-backoff retrying rides out router blips,
+        // phone roams and brief peer-block episodes, and every byte-range retry is a
+        // perfect resume; how much of that the viewer never sees is whatever the
+        // device's own byte budget covers at the file's bitrate. 4xx
         // (except 416 Range-Not-Satisfiable) fail fast so the diagnosis UI takes
         // over instead of hammering a dead/blocking endpoint.
         val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy(MAX_LOAD_RETRY_COUNT) {
@@ -578,7 +698,17 @@ class PlayerController(context: Context) : SessionPlayer {
                 // The strict source has already observed an unsafe HTTP response.
                 // Never turn a redirect/4xx/5xx startup failure into the long
                 // in-playback retry policy.
-                if (exception is RedirectRejectedException || exception is PlaybackHttpStatusException) {
+                //
+                // SubtitleTooLargeException belongs in the same set and is not an HTTP
+                // verdict: it is a body that has already exceeded the cap, so every retry
+                // re-fetches the same oversized file. This policy does reach the
+                // subtitle SingleSampleMediaSource, so without it a single over-cap
+                // sidecar cost ~20 fetches — on the order of 100 MB and 100 s of TV-side
+                // downloading — to reach a conclusion already known on the first attempt.
+                if (exception is RedirectRejectedException ||
+                    exception is PlaybackHttpStatusException ||
+                    exception is SubtitleTooLargeException
+                ) {
                     return C.TIME_UNSET
                 }
                 if (exception is HttpDataSource.InvalidResponseCodeException) {
@@ -595,10 +725,13 @@ class PlayerController(context: Context) : SessionPlayer {
 
         // Hardware decoders only (no software/extension renderers) — the whole
         // point is to prove the TV decodes the original bytes in hardware.
-        // Decoder fallback is OFF: if the primary (hardware) decoder fails to
-        // init, we want a visible PlaybackException in the overlay, NOT a silent
-        // drop to a software decoder that would mask the very failure this spike
-        // exists to expose.
+        //
+        // Decoder fallback is ON, and that does not weaken the claim: the selector has
+        // already removed every software decoder from the candidate list, and fallback
+        // can only walk to the NEXT entry of that list. So there is no software decoder
+        // left to fall back TO, and what the flag actually buys is the retry to a second
+        // *hardware* decoder on a TV that ships more than one — turning "the first
+        // decoder would not configure" from a dead cast into a working one.
         val renderersFactory = DefaultRenderersFactory(appContext)
             .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
                 val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
@@ -607,14 +740,18 @@ class PlayerController(context: Context) : SessionPlayer {
                     requiresTunnelingDecoder,
                 )
                 if (!MimeTypes.isVideo(mimeType)) candidates else candidates.filter { info ->
+                    // Media3 populates hardwareAccelerated on every API level, not
+                    // only 29+: below 29 it derives it from the codec namespace. The
+                    // old `>= 29` gate discarded that and left the policy with a
+                    // MediaTek-only fallback, which refused to play on every other
+                    // vendor's silicon on API 26-28.
                     HardwareDecoderPolicy.isHardwareVideoCodec(
                         name = info.name,
-                        apiLevel = Build.VERSION.SDK_INT,
-                        hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) info.hardwareAccelerated else null,
+                        hardwareAccelerated = info.hardwareAccelerated,
                     )
                 }
             }
-            .setEnableDecoderFallback(false)
+            .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
 
         return ExoPlayer.Builder(appContext, renderersFactory)
@@ -663,6 +800,9 @@ class PlayerController(context: Context) : SessionPlayer {
         currentMediaId = mediaId
         subtitleLoadFailed = false
         subtitleDropped = false
+        // A capability verdict belongs to the file it was reached about: the next cast
+        // gets to be judged on its own tracks. This is every load and reload path.
+        videoShortfallReported = false
     }
 
     // --- Lifecycle -----------------------------------------------------------
@@ -1090,19 +1230,13 @@ class PlayerController(context: Context) : SessionPlayer {
     }
 
     companion object {
-        // LoadControl tuning for LAN direct-play of large 4K files. 180s of
-        // forward buffer rides out ~3min serving outages invisibly (an observed
-        // real-world ~70s wireless event drained the previous 60s cap and caused
-        // a 12s stall); at typical 4K bitrates this is ~50-150 MB, still under
-        // the byte target below.
-        const val MIN_BUFFER_MS = 15_000
-        const val MAX_BUFFER_MS = 180_000
-        const val BUFFER_FOR_PLAYBACK_MS = 2_500
-        const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
-
-        // Retain the last 30s behind the playhead so short backward seeks replay
-        // from memory instead of refetching over the network.
-        const val BACK_BUFFER_MS = 30_000
+        // The LoadControl numbers are per-device and live in [bufferBudgetFor];
+        // nothing here may reintroduce a fixed one. What the buffer buys, stated in
+        // the unit it is actually bounded in: on the verified hardware 256 MB is
+        // ~21 s of 100 Mbps 4K, ~54 s at 40 Mbps, and the full 180 s time cap only
+        // below ~12 Mbps. The observed real-world event this tuning answers was a
+        // ~70 s wireless outage that drained a previous 60 s cap and cost a 12 s
+        // stall — so 4K is protected by BYTES, and the seconds follow the bitrate.
 
         // A seek that lands inside the buffer never leaves STATE_READY, so the
         // seek-fill window is closed from the snapshot tick once this settle time
@@ -1110,17 +1244,14 @@ class PlayerController(context: Context) : SessionPlayer {
         // same main-loop burst as the discontinuity — always arrives first).
         const val SEEK_SETTLE_MS = 700L
 
-        // Generous byte target for 4K (~256 MB). With largeHeap enabled and
-        // prioritizeTimeOverSizeThresholds(true), typical 4K bitrates buffer
-        // toward the 60s max while very-high-bitrate content stays memory-bounded.
-        const val TARGET_BUFFER_BYTES = 256 * 1024 * 1024
-
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 30_000
         const val USER_AGENT = "FlickReceiver/0.1 (Media3 direct-play)"
 
         // Load-error retry policy: ~20 tries with capped backoff (min(1000*(n+1), 5000)ms)
-        // ≈ 100s of quiet retrying, hidden by the 15-60s buffer.
+        // ≈ 100s of quiet retrying. Whether that is hidden depends on the device's
+        // own budget: it is covered outright at 40 Mbps and below on the verified
+        // hardware, and only partly on a TV whose heap forced the budget down.
         const val MAX_LOAD_RETRY_COUNT = 20
         const val MAX_LOAD_RETRY_DELAY_MS = 5_000L
 

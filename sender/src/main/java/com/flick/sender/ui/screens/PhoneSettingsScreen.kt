@@ -32,7 +32,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.net.FlickController
-import com.flick.sender.ui.components.NowPlayingDockClearance
+import com.flick.sender.ui.components.LocalNavMetrics
+import com.flick.sender.ui.components.navBottomClearance
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.ThemePreference
@@ -57,8 +58,12 @@ fun PhoneSettingsScreen(
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the diagnostics row sits
-    // under a bar that answers taps meant for it.
-    val bottomClearance = 116.dp + if (castingItem != null) NowPlayingDockClearance else 0.dp
+    // under a bar that answers taps meant for it. The nav's height is measured rather than
+    // assumed, because the label's line box grows with the font scale.
+    val bottomClearance = navBottomClearance(
+        barHeight = LocalNavMetrics.current.height,
+        dockLive = castingItem != null,
+    )
 
     Column(
         Modifier

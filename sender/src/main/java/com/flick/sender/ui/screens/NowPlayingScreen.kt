@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
@@ -112,6 +113,7 @@ import com.flick.sender.ui.theme.PosterShadow
 import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
 
@@ -178,11 +180,25 @@ private fun RemoteScreen(
         }
     }
 
+    // A run of ±10s taps commits on a quiet period, and leaving the screen ends the run
+    // whether or not that period elapsed — the taps were already spent on a head the user
+    // watched move, so the seek is owed. The session outlives this screen, so the queued
+    // commit would land anyway; this only keeps it from arriving after the gesture. The
+    // same reason PhoneScrubBar closes a stranded drag on dispose.
+    DisposableEffect(controller) {
+        onDispose { controller.commitPendingSkip() }
+    }
+
     val phase by remember { derivedStateOf { playbackState.value.phase } }
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
+    val skipping by remember { derivedStateOf { playbackState.value.skipping } }
     // Buffering stays a bounded, centered face. It must never enter the scroll
     // container because its weighted body needs finite height constraints.
-    val showBuffering = phase == PlaybackPhase.BUFFERING && !scrubbing
+    //
+    // Held back during a tap run for the same reason it is held back under a drag: this
+    // face replaces the whole transport, so a rebuffer that lands mid-run would take the
+    // ±10s buttons out from under the thumb that is still using them.
+    val showBuffering = phase == PlaybackPhase.BUFFERING && !scrubbing && !skipping
 
     Box(
         Modifier
@@ -280,7 +296,11 @@ private fun RemoteScreen(
 @Composable
 private fun BoxScope.AmbientGlow() {
     val reduceMotion = rememberReduceMotion()
-    val breathing = if (reduceMotion) {
+    // This screen is composed for the whole of a cast — hours, while the same process
+    // serves 4K — and a loop has no end state to arrive at, so it is stopped by hand the
+    // moment the window is no longer resumed. That is power, not jank: nobody is looking.
+    val resumed = rememberIsResumed()
+    val breathing = if (reduceMotion || !resumed) {
         null
     } else {
         rememberInfiniteTransition(label = "glow").animateFloat(
@@ -293,12 +313,16 @@ private fun BoxScope.AmbientGlow() {
             label = "glowAlpha",
         )
     }
+    // Reduce-motion holds the glow at full strength, which is the still form of it. A
+    // stopped loop rests where that loop begins instead, so the first resumed frame picks
+    // the breath up rather than stepping down into it.
+    val rest = if (reduceMotion) Motion.GlowMaxAlpha else Motion.GlowMinAlpha
     Box(
         Modifier
             .align(Alignment.TopCenter)
             .offset(y = (-80).dp)
             .size(width = 360.dp, height = 250.dp)
-            .graphicsLayer { alpha = breathing?.value ?: Motion.GlowMaxAlpha }
+            .graphicsLayer { alpha = breathing?.value ?: rest }
             .background(FlickGradients.ambientGlow),
     )
 }

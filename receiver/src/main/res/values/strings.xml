@@ -47,6 +47,20 @@
     <string name="pair_sealed_body">Too many wrong codes were entered. Pairing stays closed until it is resumed here on the TV, so a phone that isn\'t in this room can\'t keep guessing.</string>
     <string name="pair_sealed_resume">Resume pairing</string>
     <string name="pair_success">Phone paired</string>
+    <!-- The on-TV confirmation. It exists because the QR carries the live code, so
+         anyone who can read this screen can submit a correct one — the answer to that
+         is a button nobody outside this room can press. The copy names what allowing
+         grants ("cast to this TV") and does not overclaim: it is not file access. It
+         says the request came from THIS screen so a viewer can tell an expected
+         request from an unexpected one, and it states which way the timer resolves,
+         because a prompt that expires into an allow would be no gate at all. -->
+    <string name="pair_confirm_title">Allow this phone?</string>
+    <string name="pair_confirm_instructions">%1$s scanned the code on this screen and wants to cast here.</string>
+    <string name="pair_confirm_body">Allowing lets this phone start and control videos on this TV. It gets no access to anything else, and you can remove it later in Settings.</string>
+    <string name="pair_confirm_deadline">Declines automatically in %1$ds</string>
+    <string name="pair_confirm_deadline_unknown">Declines automatically if nobody answers</string>
+    <string name="pair_confirm_allow">Allow</string>
+    <string name="pair_confirm_deny">Don\'t allow</string>
     <string name="settings_forget_all">Forget all phones</string>
     <string name="settings_forget_all_summary">Remove every paired phone from this TV</string>
     <string name="settings_forget_all_confirm">Press again to confirm</string>

@@ -49,7 +49,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -524,10 +525,22 @@ private fun SyncChip(modifier: Modifier) {
                 if (sweep == null) {
                     Modifier
                 } else {
-                    Modifier.drawWithContent {
-                        val span = size.width * 1.4f
-                        drawRect(FlickGradients.syncShimmer(-span + sweep.value * (size.width + 2f * span), span))
-                        drawContent()
+                    // The brush is built once per size, not once per frame: a gradient with
+                    // baked endpoints is a shader, and rebuilding it to move it allocated a
+                    // native one on every frame of the loop. It travels under a translate
+                    // instead — and only the band itself is painted, because the stops
+                    // outside it are fully transparent and the chip's own pill clip keeps
+                    // the overhang off its neighbours.
+                    Modifier.drawWithCache {
+                        val span = size.width * ShimmerSpan
+                        val shimmer = FlickGradients.syncShimmer(0f, span)
+                        val travel = size.width + 2f * span
+                        onDrawWithContent {
+                            translate(left = -span + sweep.value * travel) {
+                                drawRect(brush = shimmer, size = Size(span, size.height))
+                            }
+                            drawContent()
+                        }
                     }
                 },
             )
@@ -672,6 +685,9 @@ private const val DetentCount = 36
 
 /** The echo is noise below this much of the timeline; above it, it is information. */
 private const val GhostThreshold = 0.004f
+
+/** Sweep band, as a multiple of the chip's width. Wider than the chip, so it reads as a rake. */
+private const val ShimmerSpan = 1.4f
 
 private val TwoPi = (2.0 * PI).toFloat()
 

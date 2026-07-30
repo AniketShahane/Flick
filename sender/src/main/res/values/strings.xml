@@ -161,7 +161,13 @@
     <string name="pair_error_timeout">The TV didn\'t answer in time. Check both devices are on the same Wi-Fi.</string>
     <string name="pair_error_rejected">The TV refused the connection. Make sure its pairing screen is showing, then try again.</string>
     <string name="pair_error_expired">That code expired — a new one is on the TV.</string>
-    <string name="pair_error_surface">Open Flick\'s pairing screen on the TV.</string>
+    <!-- The receiver's `surface` denial covers three things: a pairing screen that
+         isn't up, a pairing screen that has moved on, and someone at the TV choosing
+         not to allow this phone. The v2 reason vocabulary is frozen and has no name for
+         the third, so this copy has to be true of all of them — it states the outcome
+         and points at the screen that can change it, instead of instructing the user to
+         open something that is already open. -->
+    <string name="pair_error_surface">The TV didn\'t accept this phone. Check its pairing screen, then try the code shown there.</string>
     <string name="pair_error_locked">Too many attempts — the TV is waiting. Give it a moment, then try the new code.</string>
     <string name="pair_error_tv_storage">The TV couldn\'t save this pairing. Restart Flick on the TV — retrying the code won\'t help.</string>
     <string name="pair_error_repair">Pairing couldn\'t be completed. Start again from the TV\'s pairing screen.</string>
@@ -369,10 +375,7 @@
     <string name="subs_unreadable_pick">Flick couldn\'t read that file.</string>
 
     <!-- Subtitles sheet · online search. -->
-    <string name="subs_online_no_key">Flick has no subtitle account of its own, and this app ships no key. Paste your own OpenSubtitles API key to search from here: it is stored on this phone only, and nothing leaves the phone until you press Search.</string>
-    <string name="subs_online_key_label">OpenSubtitles API key</string>
-    <string name="subs_online_key_save">Save key</string>
-    <string name="subs_online_key_forget">Forget this key</string>
+    <string name="subs_online_body">Search OpenSubtitles and attach the result. Flick sends the title below, and a fingerprint of the video file when it can read one — that is what finds a subtitle already in sync with this exact release.</string>
     <string name="subs_online_query_label">Title</string>
     <string name="subs_online_season_label">Season</string>
     <string name="subs_online_episode_label">Episode</string>
@@ -381,11 +384,42 @@
     <string name="subs_online_downloading">Downloading…</string>
     <string name="subs_online_empty">OpenSubtitles has nothing for that title.</string>
     <string name="subs_online_downloads">%1$d downloads</string>
+    <string name="subs_online_hash_match">Matches this exact file</string>
+
+    <!-- Subtitles sheet · online search, when this build carries no key at all. -->
+    <string name="subs_online_no_key">This build of Flick carries no OpenSubtitles key, so it can\'t search from here. You can still attach a subtitle file yourself on the File tab — or paste your own key below, if you have one.</string>
+
+    <!-- Subtitles sheet · whose daily allowance a search and a download spend. -->
+    <string name="subs_online_shared">Searches without a sign-in draw on Flick\'s own small daily allowance, shared by everyone using the app. A free OpenSubtitles account gives you your own.</string>
+    <string name="subs_online_sign_in">Sign in to OpenSubtitles</string>
+    <string name="subs_online_user_label">Username</string>
+    <string name="subs_online_password_label">Password</string>
+    <string name="subs_online_password_note">Your password is sent to OpenSubtitles once, in exchange for a token. Flick stores the token and your username on this phone, and never the password.</string>
+    <string name="subs_online_sign_in_action">Sign in</string>
+    <string name="subs_online_signing_in">Signing in…</string>
+    <string name="subs_online_signed_in">Signed in as %1$s. Downloads count against your own allowance.</string>
+    <string name="subs_online_signed_in_anon">Signed in. Downloads count against your own allowance.</string>
+    <string name="subs_online_sign_out">Sign out</string>
+    <string name="subs_online_remaining">%1$d downloads left today.</string>
+    <string name="subs_online_remaining_reset">%1$d downloads left today · resets in %2$s.</string>
+
+    <!-- Subtitles sheet · the user's own API key, a secondary path for power users. -->
+    <string name="subs_online_key_show">Use my own OpenSubtitles key</string>
+    <string name="subs_online_key_label">OpenSubtitles API key</string>
+    <string name="subs_online_key_hint">An API Consumer key from your own OpenSubtitles account. It is stored on this phone only, and is sent nowhere except opensubtitles.com.</string>
+    <string name="subs_online_key_save">Save key</string>
+    <string name="subs_online_key_forget">Forget my key</string>
+    <string name="subs_online_key_mine">Searching with your own key.</string>
 
     <string name="subs_error_offline">No answer from OpenSubtitles. Check this phone\'s internet connection.</string>
-    <string name="subs_error_key">OpenSubtitles rejected that key. Check it and paste it again.</string>
-    <string name="subs_error_rate">OpenSubtitles is rate-limiting this key. Wait a minute, then try again.</string>
-    <string name="subs_error_quota">This account\'s daily download allowance is spent.</string>
+    <string name="subs_error_key_mine">OpenSubtitles rejected your key. Check it and paste it again.</string>
+    <string name="subs_error_key_app">OpenSubtitles has rejected Flick\'s own key. Paste your own key below, or attach a subtitle file yourself on the File tab.</string>
+    <string name="subs_error_rate">OpenSubtitles is rate-limiting these searches. Wait a minute, then try again.</string>
+    <string name="subs_error_quota">The daily download allowance is spent. Sign in with a free OpenSubtitles account for your own.</string>
+    <string name="subs_error_quota_signed">Your daily download allowance is spent. It resets within a day.</string>
+    <string name="subs_error_sign_in">OpenSubtitles didn\'t accept that username and password.</string>
+    <string name="subs_error_sign_in_expired">That sign-in has expired. Sign in again to use your own allowance.</string>
+    <string name="subs_error_link">OpenSubtitles answered with a download address outside its own site, so Flick didn\'t fetch it.</string>
     <string name="subs_error_unavailable">OpenSubtitles couldn\'t answer that just now.</string>
 
     <!-- Subtitles sheet · accessibility. -->
@@ -414,6 +448,12 @@
     <string name="pair_scanned_action">Pair with %1$s</string>
     <string name="pair_scanned_action_unknown">Pair with this TV</string>
     <string name="pair_scanned_dismiss">Not now</string>
+    <!-- Shown while the receiver is holding the socket to ask the room whether to admit
+         this phone. It is the only honest thing the phone can say: nothing on the wire
+         announces the prompt, so this is inferred from having sent the code, and the
+         copy therefore claims only that the answer is over there rather than promising
+         a prompt is definitely on screen. -->
+    <string name="pair_confirm_wait">Look at your TV — confirm this phone there.</string>
 
     <string name="settings_heading">Signal\n&amp; setup.</string>
 

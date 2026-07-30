@@ -168,6 +168,32 @@ val PosterShadow = Color(0x99000000)
  */
 val NavShadowOnNight = Color(0x8C000000)
 
+/**
+ * The closing stop of [FlickGradients.navSheenDark], and [NavSheenFootStart] is where it is
+ * allowed to begin. Both are named because this stop is not decoration the ink can ignore:
+ * the gradient runs DOWN the pill, so a wash at its end lands where the tab labels are.
+ *
+ * Measured on a device, with the stop interpolating from 62%, a label's local background came
+ * out `#38456B` against the bare glass's `#313D61` — `onSurfaceDim` at 4.31:1 where the glass
+ * alone gives 4.88:1. Under the 4.5 floor for text, on the role in the bar with the least
+ * headroom to begin with.
+ *
+ * Weakening the stop was the obvious answer and the wrong one: it would have cost the cool
+ * edge the pill is meant to have and still only reached 4.47:1 over a bright still. The bar's
+ * bottom 14% is row padding with nothing drawn in it, so the fix is to hold the wash off the
+ * text entirely rather than to dilute it — full strength, below the labels, where the glass
+ * meets its own rim. Ink then sits on bare glass: 4.88:1 on the page and 4.54:1 with a
+ * blown-out still behind it, both clear.
+ *
+ * Worth keeping next to the values: this shipped because FlickColorsTest measured ink against
+ * the glass and the glass alone, asserting a background the app never draws. A sheen laid over
+ * a surface is part of that surface, and the test now says so.
+ */
+val NavSheenDarkFoot = Color(0x1F96B4FF)
+
+/** See [NavSheenDarkFoot]: below this the pill is padding, so a wash there touches no ink. */
+const val NavSheenFootStart = 0.86f
+
 val LightFlickColors = FlickColors(
     isLight = true,
     canvas = CanvasLight,
@@ -298,10 +324,24 @@ val DarkFlickColors = FlickColors(
     inverseSurface = NightInk,
     onInverseSurface = NightCanvas,
     onInverseSurfaceDim = InkDim,
-    // Lighter than every surface of the set, because the pill and the dock float over all
-    // of them; the border comes down with it, since a hairline sized for a near-black
-    // glass rings against one this pale.
-    glass = Color(0xF02A3346),
+    // The floating chrome — the nav pill and the Now-Playing dock — and the one role that
+    // stayed a grey when the rest of this set became a blue. It carried 28 channel steps
+    // of colour against the light glass's 48, so the piece of chrome that floats over
+    // everything was the piece that dropped the brand. This holds the set's 225° anchor at
+    // a spread of 48 — the same amount of blue light mode carries, at this lightness — and
+    // separates 1.35:1 from surfaceRaisedAlt where it used to manage 1.10:1, which is a
+    // pill sitting flat on the page rather than floating over it.
+    //
+    // 98% opaque rather than 94%: this is drawn over a scrolling poster grid, and the 6%
+    // that showed through moved the inactive nav label across a full stop — 5.98:1 on the
+    // page, 4.84:1 once a blown-out still was behind it. A surface that carries controls
+    // cannot have a contrast figure that depends on which poster is under it. Nothing is
+    // given up, because the frosted read was never the backdrop: Compose cannot sample
+    // one, so it is the sheen, the hairline and the shadow doing that work (see
+    // [flickGlass]) and all three are untouched.
+    glass = Color(0xFA323E62),
+    // Held at 18%: the rim steps 1.71:1 off the new fill against 1.77:1 off the old one,
+    // so the hairline reads as it did without being retuned for it.
     glassBorder = Color(0x2EFFFFFF),
     onSurface = NightInk,
     onSurfaceDim = NightInkDim,
@@ -402,7 +442,10 @@ object FlickGradients {
         0f to Color(0x2EFFFFFF),
         0.44f to Color(0x0AFFFFFF),
         0.62f to Color(0x00FFFFFF),
-        1f to Color(0x1F96B4FF),
+        // Transparent all the way to the rim, so the closing wash never reaches the labels
+        // sitting at ~73%. See [NavSheenDarkFoot] for the measurement that put it here.
+        NavSheenFootStart to Color(0x00FFFFFF),
+        1f to NavSheenDarkFoot,
     )
 
     /** The amber pill that runs along the connecting hairline. */

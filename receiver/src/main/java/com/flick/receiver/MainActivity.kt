@@ -6,6 +6,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.flick.receiver.net.NsdAdvertiser
+import com.flick.receiver.ui.theme.warmBundledTypefaces
 import com.flick.receiver.util.FlickLog
 
 /**
@@ -33,8 +34,22 @@ class MainActivity : ComponentActivity() {
             "app start version=${BuildConfig.VERSION_NAME} code=${BuildConfig.VERSION_CODE} " +
                 "controlV=${NsdAdvertiser.PROTOCOL_VERSION} wireCaps=array",
         )
-        // No remote/user interaction during long playback — don't let the TV
-        // dim or sleep while a video is on screen.
+        // Started before setContent and off the main thread so it races composition
+        // rather than joining it: the bundled faces are Blocking by design, and this
+        // is the only way their parse cost leaves the first measure. See
+        // [warmBundledTypefaces] — a daemon thread because losing the race is the
+        // ordinary outcome on a cold start and costs nothing.
+        Thread({ warmBundledTypefaces(applicationContext) }, "flick-font-warm")
+            .apply { isDaemon = true }
+            .start()
+
+        // Unconditional for the Activity's whole life, which is WRONG for the resting
+        // surfaces: idle, pairing and settings are where the TV sits for hours between
+        // casts, and the flag denies an OLED panel its dimming and every screensaver
+        // there too. [keepScreenOnWhilePresenting] is the scoped answer, but applying
+        // it needs the cast stage, which lives in ReceiverApp — until it is wired
+        // there this stays, because a panel that never sleeps is a lesser fault than
+        // one that sleeps over a film.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {

@@ -18,10 +18,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -30,6 +34,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.util.lerp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 
 /**
@@ -132,6 +139,35 @@ object Motion {
  */
 @Composable
 fun rememberReduceMotion(): Boolean = !ValueAnimator.areAnimatorsEnabled()
+
+/**
+ * Whether the window this composition is in is resumed.
+ *
+ * A finite animation ends on its own and a paused window never sees it. A loop does not:
+ * it keeps asking for frames for as long as it is composed, and a route that stays
+ * composed for the whole of a two-hour cast keeps asking while the process is also
+ * serving 4K over HTTP. So a loop on a long-lived surface is gated on this as well as on
+ * [rememberReduceMotion].
+ */
+@Composable
+internal fun rememberIsResumed(): Boolean {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumed by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> resumed = true
+                Lifecycle.Event.ON_PAUSE -> resumed = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return resumed
+}
 
 /**
  * How far a press has got: 0 at rest, 1 held down.

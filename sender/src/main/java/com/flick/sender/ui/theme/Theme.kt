@@ -15,13 +15,16 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 
 /**
  * Literal Material 3 Expressive entry point for the phone. The brand is committed:
@@ -48,6 +51,7 @@ fun FlickTheme(
     val flick = if (darkTheme) DarkFlickColors else LightFlickColors
     val context = LocalContext.current
     val useDynamicTonalRoles = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    PreloadBundledFonts()
     val base = when {
         useDynamicTonalRoles ->
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -56,6 +60,35 @@ fun FlickTheme(
     }
 
     FlickMaterial(flick, flickColorScheme(flick, base, useDynamicTonalRoles), content)
+}
+
+/**
+ * Warms the typeface cache for the three bundled families.
+ *
+ * A `res/font` face is declared with the plain `Font(...)` constructor, which is
+ * `FontLoadingStrategy.Blocking`: the typeface is created inside the first measure that
+ * asks for a weight it has not seen. Six faces and ~455 KB of TTF are otherwise paid for
+ * one glyph at a time, on the layout pass that needs each one — and on the phone that is
+ * also serving the file. Preloading resolves every declared weight into the resolver's
+ * cache instead, so only the faces a screen has genuinely never used can still block it.
+ *
+ * A failure here has to stay silent: the fallback is exactly the behaviour this replaces —
+ * the face loads on first measure — and a preload is never worth a window.
+ */
+@Composable
+private fun PreloadBundledFonts() {
+    val resolver = LocalFontFamilyResolver.current
+    LaunchedEffect(resolver) {
+        FlickFontFamilies.forEach { family ->
+            try {
+                resolver.preload(family)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // Nothing to report and nothing to retry: the face loads on first measure.
+            }
+        }
+    }
 }
 
 /**

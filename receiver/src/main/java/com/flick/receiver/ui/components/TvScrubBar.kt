@@ -95,8 +95,16 @@ private val WavePeriodNanos: Long = (1_000_000_000.0 / WAVE_CYCLES_PER_SECOND).t
 
 private val TwoPi = (2.0 * PI).toFloat()
 
-/** A wavelength is sampled twelve times; under a 6 dp stroke the facets vanish. */
-private const val WAVE_SAMPLES_PER_WAVELENGTH = 12
+/**
+ * A wavelength is sampled six times, which is what the stroke can actually hide.
+ *
+ * The swing is 2 dp under a 6 dp round-capped, round-joined stroke. Six samples put
+ * the vertices 60° apart, so the worst crest a chord can cut — one straddled midway —
+ * lands at cos 30° of full swing: 0.27 dp short, under a fifteenth of the stroke that
+ * covers it. Twelve samples bought a facet correction far under a pixel while building
+ * ~650 stroked segments across an ~864 dp span, every frame the chrome is up.
+ */
+private const val WAVE_SAMPLES_PER_WAVELENGTH = 6
 
 /**
  * The TV scrub bar (receiver-expressive-spec.md §5.3 row 2). One session clock

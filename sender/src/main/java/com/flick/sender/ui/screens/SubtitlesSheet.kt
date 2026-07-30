@@ -64,21 +64,26 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
+import com.flick.sender.media.MovieHash
 import com.flick.sender.media.SidecarScan
 import com.flick.sender.media.SubtitleCandidate
 import com.flick.sender.media.SubtitleFiles
 import com.flick.sender.media.SubtitleFolder
 import com.flick.sender.media.SubtitleFolderStore
 import com.flick.sender.media.SubtitleMatchKind
+import com.flick.sender.net.ApiKeySource
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.OnlineSubtitle
 import com.flick.sender.net.OpenSubtitlesClient
 import com.flick.sender.net.OpenSubtitlesKeyStore
 import com.flick.sender.net.SubtitleFetchOutcome
+import com.flick.sender.net.SubtitleLoginOutcome
+import com.flick.sender.net.SubtitleQuota
 import com.flick.sender.net.SubtitleSearchOutcome
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
@@ -123,9 +128,10 @@ private class PickSubtitleFolder : ActivityResultContracts.OpenDocumentTree() {
  * External subtitles for the video being cast. Forced cinematic, like every surface
  * the remote raises.
  *
- * Everything here is name-based on purpose: on Android 16 no permission Flick may ask
- * for exposes .srt files, so the user either points at one file, grants one folder, or
- * fetches one with their own OpenSubtitles key.
+ * The two local sources are name-based on purpose: on Android 16 no permission Flick may
+ * ask for exposes .srt files, so the user either points at one file or grants one folder.
+ * The third fetches from OpenSubtitles with the key this build carries, matched against a
+ * fingerprint of the video file itself where the file can be read.
  */
 @Composable
 fun SubtitlesSheet(controller: FlickController, onDismiss: () -> Unit) {
@@ -226,6 +232,8 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                     )
                     SubtitleSource.ONLINE -> OnlinePane(
                         videoName = videoName,
+                        videoUri = item?.uri,
+                        videoSizeBytes = item?.sizeBytes ?: -1L,
                         onAttach = ::attach,
                     )
                 }
@@ -586,11 +594,23 @@ private fun CandidateRow(
     )
 }
 
-// --- source 3: the user's own OpenSubtitles key ------------------------------------
+// --- source 3: OpenSubtitles, keyed by the app and quota'd by the account -----------
 
+/**
+ * The online tab. Two things are being kept apart here, because conflating them is what
+ * made this tab do nothing for everyone: the **key** identifies the app and is what makes
+ * a request legal at all, while the daily **allowance** belongs to whichever account is
+ * signed in. So the search works the moment a key is present, and the sign-in is an
+ * optional way to stop sharing one small allowance with every other install.
+ *
+ * [videoUri] is read only to fingerprint the file — two 64 KiB windows, off the main
+ * thread — which is what makes a result an in-sync match rather than a guess at the title.
+ */
 @Composable
 private fun ColumnScope.OnlinePane(
     videoName: String?,
+    videoUri: Uri?,
+    videoSizeBytes: Long,
     onAttach: (Uri, String, String?) -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -600,8 +620,15 @@ private fun ColumnScope.OnlinePane(
     val client = remember(context) { OpenSubtitlesClient(context.applicationContext, keys) }
     DisposableEffect(client) { onDispose { client.close() } }
 
-    var hasKey by remember { mutableStateOf(keys.key() != null) }
+    var key by remember { mutableStateOf(keys.resolved()) }
+    var session by remember { mutableStateOf(client.session()) }
     var keyEntry by remember { mutableStateOf("") }
+    var showKeyEntry by remember { mutableStateOf(false) }
+    var showSignIn by remember { mutableStateOf(false) }
+    var account by remember { mutableStateOf("") }
+    // Deliberately NOT rememberSaveable: saved instance state is written out by the
+    // system, and a password must never be one of the things it writes down.
+    var password by remember { mutableStateOf("") }
     var query by remember(videoName) {
         mutableStateOf(videoName?.let { SubtitleFiles.searchQuery(it) }.orEmpty())
     }
@@ -609,46 +636,63 @@ private fun ColumnScope.OnlinePane(
     var season by remember(videoName) { mutableStateOf(marker?.first?.toString().orEmpty()) }
     var episode by remember(videoName) { mutableStateOf(marker?.second?.toString().orEmpty()) }
     var results by remember { mutableStateOf<List<OnlineSubtitle>?>(null) }
+    var quota by remember { mutableStateOf<SubtitleQuota?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var searching by remember { mutableStateOf(false) }
     var downloading by remember { mutableStateOf(false) }
+    var signingIn by remember { mutableStateOf(false) }
+
+    // The fingerprint of the file being cast, or null when there is no file, it is too
+    // small, or the provider will not seek. Nothing waits on it: the search is offered
+    // immediately and simply carries the hash once it exists.
+    var fingerprint by remember(videoUri) { mutableStateOf<String?>(null) }
+    LaunchedEffect(videoUri) {
+        fingerprint = videoUri?.let { MovieHash.of(context, it, videoSizeBytes) }
+    }
 
     val offline = stringResource(R.string.subs_error_offline)
-    val badKey = stringResource(R.string.subs_error_key)
+    val badKeyMine = stringResource(R.string.subs_error_key_mine)
+    val badKeyApp = stringResource(R.string.subs_error_key_app)
     val rateLimited = stringResource(R.string.subs_error_rate)
-    val quotaSpent = stringResource(R.string.subs_error_quota)
+    val quotaShared = stringResource(R.string.subs_error_quota)
+    val quotaOwn = stringResource(R.string.subs_error_quota_signed)
+    val badSignIn = stringResource(R.string.subs_error_sign_in)
+    val signInExpired = stringResource(R.string.subs_error_sign_in_expired)
+    val linkRejected = stringResource(R.string.subs_error_link)
     val unavailable = stringResource(R.string.subs_error_unavailable)
     val tooLarge = stringResource(R.string.subs_too_large)
 
-    if (!hasKey) {
+    // A key the user pasted is one they can fix; the app's own is not, so the sentence
+    // about a refused key has to be a different sentence.
+    fun refusedKey(): String = if (key?.source == ApiKeySource.USER) badKeyMine else badKeyApp
+
+    fun saveOwnKey() {
+        if (keys.saveUserKey(keyEntry)) {
+            keyEntry = ""
+            showKeyEntry = false
+            key = keys.resolved()
+            error = null
+        }
+    }
+
+    // No key at all — the state of this build until OpenSubtitles approves Flick's own
+    // consumer key. Say that plainly, point at the tab that still works, and leave the
+    // field as the way somebody with their own key gets past it.
+    if (key == null) {
         Text(
             stringResource(R.string.subs_online_no_key),
             style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
         )
         Spacer(Modifier.height(14.dp))
-        OutlinedTextField(
-            value = keyEntry,
-            onValueChange = { keyEntry = it.trim() },
-            label = { Text(stringResource(R.string.subs_online_key_label)) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            shape = RoundedCornerShape(FlickCorners.tuneBtn),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-        FlickPrimaryButton(
-            text = stringResource(R.string.subs_online_key_save),
-            enabled = keyEntry.isNotBlank(),
-            onClick = {
-                if (keys.save(keyEntry)) {
-                    keyEntry = ""
-                    hasKey = true
-                }
-            },
-        )
+        KeyEntry(entry = keyEntry, onEntry = { keyEntry = it }, onSave = ::saveOwnKey)
         return
     }
 
+    Text(
+        stringResource(R.string.subs_online_body),
+        style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+    )
+    Spacer(Modifier.height(14.dp))
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
@@ -685,18 +729,29 @@ private fun ColumnScope.OnlinePane(
         downloading -> BusyRow(stringResource(R.string.subs_online_downloading))
         else -> FlickPrimaryButton(
             text = stringResource(R.string.subs_online_search),
-            enabled = query.isNotBlank(),
+            // A file Flick can fingerprint is searchable even with the title box empty:
+            // the hash names it better than any typed words would.
+            enabled = query.isNotBlank() || fingerprint != null,
             onClick = {
                 error = null
                 searching = true
                 scope.launch {
-                    val outcome = client.search(query, season.toIntOrNull(), episode.toIntOrNull())
+                    val outcome = client.search(
+                        query = query,
+                        season = season.toIntOrNull(),
+                        episode = episode.toIntOrNull(),
+                        movieHash = fingerprint,
+                    )
                     searching = false
                     when (outcome) {
                         is SubtitleSearchOutcome.Found -> results = outcome.results
-                        SubtitleSearchOutcome.NoKey -> hasKey = false
+                        SubtitleSearchOutcome.NoKey -> key = null
                         SubtitleSearchOutcome.Offline -> error = offline
-                        SubtitleSearchOutcome.BadKey -> error = badKey
+                        SubtitleSearchOutcome.BadKey -> error = refusedKey()
+                        SubtitleSearchOutcome.SignInExpired -> {
+                            session = null
+                            error = signInExpired
+                        }
                         SubtitleSearchOutcome.RateLimited -> error = rateLimited
                         SubtitleSearchOutcome.Unavailable -> error = unavailable
                     }
@@ -710,6 +765,16 @@ private fun ColumnScope.OnlinePane(
         Text(it, style = FlickText.bodySmall.copy(color = colors.trouble))
     }
 
+    quota?.let { left ->
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = left.resetsIn?.let { reset ->
+                stringResource(R.string.subs_online_remaining_reset, left.remaining, reset)
+            } ?: stringResource(R.string.subs_online_remaining, left.remaining),
+            style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+        )
+    }
+
     results?.let { list ->
         Spacer(Modifier.height(12.dp))
         if (list.isEmpty()) {
@@ -720,6 +785,7 @@ private fun ColumnScope.OnlinePane(
         }
         list.forEach { result ->
             val detail = listOfNotNull(
+                stringResource(R.string.subs_online_hash_match).takeIf { result.hashMatch },
                 languageLabel(result.language),
                 stringResource(R.string.subs_online_downloads, result.downloads),
             ).joinToString(" · ")
@@ -737,13 +803,21 @@ private fun ColumnScope.OnlinePane(
                             val outcome = client.download(result)
                             downloading = false
                             when (outcome) {
-                                is SubtitleFetchOutcome.Ready ->
+                                is SubtitleFetchOutcome.Ready -> {
+                                    quota = outcome.quota
                                     onAttach(outcome.uri, outcome.displayName, outcome.language)
-                                SubtitleFetchOutcome.NoKey -> hasKey = false
+                                }
+                                SubtitleFetchOutcome.NoKey -> key = null
                                 SubtitleFetchOutcome.Offline -> error = offline
-                                SubtitleFetchOutcome.BadKey -> error = badKey
+                                SubtitleFetchOutcome.BadKey -> error = refusedKey()
+                                SubtitleFetchOutcome.SignInExpired -> {
+                                    session = null
+                                    error = signInExpired
+                                }
                                 SubtitleFetchOutcome.RateLimited -> error = rateLimited
-                                SubtitleFetchOutcome.QuotaSpent -> error = quotaSpent
+                                SubtitleFetchOutcome.QuotaSpent ->
+                                    error = if (session != null) quotaOwn else quotaShared
+                                SubtitleFetchOutcome.LinkRejected -> error = linkRejected
                                 SubtitleFetchOutcome.TooLarge -> error = tooLarge
                                 SubtitleFetchOutcome.Unavailable -> error = unavailable
                             }
@@ -755,15 +829,153 @@ private fun ColumnScope.OnlinePane(
         }
     }
 
-    Spacer(Modifier.height(4.dp))
-    FlickSubtleButton(
-        text = stringResource(R.string.subs_online_key_forget),
-        onClick = {
-            keys.clear()
-            hasKey = false
-            results = null
-            error = null
-        },
+    Spacer(Modifier.height(16.dp))
+    val signedIn = session
+    if (signedIn != null) {
+        Text(
+            text = signedIn.username.takeIf { it.isNotBlank() }
+                ?.let { stringResource(R.string.subs_online_signed_in, it) }
+                ?: stringResource(R.string.subs_online_signed_in_anon),
+            style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+        )
+        FlickSubtleButton(
+            text = stringResource(R.string.subs_online_sign_out),
+            onClick = {
+                // Cleared here and asked of the server after: the token is gone from this
+                // phone whatever the network does with the request.
+                session = null
+                quota = null
+                scope.launch { client.signOut() }
+            },
+        )
+    } else {
+        Text(
+            stringResource(R.string.subs_online_shared),
+            style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+        )
+        if (!showSignIn) {
+            FlickSubtleButton(
+                text = stringResource(R.string.subs_online_sign_in),
+                onClick = { showSignIn = true },
+            )
+        } else {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = account,
+                onValueChange = { account = it.trim() },
+                label = { Text(stringResource(R.string.subs_online_user_label)) },
+                singleLine = true,
+                shape = RoundedCornerShape(FlickCorners.tuneBtn),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text(stringResource(R.string.subs_online_password_label)) },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                shape = RoundedCornerShape(FlickCorners.tuneBtn),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.subs_online_password_note),
+                style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
+            )
+            Spacer(Modifier.height(12.dp))
+            if (signingIn) {
+                BusyRow(stringResource(R.string.subs_online_signing_in))
+            } else {
+                FlickPrimaryButton(
+                    text = stringResource(R.string.subs_online_sign_in_action),
+                    enabled = account.isNotBlank() && password.isNotEmpty(),
+                    onClick = {
+                        error = null
+                        signingIn = true
+                        val name = account
+                        val secret = password
+                        // Dropped from state before the request goes out, not after it
+                        // returns: nothing on screen holds a password across a round trip.
+                        password = ""
+                        scope.launch {
+                            val outcome = client.signIn(name, secret)
+                            signingIn = false
+                            when (outcome) {
+                                is SubtitleLoginOutcome.Signed -> {
+                                    session = client.session()
+                                    showSignIn = false
+                                    account = ""
+                                }
+                                SubtitleLoginOutcome.NoKey -> key = null
+                                SubtitleLoginOutcome.Offline -> error = offline
+                                SubtitleLoginOutcome.BadKey -> error = refusedKey()
+                                SubtitleLoginOutcome.BadCredentials -> error = badSignIn
+                                SubtitleLoginOutcome.RateLimited -> error = rateLimited
+                                SubtitleLoginOutcome.Unavailable -> error = unavailable
+                            }
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    when {
+        key?.source == ApiKeySource.USER -> {
+            Text(
+                stringResource(R.string.subs_online_key_mine),
+                style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
+            )
+            FlickSubtleButton(
+                text = stringResource(R.string.subs_online_key_forget),
+                onClick = {
+                    keys.clearUserKey()
+                    // Falls back to the key this build shipped rather than to nothing.
+                    key = keys.resolved()
+                    results = null
+                    quota = null
+                    error = null
+                },
+            )
+        }
+        showKeyEntry -> KeyEntry(entry = keyEntry, onEntry = { keyEntry = it }, onSave = ::saveOwnKey)
+        else -> FlickSubtleButton(
+            text = stringResource(R.string.subs_online_key_show),
+            onClick = { showKeyEntry = true },
+        )
+    }
+}
+
+/** The secondary path: a consumer key the user registered themselves. */
+@Composable
+private fun ColumnScope.KeyEntry(
+    entry: String,
+    onEntry: (String) -> Unit,
+    onSave: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    OutlinedTextField(
+        value = entry,
+        onValueChange = { onEntry(it.trim()) },
+        label = { Text(stringResource(R.string.subs_online_key_label)) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        shape = RoundedCornerShape(FlickCorners.tuneBtn),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        stringResource(R.string.subs_online_key_hint),
+        style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
+    )
+    Spacer(Modifier.height(12.dp))
+    FlickPrimaryButton(
+        text = stringResource(R.string.subs_online_key_save),
+        enabled = entry.isNotBlank(),
+        onClick = onSave,
     )
 }
 

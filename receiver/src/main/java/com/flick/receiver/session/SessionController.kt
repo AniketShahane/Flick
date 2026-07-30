@@ -26,11 +26,50 @@ sealed interface MediaStage {
     data class Preparing(val castId: String, val controlLeaseGeneration: Long) : MediaStage
     data class Active(val castId: String, val controlLeaseGeneration: Long) : MediaStage
     data class Error(val castId: String?, val code: CastFailureCode, val controlLeaseGeneration: Long?) : MediaStage {
-        val kind get() = if (code == CastFailureCode.MEDIA_UNREACHABLE) ErrorKind.Unreachable else ErrorKind.NotServing
+        val kind get() = errorKindFor(code)
     }
 }
 
-enum class ErrorKind { NotServing, Unreachable }
+/**
+ * What the TV screen is allowed to say happened.
+ *
+ * The person holding the remote reads this, so it may not name a cause the receiver has
+ * no evidence for. Everything that was not [Unreachable] used to collapse to
+ * [NotServing] — which put *"Your phone stopped serving… battery saver paused it"* on
+ * screen for a decoder failure, blaming a phone that was serving perfectly.
+ */
+enum class ErrorKind {
+    /** Reachable, but the bytes stopped arriving: the sender's side of the fault. */
+    NotServing,
+
+    /** The phone left the network. */
+    Unreachable,
+
+    /** The bytes arrived and this TV cannot play them. Nothing is wrong with the phone. */
+    Unplayable,
+}
+
+/**
+ * A fault in the media or in this TV's ability to decode it — never the sender's.
+ *
+ * [CastFailureCode.DECODER_INIT] belongs here: whether the decoder failed to configure
+ * or the render path would not open, the phone did its job. So do the malformed and
+ * unsupported-container verdicts, which are statements about the file.
+ */
+private val UNPLAYABLE_CODES = setOf(
+    CastFailureCode.MALFORMED_MEDIA,
+    CastFailureCode.UNSUPPORTED_CONTAINER,
+    CastFailureCode.UNSUPPORTED_VIDEO_FORMAT,
+    CastFailureCode.UNSUPPORTED_VIDEO_CODEC,
+    CastFailureCode.UNSUPPORTED_HDR_PROFILE,
+    CastFailureCode.DECODER_INIT,
+)
+
+fun errorKindFor(code: CastFailureCode): ErrorKind = when {
+    code == CastFailureCode.MEDIA_UNREACHABLE -> ErrorKind.Unreachable
+    code in UNPLAYABLE_CODES -> ErrorKind.Unplayable
+    else -> ErrorKind.NotServing
+}
 
 /**
  * A seek the receiver has issued to the player and has not yet seen it confirm.

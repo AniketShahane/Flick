@@ -99,8 +99,15 @@ data class DiscoveredTv(
 
 enum class TvAvailability { READY, SLEEPING, UNKNOWN }
 
-/** Where the phone is in the discover → pair → drive lifecycle. */
-enum class ConnectionStatus { DISCONNECTED, CONNECTING, PAIRING, CONNECTED, FAILED }
+/**
+ * Where the phone is in the discover → pair → drive lifecycle.
+ *
+ * [CONFIRM_ON_TV] is a first-time pairing that has sent a correct-shaped code and is
+ * now waiting on a person at the television, which can take tens of seconds. It is a
+ * separate state from [PAIRING] because the two owe the user different things: one is
+ * "working on it", the other is "your move, and it is over there".
+ */
+enum class ConnectionStatus { DISCONNECTED, CONNECTING, PAIRING, CONFIRM_ON_TV, CONNECTED, FAILED }
 
 /** The receiver's playback lifecycle, mirrored from TV `state` frames. */
 enum class PlaybackPhase { IDLE, BUFFERING, PLAYING, PAUSED, ENDED, ERROR }
@@ -121,6 +128,13 @@ data class PlaybackUiState(
     val volume: Float = 1f,
     val syncing: Boolean = false,
     val scrubbing: Boolean = false,
+    /**
+     * A run of ±10s taps the user may still be adding to. The head is theirs for the
+     * whole run — nothing has gone to the TV yet — so a `state` frame must not move it and
+     * the transport has to stay on screen for the next tap. Distinct from [syncing]: no
+     * sync is in flight, which is why the shimmer stays down.
+     */
+    val skipping: Boolean = false,
 ) {
     val targetFraction: Float
         get() = if (durationMs > 0L) (targetMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f

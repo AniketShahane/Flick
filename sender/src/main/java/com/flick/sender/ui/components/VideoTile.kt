@@ -1,5 +1,7 @@
 package com.flick.sender.ui.components
 
+import android.app.ActivityManager
+import android.content.Context
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
+import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import coil.size.Precision
@@ -86,16 +89,48 @@ fun rememberVideoImageLoader(): ImageLoader {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }
             .crossfade(true)
+            // Stated rather than inherited. Coil's default budget is a fraction of the
+            // heap that has moved between its own releases, and what has to fit here is
+            // fixed by this app: a full grid of ~2 MB stills plus the one the detail
+            // backdrop is flying to. A miss is not a re-read of a file — it is another
+            // frame extracted out of a multi-GB 4K file by the same process that is
+            // serving those bytes over HTTP.
+            .memoryCache {
+                MemoryCache.Builder(appContext)
+                    .maxSizePercent(framePinBudget(appContext))
+                    .build()
+            }
             .build()
             .also { sharedVideoImageLoader = it }
     }
 }
 
-// Coil validates a cached bitmap against the pixel size the request asks for, so an
-// unpinned tile decode is rejected by a full-bleed request and extracted again. That
-// re-decode is exactly the blank frame a shared-element flight cannot survive, so every
-// surface that shows a file's frame asks for these pixels and INEXACT accepts them.
-// 960 wide is the largest pin a full grid of 4K stills can hold at once.
+/**
+ * Share of the heap the decoded stills may pin — a quarter of it, which holds a grid and
+ * the backdrop it flies into on the ~96 MB heap a mid-range phone gives this process.
+ *
+ * The low-RAM branch is the platform's own verdict on the device, and raising a bitmap
+ * budget on a phone that has declared itself short of memory is not this loader's call: it
+ * keeps the share Coil would have chosen there.
+ */
+private fun framePinBudget(context: Context): Double {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    return if (activityManager?.isLowRamDevice == true) FramePinLowRam else FramePinBudget
+}
+
+private const val FramePinBudget = 0.25
+private const val FramePinLowRam = 0.15
+
+// ONE size for every surface, and it is not a per-surface choice to make. Coil keys the
+// memory cache on the file and validates the entry against the pixel size the request
+// asks for, so a smaller grid decode is rejected by the detail backdrop's larger request
+// and extracted again — the blank frame a shared-element flight cannot survive — while a
+// second size under the same key would simply evict the first. A tile is oversampled at
+// these pixels and the backdrop is upscaled from them; that is the cost of the two being
+// the same object in flight.
+//
+// 16:9 at 960 is ~2.07 MB as ARGB_8888, which is what the loader's pin budget above is
+// sized against.
 private const val FrameWidthPx = 960
 private const val FrameHeightPx = 540
 

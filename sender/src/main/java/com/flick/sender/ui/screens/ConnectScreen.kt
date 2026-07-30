@@ -121,7 +121,8 @@ fun ConnectScreen(controller: FlickController) {
         PairErrorKind.ENDPOINT_CHANGED -> stringResource(R.string.pair_error_endpoint_changed)
         null -> null
     }
-    val connecting = connection == ConnectionStatus.CONNECTING || connection == ConnectionStatus.PAIRING
+    val connecting = pairAttemptInFlight(connection)
+    val awaitingTvConfirmation = connection == ConnectionStatus.CONFIRM_ON_TV
 
     // Both pulses come from a real outcome, never from arriving here: CONNECTED is
     // published only once the receiver has accepted the code, and pairError only moves
@@ -289,6 +290,7 @@ fun ConnectScreen(controller: FlickController) {
             endpoint = "${target.host}:${target.port}",
             error = pairErrorText,
             connecting = connecting,
+            awaitingTvConfirmation = awaitingTvConfirmation,
             codeRevision = codeRevision,
             // The whole confirmed record is submitted, not just its id: the endpoint
             // rendered above is the only one the typed code may be sent to.
@@ -308,6 +310,7 @@ fun ConnectScreen(controller: FlickController) {
             endpoint = "${scanned.host}:${scanned.port}",
             error = pairErrorText,
             connecting = connecting,
+            awaitingTvConfirmation = awaitingTvConfirmation,
             // Only this tap spends the code. The scan proved a QR was in front of the
             // camera; the confirmation is the user saying it was on their own TV.
             onPair = { controller.confirmScannedPair(scanned.eventId) },
@@ -327,6 +330,7 @@ fun ConnectScreen(controller: FlickController) {
                 fromQr = launch?.host != null && launch.port != null,
                 error = pairErrorText,
                 connecting = connecting,
+                awaitingTvConfirmation = awaitingTvConfirmation,
                 codeRevision = codeRevision,
                 onConnect = { host, port, code -> controller.submitTvDisplayedPair(launchId ?: 0L, host, port, code) },
                 // Whose dismissal this is, settled on the frame the exit starts. An
@@ -363,6 +367,21 @@ fun ConnectScreen(controller: FlickController) {
         )
     }
 }
+
+/**
+ * Whether a pairing attempt is still running, and therefore whether the sheets hold
+ * their spinner and refuse a second submit.
+ *
+ * [ConnectionStatus.CONFIRM_ON_TV] belongs in here and not beside it. It is a pairing
+ * attempt that is very much in flight — a correct-shaped code is already on the wire
+ * and a person at the TV is being asked about it — and re-submitting during it would
+ * tear the socket the receiver is answering down and dial again with a code that has
+ * already been consumed.
+ */
+internal fun pairAttemptInFlight(connection: ConnectionStatus): Boolean =
+    connection == ConnectionStatus.CONNECTING ||
+        connection == ConnectionStatus.PAIRING ||
+        connection == ConnectionStatus.CONFIRM_ON_TV
 
 /** A paired record only describes a live TV while the control link is actually up. */
 internal fun linkLive(connection: ConnectionStatus, connected: PairedTv?): Boolean =
@@ -484,6 +503,7 @@ private fun ScannedSheet(
     endpoint: String,
     error: String?,
     connecting: Boolean,
+    awaitingTvConfirmation: Boolean,
     onPair: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -508,9 +528,7 @@ private fun ScannedSheet(
                 )
             }
             if (connecting) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    PairingIndicator()
-                }
+                PairingProgress(awaitingTvConfirmation)
             } else {
                 FlickPrimaryButton(
                     text = tvName?.let { stringResource(R.string.pair_scanned_action, it) }
@@ -593,6 +611,37 @@ private fun PairErrorCard(message: String) {
  * whole signal and a filled container would shout over the code the user just typed.
  * Nothing here is determinate — the handshake reports steps, never a fraction.
  */
+/**
+ * The attempt in flight, and — when the phone can honestly say so — what it is
+ * waiting for.
+ *
+ * A first-time pairing now stops on a person: the receiver holds the socket while it
+ * asks the room whether to admit this phone, which can take tens of seconds. A bare
+ * spinner for that long reads as a hang, and the user is the one who has to act, so
+ * the line names the TV as where the next move is. It appears ONLY in that state; the
+ * ordinary dial and handshake are still a silent couple of seconds.
+ */
+@Composable
+private fun PairingProgress(awaitingTvConfirmation: Boolean) {
+    val colors = LocalFlickColors.current
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        PairingIndicator()
+        if (awaitingTvConfirmation) {
+            Text(
+                stringResource(R.string.pair_confirm_wait),
+                style = FlickText.bodySmall.copy(
+                    color = colors.onSurfaceDim,
+                    textAlign = TextAlign.Center,
+                ),
+            )
+        }
+    }
+}
+
 @Composable
 private fun PairingIndicator() {
     val colors = LocalFlickColors.current
@@ -646,6 +695,7 @@ private fun CodeSheet(
     endpoint: String,
     error: String?,
     connecting: Boolean,
+    awaitingTvConfirmation: Boolean,
     codeRevision: Long,
     onSubmit: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -680,9 +730,7 @@ private fun CodeSheet(
                 )
             }
             if (connecting) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    PairingIndicator()
-                }
+                PairingProgress(awaitingTvConfirmation)
             } else {
                 FlickPrimaryButton(
                     text = stringResource(R.string.pair_connect),
@@ -738,6 +786,7 @@ private fun ManualSheet(
     fromQr: Boolean,
     error: String?,
     connecting: Boolean,
+    awaitingTvConfirmation: Boolean,
     codeRevision: Long,
     onConnect: (String, String, String) -> Unit,
     onLeaving: () -> Unit,
@@ -782,9 +831,7 @@ private fun ManualSheet(
                 )
             }
             if (connecting) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    PairingIndicator()
-                }
+                PairingProgress(awaitingTvConfirmation)
             } else {
                 FlickPrimaryButton(
                     text = stringResource(R.string.manual_connect),

@@ -7,7 +7,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,11 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -46,10 +41,10 @@ import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.idleAmbientBackground
+import com.flick.receiver.ui.theme.idleAmbientDrift
 import com.flick.receiver.ui.theme.tvOverscanSafeArea
 import kotlinx.coroutines.delay
 import java.util.Date
-import kotlin.math.max
 
 /**
  * One drift cycle. This is the single deliberate ambient loop in the whole system:
@@ -58,10 +53,6 @@ import kotlin.math.max
  * motion — the room appears to breathe, rather than the app appearing to animate.
  */
 private const val IDLE_DRIFT_MS = 34_000
-
-/** How far the radial centre and its radius wander, as fractions of the viewport. */
-private const val IDLE_DRIFT_CENTRE = 0.06f
-private const val IDLE_DRIFT_RADIUS = 0.08f
 
 /**
  * Idle's entrance: three children, each led by a sixth of the run — ~80 ms on the
@@ -105,27 +96,6 @@ private fun Modifier.idleStage(
         translationY = (1f - stage) * rise.toPx()
     }
 }
-
-/**
- * The drifting variant of the idle bed. It duplicates the static gradient in
- * `Theme.kt` on purpose: the phase has to be read INSIDE the draw lambda so the
- * drift invalidates the draw phase alone, and Settings keeps the static brush.
- */
-private fun Modifier.idleWashDrift(phase: () -> Float): Modifier = this
-    .background(FlickColor.Canvas)
-    .drawBehind {
-        val p = phase()
-        drawRect(
-            Brush.radialGradient(
-                colors = listOf(FlickColor.Primary.copy(alpha = 0.22f), Color.Transparent),
-                center = Offset(
-                    x = size.width * (0.5f + IDLE_DRIFT_CENTRE * p),
-                    y = size.height * (-0.10f + IDLE_DRIFT_CENTRE * p),
-                ),
-                radius = max(size.width, size.height) * (0.65f + IDLE_DRIFT_RADIUS * p),
-            ),
-        )
-    }
 
 /**
  * T2 · Idle — "ready to cast". Screensaver-grade standby on the ambient blue
@@ -176,7 +146,7 @@ fun IdleScreen(
             .fillMaxSize()
             .then(
                 if (driftPhase == null) Modifier.idleAmbientBackground()
-                else Modifier.idleWashDrift { driftPhase.value },
+                else Modifier.idleAmbientDrift { driftPhase.value },
             )
             .tvOverscanSafeArea(),
     ) {

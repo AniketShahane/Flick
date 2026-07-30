@@ -17,17 +17,18 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -35,15 +36,22 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.ui.screens.NavTab
@@ -79,6 +87,8 @@ internal fun FlickBottomNav(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalFlickColors.current
+    val density = LocalDensity.current
+    val metrics = LocalNavMetrics.current
     val reduceMotion = rememberReduceMotion()
     val travel = MaterialTheme.motionScheme.defaultSpatialSpec<Rect>()
     val indicator = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
@@ -115,7 +125,10 @@ internal fun FlickBottomNav(
         modifier
             .fillMaxWidth()
             .flickGlass(colors)
-            .onGloballyPositioned { host.value = it },
+            .onGloballyPositioned { host.value = it }
+            // The routes this floats over reserve their own room for it, and how much is
+            // not a constant — see [LocalNavMetrics].
+            .onSizeChanged { metrics.height = with(density) { it.height.toDp() } },
     ) {
         // Measured and placed in the layout phase straight off the Animatable, so a
         // travelling fill never recomposes the tab under the finger.
@@ -179,18 +192,24 @@ private fun NavItem(
     val colors = LocalFlickColors.current
     val reduceMotion = rememberReduceMotion()
     val motionScheme = MaterialTheme.motionScheme
-    // The icon rides the travelling fill, so its ink must not resolve before the fill
-    // has arrived under it — a slower effects spec, never a spatial one.
-    val iconTint by animateColorAsState(
+    // Both tints stay State and are spent in the draw phase, exactly as the library's
+    // filter chips do it. Read at composition scope they recomposed the seat on every frame
+    // of the travel — and the label's went further than that: a tint inside a TextStyle is
+    // a new layout input, so each frame re-measured the text as well as repainting it.
+    //
+    // The icon rides the travelling fill, so its ink must not resolve before the fill has
+    // arrived under it — a slower effects spec, never a spatial one.
+    val iconTint = animateColorAsState(
         targetValue = if (active) colors.onPrimary else colors.onSurfaceDim,
         animationSpec = Motion.orSnap(reduceMotion, motionScheme.slowEffectsSpec<Color>()),
         label = "navIcon",
     )
-    val labelTint by animateColorAsState(
+    val labelTint = animateColorAsState(
         targetValue = if (active) colors.onSurface else colors.onSurfaceDim,
         animationSpec = Motion.orSnap(reduceMotion, motionScheme.defaultEffectsSpec<Color>()),
         label = "navLabel",
     )
+    val labelInk = remember(labelTint) { ColorProducer { labelTint.value } }
 
     // No haptic here: the shell decides whether a tap moved at all — a re-tap of the
     // seat already carrying the fill is silent. FlickApp fires the pulse from onSelect.
@@ -244,18 +263,28 @@ private fun NavItem(
                 .padding(horizontal = 22.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
-            // The label carries the name; a second announcement would only repeat it.
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = iconTint,
-                modifier = Modifier.size(24.dp),
+            // Painted rather than composed as an Icon: the tint is a draw-scope colour
+            // filter here, and `Icon` can only take one resolved in composition. The label
+            // carries the name, so this glyph announces nothing a reader would hear twice.
+            val painter = rememberVectorPainter(icon)
+            Box(
+                Modifier.size(24.dp).drawBehind {
+                    with(painter) { draw(size, colorFilter = ColorFilter.tint(iconTint.value)) }
+                },
             )
         }
         Spacer(Modifier.height(6.dp))
-        Text(
+        // The ink is handed over as a producer rather than as a style, so the tint animation
+        // resolves at draw time and never recomposes the label.
+        //
+        // One line always: the seat is a fixed 76 dp and the three of them are a lockup, so
+        // at an accessibility font scale the label gives up its tail rather than its row.
+        BasicText(
             text = label,
-            style = FlickText.labelSmall.copy(color = labelTint),
+            style = FlickText.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = labelInk,
         )
     }
 }
@@ -266,3 +295,43 @@ private fun NavItem(
 private const val NavPressScale = 0.92f
 private const val NavPressWashAlpha = 0.16f
 private val NavPressWashRadius = 20.dp
+
+/**
+ * How tall the nav actually came out. The bar is drawn OVER the routes rather than inset
+ * into them, so each route reserves its own room at the foot of its scroll — and the height
+ * it has to reserve is a measurement, not a literal: the label's line box scales with the
+ * user's font setting, which at the accessibility end adds enough to hide the last row
+ * under the pill.
+ *
+ * Written from a layout callback and read only where a route computes its bottom padding.
+ * A bar whose height never changes therefore costs one write and no recomposition at all.
+ */
+@Stable
+internal class NavMetrics {
+    var height: Dp by mutableStateOf(NavNominalHeight)
+}
+
+/** Provided by the shell, which composes both the bar and the routes it floats over. */
+internal val LocalNavMetrics = staticCompositionLocalOf { NavMetrics() }
+
+/**
+ * Room a route has to leave under its content: the bar's own height, the margin the shell
+ * holds it off the window edge with, and the gap the design leaves between the last row and
+ * the pill. While a cast is live the dock rides above the bar on the same stack, so its
+ * clearance is part of the same reservation.
+ */
+internal fun navBottomClearance(barHeight: Dp, dockLive: Boolean): Dp =
+    barHeight + NavShellMargin + NavContentGap + if (dockLive) NowPlayingDockClearance else 0.dp
+
+/** The shell's own margin around the floating bottom stack (design §5.4). */
+internal val NavShellMargin = 16.dp
+
+/** Breathing room between the last row of a route and the pill floating over it. */
+private val NavContentGap = 22.dp
+
+/**
+ * The bar before it has been measured — icon, its 6 dp padding, the 6 dp spacer, one line
+ * box of `labelSmall` and the row's 11 dp, at a 1.0 font scale. Only the first frame of the
+ * first route uses it; a real measurement replaces it in the same layout pass.
+ */
+private val NavNominalHeight = 78.dp

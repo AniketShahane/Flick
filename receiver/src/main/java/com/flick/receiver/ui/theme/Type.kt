@@ -100,6 +100,25 @@ object FlickType {
     )
 
     /**
+     * The same seven faces again, as bare resources, for [warmBundledTypefaces].
+     *
+     * A second list rather than a derivation because `FontListFontFamily` does not
+     * expose its `ResourceFont` ids, and because what the warm needs is a resource id
+     * — not a family, weight or style. It is a cache warm and nothing depends on it
+     * being complete: a face missing from here costs one blocking parse on the thread
+     * that first measures it, which is exactly the cost without the warm at all.
+     */
+    internal val BundledFaces: IntArray = intArrayOf(
+        R.font.bricolage_bold,
+        R.font.bricolage_extrabold,
+        R.font.geist_medium,
+        R.font.geist_semibold,
+        R.font.geist_bold,
+        R.font.geist_mono_medium,
+        R.font.geist_mono_semibold,
+    )
+
+    /**
      * Tabular monospace style for any running number (timecodes, throughput,
      * RSSI, bitrate, the clock pill, the pairing code).
      *

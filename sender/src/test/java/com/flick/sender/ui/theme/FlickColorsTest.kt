@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * The structural rules a Flick palette has to obey, in both themes, stated as arithmetic
@@ -197,13 +198,206 @@ class FlickColorsTest {
             listOf("canvas" to canvas, "surfaceRaised" to surfaceRaised, "surfaceRaisedAlt" to surfaceRaisedAlt)
         }
         for ((name, s) in surfaces) {
-            val channels = listOf(s.red, s.green, s.blue)
-            val chroma = (channels.max() - channels.min()) / channels.max()
+            val chroma = s.relativeChroma()
             assertTrue("dark $name is ${(chroma * 100).toInt()}% chroma — that is a navy, not a tint", chroma < 0.6f)
         }
     }
 
+    // --- the floating chrome: the nav pill and the Now-Playing dock ---
+
+    /**
+     * `glass` is the one surface role a palette listing cannot state honestly. It is
+     * translucent, so the colour actually drawn does not exist until it is drawn over
+     * something — and that is how it stayed a grey slate through an entire dark-mode
+     * retune with nothing failing. Every rule above reads an opaque role; not one of them
+     * could see this.
+     *
+     * What it is drawn over is a scrolling poster grid, so each rule below is measured
+     * twice: over the page, and over the most extreme still that can be behind it. That
+     * extreme is white under a dark glass and black under a light one — in each case the
+     * backdrop that drags the fill TOWARD the ink standing on it.
+     */
+    private fun FlickColors.glassOnPage() = glass.over(canvas)
+
+    private fun FlickColors.glassOnExtremeStill() =
+        glass.over(if (isLight) Color.Black else Color.White)
+
+    /**
+     * …and the sheen laid over the glass is part of the glass, which this file learned the
+     * hard way. [FlickGradients.navSheenDark] runs DOWN the pill and closes on a pale blue
+     * stop, so the bar's labels sit in the interpolating tail of it rather than on bare
+     * glass. Measuring the ink against the fill alone put `onSurfaceDim` at 4.88:1 while the
+     * device drew it at 4.31:1 — a label under the floor, passing.
+     *
+     * The two fractions are where the bar's own layout puts things, as a share of its height:
+     * an icon spans roughly 21-51% down (11 dp row padding, 6 dp box padding, a 24 dp glyph)
+     * and a label sits at roughly 73%. So the icon is caught in the white opening stop and
+     * the label in the blue closing one, and they need separate figures.
+     */
+    /** Where a label's glyphs sit down the pill, as a share of its height. */
+    private val LABEL_DEPTH = 0.73f
+
+    /** Where the top of an icon sits — the worst point for it, being the palest. */
+    private val ICON_DEPTH = 0.21f
+
+    private fun FlickColors.sheenedAtLabel(backdrop: Color): Color {
+        // Read from the real stop position rather than a copy of it, so moving the wash in
+        // the gradient moves this with it — the two drifting apart is the whole defect.
+        val share = ((LABEL_DEPTH - NavSheenFootStart) / (1f - NavSheenFootStart)).coerceAtLeast(0f)
+        return NavSheenDarkFoot.copy(alpha = NavSheenDarkFoot.alpha * share).over(glass.over(backdrop))
+    }
+
+    private fun FlickColors.sheenedAtIcon(backdrop: Color): Color {
+        // Between the 0x2E opening stop and the 0x0A stop at 0.44, both plain white.
+        val opening = 0x2E / 255f
+        val mid = 0x0A / 255f
+        val alpha = opening + (ICON_DEPTH / 0.44f) * (mid - opening)
+        return Color.White.copy(alpha = alpha).over(glass.over(backdrop))
+    }
+
+    /** The colour a surface carries, in channel steps out of 255. A grey scores 0. */
+    private fun Color.channelSpread(): Int {
+        val channels = listOf(red, green, blue)
+        return ((channels.max() - channels.min()) * 255f).roundToInt()
+    }
+
+    /**
+     * Both themes' floating chrome carries the brand. This is the rule whose absence let
+     * the dark pill ship as a grey: it measured 28 channel steps against the light glass's
+     * 48 and nothing anywhere failed. Both now sit at 48.
+     */
+    @Test fun theFloatingGlassCarriesTheBrandInBothThemes() {
+        for ((name, c) in palettes) {
+            val spread = c.glass.channelSpread()
+            assertTrue(
+                "$name: glass ${c.glass.hex()} carries $spread channel steps of colour — the nav " +
+                    "pill and the Now-Playing dock float over every surface this app has, and " +
+                    "this is the one role that reads as a grey slate rather than as Flick",
+                spread >= 40,
+            )
+        }
+    }
+
+    /**
+     * …and stays the quieter of the two materials, because the travelling selection fill is
+     * drawn ON it. Light mode is unambiguous about which one is loud: a 19% glass under a
+     * 92% fill.
+     *
+     * Luminance contrast alone does not catch the inversion — a candidate for this change
+     * cleared every ratio in this file at 76% chroma, and would have put a saturated blue
+     * fill on a more saturated blue pill.
+     */
+    @Test fun theGlassStaysQuieterThanTheFillThatTravelsOnIt() {
+        for ((name, c) in palettes) {
+            assertTrue(
+                "$name: glass is ${(c.glass.relativeChroma() * 100).toInt()}% chroma against a " +
+                    "${(c.primary.relativeChroma() * 100).toInt()}% selection fill — the fill has " +
+                    "to be the loud one, or the nav bar reads as blue on blue",
+                c.glass.relativeChroma() < c.primary.relativeChroma(),
+            )
+        }
+    }
+
+    /**
+     * The dark chrome separates from every surface it floats over, and has to carry that
+     * separation on its own tone. A tinted drop shadow is how light mode makes a pale page
+     * darker underneath a pill, and on a near-black canvas there is nothing darker left to
+     * make — which is why 1.10:1 over `surfaceRaisedAlt` read as a pill lying on the page
+     * rather than floating above it.
+     */
+    @Test fun theDarkGlassSeparatesFromEverySurfaceItFloatsOver() {
+        val c = DarkFlickColors
+        val drawn = c.glassOnPage()
+        val surfaces = listOf(
+            "canvas" to c.canvas,
+            "surface" to c.surface,
+            "surfaceRaised" to c.surfaceRaised,
+            "surfaceRaisedAlt" to c.surfaceRaisedAlt,
+        )
+        for ((name, s) in surfaces) {
+            val step = contrast(drawn, s)
+            assertTrue(
+                "dark: the drawn glass ${drawn.hex()} is $step from $name ${s.hex()} — the pill " +
+                    "and the dock stop reading as floating chrome",
+                step >= 1.30f,
+            )
+        }
+    }
+
+    /**
+     * Every ink the two glass components put on it, held on the page AND over the worst
+     * still. `onSurface` and `onSurfaceDim` are the nav labels and the dock's title and
+     * subtitle, so they are text at 4.5; `spark` is the amber cast mark, a graphic at 3.
+     */
+    @Test fun everyInkOnTheDarkGlassHoldsWhateverIsBehindIt() {
+        val c = DarkFlickColors
+        val backdrops = listOf("the page" to c.canvas, "a blown-out still" to Color.White)
+        val inks = listOf(
+            Triple("onSurface", c.onSurface, 4.5f),
+            Triple("onSurfaceDim", c.onSurfaceDim, 4.5f),
+            Triple("spark", c.spark, 3.0f),
+        )
+        for ((bName, backdrop) in backdrops) {
+            for ((iName, i, floor) in inks) {
+                // The label row, under the sheen's closing stop — this is the figure the
+                // device actually draws, and the one that was missing.
+                val onLabel = contrast(i, c.sheenedAtLabel(backdrop))
+                assertTrue(
+                    "dark: $iName on the glass at the LABEL row over $bName is $onLabel, under " +
+                        "$floor:1 — the sheen's closing stop lands on the labels, so the bare " +
+                        "glass figure is not the one that matters",
+                    onLabel >= floor,
+                )
+                // The icon row sits in the white opening stop instead. An icon is a
+                // graphical object, so 3:1 is its floor rather than 4.5.
+                val onIcon = contrast(i, c.sheenedAtIcon(backdrop))
+                assertTrue(
+                    "dark: $iName on the glass at the ICON row over $bName is $onIcon, under 3:1",
+                    onIcon >= 3.0f,
+                )
+            }
+        }
+    }
+
+    /** …and the selection fill reads as an object on the glass, not a lighter patch of it. */
+    @Test fun theTravellingFillReadsAsAnObjectOnTheDarkGlass() {
+        val step = contrast(DarkFlickColors.primary, DarkFlickColors.glassOnPage())
+        assertTrue(
+            "dark: the nav selection fill is $step from the glass it travels across, under the " +
+                "3:1 a UI component needs against its own background",
+            step >= 3.0f,
+        )
+    }
+
+    /**
+     * Light's chrome is a RATCHET rather than a standard, on the same grounds as
+     * [theLightSetNeverDropsBelowWhereItStandsToday]: its worst pair is `onSurfaceDim` at
+     * 4.29:1 over a black still, under the floor for text, and light is not the theme this
+     * change is for. Pinned just under where it stands so the gap can close but not deepen.
+     */
+    @Test fun theLightGlassNeverDropsBelowWhereItStandsToday() {
+        val c = LightFlickColors
+        val backdrops = listOf("the page" to c.glassOnPage(), "a black still" to c.glassOnExtremeStill())
+        for ((name, b) in backdrops) {
+            assertTrue(
+                "light: onSurface on the glass over $name is ${contrast(c.onSurface, b)}",
+                contrast(c.onSurface, b) >= 11.3f,
+            )
+            assertTrue(
+                "light: onSurfaceDim on the glass over $name is ${contrast(c.onSurfaceDim, b)} — " +
+                    "the light glass regressed",
+                contrast(c.onSurfaceDim, b) >= 4.25f,
+            )
+        }
+    }
+
     // --- WCAG 2.x relative luminance and contrast, on straight sRGB ---
+
+    /** Chroma as a share of the surface's own brightest channel. */
+    private fun Color.relativeChroma(): Float {
+        val channels = listOf(red, green, blue)
+        return (channels.max() - channels.min()) / channels.max()
+    }
 
     private fun Color.luminance(): Float {
         fun lin(c: Float) = if (c <= 0.03928f) c / 12.92f else ((c + 0.055f) / 1.055f).pow(2.4f)

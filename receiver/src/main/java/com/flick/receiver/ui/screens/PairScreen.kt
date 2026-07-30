@@ -234,21 +234,49 @@ fun PairScreen(
      */
     pairingSealed: Boolean = false,
     onResumePairing: () -> Unit = {},
+    /**
+     * `PairingSurface.Confirming.deviceLabel` — a phone has presented the right code
+     * and this screen is the gate. Null means no decision is pending.
+     *
+     * The label is chosen on the phone and canonicalised on the wire, so it is
+     * single-line and at most 80 code points; it is still someone else's text and is
+     * rendered as such (bounded lines, ellipsized) rather than trusted to fit.
+     */
+    confirmDeviceLabel: String? = null,
+    /** The decision deadline on the `elapsedRealtime` timebase. It expires to a denial. */
+    confirmExpiresAtElapsedMs: Long? = null,
+    onAllowPair: () -> Unit = {},
+    onDenyPair: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
     val reducedMotion = LocalReducedMotion.current
     val renameFocus = remember { FocusRequester() }
     val resumeFocus = remember { FocusRequester() }
+    val denyFocus = remember { FocusRequester() }
     val spacedCode = code.toCharArray().joinToString("  ")
     val locked = code == PairCodePlaceholder
+    val confirming = confirmDeviceLabel != null
 
     // Exactly one control takes focus on entry, and it is the first in the action
     // row so the D-pad reads left to right from where the ring lands. A seal puts
     // Resume in that position, and re-runs this so the ring follows the one control
     // the screen is now asking for.
-    LaunchedEffect(pairingSealed) {
-        runCatching { (if (pairingSealed) resumeFocus else renameFocus).requestFocus() }
+    //
+    // A confirmation puts DENY there, which is the one place this screen deliberately
+    // does not lead with the action it is proposing. The prompt exists because reading
+    // this screen is enough to submit a correct code, so the single press the ring is
+    // already sitting on has to be the one that admits nobody: a stray OK on a remote
+    // that was already being pressed costs a rescan, where the same press on Allow
+    // costs a paired phone. Allow is one step right, which is a deliberate act.
+    LaunchedEffect(pairingSealed, confirming) {
+        runCatching {
+            when {
+                confirming -> denyFocus
+                pairingSealed -> resumeFocus
+                else -> renameFocus
+            }.requestFocus()
+        }
     }
 
     // One driver for the whole staged entrance; each child reads its own slice of
@@ -305,15 +333,26 @@ fun PairScreen(
                     ),
                 )
                 Text(
-                    text = stringResource(R.string.pair_title),
+                    // The headline follows the question. While a decision is pending
+                    // "Scan to flick from your phone" is an instruction for a code
+                    // that no longer exists — it was consumed proving itself.
+                    text = stringResource(if (confirming) R.string.pair_confirm_title else R.string.pair_title),
                     style = FlickType.display(sizeSp = 40),
                     color = Color.White,
                     modifier = Modifier.pairStage(stage, index = 0, settled = entranceSettled),
                 )
                 Text(
-                    text = highlightedInstructions(),
+                    text = if (confirmDeviceLabel != null) {
+                        AnnotatedString(stringResource(R.string.pair_confirm_instructions, confirmDeviceLabel))
+                    } else {
+                        highlightedInstructions()
+                    },
                     style = FlickType.body(sizeSp = 18),
                     color = FlickColor.OnSurfaceDim,
+                    // Someone else's device name is inside this line, so it is bounded
+                    // here rather than trusted to be short.
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .widthIn(max = PairBodyMaxWidth)
                         .pairStage(stage, index = 1, settled = entranceSettled),
@@ -336,7 +375,17 @@ fun PairScreen(
                 ) { ready ->
                     if (ready) {
                         Column(verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm)) {
-                            if (pairingSealed) {
+                            if (confirmDeviceLabel != null) {
+                                // The manual-entry card and the listening line are
+                                // both withheld, as they are under a seal, and for
+                                // the same reason: the code they describe has already
+                                // been spent, and nothing is listening for another.
+                                PairConfirmCard(
+                                    deviceLabel = confirmDeviceLabel,
+                                    expiresAtElapsedMs = confirmExpiresAtElapsedMs,
+                                    modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
+                                )
+                            } else if (pairingSealed) {
                                 // The manual-entry card and the listening line are
                                 // both withheld here, and both for the same reason:
                                 // there is no code to type into a card that shows
@@ -378,10 +427,45 @@ fun PairScreen(
                 // the ring fades and rises with the row it belongs to.
                 FocusBeaconHost(modifier = Modifier.pairStage(stage, index = 3, settled = entranceSettled)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md)) {
+                        if (confirming) {
+                            // Deny first, so it is where the ring lands, and Allow
+                            // second. Rename and Settings are withheld: while this
+                            // question is open the D-pad has exactly two answers, and
+                            // a row that let the remote wander off to rename the TV
+                            // would be inviting the decision to expire instead.
+                            FlickTvButton(
+                                onClick = onDenyPair,
+                                focusRequester = denyFocus,
+                                contentPadding = FlickDimens.ControlPadding,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.pair_confirm_deny),
+                                    style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                                    color = FlickColor.OnSurface,
+                                )
+                            }
+                            FlickTvButton(
+                                onClick = onAllowPair,
+                                containerColor = FlickColor.ControlFillStrong,
+                                contentPadding = FlickDimens.ControlPadding,
+                            ) {
+                                Icon(
+                                    imageVector = FlickIcons.CheckCircle,
+                                    contentDescription = null,
+                                    tint = FlickColor.Live,
+                                    modifier = Modifier.size(FlickDimens.GlyphSmall),
+                                )
+                                Text(
+                                    text = stringResource(R.string.pair_confirm_allow),
+                                    style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                                    color = FlickColor.OnSurface,
+                                )
+                            }
+                        }
                         // The only way back to a live code, and it is here rather
                         // than on the network on purpose: reopening the surface has
                         // to cost physical presence in this room.
-                        if (pairingSealed) {
+                        if (pairingSealed && !confirming) {
                             FlickTvButton(
                                 onClick = onResumePairing,
                                 focusRequester = resumeFocus,
@@ -394,26 +478,28 @@ fun PairScreen(
                                 )
                             }
                         }
-                        FlickTvButton(
-                            onClick = onRename,
-                            focusRequester = renameFocus,
-                            contentPadding = FlickDimens.ControlPadding,
-                        ) {
-                            Text(
-                                text = stringResource(R.string.pair_rename),
-                                style = FlickType.body(sizeSp = 16),
-                                color = FlickColor.OnSurface,
-                            )
-                        }
-                        FlickTvButton(
-                            onClick = onOpenSettings,
-                            contentPadding = FlickDimens.ControlPadding,
-                        ) {
-                            Text(
-                                text = stringResource(R.string.pair_settings),
-                                style = FlickType.body(sizeSp = 16),
-                                color = FlickColor.OnSurfaceDim,
-                            )
+                        if (!confirming) {
+                            FlickTvButton(
+                                onClick = onRename,
+                                focusRequester = renameFocus,
+                                contentPadding = FlickDimens.ControlPadding,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.pair_rename),
+                                    style = FlickType.body(sizeSp = 16),
+                                    color = FlickColor.OnSurface,
+                                )
+                            }
+                            FlickTvButton(
+                                onClick = onOpenSettings,
+                                contentPadding = FlickDimens.ControlPadding,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.pair_settings),
+                                    style = FlickType.body(sizeSp = 16),
+                                    color = FlickColor.OnSurfaceDim,
+                                )
+                            }
                         }
                     }
                 }
@@ -658,6 +744,78 @@ private fun PairingSealedCard(modifier: Modifier = Modifier) {
 }
 
 /**
+ * "Allow this phone?" — the one thing on this screen that a phone on the network
+ * cannot cause to happen by itself.
+ *
+ * It names the phone, states plainly what allowing it grants, and draws the decision
+ * deadline. The countdown is here rather than left implicit because the prompt
+ * genuinely does go away: it expires to a REFUSAL, and a card that vanished with no
+ * warning would read as a bug to the one person it is asking.
+ */
+@Composable
+private fun PairConfirmCard(
+    deviceLabel: String,
+    expiresAtElapsedMs: Long?,
+    modifier: Modifier = Modifier,
+) {
+    GlassPanel(
+        modifier = modifier.fillMaxWidth(),
+        shape = FlickShape.Xl,
+        tone = GlassPanelTone.Solid,
+        contentPadding = FlickDimens.PanelPadding,
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+        // As with every other card in this column: `Modifier.pairStage` at the call
+        // site already owns the entrance, and the panel's own latch would fade it
+        // a second time.
+        animateEntrance = false,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                imageVector = FlickIcons.Cast,
+                contentDescription = null,
+                tint = FlickColor.SparkBright,
+                modifier = Modifier.size(FlickDimens.GlyphMedium),
+            )
+            Text(
+                // The phone's own name, and the only place on this screen it appears
+                // at display size. It is chosen on the phone, so it is held to one
+                // line and ellipsized rather than allowed to set this card's height.
+                text = deviceLabel,
+                style = FlickType.display(sizeSp = 22),
+                color = FlickColor.OnSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = stringResource(R.string.pair_confirm_body),
+            style = FlickType.body(sizeSp = 16),
+            color = FlickColor.OnSurfaceDim,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Icon(
+                imageVector = FlickIcons.Timer,
+                contentDescription = null,
+                tint = FlickColor.Caution,
+                modifier = Modifier.size(FlickDimens.GlyphSmall),
+            )
+            Text(
+                text = confirmDeadlineLine(expiresAtElapsedMs),
+                style = FlickType.monoEyebrow(trackingEm = 0.14f),
+                color = FlickColor.Caution,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
  * No LAN address yet (Wi-Fi not associated / DHCP lease changing), so the QR host
  * and port are not reachable — say so instead of showing a dead endpoint.
  */
@@ -813,3 +971,29 @@ private fun rotationLine(expiresAtElapsedMs: Long?): String {
 
 private fun remainingSeconds(expiresAtElapsedMs: Long): Long =
     ((expiresAtElapsedMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L) + 999L) / 1000L
+
+/**
+ * The confirmation deadline, in whole seconds. Same one-second tick as
+ * [rotationLine], and the same rule: a countdown renders only against a real
+ * deadline, and with no deadline the line states the outcome without inventing a
+ * clock for it.
+ */
+@Composable
+private fun confirmDeadlineLine(expiresAtElapsedMs: Long?): String {
+    var remainingSec by remember(expiresAtElapsedMs) {
+        mutableStateOf(expiresAtElapsedMs?.let(::remainingSeconds) ?: 0L)
+    }
+    LaunchedEffect(expiresAtElapsedMs) {
+        if (expiresAtElapsedMs == null) return@LaunchedEffect
+        while (true) {
+            remainingSec = remainingSeconds(expiresAtElapsedMs)
+            delay(1_000L)
+        }
+    }
+    val text = if (expiresAtElapsedMs == null) {
+        stringResource(R.string.pair_confirm_deadline_unknown)
+    } else {
+        stringResource(R.string.pair_confirm_deadline, remainingSec)
+    }
+    return text.uppercase(Locale.getDefault())
+}

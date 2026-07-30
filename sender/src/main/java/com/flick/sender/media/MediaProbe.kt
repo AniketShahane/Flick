@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 /**
  * Cheap, best-effort probes of a local video: HDR classification (for the DV/HDR
@@ -93,17 +94,54 @@ object MediaProbe {
                 retriever.getScaledFrameAtTime(
                     us,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    160,
-                    90,
+                    PREVIEW_WIDTH_PX,
+                    PREVIEW_HEIGHT_PX,
                 )
             } else {
+                // No scaling call before 27, and getFrameAtTime hands back the frame at
+                // its full decoded size — 33 MB for one 4K frame. The decode itself is the
+                // platform's, so that transient is unavoidable; what must not survive it
+                // is a 33 MB bitmap held live by the preview while the next bucket
+                // allocates another. Scaled into the same box the newer call takes, and the
+                // full-size frame released here rather than left to the collector.
                 retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?.let(::scaleToPreview)
             }
         } catch (_: Throwable) {
             null
         }
     }
+
+    private fun scaleToPreview(full: Bitmap): Bitmap {
+        val (width, height) = previewFrameSize(full.width, full.height)
+        if (width == full.width && height == full.height) return full
+        val scaled = Bitmap.createScaledBitmap(full, width, height, true)
+        // createScaledBitmap is allowed to hand back its source; recycling then would
+        // recycle the bitmap being returned.
+        if (scaled !== full) full.recycle()
+        return scaled
+    }
 }
+
+/**
+ * The box a scrub still is decoded into. It matches `getScaledFrameAtTime`'s contract —
+ * fit inside the box, never upscale, preserve the source's own aspect ratio — so both
+ * branches of [MediaProbe.decodeStill] produce the same picture on either side of API 27.
+ */
+internal fun previewFrameSize(sourceWidth: Int, sourceHeight: Int): Pair<Int, Int> {
+    if (sourceWidth <= 0 || sourceHeight <= 0) return PREVIEW_WIDTH_PX to PREVIEW_HEIGHT_PX
+    val scale = minOf(
+        PREVIEW_WIDTH_PX.toFloat() / sourceWidth,
+        PREVIEW_HEIGHT_PX.toFloat() / sourceHeight,
+        1f,
+    )
+    return (sourceWidth * scale).roundToInt().coerceAtLeast(1) to
+        (sourceHeight * scale).roundToInt().coerceAtLeast(1)
+}
+
+// The preview card is 116x65dp; anything larger is decoded and thrown away.
+internal const val PREVIEW_WIDTH_PX = 160
+internal const val PREVIEW_HEIGHT_PX = 90
 
 private const val SCRUB_BUCKET_MS = 500L    // decode at most one still per 500ms of media
 private const val SCRUB_DEBOUNCE_MS = 90L   // wall-clock settle before decoding a bucket

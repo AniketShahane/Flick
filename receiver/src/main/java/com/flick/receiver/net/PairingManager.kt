@@ -4,11 +4,14 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Base64
 import com.flick.receiver.util.FlickLog
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 data class PairingSnapshot(
     val surface: PairingSurface,
@@ -36,6 +39,27 @@ sealed interface PairingSurface {
     data class Success(val deviceLabel: String, val generation: Long) : PairingSurface
 
     /**
+     * A phone presented the right code and this TV is asking the room whether to
+     * admit it. Nothing is committed yet: no key exists, and the only thing that
+     * can produce one is someone pressing Allow on this screen.
+     *
+     * It exists because the QR carries the live code (payload v4), so reading the
+     * screen is enough to submit a correct code on the first try — which the
+     * cumulative-failure ceiling cannot bound, because that ceiling charges only
+     * *wrong* codes. This state is what puts physical presence back in the room
+     * without reintroducing typing.
+     *
+     * [expiresAtElapsedMs] is a real deadline on the `elapsedRealtime` timebase and
+     * it resolves to a DENIAL, never to an allow. The screen draws it so a prompt
+     * that vanishes is explicable rather than mysterious.
+     */
+    data class Confirming(
+        val deviceLabel: String,
+        val generation: Long,
+        val expiresAtElapsedMs: Long,
+    ) : PairingSurface
+
+    /**
      * The cumulative-failure ceiling has been reached: the surface is closed, no
      * code exists, and nothing on the network can reopen it. Only
      * [PairingManager.resumePairing] does, and only something pressing a button on
@@ -55,8 +79,85 @@ sealed interface PairAttemptResult {
     data object Expired : PairAttemptResult
     data object InvalidCode : PairAttemptResult
     data class LockedOut(val retryAtElapsedMs: Long) : PairAttemptResult
-    /** Durable storage rejected the new key, so the visible code was not consumed. */
+    /**
+     * Durable storage rejected the new key.
+     *
+     * The code cannot be handed back — it was spent the moment it proved itself, at
+     * [PairingManager.attemptPair], because a proven code must not still be admitting
+     * a second phone while the room is being asked. So a fresh one is minted instead
+     * and the surface reopens; [PairingManager.commitConfirmedPair] is the only place
+     * this is produced.
+     */
     data object PersistenceFailed : PairAttemptResult
+
+    /**
+     * The code was right and nothing has been committed. The caller must now wait on
+     * [ticket] and, only on [PairConfirmationOutcome.ALLOWED], ask
+     * [PairingManager.commitConfirmedPair] for the key.
+     *
+     * This is the ONE outcome that outlives the receiver's six-second authentication
+     * window, and reaching it takes a code that passed a constant-time comparison.
+     * Every other outcome is answered inside that window exactly as it was before
+     * the confirmation existed.
+     */
+    data class NeedsConfirmation(val ticket: PairConfirmation) : PairAttemptResult
+}
+
+/** How one on-TV confirmation ended. Only [ALLOWED] may produce a pairing key. */
+enum class PairConfirmationOutcome {
+    ALLOWED,
+    /** Someone in the room said no. */
+    DENIED,
+    /** The decision window elapsed with nobody answering. */
+    EXPIRED,
+    /**
+     * The surface was taken down under the prompt — the app backgrounded, Settings
+     * opened, a cast started, every phone was forgotten, or the asking phone hung up.
+     * Nobody declined, but nobody allowed either, and only an allow may pair.
+     */
+    WITHDRAWN,
+}
+
+/**
+ * One outstanding "Allow this phone?" decision, and the only channel between the
+ * TV's screen and the socket that is waiting on it.
+ *
+ * **Single-shot in both directions.** Three independent parties can try to settle
+ * it — a button on the TV, the manager's own tick past [expiresAtElapsedMs], and
+ * the socket's own deadline or hang-up — so [resolve] is a compare-and-set and
+ * returns the decision that actually stands rather than the one proposed. That is
+ * what keeps the screen and the wire from ever reporting different answers.
+ *
+ * [consume] is the second single-shot: it guards the durable key write, so one
+ * confirmation can mint at most one pairing key however many times a caller asks.
+ */
+class PairConfirmation internal constructor(
+    val deviceLabel: String,
+    val generation: Long,
+    val expiresAtElapsedMs: Long,
+    /** Carried so the commit can still clear the throttle the attempt was charged against. */
+    internal val peerHost: String,
+) {
+    private val outcome = AtomicReference<PairConfirmationOutcome?>(null)
+    private val settled = CompletableDeferred<Unit>()
+    private val consumed = AtomicBoolean(false)
+
+    /** Settles this decision if nothing has yet, and answers with the one that stands. */
+    internal fun resolve(proposed: PairConfirmationOutcome): PairConfirmationOutcome {
+        if (outcome.compareAndSet(null, proposed)) settled.complete(Unit)
+        return outcome.get()!!
+    }
+
+    internal val decided: PairConfirmationOutcome? get() = outcome.get()
+
+    /** Suspends until something decides. It never decides anything itself. */
+    internal suspend fun await(): PairConfirmationOutcome {
+        settled.await()
+        return outcome.get()!!
+    }
+
+    /** True exactly once, for the caller allowed to write a key against this decision. */
+    internal fun consume(): Boolean = consumed.compareAndSet(false, true)
 }
 
 /** The only pairing authorization gate. All code checks and key writes share this monitor. */
@@ -90,6 +191,17 @@ class PairingManager(
      */
     private var surfaceFailures = prefs.getInt(KEY_SURFACE_FAILURES, 0).coerceIn(0, MAX_SURFACE_FAILURES)
     private var surfaceSealed = prefs.getBoolean(KEY_SEALED, false)
+
+    /**
+     * The one outstanding on-TV confirmation, or null. In memory only, and
+     * deliberately: a decision nobody answered before this process died is a
+     * decision nobody answered, and it must not come back as an offer to pair.
+     *
+     * At most one exists at a time, because [attemptPair] consumes the code the
+     * moment it proves it — a second phone submitting the same digits then finds no
+     * open code and is refused like any other closed surface.
+     */
+    private var pending: PairConfirmation? = null
     private data class HostThrottle(var failures: Int, var retryAtElapsedMs: Long)
     private val hostThrottles = LinkedHashMap<String, HostThrottle>(MAX_HOST_THROTTLES, 0.75f, true)
     // A TV that was sealed when it was last killed comes back sealed, and says so
@@ -120,9 +232,22 @@ class PairingManager(
         // The seal's whole job is to survive this. All it takes here is refusing to
         // set [visible] — [publishEligible] then publishes the seal rather than a
         // code, and no other path sets it either.
-        if (surfaceSealed) {
-            FlickLog.d("pair", "surface=sealed (open refused)")
-            return publishEligible()
+        when (openRefusal(sealed = surfaceSealed, confirming = pending != null)) {
+            OpenRefusal.SEALED -> {
+                FlickLog.d("pair", "surface=sealed (open refused)")
+                return publishEligible()
+            }
+            // A confirmation on screen is a decision in progress. Minting a code
+            // under it would leave the phone waiting on that decision holding
+            // digits this TV had already replaced, and would put a fresh code on a
+            // screen whose whole job at that moment is to ask one question. The
+            // prompt has its own bounded deadline, so nothing is stuck: the very
+            // next request after it resolves is honoured.
+            OpenRefusal.CONFIRMING -> {
+                FlickLog.d("pair", "surface=confirming (open refused)")
+                return
+            }
+            OpenRefusal.NONE -> Unit
         }
         visible = true
         FlickLog.d("pair", "surface=open")
@@ -132,6 +257,12 @@ class PairingManager(
     @Synchronized fun closeSurface() {
         visible = false
         open = null // a code is never valid when it is not visibly rendered.
+        // A prompt nobody can see is a prompt nobody can answer, and physical
+        // presence is the entire factor this confirmation adds. Withdrawing BEFORE
+        // the publish below keeps the two consistent: [resolvePending] republishes
+        // through the same decision, and it must not republish a surface this call
+        // has not finished closing.
+        pending?.let { resolvePending(it, PairConfirmationOutcome.WITHDRAWN) }
         FlickLog.d("pair", "surface=closed")
         // Through the same decision as everything else, so a seal outlives the
         // close that carried it: entering Settings closes the surface, and a plain
@@ -197,6 +328,17 @@ class PairingManager(
     @Synchronized fun onBackground() = closeSurface()
 
     @Synchronized fun tick() {
+        // The prompt's deadline, which is the screen's half of a window the waiting
+        // socket also bounds for itself. Two clocks for one decision is deliberate:
+        // this one is what makes the card come down, and it cannot disagree with the
+        // socket because [PairConfirmation] settles once and both read that answer.
+        val confirming = pending
+        if (confirming != null) {
+            if (elapsed() >= confirming.expiresAtElapsedMs) {
+                resolvePending(confirming, PairConfirmationOutcome.EXPIRED)
+            }
+            return
+        }
         val current = open
         // An Open code and a Locked retry deadline are distinct states. In
         // particular, a normal Open code must stay stable until its own expiry.
@@ -236,6 +378,72 @@ class PairingManager(
             return PairAttemptResult.InvalidCode
         }
         val label = normalizeLabel(device, 80).ifBlank { return PairAttemptResult.InvalidCode }
+        // Everything past here has proven the code, and nothing past here writes a
+        // key. The code is consumed HERE rather than at the commit, for two reasons:
+        // a correct code waiting on a human must not still be admitting a second
+        // phone, and a decision that ends in a denial must not hand the observed
+        // digits back for another attempt. The next attempt therefore meets a closed
+        // surface, exactly as it did the instant after a success used to land.
+        val ticket = PairConfirmation(
+            deviceLabel = label,
+            generation = current.generation,
+            expiresAtElapsedMs = elapsed() + CONFIRM_WINDOW_MS,
+            peerHost = host,
+        )
+        pending = ticket
+        open = null
+        // Never the label: it is a user-chosen name for a device on this LAN, and
+        // the screen is where it belongs.
+        FlickLog.i("pair", "confirmation requested gen=${current.generation} windowMs=$CONFIRM_WINDOW_MS")
+        publish(PairingSurface.Confirming(label, current.generation, ticket.expiresAtElapsedMs))
+        return PairAttemptResult.NeedsConfirmation(ticket)
+    }
+
+    /**
+     * Someone in the room pressed Allow. Returns whether that press is what settled
+     * the decision — false means it was already denied, expired or withdrawn, and a
+     * late press must never revive it.
+     *
+     * The key is deliberately NOT written here. `SharedPreferences.commit` is
+     * synchronous disk I/O and this runs on the main thread from a D-pad press; the
+     * write stays where it has always been, on the socket's own thread, in
+     * [commitConfirmedPair]. That also keeps a rejected write reported to the phone
+     * as the same `storage` denial it was before this prompt existed.
+     */
+    @Synchronized fun allowPendingPair(): Boolean {
+        val ticket = pending ?: return false
+        return resolvePending(ticket, PairConfirmationOutcome.ALLOWED) == PairConfirmationOutcome.ALLOWED
+    }
+
+    /** Someone in the room said no. Reachable without waiting for the deadline. */
+    @Synchronized fun denyPendingPair(): Boolean {
+        val ticket = pending ?: return false
+        return resolvePending(ticket, PairConfirmationOutcome.DENIED) == PairConfirmationOutcome.DENIED
+    }
+
+    /**
+     * Settles [ticket] from a party that is not the TV's own screen — the waiting
+     * socket's deadline, or that socket hanging up. Answers with the decision that
+     * actually stands, which may be an Allow that got there first.
+     */
+    @Synchronized fun resolvePendingPair(
+        ticket: PairConfirmation,
+        outcome: PairConfirmationOutcome,
+    ): PairConfirmationOutcome = resolvePending(ticket, outcome)
+
+    /**
+     * Writes the key for an ALLOWED confirmation, and only for one. The durable
+     * transaction, its ordering and its contents are the ones [attemptPair] used to
+     * run inline — this is the same commit moved behind the decision, not a new one.
+     *
+     * Authority comes from the ticket, not from [pending]: a decision that has been
+     * allowed is allowed even if the screen has already moved on, and
+     * [PairConfirmation.consume] is what stops one confirmation minting two keys.
+     */
+    @Synchronized fun commitConfirmedPair(ticket: PairConfirmation): PairAttemptResult {
+        if (ticket.decided != PairConfirmationOutcome.ALLOWED) return PairAttemptResult.SurfaceClosed
+        if (!ticket.consume()) return PairAttemptResult.SurfaceClosed
+        val label = ticket.deviceLabel
         val key = randomKey(); val keyId = randomId()
         val records = storedRecords() + encodePairingRecord(keyId, key, wall(), label)
         // Key, keyId, date and label are one durable transaction before success is
@@ -255,14 +463,46 @@ class PairingManager(
             afterCommit = {
                 failures = 0; lockoutRound = 0; lockoutUntilElapsed = 0L; lockoutUntilWall = 0L
                 surfaceFailures = 0
-                hostThrottles.remove(host)
+                hostThrottles.remove(ticket.peerHost)
+                pending = null
                 open = null
             },
         )
-        if (!committed) return PairAttemptResult.PersistenceFailed
-        val success = PairAttemptResult.Success(key, keyId, label)
-        publish(PairingSurface.Success(label, current.generation))
-        return success
+        if (!committed) {
+            // The code was already spent proving itself, so there is nothing to hand
+            // back: clear the prompt and offer a fresh code rather than leaving the
+            // screen asking about a phone whose key this TV failed to store.
+            pending = null
+            publishEligible()
+            return PairAttemptResult.PersistenceFailed
+        }
+        publish(PairingSurface.Success(label, ticket.generation))
+        return PairAttemptResult.Success(key, keyId, label)
+    }
+
+    /**
+     * Settles [ticket] and, unless it stands allowed and still inside its window,
+     * takes the prompt down and offers a code again.
+     *
+     * An allow inside the window leaves the card standing, because the key has not
+     * been written yet and [commitConfirmedPair] is what replaces it with the
+     * confirmation the viewer is owed. Past the deadline it is dropped regardless: a
+     * commit that never arrived — a socket cancelled between the press and the write —
+     * must not leave this screen asking a question nothing can answer. Dropping it is
+     * safe because the commit's authority is the ticket and not this field, so a slow
+     * write still lands.
+     */
+    private fun resolvePending(
+        ticket: PairConfirmation,
+        proposed: PairConfirmationOutcome,
+    ): PairConfirmationOutcome {
+        val settled = ticket.resolve(proposed)
+        if (pending !== ticket) return settled
+        if (settled == PairConfirmationOutcome.ALLOWED && elapsed() < ticket.expiresAtElapsedMs) return settled
+        pending = null
+        FlickLog.i("pair", "confirmation settled=$settled gen=${ticket.generation}")
+        publishEligible()
+        return settled
     }
 
     @Synchronized fun finishSuccess() { if (_snapshot.value.surface is PairingSurface.Success) { visible = false; publish(PairingSurface.Standby) } }
@@ -294,6 +534,11 @@ class PairingManager(
                 hostThrottles.clear()
                 visible = true
                 open = null
+                // Forget all is the owner revoking every phone. A confirmation still
+                // standing under it must not be allowed to write the first record
+                // back moments later, so the decision is withdrawn rather than left
+                // to its deadline.
+                pending?.let { it.resolve(PairConfirmationOutcome.WITHDRAWN); pending = null }
                 publishEligible()
             },
         )
@@ -360,6 +605,9 @@ class PairingManager(
                     hostThrottles.clear()
                     visible = true
                     open = null
+                    // Reaching zero phones takes the Forget-all path, including its
+                    // withdrawal: see [forgetAllPairings].
+                    pending?.let { it.resolve(PairConfirmationOutcome.WITHDRAWN); pending = null }
                     publishEligible()
                 } else {
                     publish(_snapshot.value.surface)
@@ -558,6 +806,29 @@ class PairingManager(
         /** The QR grammar the sender parses. Bumped from 3 when `c=` was added. */
         const val QR_VERSION = 4
         private const val CODE_TTL_MS = 5 * 60_000L
+
+        /**
+         * How long the on-TV confirmation waits for a person, before resolving to a
+         * denial.
+         *
+         * Thirty seconds is chosen against the physical task and against the socket
+         * that is held open for it. The task is: notice the card, pick up the remote,
+         * press one button — the focus ring is already sitting on a control, so it is
+         * a single press and no navigation. Thirty seconds covers that with room to
+         * spare for someone who has to reach across a sofa; a full minute would not
+         * buy a second real attempt at the same task, because a viewer who has not
+         * answered in thirty seconds is not in the room.
+         *
+         * The upper bound comes from the socket. This window plus the six-second
+         * authentication phase is the whole life of a pre-auth connection, and thirty
+         * keeps that at thirty-six — comfortably inside Ktor CIO's 45-second server
+         * connection-idle timeout, so the decision can never be lost to a reaped
+         * socket even if the client's ping were to stop. Forty-five seconds would put
+         * the total at fifty-one and make that a real question.
+         *
+         * It resolves to DENY, never to allow. That is not a tuning choice.
+         */
+        internal const val CONFIRM_WINDOW_MS = 30_000L
         private const val LOCKOUT_BASE_MS = 30_000L
         private const val MAX_LOCKOUT_MS = 8 * 60_000L
         private const val MAX_LOCKOUT_ROUNDS = 5
@@ -616,6 +887,32 @@ internal fun surfaceDecision(sealed: Boolean, visible: Boolean, lockedOut: Boole
     !visible -> SurfaceDecision.STANDBY
     lockedOut -> SurfaceDecision.LOCKED
     else -> SurfaceDecision.CODE
+}
+
+/** Why a request for a pairing code cannot be honoured, or [NONE] when it can. */
+internal enum class OpenRefusal { SEALED, CONFIRMING, NONE }
+
+/**
+ * The gate on [PairingManager.requestOpen], pulled out where it can be argued with
+ * for the same reason [surfaceDecision] is: the manager needs real
+ * `SharedPreferences`, and both of these are rules rather than state.
+ *
+ * A seal stays first. It is durable, it is the ceiling from the audit's M3, and
+ * nothing reachable over the network may lift it — a confirmation is a live decision
+ * that will be over within thirty seconds either way, so it cannot be allowed to
+ * outrank the one restriction designed to outlast a process restart.
+ *
+ * [confirming] is above the ordinary "yes, mint one" answer because every route that
+ * asks for a code asks with nobody pressing anything:
+ * [PairingManager.onForeground] does it on a lifecycle event, and leaving Settings
+ * does it on the way out. Minting a code under a prompt would rotate the digits the
+ * waiting phone proved and put a second offer on a screen that is asking one
+ * question.
+ */
+internal fun openRefusal(sealed: Boolean, confirming: Boolean): OpenRefusal = when {
+    sealed -> OpenRefusal.SEALED
+    confirming -> OpenRefusal.CONFIRMING
+    else -> OpenRefusal.NONE
 }
 
 /** What a wrong code costs, given the two budgets one attempt spends at once. */

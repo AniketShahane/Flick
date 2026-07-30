@@ -41,6 +41,13 @@ val GeistMono: FontFamily = FontFamily(
 )
 
 /**
+ * Every family the ramp below draws from. Declared as a list so the theme can warm all of
+ * them without naming them a second time — a family added above and missed here would
+ * silently go back to being created inside the first measure that asks for it.
+ */
+internal val FlickFontFamilies: List<FontFamily> = listOf(Bricolage, Geist, GeistMono)
+
+/**
  * Required on every live readout. `tnum` keeps a ticking timecode from re-laying out the
  * row; `zero` keeps the pairing code the user reads off the TV from turning `0` into `O`.
  *

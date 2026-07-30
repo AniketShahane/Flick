@@ -107,6 +107,7 @@ import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.screens.SubtitleSize
 import com.flick.receiver.ui.screens.VideoResolutionClass
 import com.flick.receiver.ui.screens.formatMbps
+import com.flick.receiver.ui.screens.rememberDiagnosticsLines
 import com.flick.receiver.ui.screens.videoResolutionClass
 import com.flick.receiver.ui.screens.videoResolutionLines
 import com.flick.receiver.ui.theme.FlickColor
@@ -151,6 +152,12 @@ internal enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
  * phones the `pairedCount` arm would have caught it anyway; with phones it would
  * not, and the TV would drop to Idle having silently stopped accepting codes —
  * which is the one thing the ceiling must never look like.
+ *
+ * A pending confirmation routes to Pair at any paired count for the same reason and
+ * a sharper one: "Pair another phone" from Idle opens a code with phones already
+ * stored, so without this arm the prompt would be asked of a screen that is not
+ * drawing it — an unanswerable question that could only ever expire, which is the
+ * one shape a physical-presence gate must never take.
  */
 internal fun standbySurfaceFor(
     showSettings: Boolean,
@@ -161,6 +168,7 @@ internal fun standbySurfaceFor(
     surface is PairingSurface.Open ||
         surface is PairingSurface.Locked ||
         surface is PairingSurface.Sealed ||
+        surface is PairingSurface.Confirming ||
         pairedCount == 0 -> StandbySurface.Pair
     surface is PairingSurface.Success -> StandbySurface.PairSuccess
     else -> StandbySurface.Idle
@@ -218,6 +226,12 @@ private data class StandbyState(
     val code: String,
     val codeExpiresAtElapsedMs: Long?,
     val qrPayload: String?,
+    /**
+     * `PairingSurface.Confirming`, snapshotted for the same reason the code is: the
+     * prompt resolves the instant someone presses a button, and an exiting pair
+     * screen must finish the fade still showing the question it was asking.
+     */
+    val confirming: PairingSurface.Confirming?,
 )
 
 /**
@@ -249,9 +263,6 @@ internal fun receiverPlaybackGesturesEnabled(
     playbackActive: Boolean,
     panelOpen: Boolean,
 ): Boolean = playbackActive && !panelOpen
-
-/** Newest diagnostics lines rendered on the TV; the ring buffer itself holds 200. */
-private const val DIAGNOSTICS_VISIBLE = 14
 
 /** Handshake card width (receiver-expressive-spec.md §5.2). */
 private val HANDSHAKE_CARD_WIDTH = 450.dp
@@ -301,7 +312,6 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var rebindCount by remember { mutableStateOf(0) }
     var lastTeardown by remember { mutableStateOf<String?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
-    val logRevision by FlickLog.revision.collectAsState()
     var tvName by remember { mutableStateOf(pairing.tvName) }
     // Remembered rather than read through stringArrayResource: this composable
     // recomposes with the 10 Hz position feed, and the presets never change under
@@ -791,10 +801,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // whole cast (finish() would release the player and tear down the servers).
     BackHandler(
         enabled = showSettings || pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked ||
+            pairingSnapshot.surface is PairingSurface.Confirming ||
             stage is MediaStage.Checking || stage is MediaStage.Preparing || stage is MediaStage.Active || stage is MediaStage.Error,
     ) {
         when {
             showSettings -> leaveSettings()
+            // Back over a prompt is a refusal, not a dismissal: it is above the
+            // ordinary surface close so that dismissing the question can never be the
+            // thing that leaves it unanswered and running down its clock. Denying is
+            // also what Back means everywhere else on this TV — undo the top surface —
+            // and it is the safe direction for a gate whose whole job is to withhold.
+            pairingSnapshot.surface is PairingSurface.Confirming -> pairing.denyPendingPair()
             pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
             stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
             // An open side panel is the topmost surface: dismiss it before Back is
@@ -913,6 +930,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         codeExpiresAtElapsedMs =
                             (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
                         qrPayload = qrPayload,
+                        confirming = pairingSnapshot.surface as? PairingSurface.Confirming,
                     )
                     // Only non-video standby surfaces animate. The outgoing subtree
                     // is immediately removed from focus/semantics while it finishes
@@ -1013,9 +1031,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     },
                                     onDone = leaveSettings,
                                     diagnosticsVisible = showDiagnostics,
-                                    diagnostics = remember(logRevision, showDiagnostics) {
-                                        if (showDiagnostics) FlickLog.recent().take(DIAGNOSTICS_VISIBLE) else emptyList()
-                                    },
+                                    // Subscribed inside this lambda, not at the root
+                                    // of this composable — see [rememberDiagnosticsLines].
+                                    diagnostics = rememberDiagnosticsLines(showDiagnostics),
                                     onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
                                     onClearDiagnostics = { FlickLog.clear() },
                                 )
@@ -1040,6 +1058,25 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // Nothing reachable over the LAN can call this;
                                     // it takes a button press in the room.
                                     onResumePairing = { pairing.resumePairing() },
+                                    // Snapshotted, so the card finishes its exit
+                                    // still naming the phone it was asking about.
+                                    confirmDeviceLabel = rendered.confirming?.deviceLabel,
+                                    confirmExpiresAtElapsedMs = rendered.confirming?.expiresAtElapsedMs,
+                                    // Straight to the manager, NOT through the
+                                    // server: there is no lease to revoke or install
+                                    // here — the socket that asked is waiting on the
+                                    // decision itself — and `ControlServer.forget`
+                                    // takes the manager monitor before `serverLock`,
+                                    // so routing a manager write back through the
+                                    // server is the lock order that deadlocks.
+                                    //
+                                    // Nothing on the LAN can reach either of these.
+                                    // That is the whole point: the QR carries the
+                                    // live code, so being able to read the screen is
+                                    // enough to submit a correct one — and pressing a
+                                    // button on the television is not.
+                                    onAllowPair = { pairing.allowPendingPair() },
+                                    onDenyPair = { pairing.denyPendingPair() },
                                     onRename = {
                                         val next = nextName(tvName, tvNamePresets)
                                         pairing.tvName = next

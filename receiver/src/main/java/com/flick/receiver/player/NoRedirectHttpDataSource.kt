@@ -16,6 +16,65 @@ class RedirectRejectedException(val statusCode: Int) : IOException("HTTP redirec
 /** A safe status-only error for the session taxonomy; response bodies stay local. */
 class PlaybackHttpStatusException(val statusCode: Int) : IOException("HTTP response rejected: $statusCode")
 
+/** Carries the ceiling, never the URL or any part of the body. */
+class SubtitleTooLargeException(val limitBytes: Long) : IOException("subtitle body exceeds $limitBytes bytes")
+
+/**
+ * The subtitle route's byte ceiling, matching the sender's own
+ * `SubtitlePolicy.MAX_BYTES` deliberately — the two are one convention and a TV
+ * that trusted the phone's copy of it would be enforcing nothing.
+ *
+ * It exists because Media3's `SingleSampleMediaSource` reads a sideloaded subtitle
+ * into a single in-memory sample, growing the array as bytes arrive. An already
+ * paired phone — or anything that has taken over that session — can therefore hand
+ * the TV an arbitrarily large body and exhaust its heap. A subtitle is kilobytes.
+ */
+internal const val SUBTITLE_BODY_MAX_BYTES: Long = 5L * 1024L * 1024L
+
+/**
+ * Whether [path] is the sideloaded-subtitle route, and so the one route [SUBTITLE_BODY_MAX_BYTES]
+ * applies to.
+ *
+ * The cap is deliberately NOT global: the media route legitimately streams
+ * gigabytes of 4K HDR through this same factory, and a ceiling there would cap the
+ * product. The prefix is all this needs to decide — `MediaUrlValidator` has already
+ * pinned the full `^/s/{22}$` shape, the peer, the port and the scheme before any
+ * URL reaches the player, so this is route selection rather than validation.
+ */
+internal fun isSubtitleRoute(path: String?): Boolean = path != null && path.startsWith("/s/")
+
+/**
+ * The route ceiling as a pure seam, so what the data source enforces is what a test
+ * can exercise without a socket — the same reason [NoRedirectRequestGate] exists.
+ *
+ * A null [cap] is the uncapped media route and both checks then pass everything: one
+ * factory serves both routes, and the gigabytes of a 4K stream must not be measured
+ * against a subtitle's ceiling. Build one per `open()`; it counts a single body.
+ */
+internal class SubtitleBodyGate(private val cap: Long?) {
+    var produced: Long = 0L
+        private set
+
+    /**
+     * The declared size, refused before a byte is read. [length] is
+     * `C.LENGTH_UNSET` when neither the `DataSpec` nor `Content-Length` states one,
+     * which is not itself a refusal: the sender's subtitle route answers a
+     * whole-file 200 with no range, and [verifyProduced] is what covers a body that
+     * declares nothing — or under-reports.
+     */
+    fun verifyDeclaredLength(length: Long) {
+        val limit = cap ?: return
+        if (length != C.LENGTH_UNSET.toLong() && length > limit) throw SubtitleTooLargeException(limit)
+    }
+
+    /** One chunk of body, counted and refused as the running total overruns. */
+    fun verifyProduced(read: Int) {
+        produced += read.toLong()
+        val limit = cap ?: return
+        if (produced > limit) throw SubtitleTooLargeException(limit)
+    }
+}
+
 /** Pure one-request seam used to prove a 3xx never becomes a follow-up request. */
 class NoRedirectRequestGate {
     var requestCount: Int = 0
@@ -59,6 +118,9 @@ private class NoRedirectHttpDataSource(
     private var bytesRemaining = C.LENGTH_UNSET.toLong()
     private var resolvedUri: Uri? = null
 
+    /** One per body, capped on the subtitle route and uncapped on the media route. */
+    private var bodyGate = SubtitleBodyGate(null)
+
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         if (dataSpec.httpMethod != DataSpec.HTTP_METHOD_GET) {
@@ -69,6 +131,7 @@ private class NoRedirectHttpDataSource(
         val openedConnection = (url.openConnection() as? HttpURLConnection)
             ?: throw IOException("not an HTTP connection")
         connection = openedConnection
+        bodyGate = SubtitleBodyGate(if (isSubtitleRoute(dataSpec.uri.path)) SUBTITLE_BODY_MAX_BYTES else null)
         try {
             openedConnection.instanceFollowRedirects = false
             openedConnection.connectTimeout = connectTimeoutMs
@@ -93,6 +156,10 @@ private class NoRedirectHttpDataSource(
             bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.length else {
                 openedConnection.contentLengthLong.takeIf { it >= 0L } ?: C.LENGTH_UNSET.toLong()
             }
+            // Half of the convention the sender enforces on its own side; [read]
+            // carries the other half, because a body that under-reports its size
+            // would otherwise walk straight past this one.
+            bodyGate.verifyDeclaredLength(bytesRemaining)
             opened = true
             transferStarted(dataSpec)
             return bytesRemaining
@@ -112,6 +179,10 @@ private class NoRedirectHttpDataSource(
             throw error
         }
         if (read == C.RESULT_END_OF_INPUT) return C.RESULT_END_OF_INPUT
+        // Ahead of `bytesTransferred`: the single in-memory sample downstream grows
+        // on whatever this call returns, so an overrun has to end the read rather
+        // than be counted once the bytes are already handed over.
+        bodyGate.verifyProduced(read)
         if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= read.toLong()
         bytesTransferred(read)
         return read
@@ -125,6 +196,7 @@ private class NoRedirectHttpDataSource(
             closeConnectionOnly()
             resolvedUri = null
             bytesRemaining = C.LENGTH_UNSET.toLong()
+            bodyGate = SubtitleBodyGate(null)
             if (opened) {
                 opened = false
                 transferEnded()
