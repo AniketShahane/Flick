@@ -48,6 +48,18 @@ Custom URI schemes do not establish application identity. Another installed app 
 
 One-scan authorization has since shipped, and it took the second of the two routes this section used to require rather than the first. `autoVerify` needs an https App Link and a signed `assetlinks.json`, neither of which a `flick://` scheme can have; so instead of verifying the scheme, the sender confines a v4 code to `PairLaunch.parseScanned` — the camera running inside this process — and demotes every externally delivered payload to v3 in the parser. The scheme is still unverifiable and still claims nothing. That confinement, not the scheme, is what carries the one-scan claim, and it is why a hostile app registering the same filter can neither harvest a live code from a scan nor feed one in.
 
+## The bundled OpenSubtitles key
+
+The OpenSubtitles API Consumer key identifies the **app**, not a user. Download allowance attaches to whichever account is signed in, so the key spends nobody's quota and unlocks nobody's account, and request rate is limited per IP address rather than per key — every install brings its own. A build that ships one therefore hands an extractor nothing they could not get by registering a free key of their own in a minute.
+
+It is not hidden, and nothing here claims it is. A key compiled into `BuildConfig` is a string in the APK: R8 renames symbols and leaves string constants alone, and moving the value into a `.so` only exchanges `strings` for a hook at the JNI boundary. Because this repository is public, any scheme that concealed the key would be published beside it — Kerckhoffs's principle is not merely broken here, it is inverted. Google's own secrets Gradle plugin says as much of the technique it exists to serve: the key is part of the static binary and stays recoverable by decompiling an APK. The value is kept out of the repository because the repository is public, not because packaging could hide it.
+
+The only measure that would actually protect it is a server holding it off the device, which would give Flick a backend that sees every subtitle search every user makes — the cloud dependency this app exists not to have. Play Integrity cannot substitute: it needs that same backend to verify a verdict, and a build distributed outside Google Play is precisely the case its attestation reports as unrecognized.
+
+Comparable open-source clients resolve this the same way, including the VLC extension OpenSubtitles publish themselves, which carries its key as a literal in `vlsubcom.lua` with no user override at all. Flick is stricter: `OpenSubtitlesWire.resolveKey` prefers a pasted key over the bundled one, an empty bundled key is the DEFAULT state of a clone and resolves to no key rather than to an error, and a key the API refuses degrades to a sentence inviting the user to paste their own. A revoked key costs the convenience path, never the feature.
+
+What that accepts is a reputational channel, not a credential one. The `User-Agent` names this app on every call, so abuse conducted with an extracted key is attributable to Flick and answerable by revocation. The response is to rotate the key and ship a build carrying the new one; installs running a user-supplied key are unaffected throughout.
+
 ## Privacy, backup, and notifications
 
 Never record pairing key/code, media token/full URL, HMAC nonce/proof, the raw deep-link URI, SSID/BSSID, device serial, or media title in logs, exceptions, notifications, analytics, backup, exported diagnostics, or committed evidence. The deep-link URI is on that list precisely because a v4 payload carries the live code, and `ScannedPairLaunch.toString` prints the code as `held` rather than as itself for the same reason.

@@ -1,6 +1,7 @@
 package com.flick.sender.net
 
 import java.net.URI
+import java.util.Locale
 
 /**
  * Which key a request is carrying. The two differ in whose allowance is being spent, and
@@ -143,6 +144,36 @@ object OpenSubtitlesWire {
      */
     fun allowedRedirect(location: String?): String? =
         location?.trim()?.takeIf { downloadLinkIsAllowed(it) }
+
+    /**
+     * A `/subtitles` query in the only spelling the API answers.
+     *
+     * OpenSubtitles does not merely accept a query, it normalises one, and replies to
+     * anything else with a 301 naming the spelling it wanted. Three rules, each confirmed
+     * against the live API: parameters sorted by name, values lower-cased, and a space
+     * written `+` rather than `%20`. Searching for `Blade Runner` breaks all three at once,
+     * and `query` before `season_number` breaks the first — which is to say every text
+     * search this app can produce was un-canonical, while the hash search, a lone
+     * lower-case hex parameter, was canonical by accident.
+     *
+     * That 301 is not a hop available to this client. Redirects are refused on every call
+     * it makes, for the reason given on its [HttpClient][OpenSubtitlesClient], so an
+     * un-canonical query does not cost a round trip — it returns no results at all, as a
+     * `Unavailable`. The correct spelling has to be built here or not at all.
+     *
+     * Percent-encoding is left to the caller and is not part of the normal form: `%27`,
+     * `%3A`, `%26`, `%C3%A9` and a literal `*` all answer 200 unchanged. Only the space is
+     * special-cased, because `+` and `%20` are both legal spellings of it and the server
+     * has picked one.
+     *
+     * The lower-casing is [Locale.ROOT]'s, never the device's: the term is derived from a
+     * filename, and a phone set to Turkish would map the `I` in `INCEPTION` to a dotless
+     * `ı` and search for a title that does not exist.
+     */
+    fun canonicalQuery(parameters: List<Pair<String, Any>>): List<Pair<String, String>> =
+        parameters
+            .map { (name, value) -> name to value.toString().lowercase(Locale.ROOT) }
+            .sortedBy { it.first }
 
     /**
      * Hash matches first.

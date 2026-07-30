@@ -13,14 +13,15 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.request.url
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import io.ktor.http.encodeURLParameter
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
@@ -356,7 +357,14 @@ class OpenSubtitlesClient(
         val response = attempt {
             http.get("$API/subtitles") {
                 apiHeaders(key, session)
-                query.forEach { (name, value) -> parameter(name, value) }
+                // Appended already encoded, because `parameter()` writes a space as %20 and
+                // the server's canonical form is `+`. See [OpenSubtitlesWire.canonicalQuery]
+                // for the whole normal form and why a 301 here costs the entire search.
+                url {
+                    OpenSubtitlesWire.canonicalQuery(query).forEach { (name, value) ->
+                        encodedParameters.append(name, value.encodeURLParameter(spaceToPlus = true))
+                    }
+                }
             }
         } ?: return SubtitleSearchOutcome.Offline
         FlickLog.i("http", "opensubtitles search status=${response.status.value}")

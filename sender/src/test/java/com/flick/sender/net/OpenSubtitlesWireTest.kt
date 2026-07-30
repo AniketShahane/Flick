@@ -246,4 +246,53 @@ class OpenSubtitlesWireTest {
         assertEquals("in 5 hours", OpenSubtitlesWire.quotaOf(3, "in\r\n5    hours")?.resetsIn)
         assertEquals(48, OpenSubtitlesWire.quotaOf(3, "z".repeat(200))?.resetsIn?.length)
     }
+
+    // --- the one spelling of a query the server answers ----------------------
+    //
+    // Every expectation below was read off the live API rather than off its documentation:
+    // the un-canonical form of each answers 301 with a Location naming the canonical one,
+    // and this client follows no redirect, so a 301 is a search that returned nothing.
+
+    @Test fun parametersAreSortedByName() {
+        // The episode search sends query, season_number, episode_number in reading order,
+        // which is exactly the order the server rejects.
+        assertEquals(
+            listOf("episode_number" to "2", "query" to "house", "season_number" to "1"),
+            OpenSubtitlesWire.canonicalQuery(
+                listOf("query" to "house", "season_number" to 1, "episode_number" to 2),
+            ),
+        )
+    }
+
+    @Test fun valuesAreLowerCased() {
+        // A term derived from a filename is almost never already lower-case.
+        assertEquals(
+            listOf("query" to "blade runner 2049"),
+            OpenSubtitlesWire.canonicalQuery(listOf("query" to "Blade Runner 2049")),
+        )
+    }
+
+    @Test fun theSpaceIsLeftForTheCallerToEncodeAndNothingElseIsTouched() {
+        // Normalising is not escaping: the client appends these already percent-encoded,
+        // and the server takes %27, %3A, %26, %C3%A9 and a literal * unchanged.
+        assertEquals(
+            listOf("query" to "ocean's eleven: amélie & co *"),
+            OpenSubtitlesWire.canonicalQuery(listOf("query" to "Ocean's Eleven: Amélie & Co *")),
+        )
+    }
+
+    @Test fun aHashSearchIsAlreadyCanonicalAndSurvivesUnchanged() {
+        // One lower-case hex parameter cannot be mis-ordered or mis-cased, which is why the
+        // hash half of the search was working while the text half returned nothing.
+        val hash = listOf("moviehash" to "8e245d9679d31e12")
+        assertEquals(listOf("moviehash" to "8e245d9679d31e12"), OpenSubtitlesWire.canonicalQuery(hash))
+    }
+
+    @Test fun anIntegerParameterSurvivesTheLowerCasing() {
+        // season_number and episode_number arrive as Int, and toString must not widen them.
+        assertEquals(
+            listOf("episode_number" to "12", "season_number" to "3"),
+            OpenSubtitlesWire.canonicalQuery(listOf("season_number" to 3, "episode_number" to 12)),
+        )
+    }
 }
