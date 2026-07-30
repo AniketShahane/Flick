@@ -63,6 +63,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -159,7 +160,13 @@ private fun RemoteScreen(
     var showSubtitles by rememberSaveable { mutableStateOf(false) }
     val subtitleAttached = controller.selectedSubtitle.collectAsState().value != null
 
-    val hdr by produceState(initialValue = HdrType.NONE, item?.uri) {
+    // Seeded from the memo rather than from NONE: this film was almost always probed by its
+    // own library tile before it was ever cast, so the badge is right on the first frame
+    // instead of stating NONE and correcting itself a dispatch later.
+    val hdrSeed = remember(item?.uri) {
+        item?.uri?.let { MediaProbe.cachedHdr(it) } ?: HdrType.NONE
+    }
+    val hdr by produceState(hdrSeed, item?.uri) {
         val uri = item?.uri
         value = if (uri != null) MediaProbe.detectHdr(context, uri) else HdrType.NONE
     }
@@ -322,7 +329,16 @@ private fun BoxScope.AmbientGlow() {
             .align(Alignment.TopCenter)
             .offset(y = (-80).dp)
             .size(width = 360.dp, height = 250.dp)
-            .graphicsLayer { alpha = breathing?.value ?: rest }
+            .graphicsLayer {
+                // One drawing instruction lives in this layer — the gradient below — so
+                // modulating its alpha per op is pixel-identical to compositing it through
+                // a buffer, and the buffer is what the default strategy would build: ~990×688
+                // px of RGBA, allocated and composited on EVERY frame of a cast, for hours,
+                // to fade one ellipse. The loop above is stopped when nobody is looking; this
+                // is the other half of that, for the frames somebody is.
+                compositingStrategy = CompositingStrategy.ModulateAlpha
+                alpha = breathing?.value ?: rest
+            }
             .background(FlickGradients.ambientGlow),
     )
 }
@@ -684,9 +700,19 @@ private fun ColumnScope.Poster(
                 contentDescription = item?.name,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
-                // In the shared overlay: the flight starts outside this rounded clip.
+                // In the shared overlay: the flight starts outside this rounded clip, so
+                // the copy carries the radius itself. The poster is 24% of the viewport by
+                // construction and the morph holds the full corner below 25% of the window,
+                // so this seat's radius stands for the whole flight instead of resolving
+                // toward square — which is what a hero growing into a window wants and not
+                // what two card-sized seats want.
                 modifier = Modifier
-                    .flickSharedFrame(sharedScope, animatedScope, CastPosterKey)
+                    .flickSharedFrame(
+                        sharedScope = sharedScope,
+                        animatedScope = animatedScope,
+                        key = CastPosterKey,
+                        restCorner = FlickCorners.poster,
+                    )
                     .fillMaxSize(),
             )
         }

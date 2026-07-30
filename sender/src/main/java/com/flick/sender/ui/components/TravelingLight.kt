@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
@@ -40,9 +41,13 @@ fun TravelingLight(
     lightHeight: Dp = 10.dp,
 ) {
     val reduceMotion = rememberReduceMotion()
+    // Connecting is bounded, so this is the mildest case of the rule — but a handoff that
+    // is failing is exactly the one that stays on screen, and the user who backgrounds the
+    // phone while it retries is the one paying for it. See [rememberIsResumed].
+    val resumed = rememberIsResumed()
     // Kept as State and read inside the layer block: a 1050 ms loop unwrapped at
     // composition scope would re-subcompose this layout on every frame of the wait.
-    val phase = if (reduceMotion) {
+    val phase = if (reduceMotion || !resumed) {
         null
     } else {
         val transition = rememberInfiniteTransition(label = "link")

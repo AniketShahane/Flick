@@ -39,40 +39,60 @@ object MediaProbe {
     private val probeDispatcher = Dispatchers.IO.limitedParallelism(2)
 
     /**
+     * The verdict already reached for [uri], or null if nobody has looked yet.
+     *
+     * Exposed so a caller can read the memo WITHOUT suspending. The hit test used to live
+     * inside [detectHdr]'s `withContext`, which meant a tile whose answer was already a
+     * value in this map still had to launch a coroutine and queue on a two-wide dispatcher
+     * behind whatever cold tiles were mid-container-parse of a multi-gigabyte file — then
+     * dispatch back to Main and write state, recomposing the tile. Over a fling across an
+     * already-visited part of the grid that is forty coroutines and forty recompositions to
+     * re-answer forty questions that were answered the first time.
+     */
+    fun cachedHdr(uri: Uri): HdrType? = hdrCache[uri.toString()]
+
+    /**
      * Reads the video track's MIME / color-transfer to classify HDR. Dolby Vision
      * carries its own MIME; HDR10/HLG show up as an ST2084 / HLG transfer.
+     *
+     * The memo is checked before the dispatch, not inside it — see [cachedHdr].
      */
-    suspend fun detectHdr(context: Context, uri: Uri): HdrType = withContext(probeDispatcher) {
-        hdrCache[uri.toString()]?.let { return@withContext it }
-        val result = runCatching {
-            val extractor = MediaExtractor()
-            try {
-                extractor.setDataSource(context, uri, null)
-                var found = HdrType.NONE
-                for (i in 0 until extractor.trackCount) {
-                    val format = extractor.getTrackFormat(i)
-                    val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (!mime.startsWith("video/")) continue
-                    if (mime.equals("video/dolby-vision", ignoreCase = true)) {
-                        found = HdrType.DOLBY_VISION
-                        break
-                    }
-                    if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
-                        val transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
-                        if (transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
-                            transfer == MediaFormat.COLOR_TRANSFER_HLG
-                        ) {
-                            found = HdrType.HDR10
+    suspend fun detectHdr(context: Context, uri: Uri): HdrType {
+        cachedHdr(uri)?.let { return it }
+        return withContext(probeDispatcher) {
+            // Re-checked on arrival: two tiles for the same file can both miss above and
+            // both queue, and the second no longer has a reason to parse the container.
+            hdrCache[uri.toString()]?.let { return@withContext it }
+            val result = runCatching {
+                val extractor = MediaExtractor()
+                try {
+                    extractor.setDataSource(context, uri, null)
+                    var found = HdrType.NONE
+                    for (i in 0 until extractor.trackCount) {
+                        val format = extractor.getTrackFormat(i)
+                        val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                        if (!mime.startsWith("video/")) continue
+                        if (mime.equals("video/dolby-vision", ignoreCase = true)) {
+                            found = HdrType.DOLBY_VISION
+                            break
+                        }
+                        if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
+                            val transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+                            if (transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
+                                transfer == MediaFormat.COLOR_TRANSFER_HLG
+                            ) {
+                                found = HdrType.HDR10
+                            }
                         }
                     }
+                    found
+                } finally {
+                    extractor.release()
                 }
-                found
-            } finally {
-                extractor.release()
-            }
-        }.getOrDefault(HdrType.NONE)
-        hdrCache[uri.toString()] = result
-        result
+            }.getOrDefault(HdrType.NONE)
+            hdrCache[uri.toString()] = result
+            result
+        }
     }
 
     /**

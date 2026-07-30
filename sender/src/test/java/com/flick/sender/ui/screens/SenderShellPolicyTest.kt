@@ -120,6 +120,31 @@ class SenderShellPolicyTest {
         assertFalse(SenderShellPolicy.dockMorph(ShellDestination.LIBRARY, ShellDestination.DETAIL))
     }
 
+    @Test fun onlyTheReturnOutOfDetailHoldsTheChromeBackForTheFrame() {
+        assertTrue(SenderShellPolicy.heroReturn(ShellDestination.DETAIL, ShellDestination.LIBRARY))
+        // Going in, the chrome is the thing leaving, and it leaves before the frame grows.
+        assertFalse(SenderShellPolicy.heroReturn(ShellDestination.LIBRARY, ShellDestination.DETAIL))
+        // The app's other shared-frame pair carries no chrome at either end.
+        assertFalse(
+            SenderShellPolicy.heroReturn(ShellDestination.CONNECTING, ShellDestination.NOW_PLAYING),
+        )
+        assertFalse(SenderShellPolicy.heroReturn(ShellDestination.DETAIL, ShellDestination.CONNECTING))
+        assertFalse(SenderShellPolicy.heroReturn(ShellDestination.NOW_PLAYING, ShellDestination.LIBRARY))
+        assertFalse(SenderShellPolicy.heroReturn(ShellDestination.FAILURE, ShellDestination.LIBRARY))
+        assertFalse(SenderShellPolicy.heroReturn(ShellDestination.LIBRARY, ShellDestination.CONNECT))
+
+        // Both arms hang off one latch in the shell, so no pair may claim both of them.
+        ShellDestination.entries.forEach { initial ->
+            ShellDestination.entries.forEach { target ->
+                assertFalse(
+                    "$initial -> $target",
+                    SenderShellPolicy.heroReturn(initial, target) &&
+                        SenderShellPolicy.dockMorph(initial, target),
+                )
+            }
+        }
+    }
+
     @Test fun onlyTheCinematicRoutesInvertTheSystemBarIcons() {
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.NOW_PLAYING))
         assertTrue(SenderShellPolicy.darkBackdrop(ShellDestination.CONNECTING))

@@ -11,6 +11,7 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -41,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -66,6 +68,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 /**
@@ -140,6 +143,11 @@ fun FlickApp(
     // Owned here because the bar and the routes that reserve room for it are siblings: the
     // shell is the only composition both of them are inside.
     val navMetrics = remember { NavMetrics() }
+    // Same reason, one level up: the routes below cross-dissolve, so the library is DISPOSED
+    // while a detail sheet is up. Held here it comes back seated where it was left, which is
+    // also what puts the tile a returning poster flies into back on the screen — see
+    // [SenderShellPolicy.heroReturn], whose whole premise is that the seat is there.
+    val libraryUi = rememberLibraryUiState()
 
     val destination = SenderShellPolicy.destinationOf(route)
     val dockLive = castingItem != null
@@ -155,17 +163,54 @@ fun FlickApp(
     val flightMorph = remember(route) {
         dockLive && SenderShellPolicy.dockMorph(history.destination, destination)
     }
+    // The latch's other arm, decided off the pair for the same reason and at the same
+    // moment: which surface the app came FROM is what says whether a frame is about to
+    // land on the chrome's seat, and by the time the flight is running that is gone.
+    //
+    // The pair is also all there is to decide on. The grid the frame is flying into has
+    // not been measured on this frame — it has not even been composed — so nothing can be
+    // asked about the seat, and [libraryUi] is what makes the pair worth trusting: the
+    // grid comes back where it was left, so the tile that was tapped is composed again.
+    // What survives is a file that left the library while the sheet was up, which spends
+    // the hold with nothing in the air; it is bounded by [HeroLandMs] and it is the only
+    // arm of this that a wrong answer costs a wait rather than a bar under a poster.
+    val heroReturn = remember(route) {
+        SenderShellPolicy.heroReturn(history.destination, destination)
+    }
     // Identity rather than the route itself: re-opening the remote while the minimize is
     // still in the air is a new flight, even though it lands where the last one started.
     val flight = remember(route) { Any() }
     var flown by remember { mutableStateOf<Any?>(null) }
     LaunchedEffect(flight) {
-        if (flightMorph) delay(MorphFlightMs)
+        // One latch, two arms, and no pair can take both — see [SenderShellPolicy.heroReturn].
+        if (flightMorph) delay(MorphFlightMs) else if (heroReturn && !reduceMotion) delay(HeroLandMs)
         flown = flight
     }
     // Released once the geometry is out of the air, because after that a cast that ends
     // has to be able to take the bar out with an exit of its own.
     val morphing = flightMorph && flown !== flight
+    // The frame is drawn in the shell's overlay, which the transition layout paints after
+    // every child of its own — so while it is up there, nothing the chrome does underneath
+    // can be seen, and where the frame lands the chrome is what it lands on. It gets the
+    // window to itself until the flight ENDS rather than until it looks landed: the end is
+    // when the overlay copy is handed back.
+    val heroLanding = heroReturn && !reduceMotion && flown !== flight
+    // The bottom stack rises as ONE movement once the frame is down. Each bar's own
+    // entrance would carry it only its own height, which walks the dock through the nav's
+    // seat on the way up; this translates the column that already holds them apart. Held
+    // off the window by [heroLanding] itself so the very frame the route flips on is
+    // already clear, and the animator only ever runs the release.
+    val chromeRise = remember { Animatable(0f) }
+    LaunchedEffect(heroLanding) {
+        when {
+            heroLanding -> chromeRise.snapTo(1f)
+            chromeRise.value == 0f -> Unit
+            reduceMotion -> chromeRise.snapTo(0f)
+            // Unconditional: whatever ended the flight — the timer, a tap on another tile,
+            // a cast dying — the stack cannot be left below the window edge.
+            else -> chromeRise.animateTo(0f, motionScheme.defaultSpatialSpec<Float>())
+        }
+    }
     // The nav outlives the route that dismissed it, so it keeps the seat it was showing:
     // re-seating the pill for a route the nav does not serve would travel it under the
     // card that is swallowing it.
@@ -342,6 +387,7 @@ fun FlickApp(
                             Route.Library -> LibraryScreen(
                                 controller = controller,
                                 onRequestVideoPermission = onRequestVideoPermission,
+                                uiState = libraryUi,
                                 sharedScope = sharedScope,
                                 animatedScope = this@AnimatedContent,
                             )
@@ -380,6 +426,17 @@ fun FlickApp(
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
+                        // Above the inset and the margin, so the height this travels is the
+                        // whole stack's — one of them puts every bar past the window's
+                        // bottom edge rather than stopping at the gesture handle. Read in
+                        // the placement pass, so the rise never recomposes what it moves.
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(constraints)
+                            layout(placeable.width, placeable.height) {
+                                val lift = if (heroLanding) 1f else chromeRise.value
+                                placeable.place(0, (placeable.height * lift).roundToInt())
+                            }
+                        }
                         .navigationBarsPadding()
                         // The same margin the routes' own clearance is derived from.
                         .padding(NavShellMargin)
@@ -404,6 +461,9 @@ fun FlickApp(
                             // covers the window; it is revealed in place as that card shrinks,
                             // and any rise of its own would be seen through the gap.
                             reduceMotion || morphing -> EnterTransition.None
+                            // A frame landing needs no arm of its own: this rise is spent
+                            // below the window edge while the stack is held there, and it
+                            // is long over by the time the stack itself lifts.
                             else -> fadeIn(motionScheme.defaultEffectsSpec()) +
                                 slideInVertically(motionScheme.defaultSpatialSpec()) { it }
                         },
@@ -520,6 +580,17 @@ private const val MorphFlightMs = 900L
  * frames of each other, near the end of the spring rather than at its midpoint.
  */
 private const val MorphBarsMs = 180L
+
+/**
+ * How long the bottom stack waits below the window edge while a frame flies back into the
+ * grid. It is the FLIGHT's length and not the landing's: the copy in the overlay is handed
+ * back to the grid cell only when its bounds animation terminates, so a stack released
+ * when the frame merely looks home would be released under it. On the frame's own spring —
+ * critically damped, `StiffnessMediumLow`, a pixel per edge — a full-window return
+ * terminates at a little over half a second, and this may not be shorter than that without
+ * putting a bar back under a poster. Longer only reads as a stall.
+ */
+private const val HeroLandMs = 560L
 
 /**
  * Which arm a route pair takes. CONTAINER is the dock growing into the remote and back,

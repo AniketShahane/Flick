@@ -50,9 +50,14 @@ enum class ThemePreference(val stored: String) {
  *
  * The default is [ThemePreference.SYSTEM] so a tree that provides nothing — an
  * instrumentation harness pinning a palette, a preview — behaves as the app did before
- * the preference existed. [FlickCinematicTheme] never reads this and must not: Now
- * Playing, the connecting overlay and the quality sheet are dark by design, not by
- * preference.
+ * the preference existed, including inside [FlickCinematicTheme], which reads this too.
+ *
+ * What that read does NOT decide is whether those screens are dark. Now Playing, the
+ * connecting overlay and the quality sheet are dark by design and not by preference, and
+ * their surfaces are the same navy either way. It picks the brand ASSIGNMENT only, because
+ * the action colour has to be one colour at any instant across the whole app: those screens
+ * draw `primary`, so pinning them to one assignment would give a user a gold CTA on every
+ * other screen and a blue one inside a sheet.
  */
 val LocalThemePreference = staticCompositionLocalOf { ThemePreference.SYSTEM }
 

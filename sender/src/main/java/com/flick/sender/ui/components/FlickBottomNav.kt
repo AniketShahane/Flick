@@ -27,6 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -65,6 +67,7 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * The floating glass navigation pill (design §5.4). It is drawn over the route rather
@@ -90,8 +93,24 @@ internal fun FlickBottomNav(
     val density = LocalDensity.current
     val metrics = LocalNavMetrics.current
     val reduceMotion = rememberReduceMotion()
-    val travel = MaterialTheme.motionScheme.defaultSpatialSpec<Rect>()
+    // The FAST spatial spring, not the default one the rest of the shell travels on
+    // (0.6/800 against 0.8/380). What a tap reads is the first 100 ms, and the default
+    // spring is lazy exactly there: 28 % of the way at 50 ms and 66 % at 100 ms, against
+    // 53 % and home. Both are quiet by ~200 ms, so all that is traded is the fast spec's
+    // ~9 % ring past the seat at ~140 ms — the Expressive selection idiom, and small
+    // enough that it does not break the ordering the icon's tint depends on below: on its
+    // slow effects spring the ink is 77 % resolved at 100 ms, so it still lands after the
+    // fill has arrived under it.
+    val travel = MaterialTheme.motionScheme.fastSpatialSpec<Rect>()
     val indicator = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
+    val scope = rememberCoroutineScope()
+    // Where the fill was last SENT, which is not where it is: written from the tap and
+    // from the effect below, read from neither composition nor layout, so keeping it
+    // costs no invalidation of either.
+    val commanded = remember { mutableStateOf<Rect?>(null) }
+    // The seat the shell actually resolved, readable from a coroutine that outlives the
+    // composition that launched it.
+    val settled = rememberUpdatedState(selected)
 
     // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
     // from writing snapshot state the same layout pass reads, and the epoch only moves
@@ -108,9 +127,24 @@ internal fun FlickBottomNav(
         }
     }
 
+    // The route is the authority on where the fill belongs; it is no longer the thing that
+    // starts it moving. This effect is re-launched from applyChanges, INSIDE the frame
+    // callback, and a launch dispatches — so its body ran after that frame's traversal and
+    // the first withFrameNanos only latched a start time on the frame after. Two frames of
+    // zero movement, and they were the two dearest frames of the interaction: the same
+    // route flip composes, measures and draws the arriving screen while the outgoing one is
+    // still laid out for its fade.
     LaunchedEffect(selected, seatEpoch, reduceMotion) {
         val destination = seats[selected] ?: return@LaunchedEffect
-        if (indicator.value == destination) return@LaunchedEffect
+        // The tap below already sent the fill here, a frame ahead of the route flip that
+        // re-launched this effect; re-issuing it would restart the spring mid-flight. The
+        // comparison is the Rect and not the tab on purpose — a rotation or a font-scale
+        // change moves the seat out from under a fill already sitting on it, and that
+        // still has to re-place.
+        if (commanded.value == destination || indicator.value == destination) {
+            return@LaunchedEffect
+        }
+        commanded.value = destination
         // Rect.Zero is "nothing measured yet", so the first placement lands instead of
         // flying in from the corner of the bar — which is also the only guard the two
         // seats have on the frame the bar is first measured.
@@ -118,6 +152,42 @@ internal fun FlickBottomNav(
             indicator.snapTo(destination)
         } else {
             indicator.animateTo(destination, travel)
+        }
+    }
+
+    // The tap, which is a whole frame earlier than the route it causes.
+    // rememberCoroutineScope dispatches onto the composition's own frame clock, and that
+    // clock drains its trampoline BEFORE its frame callbacks in the same Choreographer
+    // pass — so a launch from a click handler, which runs in the input phase, reaches
+    // animateTo while the tapped frame's own time is still the frame time. The first drawn
+    // frame after the tap is already a moved one, and because the spring runs on the wall
+    // clock, whatever that expensive frame costs is absorbed by the travel instead of
+    // being added in front of it.
+    val onTap: (NavTab) -> Unit = { tab ->
+        onSelect(tab)
+        // The same rule the shell gates on: while the bar is shown, its seat IS the
+        // route's tab, so a re-tap moves nothing here either. Under reduce-motion there is
+        // no travel to get ahead of and the effect above still snaps.
+        val seat = if (reduceMotion || tab == selected) null else seats[tab]
+        if (seat != null && indicator.value != Rect.Zero) {
+            // Set here and not inside the coroutine: the effect above reads it during the
+            // applyChanges of this same frame, and a dispatch is not ordered against
+            // composition.
+            commanded.value = seat
+            scope.launch {
+                indicator.animateTo(seat, travel)
+                // The shell decides where the app actually went; this only got the fill
+                // moving sooner. A navigation it refuses leaves the pill on a seat the app
+                // is not on and re-keys nothing, so the resolved seat is read back once the
+                // travel is over — by which time the route has long since settled. A tap
+                // that supersedes this one cancels this coroutine at the animateTo above,
+                // so a stale correction can never overtake a live one.
+                val resolved = seats[settled.value]
+                if (resolved != null && resolved != commanded.value) {
+                    commanded.value = resolved
+                    indicator.animateTo(resolved, travel)
+                }
+            }
         }
     }
 
@@ -158,7 +228,7 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.LIBRARY,
                 host = host,
                 onSeat = { reportSeat(NavTab.LIBRARY, it) },
-                onClick = { onSelect(NavTab.LIBRARY) },
+                onClick = { onTap(NavTab.LIBRARY) },
             )
             NavItem(
                 icon = FlickIcons.Cast,
@@ -166,7 +236,7 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.DEVICES,
                 host = host,
                 onSeat = { reportSeat(NavTab.DEVICES, it) },
-                onClick = { onSelect(NavTab.DEVICES) },
+                onClick = { onTap(NavTab.DEVICES) },
             )
             NavItem(
                 icon = FlickIcons.Tune,
@@ -174,7 +244,7 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.SETTINGS,
                 host = host,
                 onSeat = { reportSeat(NavTab.SETTINGS, it) },
-                onClick = { onSelect(NavTab.SETTINGS) },
+                onClick = { onTap(NavTab.SETTINGS) },
             )
         }
     }

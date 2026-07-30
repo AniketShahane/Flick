@@ -60,8 +60,13 @@
     <string name="manual_heading_qr">Enter the code on your TV</string>
     <string name="manual_from_qr">The address below came from the TV\'s QR code. Type the 4-digit code on screen to confirm it.</string>
     <string name="manual_host_label">TV IP address</string>
-    <string name="manual_port_label">Control port</string>
-    <string name="manual_code_label">4-digit code</string>
+    <!-- One word each: these two share a row, so a label has roughly half the sheet's
+         width to fit in and "Control port" ran past it above a 1.6x font scale. What the
+         longer names carried is still on screen — the heading asks for the values shown
+         on the TV, and the hint below shows the code's length. -->
+    <string name="manual_port_label">Port</string>
+    <string name="manual_code_label">Code</string>
+    <string name="manual_code_hint">0000</string>
     <string name="manual_connect">Pair</string>
 
     <!-- S2 · Empty state. -->

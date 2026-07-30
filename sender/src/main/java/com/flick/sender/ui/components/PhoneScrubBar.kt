@@ -13,7 +13,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -88,6 +87,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PosterShadow
+import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -301,113 +301,136 @@ fun PhoneScrubBar(
                 },
             contentAlignment = Alignment.CenterStart,
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                // Every pointer-rate read happens here, inside the draw scope, so a
-                // scrub re-runs the draw phase and nothing above it.
-                val t = swell.value
-                val target = targetFraction().coerceIn(0f, 1f)
-                val cy = size.height / 2f
-                val trackH = lerp(TrackIdle.toPx(), TrackDrag.toPx(), t)
-                val trackR = trackH / 2f
-                val w = size.width
+            Spacer(
+                Modifier.fillMaxSize().drawWithCache {
+                    // See SyncChip below for the lesson this is the second application of: a
+                    // gradient with baked endpoints IS a shader, so rebuilding it to move it
+                    // constructs a native RadialGradientShader per draw. This one is built at
+                    // the origin once per size and travels under a translate. It ran at
+                    // pointer rate — up to 240 Hz — for the whole of a drag, on the app's most
+                    // latency-sensitive gesture, while the same process decodes a scrub frame
+                    // and writes 100 Mbps over the LAN.
+                    val gr = GhostGlow.toPx()
+                    val ghostGlow = Brush.radialGradient(
+                        colors = listOf(colors.ghost.copy(alpha = 0.55f), Color.Transparent),
+                        center = Offset(gr, gr),
+                        radius = gr,
+                    )
+                    val rippleStroke = Stroke(width = 2.5.dp.toPx())
+                    // The wave's stroke is the track's animated height, so it cannot simply be
+                    // hoisted — but it only moves while the drag swell is running. Memoized on
+                    // its own width it is one allocation per swell frame instead of one per
+                    // frame for the whole of playback, which is what the wave loop asks for.
+                    var waveStroke = strokeOf(TrackIdle.toPx())
+                    onDrawBehind {
+                        // Every pointer-rate read happens here, inside the draw scope, so a
+                        // scrub re-runs the draw phase and nothing above it.
+                        val t = swell.value
+                        val target = targetFraction().coerceIn(0f, 1f)
+                        val cy = size.height / 2f
+                        val trackH = lerp(TrackIdle.toPx(), TrackDrag.toPx(), t)
+                        val trackR = trackH / 2f
+                        val w = size.width
 
-                val playedW = target * w
-                // The wave swings off the centre line, so a track drawn from 0 keeps
-                // showing through the played span as a straight line behind the squiggle.
-                // Track and buffer therefore start AHEAD of the head, parted from it by a
-                // gap — the way Material's wavy progress parts its wave from its
-                // remainder, round cap and all.
-                val trackStart = if (playedW > 0f) playedW + TrackGap.toPx() else 0f
-                if (trackStart < w) {
-                    drawRoundRect(
-                        color = colors.fillTrackAlt,
-                        topLeft = Offset(trackStart, cy - trackR),
-                        size = Size(w - trackStart, trackH),
-                        cornerRadius = CornerRadius(trackR, trackR),
-                    )
-                }
-                // Buffer behind the head is already played, so only its lead is news — and
-                // a buffer the drag has outrun draws nothing at all.
-                val bufferedW = bufferedFraction().coerceIn(0f, 1f) * w
-                if (bufferedW > trackStart) {
-                    drawRoundRect(
-                        color = colors.fillBuffered,
-                        topLeft = Offset(trackStart, cy - trackR),
-                        size = Size(bufferedW - trackStart, trackH),
-                        cornerRadius = CornerRadius(trackR, trackR),
-                    )
-                }
-                if (playedW > 0f) {
-                    val amp = amplitude.value * WaveAmplitude.toPx()
-                    // Under one stroke width there is no span left to swing through,
-                    // only the cap — so the first seconds of a file stay a flat nub.
-                    if (amp <= 0f || playedW < trackH) {
+                        val playedW = target * w
+                        // The wave swings off the centre line, so a track drawn from 0 keeps
+                        // showing through the played span as a straight line behind the
+                        // squiggle. Track and buffer therefore start AHEAD of the head, parted
+                        // from it by a gap — the way Material's wavy progress parts its wave
+                        // from its remainder, round cap and all.
+                        val trackStart = if (playedW > 0f) playedW + TrackGap.toPx() else 0f
+                        if (trackStart < w) {
+                            drawRoundRect(
+                                color = colors.fillTrackAlt,
+                                topLeft = Offset(trackStart, cy - trackR),
+                                size = Size(w - trackStart, trackH),
+                                cornerRadius = CornerRadius(trackR, trackR),
+                            )
+                        }
+                        // Buffer behind the head is already played, so only its lead is news —
+                        // and a buffer the drag has outrun draws nothing at all.
+                        val bufferedW = bufferedFraction().coerceIn(0f, 1f) * w
+                        if (bufferedW > trackStart) {
+                            drawRoundRect(
+                                color = colors.fillBuffered,
+                                topLeft = Offset(trackStart, cy - trackR),
+                                size = Size(bufferedW - trackStart, trackH),
+                                cornerRadius = CornerRadius(trackR, trackR),
+                            )
+                        }
+                        if (playedW > 0f) {
+                            val amp = amplitude.value * WaveAmplitude.toPx()
+                            // Under one stroke width there is no span left to swing through,
+                            // only the cap — so the first seconds of a file stay a flat nub.
+                            if (amp <= 0f || playedW < trackH) {
+                                drawRoundRect(
+                                    brush = FlickGradients.playhead,
+                                    topLeft = Offset(0f, cy - trackR),
+                                    size = Size(playedW, trackH),
+                                    cornerRadius = CornerRadius(trackR, trackR),
+                                )
+                            } else {
+                                if (waveStroke.width != trackH) waveStroke = strokeOf(trackH)
+                                drawPlayedWave(
+                                    path = wavePath,
+                                    width = playedW,
+                                    cy = cy,
+                                    stroke = waveStroke,
+                                    amplitude = amp,
+                                    wavelength = WaveLength.toPx(),
+                                    phase = phase.floatValue,
+                                )
+                            }
+                        }
+
+                        // The echo paints OVER the amber fill and under the thumb, matching
+                        // the prototype's z-index 2: during a forward drag the confirmed
+                        // position always sits behind the head, so putting it under the fill
+                        // would hide the one thing it exists to show.
+                        val ghost = ghostFraction()
+                        if (dragging && ghost != null && abs(ghost - target) > GhostThreshold) {
+                            val halfGhost = GhostWidth.toPx() / 2f
+                            val gx = (ghost.coerceIn(0f, 1f) * w)
+                                .coerceIn(halfGhost, (w - halfGhost).coerceAtLeast(halfGhost))
+                            translate(left = gx - gr, top = cy - gr) {
+                                drawCircle(brush = ghostGlow, radius = gr, center = Offset(gr, gr))
+                            }
+                            drawRoundRect(
+                                color = colors.ghost,
+                                topLeft = Offset(gx - halfGhost, cy - GhostHeight.toPx() / 2f),
+                                size = Size(GhostWidth.toPx(), GhostHeight.toPx()),
+                                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+                            )
+                        }
+
+                        val thumbW = lerp(ThumbIdleW.toPx(), ThumbDragW.toPx(), t)
+                        val thumbH = lerp(ThumbIdleH.toPx(), ThumbDragH.toPx(), t)
+                        val halfThumb = thumbW / 2f
+                        val tx = (target * w)
+                            .coerceIn(halfThumb, (w - halfThumb).coerceAtLeast(halfThumb))
+                        drawThumbShadow(tx, cy, thumbW, thumbH)
                         drawRoundRect(
-                            brush = FlickGradients.playhead,
-                            topLeft = Offset(0f, cy - trackR),
-                            size = Size(playedW, trackH),
-                            cornerRadius = CornerRadius(trackR, trackR),
+                            color = colors.onSurface,
+                            topLeft = Offset(tx - halfThumb, cy - thumbH / 2f),
+                            size = Size(thumbW, thumbH),
+                            cornerRadius = CornerRadius(halfThumb, halfThumb),
                         )
-                    } else {
-                        drawPlayedWave(
-                            path = wavePath,
-                            width = playedW,
-                            cy = cy,
-                            stroke = trackH,
-                            amplitude = amp,
-                            wavelength = WaveLength.toPx(),
-                            phase = phase.floatValue,
-                        )
+
+                        val r = ripple.progress.value
+                        if (r < 1f) {
+                            drawCircle(
+                                color = colors.onSurface.copy(
+                                    alpha = Motion.RippleFromAlpha * (1f - r),
+                                ),
+                                radius = RippleBase.toPx() *
+                                    lerp(Motion.RippleFromScale, Motion.RippleToScale, r),
+                                center = Offset(tx, cy),
+                                style = rippleStroke,
+                            )
+                        }
                     }
-                }
-
-                // The echo paints OVER the amber fill and under the thumb, matching the
-                // prototype's z-index 2: during a forward drag the confirmed position
-                // always sits behind the head, so putting it under the fill would hide
-                // the one thing it exists to show.
-                val ghost = ghostFraction()
-                if (dragging && ghost != null && abs(ghost - target) > GhostThreshold) {
-                    val halfGhost = GhostWidth.toPx() / 2f
-                    val gx = (ghost.coerceIn(0f, 1f) * w).coerceIn(halfGhost, (w - halfGhost).coerceAtLeast(halfGhost))
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(colors.ghost.copy(alpha = 0.55f), Color.Transparent),
-                            center = Offset(gx, cy),
-                            radius = GhostGlow.toPx(),
-                        ),
-                        radius = GhostGlow.toPx(),
-                        center = Offset(gx, cy),
-                    )
-                    drawRoundRect(
-                        color = colors.ghost,
-                        topLeft = Offset(gx - halfGhost, cy - GhostHeight.toPx() / 2f),
-                        size = Size(GhostWidth.toPx(), GhostHeight.toPx()),
-                        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
-                    )
-                }
-
-                val thumbW = lerp(ThumbIdleW.toPx(), ThumbDragW.toPx(), t)
-                val thumbH = lerp(ThumbIdleH.toPx(), ThumbDragH.toPx(), t)
-                val halfThumb = thumbW / 2f
-                val tx = (target * w).coerceIn(halfThumb, (w - halfThumb).coerceAtLeast(halfThumb))
-                drawThumbShadow(tx, cy, thumbW, thumbH)
-                drawRoundRect(
-                    color = colors.onSurface,
-                    topLeft = Offset(tx - halfThumb, cy - thumbH / 2f),
-                    size = Size(thumbW, thumbH),
-                    cornerRadius = CornerRadius(halfThumb, halfThumb),
-                )
-
-                val r = ripple.progress.value
-                if (r < 1f) {
-                    drawCircle(
-                        color = colors.onSurface.copy(alpha = Motion.RippleFromAlpha * (1f - r)),
-                        radius = RippleBase.toPx() * lerp(Motion.RippleFromScale, Motion.RippleToScale, r),
-                        center = Offset(tx, cy),
-                        style = Stroke(width = 2.5.dp.toPx()),
-                    )
-                }
-            }
+                },
+            )
 
             // Fully qualified: inside this Box the enclosing Column's scoped overload
             // would otherwise win overload resolution.
@@ -504,8 +527,13 @@ private fun RemainingTime(modifier: Modifier, positionMs: () -> Long, durationMs
 private fun SyncChip(modifier: Modifier) {
     val colors = LocalFlickColors.current
     val reduceMotion = rememberReduceMotion()
-    // A loop never reaches an end state, so it is gated rather than snapped.
-    val sweep = if (reduceMotion) {
+    // Read unconditionally: behind a short-circuiting `||` this would be a composable call
+    // that only sometimes happens.
+    val resumed = rememberIsResumed()
+    // A loop never reaches an end state, so it is gated rather than snapped — and gated on
+    // the window too: this chip is composed for the whole of the remote whenever the TV's
+    // clock is stale, which is exactly the situation that lasts. See [rememberIsResumed].
+    val sweep = if (reduceMotion || !resumed) {
         null
     } else {
         rememberInfiniteTransition(label = "sync").animateFloat(
@@ -606,6 +634,10 @@ private fun PreviewTimecode(label: () -> String?) {
     )
 }
 
+/** The played wave's one stroke shape; see the memo at the draw scope that builds these. */
+private fun strokeOf(width: Float) =
+    Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
 /**
  * The played fill as a travelling wave, stroked at the track's own height with round
  * caps so it occupies exactly the span the flat fill would. A wavelength is sampled
@@ -616,12 +648,12 @@ private fun DrawScope.drawPlayedWave(
     path: Path,
     width: Float,
     cy: Float,
-    stroke: Float,
+    stroke: Stroke,
     amplitude: Float,
     wavelength: Float,
     phase: Float,
 ) {
-    val start = stroke / 2f
+    val start = stroke.width / 2f
     val end = (width - start).coerceAtLeast(start)
     val step = (wavelength / 12f).coerceAtLeast(1f)
     // Subtracting the phase carries the crests toward the head, the way play runs.
@@ -633,11 +665,7 @@ private fun DrawScope.drawPlayedWave(
         x = (x + step).coerceAtMost(end)
         path.lineTo(x, y(x))
     } while (x < end)
-    drawPath(
-        path = path,
-        brush = FlickGradients.playhead,
-        style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
-    )
+    drawPath(path = path, brush = FlickGradients.playhead, style = stroke)
 }
 
 /** Compose takes shadows as elevation, not as a blur radius — two soft passes stand in. */

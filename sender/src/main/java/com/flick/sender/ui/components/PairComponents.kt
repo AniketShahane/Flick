@@ -58,9 +58,9 @@ import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
 /**
  * A discovered-TV row (design §5.1.4) in one of four states: the [connected] TV wears
- * the filled card and an amber ring, the featured TV is the same filled brand-blue
- * card without one, other ready TVs are tonal, and a sleeping TV is a flat outline
- * that cannot be tapped — selecting it would only fail at the handshake.
+ * the filled card and a contrasting accent ring, the featured TV is the same filled
+ * action-coloured card without one, other ready TVs are tonal, and a sleeping TV is a flat
+ * outline that cannot be tapped — selecting it would only fail at the handshake.
  *
  * [connected] outranks both of the others. Featured is a recommendation of where to
  * go next and a sleeping advertisement is stale the moment the TV answers a control
@@ -135,10 +135,13 @@ fun DeviceRow(
             .then(
                 when {
                     asleep -> Modifier.border(2.dp, colors.outline, shape)
-                    // Amber is the list's only mark of a live link, and it survives both
-                    // palettes unchanged — the blue fill does not, so the ring rather
-                    // than the fill is what separates connected from featured.
-                    connected -> Modifier.border(2.dp, colors.spark, shape)
+                    // The ring rather than the fill is what separates connected from
+                    // featured, both of which wear the action fill. It takes the INVERSE
+                    // accent because it is drawn on that fill, and the fill inverts
+                    // polarity between the sets — deep blue in light, gold in dark — so the
+                    // accent standing on it cannot be one value. The plain accent measures
+                    // 1.88:1 on the gold; this holds 3.90:1 there and 4.09:1 on the blue.
+                    connected -> Modifier.border(2.dp, colors.sparkInverse, shape)
                     else -> Modifier
                 },
             )
@@ -295,7 +298,10 @@ fun PairQrCard(
                 )
                 Text(
                     text = stringResource(R.string.connect_pair_card_slots),
-                    style = FlickText.monoDisplay.copy(color = colors.sparkBright),
+                    // On the inverse card, which is near-black in light and near-WHITE in
+                    // dark, so this reads the accent chosen by the ground: the ramp's own
+                    // bright tone measures 1.77:1 there in dark.
+                    style = FlickText.monoDisplay.copy(color = colors.sparkInverse),
                     modifier = Modifier.padding(top = 7.dp),
                 )
                 Text(
@@ -449,9 +455,18 @@ fun PairCodeField(
                                 .size(width = 52.dp, height = 62.dp)
                                 .clip(cellShape)
                                 .background(colors.surfaceRaisedAlt)
+                                // The resting edge is an INK role doing a stroke's job: no
+                                // outline role in this palette reaches 3:1 on either theme,
+                                // and `outline` measured 1.43:1 on the light sheet and
+                                // 1.76:1 on the dark one — a cell with no perceptible edge.
+                                // `onSurfaceFaint` is the quietest ink that clears it, at
+                                // 4.18:1 / 6.01:1 outside and 3.60:1 / 5.14:1 against the
+                                // fill inside. The manual-address form's fields are built
+                                // from this same recipe, so the escape hatch reads as these
+                                // cells' sibling rather than as a different kind of input.
                                 .border(
                                     width = if (focused) 2.dp else 1.dp,
-                                    color = if (focused) colors.primary else colors.outline,
+                                    color = if (focused) colors.primary else colors.onSurfaceFaint,
                                     shape = cellShape,
                                 ),
                             contentAlignment = Alignment.Center,

@@ -41,8 +41,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,6 +63,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -81,6 +84,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorProducer
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
@@ -153,11 +157,47 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** S3 — the library. A gallery, not a file browser: real MediaStore videos. */
+/**
+ * Everything about the grid that is a POSITION in it rather than a fact about the library.
+ * Held by the shell because routes cross-dissolve: the `AnimatedContent` that swaps them
+ * disposes the surface it left, so anything remembered inside this screen is gone by the
+ * time the user comes back from a detail sheet — the grid returns at the top with the
+ * quality chip cleared, and the tile a poster is flying home to is no longer composed for
+ * it to land on.
+ *
+ * The library itself is not in here. Which files exist and which folder is in force are the
+ * controller's, and re-deriving them on arrival is the point of the reload this screen asks
+ * for every time it is shown.
+ */
+@Stable
+internal class LibraryUiState(val grid: LazyGridState) {
+    var filter by mutableStateOf(LibFilter.ALL)
+
+    /**
+     * The entrance belongs to the library ARRIVING — the first paint after MediaStore
+     * answers — and a route change is not that. Spent once for as long as the shell holds
+     * this, so coming back from a detail sheet restores a grid rather than replaying one.
+     */
+    var entrancePlayed by mutableStateOf(false)
+}
+
 @Composable
-fun LibraryScreen(
+internal fun rememberLibraryUiState(): LibraryUiState {
+    val grid = rememberLazyGridState()
+    return remember(grid) { LibraryUiState(grid) }
+}
+
+/**
+ * S3 — the library. A gallery, not a file browser: real MediaStore videos.
+ *
+ * Internal because [LibraryUiState] is: the grid's position is the shell's to hold, and
+ * only the shell composes this.
+ */
+@Composable
+internal fun LibraryScreen(
     controller: FlickController,
     onRequestVideoPermission: () -> Unit,
+    uiState: LibraryUiState,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
@@ -193,7 +233,7 @@ fun LibraryScreen(
         dockLive = castingItem != null,
     )
 
-    var filter by remember { mutableStateOf(LibFilter.ALL) }
+    val filter = uiState.filter
     var choosingFolder by remember { mutableStateOf(false) }
 
     // The grid's answer to a chip tap. The epoch retriggers the wave; the window closes
@@ -209,12 +249,12 @@ fun LibraryScreen(
 
     // The entrance plays once, on the first paint after MediaStore resolves — never on
     // a filter switch, which has a wave of its own. The window closes it so scrolling
-    // back to the top cannot replay it on tiles the lazy grid recomposes.
+    // back to the top cannot replay it on tiles the lazy grid recomposes, and the latch
+    // it spends is the shell's so a route change cannot replay it either.
     var staggerArmed by remember { mutableStateOf(false) }
-    var staggerSpent by remember { mutableStateOf(false) }
     LaunchedEffect(loading, scoped.isEmpty(), reduceMotion) {
-        if (staggerSpent || reduceMotion || loading || scoped.isEmpty()) return@LaunchedEffect
-        staggerSpent = true
+        if (uiState.entrancePlayed || reduceMotion || loading || scoped.isEmpty()) return@LaunchedEffect
+        uiState.entrancePlayed = true
         staggerArmed = true
         delay(StaggerWindowMs)
         staggerArmed = false
@@ -318,6 +358,7 @@ fun LibraryScreen(
                 // Adaptive rather than a fixed pair: rotation and foldables widen the row, and
                 // a fixed two-column split would stretch each 16:9 still into a letterbox sliver.
                 columns = GridCells.Adaptive(minSize = TileMinWidth),
+                state = uiState.grid,
                 modifier = Modifier
                     .fillMaxSize()
                     .navigationBarsPadding(),
@@ -353,7 +394,7 @@ fun LibraryScreen(
                         // count has to describe the set the chip actually selects.
                         totalCount = scoped.size,
                         onSelect = { chosen ->
-                            filter = chosen
+                            uiState.filter = chosen
                             // Armed from the tap rather than from the effect that closes it:
                             // the wave has to be in place for the first composition the new
                             // set is measured in, or the tiles paint once at rest and only
@@ -419,7 +460,14 @@ fun LibraryScreen(
                     // filter every file away.
                     filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
                 }
-                itemsIndexed(filtered, key = { _, item -> item.id }) { index, item ->
+                itemsIndexed(
+                    filtered,
+                    key = { _, item -> item.id },
+                    // Stated: handed a scrolled-away section's slot, a tile is rebuilt from
+                    // nothing — a fresh HDR probe and a fresh image request — on a frame
+                    // that was meant to be a placement.
+                    contentType = { _, _ -> TileContent },
+                ) { index, item ->
                     LibraryTile(
                         item = item,
                         imageLoader = imageLoader,
@@ -534,6 +582,13 @@ private fun Modifier.staggeredEntrance(index: Int, armed: Boolean): Modifier {
     }
     if (!armed && !rising) return this
     return graphicsLayer {
+        // Modulated per draw op rather than through a buffer. Under the default strategy an
+        // alpha below 1 has the whole tile rasterized offscreen and composited back — a
+        // megabyte and a half of RGBA per tile per frame, on up to twelve tiles at once, on
+        // the one frame budget in the app's life that is already carrying a MediaStore walk
+        // and a 4K frame extract. That buffer is also sized to the tile's bounds, which cuts
+        // off the shadow the poster deliberately casts outside them.
+        compositingStrategy = CompositingStrategy.ModulateAlpha
         val p = progress.value
         // Clamped: the spatial spring overshoots by design and opacity must not.
         alpha = p.coerceIn(0f, 1f)
@@ -571,6 +626,9 @@ private fun Modifier.reflowWave(index: Int, epoch: Int, armed: Boolean): Modifie
     }
     if (!armed && !dipping) return this
     return graphicsLayer {
+        // See [staggeredEntrance]: the dip's alpha would otherwise buy every tile on screen
+        // an offscreen buffer per frame, and clip its shadow away for the length of it.
+        compositingStrategy = CompositingStrategy.ModulateAlpha
         val p = progress.value
         alpha = (ReflowFromAlpha + (1f - ReflowFromAlpha) * p).coerceIn(0f, 1f)
         // Unclamped on purpose: the spring's overshoot is the tile landing.
@@ -583,7 +641,7 @@ private fun Modifier.reflowWave(index: Int, epoch: Int, armed: Boolean): Modifie
 /** Section blocks span both columns and carry the extra 5 dp that widens the 13 dp grid gap. */
 private fun LazyGridScope.fullWidth(
     content: @Composable () -> Unit,
-) = item(span = { GridItemSpan(maxLineSpan) }) {
+) = item(span = { GridItemSpan(maxLineSpan) }, contentType = SectionContent) {
     Box(Modifier.padding(bottom = 5.dp)) { content() }
 }
 
@@ -768,8 +826,9 @@ private fun LinkPill(
     }
 
     val ink = when (state) {
-        // Amber never clears its contrast floor as ink, so the offline face inverts the
-        // way every other caution surface in the app does: solid fill, dark ink.
+        // The caution hue is a warm mid-tone in both assignments and clears its floor as ink
+        // on neither, so the offline face inverts the way every other caution surface in the
+        // app does: solid fill, dark ink.
         LinkPillState.OFFLINE -> colors.onCaution
         LinkPillState.UNPAIRED -> colors.onPrimaryContainer
         else -> colors.onPrimary
@@ -879,8 +938,16 @@ private fun LinkPill(
                             )
                         }
                         LinkPillState.CASTING, LinkPillState.PAIRED -> {
+                            // The dot sits on the action fill, which is a deep blue in light
+                            // and a gold in dark, so the ground picks the mark. Only the
+                            // inverse accent survives the gold — the ramp's pale tone is
+                            // 1.08:1 there. On the blue both clear the 3:1 a mark needs and
+                            // the pale tone is the brighter of the two, 5.24:1 against the
+                            // inverse accent's 4.09:1, because a light set's inverse accent
+                            // IS its amber and the amber is the darker end of that ramp.
+                            val dot = if (colors.isLight) colors.sparkLight else colors.sparkInverse
                             LiveDot(
-                                color = colors.sparkLight,
+                                color = dot,
                                 size = 10.dp,
                                 pulsing = face.playing,
                             )
@@ -1353,8 +1420,14 @@ private fun LibraryTile(
     // costs a map lookup rather than a second container parse. Null rather than
     // [HdrType.NONE] until it answers: NONE is the probe's verdict, not its starting
     // point, and the tile must not be told the file has no HDR before anyone looked.
-    val hdr by produceState<HdrType?>(initialValue = null, item.uri) {
-        value = MediaProbe.detectHdr(context, item.uri)
+    //
+    // The memo is read SYNCHRONOUSLY as the initial value, so a tile scrolled back to is
+    // composed once already carrying its answer. Seeded from `null` it would recompose at
+    // least once more no matter how warm the cache was — forty of those land at forty
+    // arbitrary frames during a fling back over ground already covered.
+    val seed = remember(item.uri) { MediaProbe.cachedHdr(item.uri) }
+    val hdr by produceState(seed, item.uri) {
+        if (value == null) value = MediaProbe.detectHdr(context, item.uri)
     }
     VideoTile(
         item = item,
@@ -1520,6 +1593,12 @@ private fun EmptyState(
  * 360 dp phone still show two and a rotated one reflow to five.
  */
 private val TileMinWidth = 150.dp
+
+// What the grid sorts its reuse pool by. Half a dozen structurally unrelated full-span
+// sections share this list with the tiles, and a slot is only cheap to reuse for its own
+// kind: handed a header's slot, a tile is rebuilt from nothing rather than updated.
+private const val TileContent = "tile"
+private const val SectionContent = "section"
 
 /** The face arriving grows into place rather than appearing at full size. */
 private const val PillSwapScale = 0.9f

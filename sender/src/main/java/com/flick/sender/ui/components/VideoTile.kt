@@ -7,7 +7,10 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,7 +27,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -32,19 +34,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -167,6 +180,22 @@ fun rememberVideoFrameRequest(
 }
 
 /**
+ * The spring every shared frame travels on, spelled out rather than taken from the motion
+ * scheme because of the threshold. A spec that names none falls back to a hundredth of a
+ * pixel per edge, and the overlay copy is handed back to its parent — corner and all —
+ * when the bounds animation ENDS, not when it has visibly landed: a window-sized return
+ * settles to the eye in a quarter of a second and does not terminate for three quarters of
+ * one. [Rect.VisibilityThreshold] is a pixel per edge, which is where a photograph is
+ * actually home. Critically damped for a second reason: a still that springs past its
+ * landing reads as a bounce, and nothing about a frame growing out of a grid is bouncy.
+ */
+private val FrameFlight = spring(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+    visibilityThreshold = Rect.VisibilityThreshold,
+)
+
+/**
  * Marks a decoded frame as the surface that becomes the next screen. Both scopes null
  * leaves the modifier inert, so anything composed outside the shell's
  * `SharedTransitionLayout` renders exactly as it did before.
@@ -174,6 +203,14 @@ fun rememberVideoFrameRequest(
  * [renderInOverlay] must stay true wherever the flight starts or ends inside a clip —
  * a grid cell, a rounded poster — because the overlay copy is the only one that can
  * leave it.
+ *
+ * [restCorner] is the radius of the SEAT the frame flies out of and back into. An overlay
+ * copy is drawn from the transition layout's own draw scope, so every ancestor layer is
+ * bypassed — including the one that gives the seat its corner — and the library's default
+ * clip resolves to none for a frame that is inside no enclosing shared element. Naming the
+ * radius here is what keeps the copy rounded for the whole flight instead of arriving as a
+ * hard rectangle and squaring off the moment it lands. Unspecified passes no clip argument
+ * at all and leaves that default in force, which is what a seat with no corner wants.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -182,22 +219,94 @@ fun Modifier.flickSharedFrame(
     animatedScope: AnimatedVisibilityScope?,
     key: String,
     renderInOverlay: Boolean = true,
+    restCorner: Dp = Dp.Unspecified,
 ): Modifier {
     if (sharedScope == null || animatedScope == null) return this
     val reduceMotion = rememberReduceMotion()
-    val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<Rect>()
-    val bounds = remember(reduceMotion, spatial) {
-        BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else spatial }
+    val bounds = remember(reduceMotion) {
+        BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else FrameFlight }
     }
+    val clip = if (restCorner.isSpecified) rememberFrameMorphClip(sharedScope, restCorner) else null
     return with(sharedScope) {
-        this@flickSharedFrame.sharedElement(
-            sharedContentState = rememberSharedContentState(key),
-            animatedVisibilityScope = animatedScope,
-            boundsTransform = bounds,
-            renderInOverlayDuringTransition = renderInOverlay,
+        val state = rememberSharedContentState(key)
+        if (clip == null) {
+            this@flickSharedFrame.sharedElement(
+                sharedContentState = state,
+                animatedVisibilityScope = animatedScope,
+                boundsTransform = bounds,
+                renderInOverlayDuringTransition = renderInOverlay,
+            )
+        } else {
+            this@flickSharedFrame.sharedElement(
+                sharedContentState = state,
+                animatedVisibilityScope = animatedScope,
+                boundsTransform = bounds,
+                renderInOverlayDuringTransition = renderInOverlay,
+                clipInOverlayDuringTransition = clip,
+            )
+        }
+    }
+}
+
+/**
+ * The silhouette a travelling frame is clipped to. As with the dock's morph, the radius is
+ * a function of the copy's own measured height rather than of a second animation, so it
+ * cannot drift out of step with the bounds it is rounding.
+ *
+ * The small end is anchored to the WINDOW and never to the tile: an adaptive grid makes a
+ * tile's height a variable, and a small end set under it would leave the radius already
+ * part-resolved where the frame comes to rest — which is the snap this exists to remove.
+ * A grid still is under an eighth of the window on any phone this ships to, so holding the
+ * full radius for everything below [CornerHold] of it puts the corner home well before the
+ * bounds are. That margin is what the clip being handed back at the END of the flight
+ * requires.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun rememberFrameMorphClip(
+    sharedScope: SharedTransitionScope,
+    restCorner: Dp,
+): SharedTransitionScope.OverlayClip {
+    val density = LocalDensity.current
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
+    val shape = remember(density, screenHeightDp, restCorner) {
+        with(density) {
+            val windowPx = screenHeightDp.dp.toPx()
+            FrameMorphShape(
+                restRadiusPx = restCorner.toPx(),
+                seatPx = windowPx * CornerHold,
+                spanPx = (windowPx * (1f - CornerHold)).coerceAtLeast(1f),
+            )
+        }
+    }
+    return remember(sharedScope, shape) { with(sharedScope) { OverlayClip(shape) } }
+}
+
+private class FrameMorphShape(
+    private val restRadiusPx: Float,
+    private val seatPx: Float,
+    private val spanPx: Float,
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density,
+    ): Outline {
+        val grown = ((size.height - seatPx) / spanPx).coerceIn(0f, 1f)
+        return Outline.Rounded(
+            RoundRect(
+                left = 0f,
+                top = 0f,
+                right = size.width,
+                bottom = size.height,
+                cornerRadius = CornerRadius(restRadiusPx * (1f - grown)),
+            ),
         )
     }
 }
+
+/** Share of the window's height under which a travelling frame keeps its seat's full corner. */
+private const val CornerHold = 0.25f
 
 /**
  * Library tile (design §5.2.5): a real decoded frame under a bottom scrim, the
@@ -272,7 +381,16 @@ fun VideoTile(
                 contentScale = ContentScale.Crop,
                 colorFilter = frameFilter,
                 modifier = Modifier
-                    .flickSharedFrame(sharedScope, animatedScope, posterKey(item.id))
+                    // The seat's radius, not the press's: for the first frames of a flight
+                    // begun under a finger the travelling copy can be up to 6 dp rounder
+                    // than the tile beneath it, which at that scale is not visible and is
+                    // not worth a second animation chasing it.
+                    .flickSharedFrame(
+                        sharedScope = sharedScope,
+                        animatedScope = animatedScope,
+                        key = posterKey(item.id),
+                        restCorner = FlickCorners.tile,
+                    )
                     .fillMaxSize(),
             )
             Box(Modifier.fillMaxSize().background(FlickGradients.posterScrim))

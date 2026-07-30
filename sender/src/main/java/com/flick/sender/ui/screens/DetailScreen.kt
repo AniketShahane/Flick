@@ -71,6 +71,7 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.FlickGesture
 import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.posterKey
 import com.flick.sender.ui.components.rememberVideoFrameRequest
@@ -247,13 +248,23 @@ fun DetailScreen(
             // One card, two truths, never both: "will direct-play at full quality" is a
             // promise this TV has already broken for this file, and printing it above the
             // refusal would make the sheet argue with itself.
+            //
+            // The gesture belongs to the same verdict. It is an invitation to press the
+            // button under it — a thumb flicking the film away — and above a refusal it
+            // would be the sheet cheering for the thing it has just warned about. Its seat
+            // is here rather than beside the poster because the flick has to point at the
+            // CTA, and because the poster overhead is still flying in from the Library
+            // when this route opens; FlickGesture holds its own first cycle back for that.
             if (refusal != null) {
                 RefusalCard(refusal)
+                Spacer(Modifier.height(17.dp))
             } else {
                 DirectPlayCard()
+                Spacer(Modifier.height(17.dp))
+                FlickGesture()
+                Spacer(Modifier.height(9.dp))
             }
 
-            Spacer(Modifier.height(17.dp))
             FlickToTvButton(
                 text = connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
                     ?: stringResource(R.string.detail_cta_noconnect),
@@ -292,7 +303,11 @@ fun DetailScreen(
     }
 }
 
-/** The amber direct-play promise: what happens when nothing has gone wrong. */
+/**
+ * The direct-play promise: what happens when nothing has gone wrong. Carried on a solid
+ * accent fill with its own inverting ink, which is the one shape the accent is allowed in
+ * the dark palette — an area, never a hairline.
+ */
 @Composable
 private fun DirectPlayCard() {
     val colors = LocalFlickColors.current
@@ -324,8 +339,9 @@ private fun DirectPlayCard() {
 
 /**
  * The promise card's seat when a receiver has refused this file, in the app's advisory
- * vocabulary rather than its failure one: caution amber, the same geometry, and the CTA
- * below it untouched. Crimson would read as a blocked file, and this file is not blocked
+ * vocabulary rather than its failure one: the caution hue — amber on light, vermilion on
+ * the dark sets, where the action itself is gold — the same geometry, and the CTA below it
+ * untouched. Crimson would read as a blocked file, and this file is not blocked
  * — the user may have remuxed it, or be standing in front of a different TV.
  */
 @Composable

@@ -56,7 +56,10 @@ fun AdvisoryCard(
     val colors = LocalFlickColors.current
     val container = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.inverseSurface
     val ink = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.onInverseSurface
-    val glyph = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.spark
+    // The INFO glyph stands on the inverse card, whose polarity flips between the sets, so
+    // it takes the accent the ground picks — the plain accent is 2.39:1 on the dark set's
+    // near-white inverse surface.
+    val glyph = if (tone == AdvisoryTone.CAUTION) colors.onCaution else colors.sparkInverse
     val primaryPress = remember { MutableInteractionSource() }
     val secondaryPress = remember { MutableInteractionSource() }
     Row(

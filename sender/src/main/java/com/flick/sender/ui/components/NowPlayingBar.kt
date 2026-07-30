@@ -70,8 +70,10 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.theme.FlickCorners
+import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.Ink
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
@@ -316,7 +318,10 @@ private fun DockBar(
     val description = stringResource(R.string.a11y_now_playing_dock, item.name, tvName)
     val openLabel = stringResource(R.string.a11y_open_remote)
     val track = colors.fillTrack
-    val played = colors.spark
+    // The played hairline is the scrub bar's own fill in miniature, so it takes the media
+    // role rather than the accent — the accent is a blue in dark, and this line has to be
+    // the same substance as the fill the remote shows for the same position.
+    val played = colors.playheadLo
 
     Box(
         Modifier
@@ -412,7 +417,6 @@ private fun DockBar(
 /** The remote's amber FAB, shrunk to one key. Same glyph, same morph, same ink. */
 @Composable
 private fun DockKey(playing: Boolean, onClick: () -> Unit) {
-    val colors = LocalFlickColors.current
     val source = remember { MutableInteractionSource() }
     val label = stringResource(if (playing) R.string.a11y_pause else R.string.a11y_play)
     val state = stringResource(if (playing) R.string.a11y_playing_state else R.string.a11y_paused_state)
@@ -421,7 +425,11 @@ private fun DockKey(playing: Boolean, onClick: () -> Unit) {
             .size(DockKeySize)
             .pressScale(source)
             .clip(CircleShape)
-            .background(colors.spark)
+            // The same brush and the same ink as the remote's FAB, not a flat accent: this
+            // key morphs into that FAB, and a shared-element flight that changes hue in the
+            // air is the most visible thing a palette swap can produce. The accent is a blue
+            // in dark and would also land at 2.64:1 on the dock's own glass.
+            .background(FlickGradients.fab)
             // No haptic here: PlaybackSession already pulses the vibrator when it sends
             // the command, and the two would answer one tap twice.
             .clickable(interactionSource = source, indication = null, onClick = onClick)
@@ -434,7 +442,7 @@ private fun DockKey(playing: Boolean, onClick: () -> Unit) {
     ) {
         PlayPauseMorph(
             playing = playing,
-            color = colors.onSpark,
+            color = Ink,
             modifier = Modifier.size(21.dp),
         )
     }

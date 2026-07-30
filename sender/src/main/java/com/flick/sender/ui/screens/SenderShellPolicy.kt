@@ -58,6 +58,18 @@ internal object SenderShellPolicy {
         (target == ShellDestination.NOW_PLAYING && dockVisible(initial)) ||
             (initial == ShellDestination.NOW_PLAYING && dockVisible(target))
 
+    /**
+     * The one route pair on which a travelling frame lands ON the chrome's own seat. The
+     * detail sheet carries neither bar, so coming back they would rise into the window
+     * while the frame is still crossing it — and a grid seat in the bottom row is partly
+     * under the dock, so the frame would sit on top of both once it got there. The
+     * opposite direction needs nothing: there the chrome is what is leaving, and it is
+     * gone before the frame has grown. Never true for a pair [dockMorph] claims, because
+     * the shell hangs both off one latch.
+     */
+    fun heroReturn(initial: ShellDestination, target: ShellDestination): Boolean =
+        initial == ShellDestination.DETAIL && target == ShellDestination.LIBRARY
+
     fun selectedTab(route: Route): NavTab = selectedTab(destinationOf(route))
 
     /**

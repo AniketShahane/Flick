@@ -29,7 +29,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -848,44 +850,106 @@ private fun ManualSheet(
             )
         }
         Spacer(Modifier.height(14.dp))
+        val fieldShape = RoundedCornerShape(FlickCorners.tuneBtn)
+        val fieldColors = manualFieldColors()
         // The address is entered before the port and the port before the code, so Next
-        // walks the form the way it is read. Only the code field ends it: it is the
-        // secret that authorises the endpoint above it, so nothing earlier may connect.
+        // walks the form the way it is read — and the row below keeps that order running
+        // left to right, which is the order one-dimensional focus traversal takes through
+        // it. Only the code field ends the run: it is the secret that authorises the
+        // endpoint above it, so nothing earlier may connect.
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
             label = { Text(stringResource(R.string.manual_host_label)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            shape = RoundedCornerShape(FlickCorners.tuneBtn),
+            shape = fieldShape,
+            colors = fieldColors,
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = port,
-            onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
-            label = { Text(stringResource(R.string.manual_port_label)) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Number,
-                imeAction = ImeAction.Next,
-            ),
-            shape = RoundedCornerShape(FlickCorners.tuneBtn),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = code,
-            onValueChange = { code = it.filter { c -> c.isDigit() }.take(4) },
-            label = { Text(stringResource(R.string.manual_code_label)) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.NumberPassword,
-                imeAction = ImeAction.Go,
-            ),
-            keyboardActions = KeyboardActions(onGo = { submit() }),
-            shape = RoundedCornerShape(FlickCorners.tuneBtn),
-            modifier = Modifier.fillMaxWidth().focusRequester(codeFocus),
-        )
+        Spacer(Modifier.height(10.dp))
+        // A port and a code are a handful of digits each and were taking a full row apiece.
+        // Paired, they also read as what they are: the two short numbers under the address.
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            OutlinedTextField(
+                value = port,
+                onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
+                label = { Text(stringResource(R.string.manual_port_label)) },
+                // Only ever seen if the prefilled port is cleared, which is the one moment
+                // nothing on screen says what belongs here. Read off the constant so the
+                // hint cannot drift from the value the form actually starts with.
+                placeholder = { Text(PairLaunch.DEFAULT_CONTROL_PORT.toString()) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next,
+                ),
+                shape = fieldShape,
+                colors = fieldColors,
+                // Five digits against the code's four, over the same field padding on both
+                // — so the split is 1.15, not the 5:4 the digit counts alone would suggest.
+                modifier = Modifier.weight(1.15f),
+            )
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.filter { c -> c.isDigit() }.take(4) },
+                label = { Text(stringResource(R.string.manual_code_label)) },
+                // Carries the length the label used to spell out, in the one place it is
+                // needed: an empty, focused code field with nothing typed into it yet.
+                placeholder = { Text(stringResource(R.string.manual_code_hint)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.NumberPassword,
+                    imeAction = ImeAction.Go,
+                ),
+                keyboardActions = KeyboardActions(onGo = { submit() }),
+                shape = fieldShape,
+                colors = fieldColors,
+                modifier = Modifier.weight(1f).focusRequester(codeFocus),
+            )
+        }
     }
+}
+
+/**
+ * A container and an edge for the manual form's fields, which had neither.
+ *
+ * Material's outlined field is transparent and strokes itself in `outline`, and on this
+ * palette that stroke measures 1.43:1 on the light sheet and 1.76:1 on the dark one —
+ * under the 3:1 a control owes the surface behind it, and the whole of why three inputs
+ * read as loose lines of text. The fill is `surfaceRaisedAlt`, the tonal step the pairing
+ * code's own cells stand on, and the resting stroke is `onSurfaceFaint`: the quietest ink
+ * in the set that still clears the floor, at 4.18:1 against the sheet outside and 3.60:1
+ * against the fill inside in light, 6.01:1 and 5.14:1 in dark. It is an ink role doing a
+ * stroke's job because no outline role in this palette reaches 3:1 on either theme.
+ *
+ * Focus buys a colour AND a weight. Material draws the resting stroke at 1 dp and the
+ * focused one at 2 dp and exposes neither thickness to a call site, so the step is fixed
+ * and `primary` arriving at double weight is the signal — 7.18:1 on the light sheet and
+ * 10.92:1 on the dark one. Nothing here names a hex: the two themes do not share an action
+ * colour (light is the brand blue, dark the amber) and either is free to move again.
+ */
+@Composable
+private fun manualFieldColors(): TextFieldColors {
+    val colors = LocalFlickColors.current
+    return OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.onSurface,
+        unfocusedTextColor = colors.onSurface,
+        focusedContainerColor = colors.surfaceRaisedAlt,
+        unfocusedContainerColor = colors.surfaceRaisedAlt,
+        cursorColor = colors.primary,
+        focusedBorderColor = colors.primary,
+        unfocusedBorderColor = colors.onSurfaceFaint,
+        focusedLabelColor = colors.primary,
+        unfocusedLabelColor = colors.onSurfaceDim,
+        // The dim ink rather than the faint one: a hint is still text, and `onSurfaceFaint`
+        // on this fill is 3.60:1 in light — the floor it clears as a stroke is not the floor
+        // it has to clear as a glyph.
+        focusedPlaceholderColor = colors.onSurfaceDim,
+        unfocusedPlaceholderColor = colors.onSurfaceDim,
+    )
 }

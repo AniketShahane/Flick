@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      Launcher-icon colours only. They restate Primary, Spark and CanvasLight from
-      ui/theme/Color.kt because a vector drawable cannot read a Kotlin token;
-      change them together or the icon drifts from the in-app FlickMark.
+      Launcher-icon colours only, and this bucket is the LIGHT set: they restate Primary,
+      Spark and CanvasLight from ui/theme/Color.kt because a vector drawable cannot read a
+      Kotlin token. values-night restates the dark set the same way, and the two brand
+      roles trade places there because the palette does. Change all three files together
+      or the icon drifts from the in-app FlickMark.
     -->
     <!-- Fills the icon disc (@drawable/ic_launcher_disc) and the API 31+ splash. -->
     <color name="ic_launcher_background">#FFF2F6FF</color>

@@ -27,10 +27,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 
 /**
- * Literal Material 3 Expressive entry point for the phone. The brand is committed:
- * electric blue for action, amber for the media itself, cyan for the LAN. Dynamic
- * color survives only as a wallpaper tint on the quiet tonal containers — it is
- * never allowed to reach an anchored role.
+ * Literal Material 3 Expressive entry point for the phone. The brand is committed: amber
+ * for the media itself, cyan for the LAN, and electric blue and amber trading the action
+ * and accent jobs between the two palettes — light is a blue tool that plays amber films,
+ * dark is the film's own amber become the interface. Dynamic color survives only as a
+ * wallpaper tint on the quiet tonal containers — it is never allowed to reach an anchored
+ * role.
  *
  * [darkTheme] defaults to the user's own [LocalThemePreference] resolved against the
  * platform — the only read of the configuration's night mode inside a composition.
@@ -92,15 +94,35 @@ private fun PreloadBundledFonts() {
 }
 
 /**
- * Forces the cinematic dark set regardless of the system theme. Now Playing, the
- * connecting overlay and the quality sheet are dark by design, not by preference.
+ * Forces a cinematic dark set regardless of the system theme. Now Playing, the connecting
+ * overlay and the quality sheet are dark by design, not by preference — that part of the
+ * invariant is unchanged, and the surfaces below are the same navy in both variants.
+ *
+ * What the preference DOES pick is the brand assignment, because the action colour has to
+ * be one colour at any instant across the whole app. These screens draw `primary` — the
+ * primary button, the sheet chrome, the subtitles sheet's loading indicator — so pinning
+ * them to the light assignment would give a dark-mode user a gold CTA everywhere and a
+ * blue one inside a sheet, and swapping them outright would give a light-mode user the
+ * reverse. Only the action family follows; the accent, the media and the LAN roles stay
+ * where the cinematic backdrop needs them.
+ *
+ * Resolved from [LocalThemePreference] rather than from the ambient palette's own
+ * `isLight`, which would answer wrongly for a cinematic theme nested inside another one. A
+ * cinematic screen composed outside [FlickTheme] — a preview, an instrumentation harness —
+ * sees [ThemePreference.SYSTEM] and resolves against the platform, which is what
+ * [FlickTheme] itself already does there.
  */
 @Composable
 fun FlickCinematicTheme(content: @Composable () -> Unit) {
-    val scheme = remember {
-        flickColorScheme(CinematicFlickColors, darkColorScheme(), useDynamicTonalRoles = false)
+    val flick = if (LocalThemePreference.current.resolvesDark(isSystemInDarkTheme())) {
+        CinematicNightFlickColors
+    } else {
+        CinematicFlickColors
     }
-    FlickMaterial(CinematicFlickColors, scheme, content)
+    val scheme = remember(flick) {
+        flickColorScheme(flick, darkColorScheme(), useDynamicTonalRoles = false)
+    }
+    FlickMaterial(flick, scheme, content)
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

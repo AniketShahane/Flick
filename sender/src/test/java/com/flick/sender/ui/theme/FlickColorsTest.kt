@@ -21,6 +21,21 @@ class FlickColorsTest {
     private val palettes = listOf("light" to LightFlickColors, "dark" to DarkFlickColors)
 
     /**
+     * …and the two cinematic sets, for the rules that are about the BRAND ASSIGNMENT rather
+     * than about surfaces. They are excluded from everything above on purpose: the
+     * cinematic backdrop is deliberately the darkest, most saturated thing on the screen,
+     * so the surface and elevation rules would have to be weakened to admit it, and
+     * weakening a rule to admit a palette is how a rule stops meaning anything.
+     *
+     * What every set does share is which role does which job, and that is what these four
+     * are held to together.
+     */
+    private val allPalettes = palettes + listOf(
+        "cinematic" to CinematicFlickColors,
+        "cinematic night" to CinematicNightFlickColors,
+    )
+
+    /**
      * Raised means lighter, in both themes. Light mode gets this for free — white cards on
      * an off-white canvas — and dark mode is where the direction can silently invert.
      */
@@ -169,6 +184,96 @@ class FlickColorsTest {
     }
 
     /**
+     * `sparkInverse` exists for the two grounds a palette draws LIT, and both of them
+     * change polarity between the sets: `inverseSurface` is near-black in light and
+     * near-WHITE in dark, and `primary` is a deep blue in light and a gold in dark. An
+     * accent standing on either therefore cannot be one value, which is the entire reason
+     * the role was cut.
+     *
+     * This is the rule that would have caught three defects that shipped, all of them an
+     * amber accent drawn on the near-white dark `inverseSurface` and none of them visible
+     * in a palette listing: an advisory's INFO glyph at 1.45:1, a pair card's slot count at
+     * 1.31:1, and the link pill's live dot on the action fill at 2.09:1.
+     *
+     * Text on the inverse card, so 4.5; a dot and a 2 dp ring on the action fill, so 3.
+     * Asserted for all four sets even though the cinematic-light value is currently painted
+     * by nothing — the rule is about what the role MEANS, and a carve-out for the one set
+     * that has no call site yet is a carve-out the next call site would inherit.
+     */
+    @Test fun theInverseAccentHoldsOnBothGroundsThatInvert() {
+        for ((name, c) in allPalettes) {
+            val onCard = contrast(c.sparkInverse, c.inverseSurface)
+            assertTrue(
+                "$name: sparkInverse ${c.sparkInverse.hex()} on inverseSurface " +
+                    "${c.inverseSurface.hex()} is $onCard, under 4.5:1 — this is the pair that " +
+                    "was invisible in dark for an entire release",
+                onCard >= 4.5f,
+            )
+            val onFill = contrast(c.sparkInverse, c.primary)
+            assertTrue(
+                "$name: sparkInverse on the primary fill is $onFill, under the 3:1 a mark needs " +
+                    "against its own background",
+                onFill >= 3.0f,
+            )
+        }
+    }
+
+    /**
+     * The action and the warning are never the same paint. This is not a general aesthetic
+     * claim — the link pill draws `primary` for CASTING/PAIRED and `caution` for OFFLINE in
+     * the SAME seat in the library header, both as a solid warm fill with near-black ink,
+     * so with an amber action the two states would be indistinguishable before the words
+     * are even read.
+     *
+     * 1.6 is the floor rather than 3, because these two are never drawn on each other: they
+     * are alternative fills for one control, so what has to separate them is a step the eye
+     * notices across a state change, not a legibility ratio. The dark sets sit at 1.79:1
+     * with 28.2° of hue between them; light sits at 3.58:1 and needs none of this.
+     */
+    @Test fun theActionAndTheWarningAreNeverTheSamePaint() {
+        for ((name, c) in allPalettes) {
+            val step = contrast(c.primary, c.caution)
+            assertTrue(
+                "$name: primary ${c.primary.hex()} and caution ${c.caution.hex()} are $step " +
+                    "apart — the link pill shows either one in the same seat, and a state has " +
+                    "to be readable before its label is",
+                step >= 1.6f,
+            )
+        }
+    }
+
+    /**
+     * The media pair is the same amber in every set, and it is the two stops
+     * [FlickGradients.playhead] and [FlickGradients.fab] are built from.
+     *
+     * This is arithmetic standing in for a mechanism. Those two brushes are plain `val`s,
+     * so they cannot follow a palette — and making them follow one would cost a shader
+     * allocation and a `remember` slot per call in the app's hottest draw path, the scrub
+     * bar under a drag while the phone is serving 4K, to return a byte-identical brush.
+     * Correct only for as long as the media roles stay pinned, so the pinning is what is
+     * asserted; the day someone re-hues the scrub fill or the FAB this fails loudly rather
+     * than shipping a gradient that disagrees with the palette it is drawn from.
+     *
+     * It is also the one claim this product makes about colour: the scrub fill, the play key
+     * and the dock are the film's own light, in light mode and in dark.
+     */
+    @Test fun theMediaAccentIsTheSameAmberInEverySetAndIsWhatTheBrushesAreBuiltFrom() {
+        for ((name, c) in allPalettes) {
+            assertTrue(
+                "$name: playheadHi is ${c.playheadHi.hex()}, not the PlayheadHi " +
+                    "${PlayheadHi.hex()} FlickGradients.playhead and .fab open on — those " +
+                    "brushes are palette-independent vals and have just been made wrong",
+                c.playheadHi == PlayheadHi,
+            )
+            assertTrue(
+                "$name: playheadLo is ${c.playheadLo.hex()}, not the PlayheadLo " +
+                    "${PlayheadLo.hex()} those two brushes close on",
+                c.playheadLo == PlayheadLo,
+            )
+        }
+    }
+
+    /**
      * The ink ramp keeps its order. Three roles that have crossed over are three roles
      * that no longer mean anything, and the crossing is invisible in a palette listing.
      */
@@ -179,6 +284,37 @@ class FlickColorsTest {
             assertTrue(
                 "$name: onSurface/onSurfaceDim/onSurfaceFaint are not in decreasing weight — $ramp",
                 ramp.zipWithNext().all { (a, b) -> a > b },
+            )
+        }
+    }
+
+    /**
+     * The quietest ink still reads as an EDGE, on the raised surface and on the tonal fill
+     * it encloses. This is a rule about a role being borrowed rather than about ink: the
+     * pairing code's four cells and the manual-address form's three fields both stroke
+     * themselves in `onSurfaceFaint`, because no outline role in this palette reaches 3:1
+     * on either theme — `outline` measures 1.43:1 on the light sheet and 1.76:1 on the dark
+     * one, which is a control with no perceptible container at all.
+     *
+     * So the floor is 3, the figure a control owes the surface behind it, and it is checked
+     * on both grounds because a stroke has a surface on each side of it. The right long-term
+     * fix is a real `outlineStrong` role; until there is one, two components depend on this
+     * ink staying where it is and nothing else would notice it moving.
+     */
+    @Test fun theQuietestInkCanStillCarryAnEdge() {
+        for ((name, c) in palettes) {
+            val onSheet = contrast(c.onSurfaceFaint, c.surfaceRaised)
+            assertTrue(
+                "$name: onSurfaceFaint ${c.onSurfaceFaint.hex()} is $onSheet against " +
+                    "surfaceRaised ${c.surfaceRaised.hex()} — the code cells and the manual " +
+                    "form borrow it as their resting stroke and would lose their edge",
+                onSheet >= 3.0f,
+            )
+            val onFill = contrast(c.onSurfaceFaint, c.surfaceRaisedAlt)
+            assertTrue(
+                "$name: onSurfaceFaint is $onFill against the surfaceRaisedAlt fill it " +
+                    "encloses — a stroke has a surface on each side of it",
+                onFill >= 3.0f,
             )
         }
     }
@@ -327,7 +463,18 @@ class FlickColorsTest {
     /**
      * Every ink the two glass components put on it, held on the page AND over the worst
      * still. `onSurface` and `onSurfaceDim` are the nav labels and the dock's title and
-     * subtitle, so they are text at 4.5; `spark` is the amber cast mark, a graphic at 3.
+     * subtitle, so they are text at 4.5; `playheadLo` is the dock's play key, a graphic at 3.
+     *
+     * That third entry was `spark` until the action colour moved. The dock's key had to
+     * follow the MEDIA roles rather than the accent, because the key morphs into the
+     * remote's FAB — which is amber in every set — and a shared-element flight that changes
+     * hue mid-air is the most visible thing this palette change could have produced. So the
+     * accent is now drawn on the glass nowhere, and asserting an ink against a surface the
+     * app never puts it on is what this file says not to do two rules up.
+     *
+     * Worth the measurement it replaces: the accent blue would have failed here anyway, at
+     * 2.64:1 on the icon row over the page. Amber holds 5.06:1 and 3.61:1 there, and 4.71:1
+     * and 3.39:1 with a blown-out still behind it.
      */
     @Test fun everyInkOnTheDarkGlassHoldsWhateverIsBehindIt() {
         val c = DarkFlickColors
@@ -335,7 +482,7 @@ class FlickColorsTest {
         val inks = listOf(
             Triple("onSurface", c.onSurface, 4.5f),
             Triple("onSurfaceDim", c.onSurfaceDim, 4.5f),
-            Triple("spark", c.spark, 3.0f),
+            Triple("playheadLo", c.playheadLo, 3.0f),
         )
         for ((bName, backdrop) in backdrops) {
             for ((iName, i, floor) in inks) {

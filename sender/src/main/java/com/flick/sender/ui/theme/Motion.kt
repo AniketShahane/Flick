@@ -14,7 +14,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Indication
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -27,12 +26,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.util.lerp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -247,7 +253,7 @@ internal fun Modifier.pressMorph(
     val press = rememberPressAmount(interactionSource)
     return this.graphicsLayer {
         clip = true
-        shape = RoundedCornerShape(pressRadius(restRadius, pressedRadius, press.value))
+        shape = PressCorner(pressRadius(restRadius, pressedRadius, press.value))
     }
 }
 
@@ -258,6 +264,39 @@ internal fun Modifier.pressMorph(
  */
 internal fun pressRadius(restRadius: Dp, pressedRadius: Dp, amount: Float): Dp =
     restRadius + (pressedRadius - restRadius) * amount.coerceIn(0f, 1f)
+
+/**
+ * One frame of that corner, as one object rather than five.
+ *
+ * A fresh instance per frame is the mechanism, not an oversight, and must not be replaced
+ * by a remembered one that is mutated in place: the layer scope's shape setter compares
+ * what it is handed against what it holds and flags the outline as changed only when the
+ * two differ, so an instance that stays equal to itself while its radius moves underneath
+ * re-pushes nothing and the corner freezes wherever it was first resolved. What the frame
+ * can be spared is everything around it — RoundedCornerShape boxes a corner size, keeps
+ * four of them and resolves all four per outline, to describe a radius that is one number
+ * applied to every corner. Equality here is that number, so frames the spring resolves to
+ * the same corner still cost no outline at all.
+ */
+private class PressCorner(private val radius: Dp) : Shape {
+
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density,
+    ): Outline {
+        // Half the shorter side is the largest corner the surface has; past it the
+        // renderer scales every radius down to fit anyway.
+        val corner = with(density) { radius.toPx() }.coerceIn(0f, size.minDimension / 2f)
+        return Outline.Rounded(
+            RoundRect(0f, 0f, size.width, size.height, CornerRadius(corner)),
+        )
+    }
+
+    override fun equals(other: Any?): Boolean = other is PressCorner && other.radius == radius
+
+    override fun hashCode(): Int = radius.hashCode()
+}
 
 /**
  * Material's ripple, remembered so a press does not allocate a fresh factory on

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The dark set's launcher and splash colours, restating DarkFlickColors the way
+      values/colors.xml restates the light one. The two brand roles trade places here
+      because the palette does: the mark is the action gold, the bars are the accent blue.
+
+      These reach TWO surfaces, and only one of them can follow the in-app preference.
+
+      The API 31+ SPLASH does. values-night-v31 names @drawable/ic_launcher_foreground,
+      which reads the two colours below, and it is resolved inside this app's own process —
+      where the per-app night mode MainActivity stores through UiModeManager applies. So a
+      user who chooses Dark in Settings gets a gold cold-start mark from the next launch on,
+      at 12.46:1 against that bucket's #0C0F18 plate. That is the strongest answer this
+      platform has to "make the logo follow the choice permanently".
+
+      The HOME-SCREEN ICON does not, and cannot. The adaptive icon is inflated by whoever
+      DISPLAYS it: the launcher builds a Resources object for our package inside its own
+      process, so the -night qualifier is matched against the LAUNCHER's configuration —
+      the system's night mode, never ours. Android has no supported light/dark variant of a
+      launcher icon at all; the documented mechanism is the <monochrome> layer, which
+      ic_launcher_monochrome.xml already ships and the launcher tints itself. Worse, AOSP's
+      shared IconProvider invalidates its icon cache on ACTION_OVERLAY_CHANGED only, so even
+      a SYSTEM dark-mode toggle does not repaint the cached bitmap — the night icon lands on
+      the next cache rebuild (package update, reinstall, eviction), not on the flip. Ship
+      this as a best-effort improvement; do not promise it is instant.
+
+      The activity-alias swap is the technique that would close that gap, and it is
+      deliberately NOT implemented, so that this does not get re-litigated: disabling an
+      alias forces process death and DONT_KILL_APP is ignored for that transition. This
+      process owns CastServerService — the foreground byte-range server, the control socket
+      and the playback session — so the cost of a home-screen repaint is a stall on the TV
+      mid-cast, which is the one failure this whole product exists to prevent. It is also
+      unofficial and launcher-dependent, minSdk here is 26 where the icon can vanish from
+      the home screen outright, and the flick:// pairing filter would have to be duplicated
+      on every alias.
+    -->
+    <!-- DarkFlickColors.surfaceRaised — a dark slate DISC, not the near-black canvas, so
+         the r=33 circle still reads as an object on a dark wallpaper. -->
+    <color name="ic_launcher_background">#FF171D2E</color>
+    <!-- The action gold: 10.92:1 on that disc, 12.46:1 on the #0C0F18 splash plate. -->
+    <color name="ic_launcher_mark">#FFFFC93D</color>
+    <!-- The accent blue: 2.23:1 and 3.87:1 on the disc at the drawable's 0.45/0.75
+         strokeAlpha. Decorative, exactly as in FlickMark — the triangle is the mark. -->
+    <color name="ic_launcher_spark">#FF6E93FF</color>
+    <!-- ic_launcher_monochrome is deliberately absent, so the default bucket supplies it:
+         the launcher re-tints that layer itself and must get only its alpha. -->
+</resources>

@@ -36,6 +36,7 @@ import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 /** A status dot; when [pulsing] it breathes alpha .4↔1 and scale .82↔1.18 over 1.6 s. */
@@ -47,7 +48,13 @@ fun LiveDot(
     pulsing: Boolean = false,
 ) {
     val reduceMotion = rememberReduceMotion()
-    if (!pulsing || reduceMotion) {
+    // Read before the early return, so the call shape does not depend on the branch taken.
+    // This dot is the longest-lived loop in the app: the library's link pill drives it with
+    // `playing` and the remote's top row with `serving`, both true for the whole of a cast,
+    // so without this it asks for a frame every vsync for two hours while the same process
+    // saturates the Wi-Fi radio. See [rememberIsResumed] for the rule.
+    val resumed = rememberIsResumed()
+    if (!pulsing || reduceMotion || !resumed) {
         Canvas(modifier.size(size)) { drawCircle(color = color) }
         return
     }
@@ -85,8 +92,10 @@ fun StatusPill(text: String, kind: StatusKind, modifier: Modifier = Modifier) {
         StatusKind.TROUBLE -> colors.trouble
         StatusKind.CAUTION -> colors.caution
     }
-    // Amber never clears its contrast floor as ink, so the caution pill inverts:
-    // solid fill, dark ink. Every other state is a tint of its own accent.
+    // The caution hue is a warm mid-tone in every set — amber on the light canvas, vermilion
+    // on the dark ones — so it never clears its floor as ink on the surface it would be
+    // drawn on. The pill inverts instead: solid fill, dark ink. Every other state is a tint
+    // of its own accent, which is a ground it does clear.
     val fill = if (kind == StatusKind.CAUTION) colors.caution else accent.copy(alpha = 0.14f)
     val ink = if (kind == StatusKind.CAUTION) colors.onCaution else accent
     Row(

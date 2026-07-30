@@ -43,7 +43,7 @@ data class FlickColors(
     val outline: Color,
     val outlineSoft: Color,
     val outlineHairline: Color,
-    // --- action (brand blue) ---
+    // --- action: what a tap is drawn in ---
     val primary: Color,
     val onPrimary: Color,
     val onPrimaryMuted: Color,
@@ -51,12 +51,20 @@ data class FlickColors(
     val onPrimaryContainer: Color,
     val primaryFixed: Color,
     val onPrimaryFixed: Color,
-    // --- accent (amber spark) ---
+    // --- accent: the mark that is NOT a tap — badges, folder markers, live dots ---
     val spark: Color,
     val onSpark: Color,
     val sparkBright: Color,
     val sparkLight: Color,
     val sparkPale: Color,
+    /**
+     * The accent for the grounds this palette draws LIT. Both [inverseSurface] and
+     * [primary] invert polarity between the sets — near-white and gold in dark,
+     * near-black and deep blue in light — so an accent standing on either cannot be one
+     * value. Same hue as [spark], the tone chosen by the ground rather than by the set.
+     */
+    val sparkInverse: Color,
+    // --- media: the film's own light, and the one family that is amber in every set ---
     val playheadHi: Color,
     val playheadLo: Color,
     // --- status ---
@@ -77,7 +85,9 @@ data class FlickColors(
     val posterScrim: Color,
 )
 
-// Electric blue carries every action; amber carries the media itself.
+// The LIGHT assignment: electric blue carries every action, amber is the accent, and amber
+// also carries the media itself. The dark sets swap the first two — see [PrimaryOnNight] —
+// and never the third: [PlayheadHi] and [PlayheadLo] are amber in all four palettes.
 val Primary = Color(0xFF1240E8)
 val PrimaryOnDark = Color(0xFF4A78FF)
 val PrimaryContainer = Color(0xFFDCE5FF)
@@ -139,17 +149,144 @@ val NightInk = Color(0xFFE4EAF6)
 val NightInkDim = Color(0xFFA5B0C6)
 val NightInkFaint = Color(0xFF909BB2)
 
-// The action blue for the dark set, lighter than the cinematic one. #4A78FF holds 4.33:1
-// on the sheet stop and 3.45:1 on a filled card, which is under the floor for the label
-// of a text button; this holds 4.64:1 on the worst surface the set paints, and the
-// near-black ink it carries when it is a fill holds 6.6:1 on it.
-val PrimaryOnNight = Color(0xFF6E93FF)
-val OnPrimaryOnNight = Color(0xFF0A1020)
+// --- the dark assignment: the action takes the amber, the accent takes the brand blue ---
+//
+// One hue story rather than two swapped variables. In light, Flick is a blue tool that
+// plays amber films; in dark the room lights go down, the film's own amber becomes the
+// interface, and blue recedes to being the cool signal of the network. What does NOT move
+// is the media pair — the scrub fill, the FAB and the dock stay amber in every set, so
+// gold acting and gold playing are one meaning rather than a duplication.
+//
+// The physiology is the argument for doing it at all: about 2% of retinal cones are
+// blue-sensitive and the eye focuses blue in front of the retina rather than on it, so a
+// saturated blue is the worst hue there is for small targets and fine lines on near-black
+// — and that is precisely what the old dark set spent it on (1-2 dp rings, 10 dp dots, and
+// every action label in the app). After the swap the blue is only ever an area: a badge, a
+// marker, a ripple. Never a hairline.
 
-// Deep enough to read as a tinted CONTROL rather than as one more dark box: 1.348:1 above
-// the sheet it sits on, which is the step light mode's #DCE5FF has over white (1.258:1).
-val PrimaryContainerOnNight = Color(0xFF1D306B)
-val OnPrimaryContainerOnNight = Color(0xFFC7D6FF)
+/**
+ * The action gold. Tone ~85 at 76% relative chroma — luminous rather than saturated-dark,
+ * which is the shape M3 asks of a dark accent; a tone-40 amber at this chroma would
+ * vibrate against the canvas. One notch off [SparkBright] so it reads as the amber
+ * family's own head rather than as a fifth brand colour.
+ *
+ * 12.46:1 on the canvas, 10.92:1 on the raised surface, 8.72:1 on the worst surface this
+ * set paints (a filled card over the raise) — over-shot on purpose. WCAG 2.x flatters
+ * dark-on-dark pairs badly enough that its own authors say it cannot guide a dark theme,
+ * so the roles a polarity-aware metric would punish hardest are the ones given headroom
+ * rather than scraped past 4.5.
+ *
+ * The largest single gain is on the nav pill: as the travelling selection fill against the
+ * drawn glass #313D61 it measures 6.93:1, where the blue it replaces managed 3.69:1.
+ */
+val PrimaryOnNight = Color(0xFFFFC93D)
+
+/**
+ * Amber needs near-black ink and it needs it WARM — the old cool #0A1020 reads grey on
+ * gold. The same deep-brown family as [OnSpark], two steps darker because it carries
+ * button labels at body weight rather than a single badge word. 11.33:1 on [PrimaryOnNight].
+ */
+val OnPrimaryOnNight = Color(0xFF241804)
+
+/**
+ * Unchanged in kind: the muted telemetry ink stays the dark ink at 80% rather than
+ * becoming a pale tint, for the reason already recorded below — a pale ink drops under 3:1
+ * on a light primary, and this primary is lighter still. 6.90:1 composited over the gold,
+ * which is the only ground it is ever drawn on.
+ */
+val OnPrimaryMutedOnNight = Color(0xCC241804)
+
+// Deep enough to read as a tinted CONTROL rather than as one more dark box: 1.350:1 above
+// the sheet it sits on, which is the step light mode's #DCE5FF has over white (1.258:1)
+// and the step the navy container it replaces held (1.348:1). Cut to land on that same
+// tonal rung so the folder chip, every tonal button, the UNPAIRED link pill and the
+// library filter row keep their exact relationship to the card behind them.
+val PrimaryContainerOnNight = Color(0xFF46300E)
+
+/** The bronze container's own ink — a real tint, not white, so tonal still reads tonal. 9.67:1. */
+val OnPrimaryContainerOnNight = Color(0xFFFFDFA3)
+
+/**
+ * The deep, white-ink-carrying form of the action, so the family is one hue top to bottom.
+ * Its luminance is a near-exact match for the #1240E8 it replaces (0.0959 against 0.0962),
+ * which is why [FlickColors.onPrimaryFixed] stays pure white with no retune (7.20:1 against
+ * 7.18:1) and why the device-row tile keeps its softness inside the container (1.73:1
+ * against 1.74:1).
+ */
+val PrimaryFixedOnNight = Color(0xFF7A4E00)
+
+/**
+ * The surface role that used to share a value with [PrimaryContainerOnNight], and is
+ * decoupled from it here. This is a SURFACE — a poster placeholder, an error screen's dot
+ * track, and Material's `surfaceVariant`/`surfaceContainer` below API 31 — so it belongs to
+ * this set's 225° surface family, not to the action hue. A bronze poster placeholder would
+ * be wrong, and it would drag the surfaces off their anchor.
+ */
+val SurfaceTonalOnNight = Color(0xFF1D306B)
+
+/**
+ * The freed brand blue, unchanged in value: it changes job, not hue. The HDR/DV badge, the
+ * folder marker, the connected badge, the tile ripple — fills and areas, never a fine line.
+ * 5.82:1 as a badge on the raised surface, 4.64:1 as ink on the worst surface this set
+ * paints.
+ */
+val SparkOnNight = Color(0xFF6E93FF)
+
+/** The badge ink inverts with the badge: warm brown on blue reads muddy. 6.55:1. */
+val OnSparkOnNight = Color(0xFF071026)
+
+/**
+ * The rest of the accent ramp, kept monotonic and kept BLUE even though nothing in this set
+ * paints these two: their call sites moved to [SparkInverseOnNight], which is the role that
+ * belongs on a lit ground. Deliberately not left amber and not deleted — a future component
+ * reaching for the accent must not get an amber back from a palette whose accent is blue.
+ * 6.27:1 and 8.11:1 on the worst surface, so either can be picked up without a retune.
+ */
+val SparkBrightOnNight = Color(0xFF8FB0FF)
+val SparkLightOnNight = Color(0xFFB3C9FF)
+
+/** The ramp's pale end — the light set's own [PrimaryContainer]. Carries [OnSparkOnNight] at 15.02:1. */
+val SparkPaleOnNight = Color(0xFFDCE5FF)
+
+/**
+ * See [FlickColors.sparkInverse]. Two tones below [SparkOnNight] at the same hue (228.5°
+ * against 224.7°): one accent, light on this set's dark surfaces and deep on the two
+ * grounds it draws lit. 4.97:1 on `inverseSurface` #E4EAF6 and 3.90:1 on the gold fill.
+ *
+ * It repairs three defects that shipped, all of which were an amber accent drawn on a
+ * near-WHITE `inverseSurface` in dark: an advisory's INFO glyph at 1.45:1, a pair card's
+ * slot count at 1.31:1, and the link pill's live dot on the action fill at 2.09:1.
+ */
+val SparkInverseOnNight = Color(0xFF2A50F0)
+
+/**
+ * A safety vermilion, 16.6° round from [Caution] toward red. It has to move because the
+ * link pill draws `primary` for CASTING/PAIRED and `caution` for OFFLINE in the same seat
+ * in the header, both as a solid warm fill with near-black ink — with an amber action those
+ * two states would be the same paint. 28.2° of hue and a 1.79:1 luminance step apart from
+ * [PrimaryOnNight] now, still unambiguously a warning hue, still carried with a Warning
+ * glyph and still inverting to [OnCaution] (5.93:1).
+ *
+ * The light sets keep [Caution]: they have a blue action and no collision to solve, and
+ * moving an anchored light role to settle a dark problem is how a palette drifts.
+ *
+ * The weakest separation left in the set is this against [TroubleOnDark] — 1.10:1 and
+ * 23.2° — and it is held structurally rather than tonally: a saturated vermilion against a
+ * desaturated salmon, and the two never share a control (a status pill picks one by kind,
+ * an error face by tone) or a treatment (caution is a solid fill with dark ink, trouble is
+ * always a 12-14% tint carrying its own ink).
+ */
+val CautionOnNight = Color(0xFFFF7040)
+
+/**
+ * A guard rather than a repaint: nothing in this set draws `ghost` today — the scrub bar is
+ * cinematic and keeps the periwinkle [Ghost]. But at 217° the old value sat 8° from the new
+ * accent at comparable chroma, which is a trap for the next component to reach for it. This
+ * is the job the role's NAME states: the surfaces' own 223.6° lifted to ink weight, at 15%
+ * relative chroma against the accent's 57%. A phantom by construction, 1.62:1 and 42 points
+ * of chroma off [SparkOnNight], where the old pair managed 1.31:1 and 7 points.
+ */
+val GhostOnNight = Color(0xFFB9C2DA)
 
 // Drop shadows are authored as colors because Compose takes them as ambient/spot
 // tints rather than as a CSS shadow list.
@@ -225,6 +362,10 @@ val LightFlickColors = FlickColors(
     sparkBright = SparkBright,
     sparkLight = SparkLight,
     sparkPale = SparkPale,
+    // The accent is already the amber here, and the grounds this palette draws lit are the
+    // near-black `inverseSurface` and the deep blue `primary` — so the inverse tone IS the
+    // accent. 10.24:1 on the inverse card, 4.09:1 on the action fill.
+    sparkInverse = Spark,
     playheadHi = PlayheadHi,
     playheadLo = PlayheadLo,
     // Cyan reads at ~1.3:1 on the pale canvas, so the LAN/health jobs borrow the
@@ -277,6 +418,9 @@ val CinematicFlickColors = FlickColors(
     sparkBright = SparkBright,
     sparkLight = SparkLight,
     sparkPale = SparkPale,
+    // The blue end of the brand, which on this set is the deep tone [OnPrimaryFixed]
+    // already carries. 10.76:1 on the inverse card, 3.17:1 on the action fill.
+    sparkInverse = OnPrimaryFixed,
     playheadHi = PlayheadHi,
     playheadLo = PlayheadLo,
     link = Link,
@@ -295,6 +439,42 @@ val CinematicFlickColors = FlickColors(
 )
 
 /**
+ * The cinematic set for a phone that has been put into dark mode — the same backdrop,
+ * carrying the dark ACTION assignment.
+ *
+ * Derived from [CinematicFlickColors] rather than written out, because "identical except
+ * for the action family" is the whole claim and a copy is the only form of it that cannot
+ * drift. Three reasons it inherits at all, and inherits only this much:
+ *
+ * 1. Swapping the cinematic set unconditionally would give a LIGHT-mode user amber CTAs on
+ *    Now Playing and blue ones everywhere else. Resolving it means the action colour is one
+ *    colour at any instant across the whole app; neither user ever sees a split.
+ * 2. Not inheriting at all leaves a real seam: the primary button, the sheet chrome and the
+ *    subtitles sheet's loading indicator all read `primary` under the cinematic theme, so a
+ *    dark-mode user would tap a gold CTA on every screen and a blue one inside one sheet.
+ * 3. The accent and the media families deliberately do NOT follow. A blue `spark` and a blue
+ *    ambient glow on a navy backdrop is blue on blue — the inversion
+ *    `theGlassStaysQuieterThanTheFillThatTravelsOnIt` exists to catch — and it would delete
+ *    the one claim this product makes about colour. So this keeps amber `spark`, amber
+ *    `playhead*`, cyan `link` and periwinkle `ghost`.
+ */
+val CinematicNightFlickColors = CinematicFlickColors.copy(
+    primary = PrimaryOnNight,
+    onPrimary = OnPrimaryOnNight,
+    onPrimaryMuted = OnPrimaryMutedOnNight,
+    // Cut against this set's own sheet rather than reused from the dark one: 1.355:1 over
+    // CinemaSheet, where the navy container it replaces held 1.299:1.
+    primaryContainer = Color(0xFF3D2A0A),
+    onPrimaryContainer = OnPrimaryContainerOnNight,
+    primaryFixed = PrimaryFixedOnNight,
+    // Both follow the assignment they belong to: caution cannot be the action's own hue in
+    // the set that also draws the action, and the inverse accent is chosen by the polarity
+    // of the ground, which the gold fill just flipped.
+    caution = CautionOnNight,
+    sparkInverse = SparkInverseOnNight,
+)
+
+/**
  * A dark resolution — chosen outright in Settings, or inherited from the platform while
  * the preference is Match system.
  *
@@ -305,10 +485,10 @@ val CinematicFlickColors = FlickColors(
  * app was drawn in a palette designed to disappear behind artwork — see the stops above
  * for the two measurements that made that concrete.
  *
- * Nothing here is shared BY REFERENCE with the cinematic set beyond the brand accents,
- * which are the same colours in both because they are the brand: amber for the media,
- * cyan for the LAN, and the caution/trouble pair. The surfaces, the ink and the action
- * blue are this set's own, so tuning one theme can never move the other.
+ * Nothing here is shared BY REFERENCE with the cinematic sets beyond the brand roles that
+ * are the same colours in both because they are the brand: amber for the media, cyan for
+ * the LAN, and the trouble ink. The surfaces, the ink, the action family and the accent
+ * family are this set's own, so tuning one theme can never move the other.
  */
 val DarkFlickColors = FlickColors(
     isLight = false,
@@ -319,7 +499,7 @@ val DarkFlickColors = FlickColors(
     surface = NightCanvas,
     surfaceRaised = NightRaised,
     surfaceRaisedAlt = NightRaisedAlt,
-    surfaceTonal = PrimaryContainerOnNight,
+    surfaceTonal = SurfaceTonalOnNight,
     surfaceDisabled = NightDisabled,
     inverseSurface = NightInk,
     onInverseSurface = NightCanvas,
@@ -339,6 +519,12 @@ val DarkFlickColors = FlickColors(
     // given up, because the frosted read was never the backdrop: Compose cannot sample
     // one, so it is the sheen, the hairline and the shadow doing that work (see
     // [flickGlass]) and all three are untouched.
+    //
+    // It stays COOL under the gold selection fill, which is a decision rather than an
+    // oversight: 49% relative chroma against the fill's 76%, so the loud thing on the pill
+    // is still the fill and not the material it travels on. Warming the glass to match the
+    // gold is the same inversion `theGlassStaysQuieterThanTheFillThatTravelsOnIt` was
+    // written to catch, only the other way round.
     glass = Color(0xFA323E62),
     // Held at 18%: the rim steps 1.71:1 off the new fill against 1.77:1 off the old one,
     // so the hairline reads as it did without being retuned for it.
@@ -355,26 +541,30 @@ val DarkFlickColors = FlickColors(
     outlineHairline = Color(0x1AFFFFFF),
     primary = PrimaryOnNight,
     onPrimary = OnPrimaryOnNight,
-    // The light set's pale-blue telemetry ink would drop under 3:1 on this lighter
-    // primary, so the muted role stays the dark ink and only loses weight.
-    onPrimaryMuted = Color(0xCC0A1020),
+    onPrimaryMuted = OnPrimaryMutedOnNight,
     primaryContainer = PrimaryContainerOnNight,
     onPrimaryContainer = OnPrimaryContainerOnNight,
-    primaryFixed = Primary,
+    primaryFixed = PrimaryFixedOnNight,
     onPrimaryFixed = Color(0xFFFFFFFF),
-    spark = Spark,
-    onSpark = OnSpark,
-    sparkBright = SparkBright,
-    sparkLight = SparkLight,
-    sparkPale = SparkPale,
+    spark = SparkOnNight,
+    onSpark = OnSparkOnNight,
+    sparkBright = SparkBrightOnNight,
+    sparkLight = SparkLightOnNight,
+    sparkPale = SparkPaleOnNight,
+    sparkInverse = SparkInverseOnNight,
+    // Amber in this set too, and that is the load-bearing line of the whole dark
+    // assignment: the scrub fill, the play FAB and the Now-Playing dock are the film's own
+    // light. Gold acting and gold playing read as one meaning rather than as a duplication,
+    // and pinning them here is what lets [FlickGradients.playhead] and [FlickGradients.fab]
+    // stay plain `val`s in the app's hottest draw path.
     playheadHi = PlayheadHi,
     playheadLo = PlayheadLo,
     link = Link,
     live = Link,
-    caution = Caution,
+    caution = CautionOnNight,
     onCaution = OnCaution,
     trouble = TroubleOnDark,
-    ghost = Ghost,
+    ghost = GhostOnNight,
     fillCard = Color(0x14FFFFFF),
     fillControl = Color(0x1CFFFFFF),
     fillTrack = Color(0x26FFFFFF),
@@ -398,10 +588,20 @@ object FlickGradients {
     /** 170° Connecting-overlay backdrop. */
     val connectingBackdrop: Brush = angledGradient(170f, 0f to CinemaTop, 1f to CinemaDeep)
 
-    /** 90° played-fill of the scrub bar. */
+    /**
+     * 90° played-fill of the scrub bar, and 150° for the play/pause FAB.
+     *
+     * Both stay plain `val`s across a palette swap that moved the action colour, because
+     * the media roles they are built from are pinned amber in all four sets. Making them
+     * palette-aware would cost a shader allocation and a `remember` slot per call in the
+     * app's hottest draw path — the scrub bar under a drag, on a phone that is at the same
+     * time serving 4K over the LAN — to return a byte-identical brush. The invariant is
+     * held by arithmetic in `FlickColorsTest` instead, which fails the day someone re-hues
+     * the media accent.
+     */
     val playhead: Brush = angledGradient(90f, 0f to PlayheadHi, 1f to PlayheadLo)
 
-    /** 150° play/pause FAB fill. */
+    /** See [playhead]: the same two stops, raked for the round key. */
     val fab: Brush = angledGradient(150f, 0f to PlayheadHi, 1f to PlayheadLo)
 
     /** 180° poster scrim — transparent until 42%, then down to 62% black. */

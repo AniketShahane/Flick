@@ -245,7 +245,17 @@ private fun CastFrame(
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .flickSharedFrame(sharedScope, animatedScope, CastPosterKey)
+                    // This end's own radius. Both seats of this flight are small cards, so
+                    // the morph holds the full corner across the whole of it rather than
+                    // resolving toward square the way a grid-to-window hero does — without
+                    // it the travelling copy is drawn in the overlay with no clip at all
+                    // and crosses the screen as a hard rectangle between two rounded seats.
+                    .flickSharedFrame(
+                        sharedScope = sharedScope,
+                        animatedScope = animatedScope,
+                        key = CastPosterKey,
+                        restCorner = FlickCorners.detailPoster,
+                    )
                     .fillMaxSize(),
             )
         }
