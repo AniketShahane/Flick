@@ -17,6 +17,15 @@ bin/
 gen/
 out/
 release/
+# ...but NOT the baseline profiles, which live at <module>/src/release/generated/ because
+# `saveInSrc = true` puts them there to be COMMITTED — `assemble*` never regenerates them,
+# it packages whatever is checked in. The rule above is the only thing that ever matched
+# those two directories (there is no top-level release/ output dir; build/ already covers
+# build output), so it silently excluded the one artifact it must not, and both apps shipped
+# an ART profile containing zero app classes. Git cannot re-include a path whose parent
+# directory is excluded, so the directory has to be un-ignored before its contents can be.
+!**/src/release/
+!**/src/release/**
 
 # Keystores / signing
 *.jks
