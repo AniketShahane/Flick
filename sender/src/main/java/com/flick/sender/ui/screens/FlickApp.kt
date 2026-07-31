@@ -68,6 +68,8 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -143,6 +145,7 @@ fun FlickApp(
     // Owned here because the bar and the routes that reserve room for it are siblings: the
     // shell is the only composition both of them are inside.
     val navMetrics = remember { NavMetrics() }
+    val navHazeState = rememberHazeState()
     // Same reason, one level up: the routes below cross-dissolve, so the library is DISPOSED
     // while a detail sheet is up. Held here it comes back seated where it was left, which is
     // also what puts the tile a returning poster flies into back on the screen — see
@@ -282,6 +285,11 @@ fun FlickApp(
             val sharedScope = this
             Box(Modifier.fillMaxSize().background(colors.surface)) {
                 AnimatedContent(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (colors.isLight) Modifier else Modifier.hazeSource(navHazeState),
+                        ),
                     targetState = route,
                     transitionSpec = {
                         if (reduceMotion) {
@@ -482,6 +490,7 @@ fun FlickApp(
                     ) {
                         FlickBottomNav(
                             selected = history.seat,
+                            hazeState = navHazeState,
                             onSelect = { tab ->
                                 // Re-selecting the current tab is a no-op: openConnect() also arms the
                                 // in-flow back behavior, which would strand Back on the launch route.

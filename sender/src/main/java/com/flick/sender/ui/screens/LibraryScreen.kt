@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
@@ -9,7 +10,6 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,9 +22,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -34,10 +33,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
@@ -46,9 +47,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -68,7 +69,6 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -77,29 +77,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.LookaheadScope
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -107,6 +109,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.flick.sender.NetworkUtils
@@ -156,14 +159,14 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.roundToInt
 
 /**
  * Everything about the grid that is a POSITION in it rather than a fact about the library.
  * Held by the shell because routes cross-dissolve: the `AnimatedContent` that swaps them
  * disposes the surface it left, so anything remembered inside this screen is gone by the
- * time the user comes back from a detail sheet — the grid returns at the top with the
- * quality chip cleared, and the tile a poster is flying home to is no longer composed for
- * it to land on.
+ * time the user comes back from a detail sheet — the grid position and search state survive,
+ * and the tile a poster is flying home to is still composed for it to land on.
  *
  * The library itself is not in here. Which files exist and which folder is in force are the
  * controller's, and re-deriving them on arrival is the point of the reload this screen asks
@@ -171,7 +174,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 @Stable
 internal class LibraryUiState(val grid: LazyGridState) {
-    var filter by mutableStateOf(LibFilter.ALL)
+    var searchOpen by mutableStateOf(false)
+    var searchQuery by mutableStateOf("")
 
     /**
      * The entrance belongs to the library ARRIVING — the first paint after MediaStore
@@ -204,8 +208,8 @@ internal fun LibraryScreen(
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
-    // One value, not four flows: the chip row's count, the tiles it counts and the
-    // folder that scoped both of them are always the same library.
+    // The scope and its source rows arrive together; search is applied locally below so
+    // changing a query never asks MediaStore to walk the library again.
     val library by controller.library.collectAsState()
     val folderScope = library.scope
     val scoped = library.scoped
@@ -233,24 +237,11 @@ internal fun LibraryScreen(
         dockLive = castingItem != null,
     )
 
-    val filter = uiState.filter
     var choosingFolder by remember { mutableStateOf(false) }
 
-    // The grid's answer to a chip tap. The epoch retriggers the wave; the window closes
-    // it so a tile the lazy grid composes minutes later is not treated as arriving.
-    // Neither moves on a re-tap of the live chip: an exclusive axis reflows nothing.
-    var reflowEpoch by remember { mutableIntStateOf(0) }
-    var reflowArmed by remember { mutableStateOf(false) }
-    LaunchedEffect(reflowEpoch) {
-        if (reflowEpoch == 0) return@LaunchedEffect
-        delay(ReflowWindowMs)
-        reflowArmed = false
-    }
-
-    // The entrance plays once, on the first paint after MediaStore resolves — never on
-    // a filter switch, which has a wave of its own. The window closes it so scrolling
-    // back to the top cannot replay it on tiles the lazy grid recomposes, and the latch
-    // it spends is the shell's so a route change cannot replay it either.
+    // The entrance plays once, on the first paint after MediaStore resolves. The window
+    // closes it so scrolling back to the top cannot replay it on tiles the lazy grid
+    // recomposes, and the latch it spends is the shell's so a route change cannot replay it.
     var staggerArmed by remember { mutableStateOf(false) }
     LaunchedEffect(loading, scoped.isEmpty(), reduceMotion) {
         if (uiState.entrancePlayed || reduceMotion || loading || scoped.isEmpty()) return@LaunchedEffect
@@ -287,17 +278,10 @@ internal fun LibraryScreen(
         return
     }
 
-    // Both quality chips read a value MediaStore already reported, so the visible set
-    // is a plain function of the library and the chip — no probe, nothing to subscribe
-    // to, and no work at all on the frame a tile arrives. The folder narrowed the list
-    // before it got here, so the chips describe what is on screen rather than the
-    // phone: a count taken any earlier would be a tally of files this screen is hiding.
-    val filtered = remember(scoped, filter) {
-        LibraryFilterPolicy.apply(
-            items = scoped,
-            filter = filter,
-            resolutionLabel = { it.resolutionLabel },
-        )
+    // Folder scope comes first. Search only narrows that already-scoped set, never the
+    // whole library, and a blank query returns the same list object without allocation.
+    val searchResults = remember(scoped, uiState.searchQuery) {
+        LibrarySearchPolicy.apply(scoped, uiState.searchQuery) { it.name }
     }
 
     // The pull's own claim on the indicator, which is not the same claim as `loading`:
@@ -388,32 +372,21 @@ internal fun LibraryScreen(
                     )
                 }
                 fullWidth {
-                    FilterChips(
-                        filter = filter,
-                        // What "All" would show, which under a folder is that folder — the
-                        // count has to describe the set the chip actually selects.
-                        totalCount = scoped.size,
-                        onSelect = { chosen ->
-                            uiState.filter = chosen
-                            // Armed from the tap rather than from the effect that closes it:
-                            // the wave has to be in place for the first composition the new
-                            // set is measured in, or the tiles paint once at rest and only
-                            // then dip.
-                            reflowArmed = !reduceMotion
-                            reflowEpoch++
-                        },
-                        trailing = {
-                            // Below API 29 MediaStore reports no relative path for a video, so
-                            // no folder is ever derived and this seat stays empty — the
-                            // feature is absent there rather than guessed at from a file path.
-                            // A choice made on a later phone cannot arrive to contradict that
-                            // either: the file holding it is excluded from backup.
-                            if (LibraryFolders.chooserOffered(library.folders, folderScope, library.items.size)) {
-                                LibraryFolderChip(
-                                    scope = folderScope,
-                                    onClick = { choosingFolder = true },
-                                )
-                            }
+                    LibraryControls(
+                        chooserOffered = LibraryFolders.chooserOffered(
+                            library.folders,
+                            folderScope,
+                            library.items.size,
+                        ),
+                        scope = folderScope,
+                        searchOpen = uiState.searchOpen,
+                        query = uiState.searchQuery,
+                        onChooseFolder = { choosingFolder = true },
+                        onOpenSearch = { uiState.searchOpen = true },
+                        onQueryChange = { uiState.searchQuery = it },
+                        onCloseSearch = {
+                            uiState.searchOpen = false
+                            uiState.searchQuery = ""
                         },
                     )
                 }
@@ -450,18 +423,16 @@ internal fun LibraryScreen(
                             )
                         }
                     }
-                    // Reached only through a quality chip — a folder Flick can see holds at
-                    // least one video, which is why it is offered at all. It takes the
-                    // chips' place because their copy offers everything ON THIS PHONE, which
-                    // is not what tapping All would show while a folder is in force.
-                    filtered.isEmpty() && folderScope is LibraryScope.Folder ->
+                    // A folder can become empty between the chooser opening and the next
+                    // MediaStore read. This condition deliberately precedes search's empty
+                    // state: it describes the scope itself, not a query within it.
+                    scoped.isEmpty() && folderScope is LibraryScope.Folder ->
                         fullWidth { FolderEmpty(folderScope.name) }
-                    // "All" cannot be empty while the library is not: only a quality chip can
-                    // filter every file away.
-                    filtered.isEmpty() && filter != LibFilter.ALL -> fullWidth { FilterEmpty(filter) }
+                    uiState.searchQuery.trim().isNotEmpty() && searchResults.isEmpty() ->
+                        fullWidth { SearchEmpty() }
                 }
                 itemsIndexed(
-                    filtered,
+                    searchResults,
                     key = { _, item -> item.id },
                     // Stated: handed a scrolled-away section's slot, a tile is rebuilt from
                     // nothing — a fresh HDR probe and a fresh image request — on a frame
@@ -476,16 +447,13 @@ internal fun LibraryScreen(
                         onClick = { controller.openDetail(item) },
                         sharedScope = sharedScope,
                         animatedScope = animatedScope,
-                        // A filter switch reflows the surviving tiles instead of teleporting
-                        // them; placement is geometry and takes the spatial spring.
                         modifier = Modifier
                             .animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
                                 placementSpec = motionScheme.defaultSpatialSpec(),
                                 fadeOutSpec = motionScheme.fastEffectsSpec(),
                             )
-                            .staggeredEntrance(index = index, armed = staggerArmed)
-                            .reflowWave(index = index, epoch = reflowEpoch, armed = reflowArmed),
+                            .staggeredEntrance(index = index, armed = staggerArmed),
                     )
                 }
             }
@@ -494,18 +462,12 @@ internal fun LibraryScreen(
             LibraryFolderSheet(
                 folders = library.folders,
                 scope = folderScope,
-                // The whole library, because "All videos" is what leaving the folder
-                // restores — the scoped count is the one the chip row already states.
+                // The whole library, because "All videos" is what leaving the folder restores.
                 allCount = library.items.size,
                 // Only the scope changes here. Removing the sheet is onDismiss's, which
                 // the sheet answers once its exit has actually carried it off the window.
                 onChoose = { folder ->
                     controller.chooseLibraryFolder(folder)
-                    // A folder switch re-deals the grid for the same reason a chip tap
-                    // does: the new set is the consequence of the tap, not an unrelated
-                    // event that happened to it.
-                    reflowArmed = !reduceMotion
-                    reflowEpoch++
                 },
                 onDismiss = { choosingFolder = false },
             )
@@ -593,48 +555,6 @@ private fun Modifier.staggeredEntrance(index: Int, armed: Boolean): Modifier {
         // Clamped: the spatial spring overshoots by design and opacity must not.
         alpha = p.coerceIn(0f, 1f)
         translationY = (1f - p) * StaggerRiseDp.toPx()
-    }
-}
-
-/**
- * The grid answering the chip that was just tapped: the tiles re-deal in sequence
- * instead of the new set simply existing, so the reflow reads as the consequence of
- * the tap rather than as an unrelated event. [epoch] retriggers it, [armed] closes the
- * window — a tile the lazy grid composes after that has not just arrived, it was
- * scrolled to. A graphicsLayer transform only, like the entrance: the lazy grid's own
- * placement animation is already moving the tiles that survived the switch, and it
- * must never see bounds this changes too. Like the entrance, a tile that has joined the
- * wave keeps its layer until its own spring is home: the window closes for the grid, not
- * for a tile that is still mid-dip when the timer runs out.
- */
-@Composable
-private fun Modifier.reflowWave(index: Int, epoch: Int, armed: Boolean): Modifier {
-    val spec = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
-    // Reset by the key, not from the effect: the dip has to be on a surviving tile in the
-    // very composition the new set is measured in, or it paints once at rest first.
-    val progress = remember(epoch) { Animatable(if (armed) 0f else 1f) }
-    var dipping by remember { mutableStateOf(false) }
-    LaunchedEffect(epoch) {
-        if (!armed) {
-            dipping = false
-            return@LaunchedEffect
-        }
-        dipping = true
-        delay(index.coerceAtMost(ReflowCapIndex) * ReflowStepMs)
-        progress.animateTo(1f, spec)
-        dipping = false
-    }
-    if (!armed && !dipping) return this
-    return graphicsLayer {
-        // See [staggeredEntrance]: the dip's alpha would otherwise buy every tile on screen
-        // an offscreen buffer per frame, and clip its shadow away for the length of it.
-        compositingStrategy = CompositingStrategy.ModulateAlpha
-        val p = progress.value
-        alpha = (ReflowFromAlpha + (1f - ReflowFromAlpha) * p).coerceIn(0f, 1f)
-        // Unclamped on purpose: the spring's overshoot is the tile landing.
-        val s = ReflowFromScale + (1f - ReflowFromScale) * p
-        scaleX = s
-        scaleY = s
     }
 }
 
@@ -1018,255 +938,264 @@ private fun Pill(
     )
 }
 
-/**
- * The library's quality axis, and the app's most-tapped control.
- *
- * Selection is ONE fill that travels between the seats rather than chips that
- * cross-fade — the chip left behind and the chip arrived at are the same object
- * moving, which is the language the bottom nav already speaks. That is why the pills
- * are drawn here and not by the chips: the arriving fill has to pass over the seat it
- * is heading for, and a chip that painted its own opaque pill would hide it.
- *
- * Every tap answers, including a re-tap of the chip that is already selected. The kick is
- * therefore driven from the tap itself: an exclusive axis leaves the selection untouched
- * on a re-tap, so selection cannot be what the feedback reads.
- *
- * [trailing] is the library's other axis — which folder — seated in the same flow so a
- * narrow window wraps it onto its own line instead of squeezing the chips into three.
- * It paints its own fill: only the seats reported below belong to the exclusive axis,
- * and the travelling selection must never be able to land on a control that is not part
- * of it.
- */
-@OptIn(ExperimentalLayoutApi::class)
+/** A content-sized folder choice with search folding into the same, never-scrolling row. */
 @Composable
-private fun FilterChips(
-    filter: LibFilter,
-    totalCount: Int,
-    onSelect: (LibFilter) -> Unit,
-    trailing: @Composable () -> Unit = {},
+private fun LibraryControls(
+    chooserOffered: Boolean,
+    scope: LibraryScope,
+    searchOpen: Boolean,
+    query: String,
+    onChooseFolder: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onQueryChange: (String) -> Unit,
+    onCloseSearch: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val reduceMotion = rememberReduceMotion()
+    val motionScheme = MaterialTheme.motionScheme
+    val motion = motionScheme.defaultSpatialSpec<Float>()
+    val kickSpec = motionScheme.fastSpatialSpec<Float>()
+    val settleSpec = motionScheme.defaultSpatialSpec<Float>()
+    val progress = remember { Animatable(if (searchOpen) 1f else 0f) }
+    val buttonKick = remember { Animatable(0f) }
+    val animationScope = rememberCoroutineScope()
     val haptics = rememberFlickTouchHaptics()
-    val reduceMotion = rememberReduceMotion()
-    val motionScheme = MaterialTheme.motionScheme
-    val travel = motionScheme.defaultSpatialSpec<Rect>()
-    val kick = motionScheme.fastSpatialSpec<Float>()
-    val settle = motionScheme.defaultSpatialSpec<Float>()
+    val searchInteraction = remember { MutableInteractionSource() }
+    var openRequestPending by remember { mutableStateOf(false) }
+    // The default spatial spring is allowed to ring around its target. Composition is a
+    // separate lifetime from that geometry: a closing field stays composed until its own
+    // animation reaches rest, and a reopened search cannot be disposed by the cancelled
+    // close coroutine.
+    var fieldComposed by remember { mutableStateOf(searchOpen) }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
 
-    // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
-    // from writing snapshot state the same layout pass reads, and the epoch only moves
-    // when a seat genuinely changes (first placement, rotation, font scale).
-    val seats = remember { mutableMapOf<LibFilter, Rect>() }
-    var seatEpoch by remember { mutableIntStateOf(0) }
-    val host = remember { mutableStateOf<LayoutCoordinates?>(null) }
-    val reportSeat: (LibFilter, Rect) -> Unit = { chip, rect ->
-        if (seats[chip] != rect) {
-            seats[chip] = rect
-            seatEpoch++
-        }
+    LaunchedEffect(searchOpen) {
+        if (!searchOpen) openRequestPending = false
     }
-
-    val fill = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
-    LaunchedEffect(filter, seatEpoch, reduceMotion) {
-        val destination = seats[filter] ?: return@LaunchedEffect
-        if (fill.value == destination) return@LaunchedEffect
-        // Rect.Zero is "nothing measured yet", so the first placement lands instead of
-        // flying in from the corner of the row.
-        if (reduceMotion || fill.value == Rect.Zero) {
-            fill.snapTo(destination)
+    LaunchedEffect(reduceMotion) {
+        if (reduceMotion) buttonKick.snapTo(0f)
+    }
+    LaunchedEffect(searchOpen, reduceMotion) {
+        val target = if (searchOpen) 1f else 0f
+        if (searchOpen) fieldComposed = true
+        if (reduceMotion) {
+            progress.snapTo(target)
         } else {
-            fill.animateTo(destination, travel)
+            progress.animateTo(target, motion)
+        }
+        if (!searchOpen && progress.value == 0f) fieldComposed = false
+    }
+    val fieldPresent = searchOpen || fieldComposed
+    // A closing field is still painted for its exit, but it cannot retain focus or become
+    // a TalkBack stop after the user has asked to leave search.
+    val fieldInteractive = searchOpen
+    LaunchedEffect(searchOpen, fieldInteractive) {
+        if (searchOpen && fieldInteractive) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        } else if (!searchOpen) {
+            focusManager.clearFocus()
+            keyboard?.hide()
         }
     }
+    BackHandler(enabled = searchOpen) { onCloseSearch() }
 
-    // The kick: out to full stretch, then a spring back that overshoots through rest.
-    // One animation per chip rather than one shared value the next tap re-points: at the
-    // rhythm this row is actually tapped at, the chip just left is still settling, and it
-    // has to spring home from where it had got to instead of being dropped there. Written
-    // from the tap and read only from draw scopes, so a deformation never costs a
-    // recomposition.
-    val pops = remember { LibFilter.entries.associateWith { Animatable(0f) } }
-    // Launched off the composition's own scope, not from an effect keyed on the tap: a
-    // second tap must not cancel the spring the first one is still running.
-    val scope = rememberCoroutineScope()
-
-    val tap: (LibFilter) -> Unit = { chip ->
-        if (!reduceMotion) {
-            scope.launch {
-                val struck = pops.getValue(chip)
-                struck.animateTo(1f, kick)
-                struck.animateTo(0f, settle)
-            }
-            pops.forEach { (other, pop) ->
-                if (other != chip && (pop.isRunning || pop.value != 0f)) {
-                    scope.launch { pop.animateTo(0f, settle) }
-                }
-            }
-        }
-        // One exclusive axis: re-tapping the live chip selects nothing, so nothing may
-        // reach the actuator. The kick above is the whole answer to that tap.
-        if (chip != filter) {
-            haptics.toggle(true)
-            onSelect(chip)
-        }
-    }
-
-    val restFill = colors.primaryContainer
-    val liveFill = colors.inverseSurface
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .onGloballyPositioned { host.value = it }
-            // One draw node for the whole axis: the resting pills, then the travelling
-            // fill on top of them. Every value here is read in the draw phase, so
-            // hammering a chip repaints this row without recomposing the grid below it.
-            .drawBehind {
-                // The epoch is this node's subscription to a seat moving; the map
-                // itself is deliberately not snapshot state. Zero is "not placed yet".
-                if (seatEpoch == 0) return@drawBehind
-                LibFilter.entries.forEach { chip ->
-                    val seat = seats[chip] ?: return@forEach
-                    drawChipPill(seat, restFill, pops.getValue(chip).value)
-                }
-                // The travelling fill deforms with the seat it is sitting in, which is
-                // the chip the selection just moved to.
-                drawChipPill(fill.value, liveFill, pops.getValue(filter).value)
-            },
-    ) {
-        FlowRow(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // Only "All" carries a count: a per-bucket tally would claim a precision
-            // MediaStore's pixel dimensions do not have. It counts the set THIS chip
-            // selects — the folder in force, or the whole library when there is none —
-            // so what it names is always what tapping it would show.
-            Chip(
-                text = stringResource(R.string.library_filter_all, totalCount),
-                active = filter == LibFilter.ALL,
-                host = host,
-                onSeat = { reportSeat(LibFilter.ALL, it) },
-                squash = { pops.getValue(LibFilter.ALL).value },
-                onTap = { tap(LibFilter.ALL) },
-            )
-            Chip(
-                text = stringResource(R.string.library_filter_4k),
-                active = filter == LibFilter.FOUR_K,
-                host = host,
-                onSeat = { reportSeat(LibFilter.FOUR_K, it) },
-                squash = { pops.getValue(LibFilter.FOUR_K).value },
-                onTap = { tap(LibFilter.FOUR_K) },
-            )
-            Chip(
-                text = stringResource(R.string.library_filter_1080p),
-                active = filter == LibFilter.FULL_HD,
-                host = host,
-                onSeat = { reportSeat(LibFilter.FULL_HD, it) },
-                squash = { pops.getValue(LibFilter.FULL_HD).value },
-                onTap = { tap(LibFilter.FULL_HD) },
-            )
-            trailing()
-        }
-    }
-}
-
-/**
- * One chip pill, drawn by the row rather than by the chip. [squash] is the tap kick:
- * 0 at rest, 1 at full stretch, negative on the spring's counter-pose. Wider and
- * shorter about the seat's own centre, which is where the label's layer transform
- * pivots too, so the two deform as one object.
- */
-private fun DrawScope.drawChipPill(seat: Rect, color: Color, squash: Float) {
-    if (seat.isEmpty) return
-    scale(chipStretchX(squash), chipSquashY(squash), pivot = seat.center) {
-        drawRoundRect(
-            color = color,
-            topLeft = seat.topLeft,
-            size = seat.size,
-            cornerRadius = CornerRadius(seat.height / 2f),
-        )
-    }
-}
-
-private fun chipStretchX(squash: Float): Float = 1f + squash * ChipPopStretch
-
-private fun chipSquashY(squash: Float): Float = 1f - squash * ChipPopSquash
-
-/**
- * Label, press wash and seat report. The chip owns no fill of its own — [onSeat]
- * publishes the bounds the row paints one for, measured off a node that sits above the
- * kick's layer so a deforming chip can never republish its own seat.
- */
-@Composable
-private fun Chip(
-    text: String,
-    active: Boolean,
-    host: State<LayoutCoordinates?>,
-    onSeat: (Rect) -> Unit,
-    squash: () -> Float,
-    onTap: () -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    val reduceMotion = rememberReduceMotion()
-    val motionScheme = MaterialTheme.motionScheme
-    val interaction = remember { MutableInteractionSource() }
-
-    // The label rides the travelling fill, so its ink must not resolve before the fill
-    // has arrived under it — a slower effects spec, never a spatial one.
-    val ink = animateColorAsState(
-        targetValue = if (active) colors.onInverseSurface else colors.onPrimaryContainer,
-        animationSpec = Motion.orSnap(reduceMotion, motionScheme.slowEffectsSpec<Color>()),
-        label = "chip ink",
+    val openDescription = stringResource(R.string.library_search_open)
+    val closeDescription = stringResource(
+        if (query.isNotEmpty()) R.string.library_search_clear else R.string.library_search_close,
     )
-    // Material's ripple dilutes whatever ink it is handed, and on this palette that
-    // lands on a pill as a grey blob. The chip answers a touch with the brand tint that
-    // reads against its own fill instead: the pale blue on the selected chip's dark
-    // pill, the saturated one on the pale rest pill. An effects spring rather than the
-    // spatial one the kick takes: this is opacity and must not ring past its range.
-    val wash = rememberPressAmount(interaction, motionScheme.fastEffectsSpec())
-    val washColor = if (active) colors.primaryFixed else colors.primary
-    val label = remember(ink) { ColorProducer { ink.value } }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
-            .onGloballyPositioned { coordinates ->
-                host.value?.let { onSeat(it.localBoundingBoxOf(coordinates, clipBounds = false)) }
-            }
-            .heightIn(min = 48.dp)
-            .graphicsLayer {
-                // Read in the layer block, so the kick repaints one chip rather than
-                // recomposing the row it sits in.
-                val p = squash()
-                scaleX = chipStretchX(p)
-                scaleY = chipSquashY(p)
-            }
-            .drawBehind {
-                val alpha = wash.value * ChipPressWashAlpha
-                if (alpha > 0f) {
-                    drawRoundRect(
-                        color = washColor,
-                        cornerRadius = CornerRadius(size.height / 2f),
-                        alpha = alpha,
-                    )
-                }
-            }
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                role = Role.Tab,
-                onClick = onTap,
-            )
-            // Merged on the outer node so it wins the collapse: the chips are one
-            // exclusive axis and TalkBack must not announce three independent toggles.
-            .semantics(mergeDescendants = true) { selected = active }
-            .padding(horizontal = 18.dp, vertical = 11.dp),
-        contentAlignment = Alignment.Center,
+            .fillMaxWidth()
+            .heightIn(min = SearchControlSize)
+            .clipToBounds()
+            .clip(PillShape),
     ) {
-        // The ink is handed over as a producer rather than as a style, so the tint
-        // animation resolves at draw time and never recomposes the label.
-        BasicText(text = text, style = FlickText.labelMedium, color = label)
+        val buttonTravel = (maxWidth - SearchControlSize).coerceAtLeast(0.dp)
+        val fieldWidth = (maxWidth - SearchControlSize - SearchControlGap).coerceAtLeast(0.dp)
+        val folderWidthCap = libraryFolderWidthCap(maxWidth)
+
+        if (chooserOffered) {
+            LibraryFolderChip(
+                scope = scope,
+                onClick = onChooseFolder,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    // The chip hugs short names but never takes more than three quarters
+                    // of the row. Its weighted label reserves the chevron before ellipsizing.
+                    .widthIn(max = folderWidthCap)
+                    .slideOutToStart { progress.value },
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .size(SearchControlSize)
+                .offset {
+                    val p = progress.value.coerceIn(0f, 1f)
+                    IntOffset(x = (buttonTravel * (1f - p)).roundToPx(), y = 0)
+                }
+                // The removed quality chips answered a tap by stretching wider and
+                // squashing shorter. Search keeps that exact restraint while its seat
+                // travels; this layer never changes measurement or placement bounds.
+                .graphicsLayer {
+                    val kick = if (reduceMotion) 0f else buttonKick.value
+                    scaleX = searchKickScaleX(kick)
+                    scaleY = searchKickScaleY(kick)
+                    translationY = -SearchKickLift.toPx() * kick.coerceIn(0f, 1f)
+                }
+                .clip(CircleShape)
+                .background(colors.primaryContainer)
+                .clickable(
+                    enabled = !searchOpen && !openRequestPending,
+                    interactionSource = searchInteraction,
+                    indication = flickRipple(colors.onPrimaryContainer),
+                    role = Role.Button,
+                    onClick = {
+                        // The local latch closes the tiny interval before the hoisted
+                        // open state returns, so even an extreme double tap dispatches
+                        // one open request and one haptic answer.
+                        if (!searchOpen && !openRequestPending) {
+                            openRequestPending = true
+                            haptics.toggle(true)
+                            if (!reduceMotion) {
+                                animationScope.launch {
+                                    buttonKick.animateTo(1f, kickSpec)
+                                    buttonKick.animateTo(0f, settleSpec)
+                                }
+                            }
+                            onOpenSearch()
+                        }
+                    },
+                )
+                .then(
+                    if (searchOpen) {
+                        Modifier.clearAndSetSemantics { }
+                    } else {
+                        Modifier.semantics { contentDescription = openDescription }
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = FlickIcons.Search,
+                contentDescription = null,
+                tint = colors.onPrimaryContainer,
+                modifier = Modifier
+                    .size(21.dp)
+                    .graphicsLayer {
+                        val p = if (reduceMotion) 0f else progress.value.coerceIn(0f, 1f)
+                        val arc = searchTravelArc(p)
+                        val kick = if (reduceMotion) 0f else buttonKick.value
+                        rotationZ = -SearchTravelTurnDegrees * arc + SearchKickTurnDegrees * kick
+                        translationY = -SearchTravelLift.toPx() * arc
+                    },
+            )
+        }
+
+        if (fieldPresent) {
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = FlickText.bodyMedium.copy(color = colors.onSurface),
+                cursorBrush = SolidColor(colors.primary),
+                modifier = Modifier
+                    // This is always its final width; closed it is placed beyond the row,
+                    // so a text field is never measured from zero during the morph.
+                    .align(Alignment.CenterStart)
+                    .width(fieldWidth)
+                    .height(SearchControlSize)
+                    .offset {
+                        val p = progress.value.coerceIn(0f, 1f)
+                        IntOffset(
+                            x = (SearchControlSize + SearchControlGap + fieldWidth * (1f - p)).roundToPx(),
+                            y = 0,
+                        )
+                    }
+                    .focusRequester(focusRequester)
+                    .focusProperties { canFocus = fieldInteractive }
+                    .then(
+                        if (fieldInteractive) Modifier else Modifier.clearAndSetSemantics {
+                            hideFromAccessibility()
+                        },
+                    ),
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(PillShape)
+                            .background(colors.surfaceRaised)
+                            .padding(start = 16.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.weight(1f)) {
+                            if (query.isEmpty()) {
+                                Text(
+                                    text = stringResource(R.string.library_search_placeholder),
+                                    style = FlickText.bodyMedium.copy(color = colors.onSurfaceFaint),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            innerTextField()
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(SearchControlSize)
+                                .clip(CircleShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = flickRipple(colors.onSurface),
+                                    role = Role.Button,
+                                    onClick = {
+                                        if (query.isNotEmpty()) onQueryChange("") else onCloseSearch()
+                                    },
+                                )
+                                .semantics { contentDescription = closeDescription },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = FlickIcons.Close,
+                                contentDescription = null,
+                                tint = colors.onSurface,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+/** Maximum folder width, leaving the fixed search target and its gap intact on tiny rows. */
+internal fun libraryFolderWidthCap(rowWidth: Dp): Dp = minOf(
+    rowWidth * FolderClosedWidthFraction,
+    (rowWidth - SearchControlSize - SearchControlGap).coerceAtLeast(0.dp),
+)
+
+/** The old quality-chip deformation: wide and short at the strike, springing through rest. */
+internal fun searchKickScaleX(amount: Float): Float = 1f + amount * SearchKickStretch
+
+internal fun searchKickScaleY(amount: Float): Float = 1f - amount * SearchKickSquash
+
+/** A zero-at-each-end arc for the icon's small turn while the button changes seats. */
+internal fun searchTravelArc(progress: Float): Float {
+    val p = progress.coerceIn(0f, 1f)
+    return 4f * p * (1f - p)
+}
+
+/** Places the real child, so hit and accessibility bounds leave with the folder chip. */
+private fun Modifier.slideOutToStart(progress: () -> Float): Modifier = layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    layout(placeable.width, placeable.height) {
+        val p = progress().coerceIn(0f, 1f)
+        placeable.placeRelative(x = -(placeable.width * p).roundToInt(), y = 0)
     }
 }
 
@@ -1320,23 +1249,15 @@ private fun Note(text: String) {
 }
 
 @Composable
-private fun FilterEmpty(filter: LibFilter) {
+private fun SearchEmpty() {
     val colors = LocalFlickColors.current
     Column(Modifier.fillMaxWidth().padding(vertical = 26.dp)) {
         Text(
-            // Only a quality chip can empty a library that is not itself empty, so
-            // "All" never reaches here.
-            text = stringResource(
-                if (filter == LibFilter.FULL_HD) {
-                    R.string.library_empty_filter_1080p
-                } else {
-                    R.string.library_empty_filter_4k
-                },
-            ),
+            text = stringResource(R.string.library_empty_search_title),
             style = FlickText.titleMedium.copy(color = colors.onSurface),
         )
         Text(
-            text = stringResource(R.string.library_empty_filter_body),
+            text = stringResource(R.string.library_empty_search_body),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
             modifier = Modifier.padding(top = 6.dp),
         )
@@ -1386,7 +1307,7 @@ private fun FolderHidden(name: String, onSelectMore: () -> Unit) {
     )
 }
 
-/** The folder is there; nothing in it survived the quality chip. */
+/** The folder is there but its scoped list is now empty. */
 @Composable
 private fun FolderEmpty(name: String) {
     val colors = LocalFlickColors.current
@@ -1451,7 +1372,7 @@ private class EmptyLatch(var shown: Boolean = false)
  * [showing] is the answer the screen is already giving, and it is what keeps the empty
  * state up while a re-query is in flight: refreshing from it raises [loading], and
  * falling through to the grid for the length of that query would replace the whole
- * window with a header, a link pill and an "All (0)" chip row — and then replace it back
+ * window with a header, a link pill and the library controls — and then replace it back
  * the moment MediaStore confirms there is still nothing. A library that has never
  * resolved has no answer to hold, which is the one case the grid's loading note is for.
  * Denied access never waits on a query: none is run.
@@ -1632,21 +1553,15 @@ private val StaggerRiseDp = 18.dp
 // a tile the lazy list recomposes on scroll has not just arrived.
 private const val StaggerWindowMs = 1_200L
 
-// The reflow the grid answers a chip tap with. Tighter and shallower than the entrance
-// on purpose — it is a rearrangement the user just asked for, not an arrival, and the
-// tiles that survived the switch are already sliding under it.
-private const val ReflowStepMs = 20L
-private const val ReflowCapIndex = 8
-private const val ReflowFromAlpha = 0.35f
-private const val ReflowFromScale = 0.94f
-private const val ReflowWindowMs = 700L
+private val SearchControlSize = 48.dp
+private val SearchControlGap = 8.dp
+private const val FolderClosedWidthFraction = 0.75f
 
-// The chip kick. The stretch is wider than the squash is short so the pill reads as
-// pulled rather than merely scaled, and the spring's overshoot through zero supplies
-// the counter-pose without a second animation.
-private const val ChipPopStretch = 0.10f
-private const val ChipPopSquash = 0.08f
-
-// Press wash on one chip. Sits just above the pill it has to read against, and low
-// enough that the label never loses contrast against either fill.
-private const val ChipPressWashAlpha = 0.18f
+// The same deformation the removed quality chips used. The small lift and the icon's
+// zero-at-rest travel arc make the seat change legible without turning it into a flourish.
+private const val SearchKickStretch = 0.10f
+private const val SearchKickSquash = 0.08f
+private val SearchKickLift = 2.dp
+private const val SearchKickTurnDegrees = 5f
+private val SearchTravelLift = 1.dp
+private const val SearchTravelTurnDegrees = 10f

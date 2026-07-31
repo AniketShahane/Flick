@@ -45,6 +45,36 @@ enum class PairErrorKind {
     CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
     TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED, ENDPOINT_CHANGED,
 }
+
+/** A secret-free, monotonic result signal for a manual pairing form. */
+internal data class ManualPairAttemptEvent(
+    val startedGeneration: Long = 0L,
+    val terminalGeneration: Long? = null,
+)
+
+/**
+ * Keeps a manual form from mistaking a cancelled older attempt for its own result.
+ *
+ * The published [ManualPairAttemptEvent] changes even when the user sees the same
+ * [PairErrorKind] twice, so a StateFlow collector cannot conflate away that outcome.
+ */
+internal class ManualPairAttemptLedger {
+    private var nextGeneration = 0L
+    var event: ManualPairAttemptEvent = ManualPairAttemptEvent()
+        private set
+
+    fun begin(): Long {
+        val generation = ++nextGeneration
+        event = ManualPairAttemptEvent(startedGeneration = generation)
+        return generation
+    }
+
+    fun complete(generation: Long): Boolean {
+        if (event.startedGeneration != generation) return false
+        event = event.copy(terminalGeneration = generation)
+        return true
+    }
+}
 /**
  * [host]/[port] are the QR's untrusted prefill hint — never dialed without a code.
  *
@@ -63,9 +93,9 @@ data class PendingPairLaunch(
 /**
  * The library and everything the folder scope derives from it, published as one value.
  *
- * They travel together because they describe each other: the chip row states a count of
- * [scoped], the chooser states a count per folder, and a screen that read those from
- * separate emissions could paint one library's tally over another library's tiles.
+ * They travel together because they describe each other: the selected folder and its
+ * scoped list must come from one read, or a screen could show one folder name above
+ * another folder's media while the library refreshes.
  *
  * [items] is the whole library and stays that way — the access-level empty states are
  * decided from it, so a chosen folder can never be mistaken for a gallery Flick was
@@ -163,6 +193,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var subtitleJob: Job? = null
     private var subtitleOwnerUri: Uri? = null
     private val pairingGate = PairingAttemptGate()
+    private val manualPairAttemptLedger = ManualPairAttemptLedger()
     private val pairCodeReset = PairCodeReset()
     private val castGate = CastGenerationGate()
     private val libraryGate = MediaLibraryLoadGate()
@@ -199,6 +230,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _connectedTv = MutableStateFlow(store.last()?.let { PairedTv(it.name, it.host, it.port, it.tvId) }); val connectedTv = _connectedTv.asStateFlow()
     private val _pairTarget = MutableStateFlow<DiscoveredTv?>(null); val pairTarget = _pairTarget.asStateFlow()
     private val _pairError = MutableStateFlow<PairErrorKind?>(null); val pairError = _pairError.asStateFlow()
+    private val _manualPairAttempt = MutableStateFlow(ManualPairAttemptEvent())
+    internal val manualPairAttempt: StateFlow<ManualPairAttemptEvent> = _manualPairAttempt.asStateFlow()
     private val _connectFromLibrary = MutableStateFlow(false); val connectFromLibrary = _connectFromLibrary.asStateFlow()
     private val _castingItem = MutableStateFlow<MediaItem?>(null); val castingItem = _castingItem.asStateFlow()
     private val _castStart = MutableStateFlow<CastStartState>(CastStartState.Idle); val castStart = _castStart.asStateFlow()
@@ -523,8 +556,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
-    fun submitTvDisplayedPair(eventId: Long, host: String, port: String, code: String) {
-        if (eventId != 0L && _pendingPairLaunch.value?.eventId != eventId) return
+    fun submitTvDisplayedPair(
+        eventId: Long,
+        host: String,
+        port: String,
+        code: String,
+        manualSubmission: Boolean = false,
+    ): Long? {
+        if (eventId != 0L && _pendingPairLaunch.value?.eventId != eventId) return null
         // The code itself is never logged, at any level: a 4-digit secret is trivially
         // recovered from a hash, so only its length is recorded.
         FlickLog.i("pair", "submit host=$host port=$port codeLen=${code.length}")
@@ -534,12 +573,25 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             !PairLaunch.isCode(code) -> "code"
             else -> null
         }
-        if (reject != null) { FlickLog.w("pair", "submit rejected reason=$reject"); _pairError.value = PairErrorKind.INVALID_ENTRY; return }
-        val attempt = beginPairingAttempt(); _pairError.value = null
-        pairingJob = scope.launch { runPairing(attempt, host, port.toInt(), code) }
+        if (reject != null) {
+            FlickLog.w("pair", "submit rejected reason=$reject")
+            _pairError.value = PairErrorKind.INVALID_ENTRY
+            return null
+        }
+        val attempt = beginPairingAttempt()
+        val manualGeneration = if (manualSubmission) beginManualPairAttempt() else null
+        _pairError.value = null
+        pairingJob = scope.launch { runPairing(attempt, host, port.toInt(), code, manualGeneration) }
+        return manualGeneration
     }
 
-    private suspend fun runPairing(attempt: Long, host: String, port: Int, code: String) {
+    private suspend fun runPairing(
+        attempt: Long,
+        host: String,
+        port: Int,
+        code: String,
+        manualGeneration: Long? = null,
+    ) {
         val legacyAtExactHost = store.legacyForHost(host)
         val first = control.pair(host, port, deviceLabel, code)
         // Refused before a single byte of the code left the phone is the dead-port
@@ -551,11 +603,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         FlickLog.i("pair", "result=${result.javaClass.simpleName}")
         if (!pairingGate.isCurrent(attempt)) return
         when (result) {
-            is ControlClient.Result.Paired ->
+            is ControlClient.Result.Paired -> {
                 persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)?.let { pairing ->
                     _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
                     clearPendingLaunch(); _pairTarget.value = null; _route.value = Route.Library
                 }
+                finishManualPairAttempt(manualGeneration)
+            }
             is ControlClient.Result.PairedBusy -> {
                 val pairing = persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)
                 if (pairing != null) {
@@ -564,15 +618,46 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     if (PairResultPolicy.clearCode(result)) clearEnteredCode()
                     publishBusyFailure()
                 }
+                finishManualPairAttempt(manualGeneration)
             }
-            is ControlClient.Result.Denied -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); applyDenied(result.reason) }
-            ControlClient.Result.UpdateRequired -> _pairError.value = PairErrorKind.UPDATE_REQUIRED
-            is ControlClient.Result.Unreachable -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.UNREACHABLE }
-            is ControlClient.Result.TimedOut -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.TIMED_OUT }
-            is ControlClient.Result.RejectedByTv -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.REJECTED }
-            is ControlClient.Result.ProtocolError -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); _pairError.value = PairErrorKind.INVALID_ENTRY }
-            ControlClient.Result.Busy -> { if (PairResultPolicy.clearCode(result)) clearEnteredCode(); publishBusyFailure() }
-            else -> _pairError.value = PairErrorKind.INVALID_ENTRY
+            is ControlClient.Result.Denied -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                applyDenied(result.reason)
+                finishManualPairAttempt(manualGeneration)
+            }
+            ControlClient.Result.UpdateRequired -> {
+                _pairError.value = PairErrorKind.UPDATE_REQUIRED
+                finishManualPairAttempt(manualGeneration)
+            }
+            is ControlClient.Result.Unreachable -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                _pairError.value = PairErrorKind.UNREACHABLE
+                finishManualPairAttempt(manualGeneration)
+            }
+            is ControlClient.Result.TimedOut -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                _pairError.value = PairErrorKind.TIMED_OUT
+                finishManualPairAttempt(manualGeneration)
+            }
+            is ControlClient.Result.RejectedByTv -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                _pairError.value = PairErrorKind.REJECTED
+                finishManualPairAttempt(manualGeneration)
+            }
+            is ControlClient.Result.ProtocolError -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                _pairError.value = PairErrorKind.INVALID_ENTRY
+                finishManualPairAttempt(manualGeneration)
+            }
+            ControlClient.Result.Busy -> {
+                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
+                publishBusyFailure()
+                finishManualPairAttempt(manualGeneration)
+            }
+            else -> {
+                _pairError.value = PairErrorKind.INVALID_ENTRY
+                finishManualPairAttempt(manualGeneration)
+            }
         }
     }
 
@@ -867,6 +952,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _pairCodeRevision = MutableStateFlow(0L); val pairCodeRevision = _pairCodeRevision.asStateFlow()
     private fun clearEnteredCode() { _pairCodeRevision.value = pairCodeReset.clear() }
     private fun beginPairingAttempt(): Long { invalidatePairingAttempt(); return pairingGate.begin() }
+    private fun beginManualPairAttempt(): Long = manualPairAttemptLedger.begin().also {
+        _manualPairAttempt.value = manualPairAttemptLedger.event
+    }
+    private fun finishManualPairAttempt(generation: Long?) {
+        if (generation != null && manualPairAttemptLedger.complete(generation)) {
+            _manualPairAttempt.value = manualPairAttemptLedger.event
+        }
+    }
     private fun invalidatePairingAttempt() { pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; control.cancelUnauthenticated() }
     private class CastStartupFailure(val code: String) : RuntimeException()
 

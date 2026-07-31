@@ -86,18 +86,13 @@
     <string name="library_paused_pill">Paused · %1$s</string>
     <string name="library_buffering_pill">Buffering · %1$s</string>
     <string name="library_ready_pill">Ready · %1$s</string>
-    <!-- Only "All" carries a count: a Dolby Vision verdict needs a per-file probe and a
-         4K count would imply the same precision. -->
-    <string name="library_filter_all">All %1$d</string>
-    <string name="library_filter_dolby_vision">Dolby Vision</string>
-    <string name="library_filter_4k">4K</string>
-    <!-- Both render in the mono eyebrow style, which applies no transform and is
-         tracked +0.13em — the copy has to arrive uppercase. -->
-    <string name="library_scanning_dv">CHECKING FOR DOLBY VISION</string>
     <string name="library_loading">READING YOUR LIBRARY…</string>
-    <string name="library_empty_filter_dv">No Dolby Vision here yet</string>
-    <string name="library_empty_filter_4k">No 4K here yet</string>
-    <string name="library_empty_filter_body">Tap All to see everything on this phone.</string>
+    <string name="library_search_open">Search videos</string>
+    <string name="library_search_placeholder">Search filenames</string>
+    <string name="library_search_clear">Clear search</string>
+    <string name="library_search_close">Close search</string>
+    <string name="library_empty_search_title">No matching videos</string>
+    <string name="library_empty_search_body">Try another filename or clear your search.</string>
     <string name="library_tile_badge">%1$s %2$s</string>
 
     <!-- Folder scope. Flick lists one folder at a time so a gallery full of clips and
@@ -309,12 +304,6 @@
     <!-- Shell chrome that outlives any one route: the live-cast dock above the nav. -->
     <string name="a11y_now_playing_dock">Now playing %1$s on %2$s</string>
     <string name="a11y_open_remote">Open the remote</string>
-
-    <!-- ===== Library quality chips ===== -->
-    <!-- Library quality chips. The label is the bucket MediaItem.resolutionLabel
-         produces, so it is the same token the tile badge shows. -->
-    <string name="library_filter_1080p">1080p</string>
-    <string name="library_empty_filter_1080p">No 1080p here yet</string>
 
     <!-- ===== QR scanner ===== -->
     <!-- S1 · Pairing card actions. -->

@@ -339,19 +339,15 @@ class FlickColorsTest {
         }
     }
 
-    // --- the floating chrome: the nav pill and the Now-Playing dock ---
+    // --- generic floating chrome: light navigation and the Now-Playing dock ---
 
     /**
-     * `glass` is the one surface role a palette listing cannot state honestly. It is
-     * translucent, so the colour actually drawn does not exist until it is drawn over
-     * something — and that is how it stayed a grey slate through an entire dark-mode
-     * retune with nothing failing. Every rule above reads an opaque role; not one of them
-     * could see this.
+     * `glass` is the generic floating-surface role. It is translucent, so the colour
+     * actually drawn does not exist until it is drawn over something. Dark navigation has
+     * its own blue glass treatment and is deliberately measured in FlickBottomNavStyleTest.
      *
-     * What it is drawn over is a scrolling poster grid, so each rule below is measured
-     * twice: over the page, and over the most extreme still that can be behind it. That
-     * extreme is white under a dark glass and black under a light one — in each case the
-     * backdrop that drags the fill TOWARD the ink standing on it.
+     * The dock can sit over artwork, so each rule below is measured twice: over the page,
+     * and over the extreme backdrop that drags the fill toward its ink.
      */
     private fun FlickColors.glassOnPage() = glass.over(canvas)
 
@@ -398,38 +394,16 @@ class FlickColorsTest {
     }
 
     /**
-     * Both themes' floating chrome carries the brand. This is the rule whose absence let
-     * the dark pill ship as a grey: it measured 28 channel steps against the light glass's
-     * 48 and nothing anywhere failed. Both now sit at 48.
+     * Both themes' generic floating chrome carries the brand. This protects the dock and
+     * the light navigation treatment; dark navigation uses its separately tested blue tint.
      */
     @Test fun theFloatingGlassCarriesTheBrandInBothThemes() {
         for ((name, c) in palettes) {
             val spread = c.glass.channelSpread()
             assertTrue(
-                "$name: glass ${c.glass.hex()} carries $spread channel steps of colour — the nav " +
-                    "pill and the Now-Playing dock float over every surface this app has, and " +
-                    "this is the one role that reads as a grey slate rather than as Flick",
+                "$name: glass ${c.glass.hex()} carries $spread channel steps of colour — the " +
+                    "Now-Playing dock and light navigation should not read as grey slate",
                 spread >= 40,
-            )
-        }
-    }
-
-    /**
-     * …and stays the quieter of the two materials, because the travelling selection fill is
-     * drawn ON it. Light mode is unambiguous about which one is loud: a 19% glass under a
-     * 92% fill.
-     *
-     * Luminance contrast alone does not catch the inversion — a candidate for this change
-     * cleared every ratio in this file at 76% chroma, and would have put a saturated blue
-     * fill on a more saturated blue pill.
-     */
-    @Test fun theGlassStaysQuieterThanTheFillThatTravelsOnIt() {
-        for ((name, c) in palettes) {
-            assertTrue(
-                "$name: glass is ${(c.glass.relativeChroma() * 100).toInt()}% chroma against a " +
-                    "${(c.primary.relativeChroma() * 100).toInt()}% selection fill — the fill has " +
-                    "to be the loud one, or the nav bar reads as blue on blue",
-                c.glass.relativeChroma() < c.primary.relativeChroma(),
             )
         }
     }
@@ -453,17 +427,17 @@ class FlickColorsTest {
         for ((name, s) in surfaces) {
             val step = contrast(drawn, s)
             assertTrue(
-                "dark: the drawn glass ${drawn.hex()} is $step from $name ${s.hex()} — the pill " +
-                    "and the dock stop reading as floating chrome",
+                "dark: the drawn glass ${drawn.hex()} is $step from $name ${s.hex()} — the dock " +
+                    "stops reading as floating chrome",
                 step >= 1.30f,
             )
         }
     }
 
     /**
-     * Every ink the two glass components put on it, held on the page AND over the worst
-     * still. `onSurface` and `onSurfaceDim` are the nav labels and the dock's title and
-     * subtitle, so they are text at 4.5; `playheadLo` is the dock's play key, a graphic at 3.
+     * Every ink the generic dark glass component puts on it, held on the page AND over the
+     * worst still. `onSurface` and `onSurfaceDim` are the dock's title and subtitle, so
+     * they are text at 4.5; `playheadLo` is the dock's play key, a graphic at 3.
      *
      * That third entry was `spark` until the action colour moved. The dock's key had to
      * follow the MEDIA roles rather than the accent, because the key morphs into the
@@ -504,16 +478,6 @@ class FlickColorsTest {
                 )
             }
         }
-    }
-
-    /** …and the selection fill reads as an object on the glass, not a lighter patch of it. */
-    @Test fun theTravellingFillReadsAsAnObjectOnTheDarkGlass() {
-        val step = contrast(DarkFlickColors.primary, DarkFlickColors.glassOnPage())
-        assertTrue(
-            "dark: the nav selection fill is $step from the glass it travels across, under the " +
-                "3:1 a UI component needs against its own background",
-            step >= 3.0f,
-        )
     }
 
     /**

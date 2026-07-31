@@ -100,8 +100,8 @@ sealed interface LibraryScope {
 
 /**
  * Folder scoping, kept pure so every rule is unit testable: `MediaItem` holds an
- * `android.net.Uri` and cannot be built on the JVM, so — as in `LibraryFilterPolicy` —
- * the rules read the columns they need through projections instead of whole items.
+ * `android.net.Uri` and cannot be built on the JVM, so the rules read the columns they
+ * need through projections instead of whole items.
  *
  * Nothing here consults `Build.VERSION`. It does not have to: below API 29 no row ever
  * carries a relative path, so [derive] returns nothing and [chooserOffered] hides the

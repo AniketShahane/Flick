@@ -186,6 +186,16 @@ object FlickIcons {
     val ChevronDown: ImageVector = strokeIcon("ChevronDown", width = 2f) {
         moveTo(5f, 8.5f); lineTo(12f, 15.5f); lineTo(19f, 8.5f)
     }
+
+    val Search: ImageVector = strokeIcon("Search", width = 2f) {
+        circle(10.5f, 10.5f, 5.8f)
+        moveTo(14.8f, 14.8f); lineTo(20f, 20f)
+    }
+
+    val Close: ImageVector = strokeIcon("Close", width = 2f) {
+        moveTo(6.5f, 6.5f); lineTo(17.5f, 17.5f)
+        moveTo(17.5f, 6.5f); lineTo(6.5f, 17.5f)
+    }
 }
 
 // --- builders ---------------------------------------------------------------

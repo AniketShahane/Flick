@@ -65,6 +65,7 @@ import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.ManualPairAttemptEvent
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.net.PairedTv
@@ -94,6 +95,7 @@ fun ConnectScreen(controller: FlickController) {
     val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
     val codeRevision by controller.pairCodeRevision.collectAsState()
     val connection by controller.connection.collectAsState()
+    val manualPairAttempt by controller.manualPairAttempt.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
     val manualLabel = stringResource(R.string.connect_manual)
@@ -331,10 +333,18 @@ fun ConnectScreen(controller: FlickController) {
                 initialPort = launch?.port?.toString() ?: PairLaunch.DEFAULT_CONTROL_PORT.toString(),
                 fromQr = launch?.host != null && launch.port != null,
                 error = pairErrorText,
-                connecting = connecting,
-                awaitingTvConfirmation = awaitingTvConfirmation,
+                connection = connection,
+                manualPairAttempt = manualPairAttempt,
                 codeRevision = codeRevision,
-                onConnect = { host, port, code -> controller.submitTvDisplayedPair(launchId ?: 0L, host, port, code) },
+                onConnect = { host, port, code ->
+                    controller.submitTvDisplayedPair(
+                        eventId = launchId ?: 0L,
+                        host = host,
+                        port = port,
+                        code = code,
+                        manualSubmission = true,
+                    )
+                },
                 // Whose dismissal this is, settled on the frame the exit starts. An
                 // INVALID_QR landing during a user's own exit runs `manual.close()`, and
                 // read any later this would call that close the app's — and skip the
@@ -787,10 +797,10 @@ private fun ManualSheet(
     initialPort: String,
     fromQr: Boolean,
     error: String?,
-    connecting: Boolean,
-    awaitingTvConfirmation: Boolean,
+    connection: ConnectionStatus,
+    manualPairAttempt: ManualPairAttemptEvent,
     codeRevision: Long,
-    onConnect: (String, String, String) -> Unit,
+    onConnect: (String, String, String) -> Long?,
     onLeaving: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -798,17 +808,33 @@ private fun ManualSheet(
     var host by remember { mutableStateOf(initialHost) }
     var port by remember { mutableStateOf(initialPort) }
     var code by remember { mutableStateOf("") }
+    var attempt by remember { mutableStateOf(ManualPairAttemptState()) }
     val codeFocus = remember { FocusRequester() }
     LaunchedEffect(codeRevision) { code = "" }
+    LaunchedEffect(manualPairAttempt) {
+        attempt = attempt.onControllerState(manualPairAttempt)
+    }
     LaunchedEffect(Unit) { runCatching { codeFocus.requestFocus() } }
     // Stay open — the connect result (spinner → error) shows here; a successful connect
     // changes the route, which unmounts the sheet. One lambda for the button and the
     // keyboard's action key, so neither can submit what the other would have refused.
     val submit: () -> Unit = {
-        if (canSubmitManualPair(host, port, code, connecting)) onConnect(host.trim(), port, code)
+        if (canSubmitManualPair(host, port, code, connecting = attempt.submitted)) {
+            // The controller returns its monotonic generation synchronously. This makes the
+            // local token authoritative before Compose can observe a replacement socket's
+            // DISCONNECTED pulse, and distinguishes repeated identical PairErrorKinds.
+            onConnect(host.trim(), port, code)?.let { generation ->
+                attempt = attempt.begin(generation)
+            }
+        }
     }
     BottomSheet(
-        onDismiss = onDismiss,
+        onDismiss = {
+            // The exit may remain composed long enough to animate. Retire the local token
+            // at the user's dismissal rather than leaving an invisible attempt behind.
+            attempt = ManualPairAttemptState()
+            onDismiss()
+        },
         visible = visible,
         onLeaving = onLeaving,
         // Pinned above the scroll: this form focuses its LAST field on arrival, so the
@@ -825,20 +851,23 @@ private fun ManualSheet(
         footer = {
             // Pinned with the action: the sheet is held open through the attempt so the
             // result shows, which it cannot do from under a raised keyboard.
-            if (error != null) {
+            // An error that was already on the screen belongs to an older attempt. Keep
+            // it from sitting beside this form's newly-owned progress until a new outcome
+            // releases the local token.
+            if (error != null && !attempt.submitted) {
                 Text(
                     error,
                     style = FlickText.bodySmall.copy(color = colors.trouble),
                     modifier = Modifier.padding(bottom = 14.dp),
                 )
             }
-            if (connecting) {
-                PairingProgress(awaitingTvConfirmation)
+            if (manualPairShowsProgress(attempt)) {
+                PairingProgress(manualPairAwaitsTvConfirmation(attempt, connection))
             } else {
                 FlickPrimaryButton(
                     text = stringResource(R.string.manual_connect),
                     onClick = submit,
-                    enabled = canSubmitManualPair(host, port, code, connecting),
+                    enabled = canSubmitManualPair(host, port, code, connecting = attempt.submitted),
                 )
             }
         },
@@ -916,16 +945,15 @@ private fun ManualSheet(
 }
 
 /**
- * A container and an edge for the manual form's fields, which had neither.
+ * An edge for the manual form's fields without introducing another surface inside the
+ * sheet. The field container is the sheet's own `surfaceRaised` in every state.
  *
  * Material's outlined field is transparent and strokes itself in `outline`, and on this
  * palette that stroke measures 1.43:1 on the light sheet and 1.76:1 on the dark one —
  * under the 3:1 a control owes the surface behind it, and the whole of why three inputs
- * read as loose lines of text. The fill is `surfaceRaisedAlt`, the tonal step the pairing
- * code's own cells stand on, and the resting stroke is `onSurfaceFaint`: the quietest ink
- * in the set that still clears the floor, at 4.18:1 against the sheet outside and 3.60:1
- * against the fill inside in light, 6.01:1 and 5.14:1 in dark. It is an ink role doing a
- * stroke's job because no outline role in this palette reaches 3:1 on either theme.
+ * read as loose lines of text. The resting stroke remains `onSurfaceFaint`, the quietest
+ * ink in the set that still clears the floor. It is an ink role doing a stroke's job
+ * because no outline role in this palette reaches 3:1 on either theme.
  *
  * Focus buys a colour AND a weight. Material draws the resting stroke at 1 dp and the
  * focused one at 2 dp and exposes neither thickness to a call site, so the step is fixed
@@ -939,8 +967,12 @@ private fun manualFieldColors(): TextFieldColors {
     return OutlinedTextFieldDefaults.colors(
         focusedTextColor = colors.onSurface,
         unfocusedTextColor = colors.onSurface,
-        focusedContainerColor = colors.surfaceRaisedAlt,
-        unfocusedContainerColor = colors.surfaceRaisedAlt,
+        disabledTextColor = colors.onSurfaceDim,
+        errorTextColor = colors.onSurface,
+        focusedContainerColor = colors.surfaceRaised,
+        unfocusedContainerColor = colors.surfaceRaised,
+        disabledContainerColor = colors.surfaceRaised,
+        errorContainerColor = colors.surfaceRaised,
         cursorColor = colors.primary,
         focusedBorderColor = colors.primary,
         unfocusedBorderColor = colors.onSurfaceFaint,

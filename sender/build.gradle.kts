@@ -158,6 +158,7 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation(libs.androidx.material3.expressive)
     implementation(libs.androidx.activity.compose)
+    implementation("dev.chrisbanes.haze:haze:1.7.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Embedded LAN HTTP media server (Ktor 3.x, CIO engine — no Netty).

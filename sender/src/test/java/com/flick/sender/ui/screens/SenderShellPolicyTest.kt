@@ -185,7 +185,7 @@ class SenderShellPolicyTest {
 
     // The empty state's own Refresh raises `loading` on a library that is already empty.
     // Falling through to the grid there flashes its entire chrome — header, link pill,
-    // an "All (0)" chip row — and snaps back the moment the query returns nothing new.
+    // the library controls — and snaps back the moment the query returns nothing new.
     @Test fun theEmptyLibraryHoldsItsGroundWhileARequeryIsInFlight() {
         assertTrue(libraryEmptyShown(MediaAccess.FULL, itemCount = 0, loading = false, showing = false))
         assertTrue(libraryEmptyShown(MediaAccess.FULL, itemCount = 0, loading = true, showing = true))

@@ -55,14 +55,12 @@ data class MediaItem(
 }
 
 /**
- * MediaStore pixel dimensions → the resolution bucket the tile badges, the detail
- * chips and the library's two quality filters all match on. Extracted from [MediaItem]
- * so the filters' exact-string dependency on [FourKLabel] and [FullHdLabel] is
- * testable without a `Uri`.
+ * MediaStore pixel dimensions → the resolution label shown on tile and detail badges.
+ * Extracted from [MediaItem] so the boundary behavior is testable without a `Uri`.
  *
  * No dimensions at all returns [UnknownResolutionLabel] rather than falling through to
  * the smallest bucket: the bottom of a ladder is a verdict, and nothing here measured
- * anything. It matches neither quality filter for the same reason.
+ * anything.
  */
 fun resolutionLabelFor(width: Int, height: Int): String = when {
     width <= 0 && height <= 0 -> UnknownResolutionLabel

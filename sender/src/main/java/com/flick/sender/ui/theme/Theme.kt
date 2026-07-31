@@ -18,6 +18,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -188,14 +189,18 @@ private fun flickColorScheme(
 )
 
 /**
- * Frosted treatment for the floating bottom nav. Compose cannot sample the backdrop
- * without a new dependency, and `Modifier.blur` blurs the content rather than what
- * is behind it — so the glass is approximated with an opaque-enough tint, a raking
- * sheen and a bright hairline.
+ * Glass treatment shared by the floating chrome. [backdropEffect] is reserved for a
+ * real background effect, such as the dark navigation bar's Haze blur; it is inserted
+ * inside the rounded clip after the shadow and before the material's own tints. The
+ * default remains the existing layered glass used by light navigation and the dock.
  */
 fun Modifier.flickGlass(
     colors: FlickColors,
     shape: Shape = RoundedCornerShape(FlickCorners.nav),
+    fill: Color = colors.glass,
+    underlay: Color = Color.Transparent,
+    showSheen: Boolean = true,
+    backdropEffect: Modifier? = null,
 ): Modifier = this
     .shadow(
         elevation = 20.dp,
@@ -208,10 +213,22 @@ fun Modifier.flickGlass(
         ambientColor = if (colors.isLight) NavShadow else NavShadowOnNight,
         spotColor = if (colors.isLight) NavShadow else NavShadowOnNight,
     )
-    .background(color = colors.glass, shape = shape)
-    .background(
-        brush = if (colors.isLight) FlickGradients.navSheen else FlickGradients.navSheenDark,
-        shape = shape,
+    .then(
+        backdropEffect?.let { Modifier.clip(shape).then(it) } ?: Modifier,
+    )
+    .then(
+        if (underlay.alpha > 0f) Modifier.background(color = underlay, shape = shape) else Modifier,
+    )
+    .background(color = fill, shape = shape)
+    .then(
+        if (showSheen) {
+            Modifier.background(
+                brush = if (colors.isLight) FlickGradients.navSheen else FlickGradients.navSheenDark,
+                shape = shape,
+            )
+        } else {
+            Modifier
+        },
     )
     .border(width = 1.dp, color = colors.glassBorder, shape = shape)
 

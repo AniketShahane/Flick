@@ -1,8 +1,5 @@
 package com.flick.sender.media
 
-import com.flick.sender.model.resolutionLabelFor
-import com.flick.sender.ui.screens.LibFilter
-import com.flick.sender.ui.screens.LibraryFilterPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,7 +12,6 @@ class LibraryFoldersTest {
         val id: Long,
         val path: String?,
         val bucketId: Long?,
-        val label: String = resolutionLabelFor(3840, 2160),
     )
 
     // Bucket ids as MediaStore hands them out: one per LEAF folder, and none at all for a
@@ -30,12 +26,12 @@ class LibraryFoldersTest {
     // MediaStore placed nowhere at all.
     private val library = listOf(
         Row(1L, "Movies/", movies),
-        Row(2L, "DCIM/Camera/", camera, resolutionLabelFor(1920, 1080)),
-        Row(3L, "Movies/", movies, resolutionLabelFor(1920, 1080)),
+        Row(2L, "DCIM/Camera/", camera),
+        Row(3L, "Movies/", movies),
         Row(4L, "Movies/Marvel/", marvel),
-        Row(5L, "Movies/Marvel/Phase 4/", phase4, resolutionLabelFor(1920, 1080)),
+        Row(5L, "Movies/Marvel/Phase 4/", phase4),
         Row(6L, "Movies/Marvel/Phase 4/", phase4),
-        Row(7L, null, null, resolutionLabelFor(1920, 1080)),
+        Row(7L, null, null),
     )
 
     private fun folders(items: List<Row> = library) =
@@ -256,50 +252,34 @@ class LibraryFoldersTest {
         assertTrue(LibraryFolders.chooserOffered(folders(), LibraryScope.All, library.size))
     }
 
-    // The chip row states "All %d" for the set the folder left behind, so the number and
-    // the tiles under it have to come from the same list in the same order.
-    @Test fun theAllChipCountsExactlyWhatTheFolderLeftToRender() {
+    // The tile list comes directly from the folder scope, preserving the source order.
+    @Test fun aFolderScopeKeepsItsTilesInTheOriginalOrder() {
         val scoped = LibraryFolders.scoped(library, at("Movies/Marvel"), Row::path, Row::bucketId)
         assertEquals(3, scoped.size)
-        assertEquals(
-            scoped.map { it.id },
-            LibraryFilterPolicy.apply(scoped, LibFilter.ALL, Row::label).map { it.id },
-        )
+        assertEquals(listOf(4L, 5L, 6L), scoped.map { it.id })
     }
 
-    // A quality chip can still empty a folder that is genuinely there — the one case the
-    // folder-empty copy speaks for, and never the missing folder's case. The two are told
-    // apart by the scope, not by the emptiness they share.
-    @Test fun aFolderAQualityChipEmptiedIsStillNotAFolderThatIsGone() {
+    // A present-but-empty scope and a missing folder are distinct UI states. The folder
+    // chooser normally prevents the former, but the distinction remains important when a
+    // provider changes between reads.
+    @Test fun aPresentFolderIsStillDistinctFromAFolderThatIsGone() {
         val clips = listOf(
-            Row(9L, "Clips/", 21L, resolutionLabelFor(1280, 720)),
-            Row(10L, "Clips/", 21L, resolutionLabelFor(640, 480)),
+            Row(9L, "Clips/", 21L),
+            Row(10L, "Clips/", 21L),
         )
         val present = LibraryFolders.scope(chose("Clips"), folders(clips), resolved = true)
         val gone = LibraryFolders.scope(chose("Holiday"), folders(clips), resolved = true)
         assertEquals(at("Clips"), present)
         assertEquals(LibraryScope.Missing("Holiday"), gone)
-        // The folder that is there lists its files, and only the chip empties them…
         val scoped = LibraryFolders.scoped(clips, present, Row::path, Row::bucketId)
         assertEquals(listOf(9L, 10L), scoped.map { it.id })
-        assertTrue(LibraryFilterPolicy.apply(scoped, LibFilter.FOUR_K, Row::label).isEmpty())
-        // …while the folder that is gone lists nothing before any chip is consulted.
         assertEquals(emptyList<Long>(), LibraryFolders.scoped(clips, gone, Row::path, Row::bucketId).map { it.id })
     }
 
-    // Quality filtering must not be able to reach past the folder into the rest of the
-    // library: the 4K file in Marvel is not in DCIM, chip or no chip.
-    @Test fun aChipNeverReachesOutsideTheFolderTheLibraryIsScopedTo() {
+    @Test fun aFolderScopeNeverReachesOutsideTheChosenFolder() {
         val scoped = LibraryFolders.scoped(library, at("DCIM"), Row::path, Row::bucketId)
-        assertTrue(LibraryFilterPolicy.apply(scoped, LibFilter.FOUR_K, Row::label).isEmpty())
-        assertEquals(
-            listOf(1L, 4L, 6L),
-            LibraryFilterPolicy.apply(
-                LibraryFolders.scoped(library, at("Movies"), Row::path, Row::bucketId),
-                LibFilter.FOUR_K,
-                Row::label,
-            ).map { it.id },
-        )
+        assertEquals(listOf(2L), scoped.map { it.id })
+        assertEquals(listOf(1L, 3L, 4L, 5L, 6L), LibraryFolders.scoped(library, at("Movies"), Row::path, Row::bucketId).map { it.id })
     }
 
     @Test fun anEmptyLibraryDerivesNothingAndScopesToNothing() {

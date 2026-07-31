@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -73,9 +72,6 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 
-/** A long folder name shortens rather than pushing the quality chips off their row. */
-private val FolderChipMaxWidth = 168.dp
-
 // One step per level of nesting, capped so a deep name keeps a readable width inside a
 // sheet that is already 20 dp in from both phone edges: four steps take 64 dp, which
 // leaves the title around 210 dp — still a couple of dozen characters at bodyMedium.
@@ -105,17 +101,19 @@ private val FolderDisclosureGlyph = 18.dp
 private val FolderChoiceDotSize = 8.dp
 
 /**
- * The library's scope control, seated beside the quality chips. It carries a chevron
- * and answers to [Role.Button], not [Role.Tab]: the chips are one exclusive axis and
- * this is a menu that opens over them, so it must not be announced as a fourth seat on
- * that axis.
+ * The library's scope control. It carries a chevron and answers to [Role.Button], not
+ * [Role.Tab], because it opens a chooser rather than selecting a value in an axis.
  *
- * Unscoped it advertises the action rather than restating "All videos", which the chip
- * beside it already implies; scoped it names the folder, because that name is the one
- * fact about the library the rest of the screen no longer states.
+ * Unscoped it advertises the action rather than restating "All videos"; scoped it names
+ * the folder, because that name is the one fact about the library the rest of the screen
+ * no longer states.
  */
 @Composable
-fun LibraryFolderChip(scope: LibraryScope, onClick: () -> Unit) {
+fun LibraryFolderChip(
+    scope: LibraryScope,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val colors = LocalFlickColors.current
     val interaction = remember { MutableInteractionSource() }
     val scopeName = when (scope) {
@@ -133,9 +131,8 @@ fun LibraryFolderChip(scope: LibraryScope, onClick: () -> Unit) {
         stringResource(R.string.library_folder_a11y, scopeName)
     }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .pressScale(interaction)
-            .widthIn(max = FolderChipMaxWidth)
             .heightIn(min = 48.dp)
             .clip(PillShape)
             .background(colors.primaryContainer)

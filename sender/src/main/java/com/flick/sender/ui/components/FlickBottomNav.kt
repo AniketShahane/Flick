@@ -3,7 +3,7 @@ package com.flick.sender.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
-import androidx.compose.foundation.background
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -27,7 +27,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -40,10 +39,10 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorProducer
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -52,22 +51,26 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.ui.screens.NavTab
+import com.flick.sender.ui.theme.FlickColors
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
-import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
-import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 
 /**
  * The floating glass navigation pill (design §5.4). It is drawn over the route rather
@@ -86,6 +89,7 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun FlickBottomNav(
     selected: NavTab,
+    hazeState: HazeState,
     onSelect: (NavTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -93,24 +97,36 @@ internal fun FlickBottomNav(
     val density = LocalDensity.current
     val metrics = LocalNavMetrics.current
     val reduceMotion = rememberReduceMotion()
-    // The FAST spatial spring, not the default one the rest of the shell travels on
-    // (0.6/800 against 0.8/380). What a tap reads is the first 100 ms, and the default
-    // spring is lazy exactly there: 28 % of the way at 50 ms and 66 % at 100 ms, against
-    // 53 % and home. Both are quiet by ~200 ms, so all that is traded is the fast spec's
-    // ~9 % ring past the seat at ~140 ms — the Expressive selection idiom, and small
-    // enough that it does not break the ordering the icon's tint depends on below: on its
-    // slow effects spring the ink is 77 % resolved at 100 ms, so it still lands after the
-    // fill has arrived under it.
-    val travel = MaterialTheme.motionScheme.fastSpatialSpec<Rect>()
+    // This keeps the fast first 50 ms response of the old spatial spring without its
+    // visible overshoot. The icon's deliberately slower effects spring still resolves
+    // after the fill has travelled beneath it.
+    val travel = spring<Rect>(
+        dampingRatio = NavTravelDampingRatio,
+        stiffness = NavTravelStiffness,
+    )
     val indicator = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
-    val scope = rememberCoroutineScope()
-    // Where the fill was last SENT, which is not where it is: written from the tap and
-    // from the effect below, read from neither composition nor layout, so keeping it
-    // costs no invalidation of either.
-    val commanded = remember { mutableStateOf<Rect?>(null) }
+    // One conflated command stream owns every call to animateTo. A second command cancels
+    // the collector's current child and immediately becomes the only destination in play;
+    // no canceled coroutine can leave a separate "commanded" flag pretending it arrived.
+    val travelCommands = remember { Channel<NavTravelCommand>(Channel.CONFLATED) }
+    val target = remember { mutableStateOf<NavTravelCommand?>(null) }
     // The seat the shell actually resolved, readable from a coroutine that outlives the
-    // composition that launched it.
+    // command that launched the current travel.
     val settled = rememberUpdatedState(selected)
+    val currentReduceMotion = rememberUpdatedState(reduceMotion)
+    val darkHazeStyle = remember(colors) {
+        HazeStyle(
+            tints = navBarHazeTints(colors).map { HazeTint(it) },
+            blurRadius = DarkNavBlurRadius,
+            noiseFactor = DarkNavNoiseFactor,
+            fallbackTint = HazeTint(navBarFallbackTint(colors)),
+        )
+    }
+    val backdropEffect = if (colors.isLight) {
+        null
+    } else {
+        Modifier.hazeEffect(state = hazeState, style = darkHazeStyle)
+    }
 
     // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
     // from writing snapshot state the same layout pass reads, and the epoch only moves
@@ -127,31 +143,37 @@ internal fun FlickBottomNav(
         }
     }
 
-    // The route is the authority on where the fill belongs; it is no longer the thing that
-    // starts it moving. This effect is re-launched from applyChanges, INSIDE the frame
-    // callback, and a launch dispatches — so its body ran after that frame's traversal and
-    // the first withFrameNanos only latched a start time on the frame after. Two frames of
-    // zero movement, and they were the two dearest frames of the interaction: the same
-    // route flip composes, measures and draws the arriving screen while the outgoing one is
-    // still laid out for its fade.
+    LaunchedEffect(travelCommands) {
+        travelCommands.receiveAsFlow().collectLatest { command ->
+            if (currentReduceMotion.value || indicator.value == Rect.Zero) {
+                indicator.snapTo(command.seat)
+            } else {
+                indicator.animateTo(command.seat, travel)
+            }
+
+            // A tap is allowed to lead navigation, but the route remains authoritative. If
+            // the shell refused the request, enqueue the resolved seat through this SAME
+            // owner after the outward trip rather than starting a competing animation.
+            val resolvedTab = settled.value
+            if (resolvedTab != command.tab && target.value == command) {
+                seats[resolvedTab]?.let { resolvedSeat ->
+                    val correction = NavTravelCommand(resolvedTab, resolvedSeat)
+                    target.value = correction
+                    travelCommands.trySend(correction)
+                }
+            }
+        }
+    }
+
+    // Route changes and genuine seat remeasurement publish destinations; they never animate
+    // directly. A successful tap already published the same command and therefore does not
+    // restart its spring when the route catches up one frame later.
     LaunchedEffect(selected, seatEpoch, reduceMotion) {
         val destination = seats[selected] ?: return@LaunchedEffect
-        // The tap below already sent the fill here, a frame ahead of the route flip that
-        // re-launched this effect; re-issuing it would restart the spring mid-flight. The
-        // comparison is the Rect and not the tab on purpose — a rotation or a font-scale
-        // change moves the seat out from under a fill already sitting on it, and that
-        // still has to re-place.
-        if (commanded.value == destination || indicator.value == destination) {
-            return@LaunchedEffect
-        }
-        commanded.value = destination
-        // Rect.Zero is "nothing measured yet", so the first placement lands instead of
-        // flying in from the corner of the bar — which is also the only guard the two
-        // seats have on the frame the bar is first measured.
-        if (reduceMotion || indicator.value == Rect.Zero) {
-            indicator.snapTo(destination)
-        } else {
-            indicator.animateTo(destination, travel)
+        val command = NavTravelCommand(selected, destination)
+        if (target.value != command || reduceMotion) {
+            target.value = command
+            travelCommands.trySend(command)
         }
     }
 
@@ -164,56 +186,52 @@ internal fun FlickBottomNav(
     // clock, whatever that expensive frame costs is absorbed by the travel instead of
     // being added in front of it.
     val onTap: (NavTab) -> Unit = { tab ->
-        onSelect(tab)
-        // The same rule the shell gates on: while the bar is shown, its seat IS the
-        // route's tab, so a re-tap moves nothing here either. Under reduce-motion there is
-        // no travel to get ahead of and the effect above still snaps.
-        val seat = if (reduceMotion || tab == selected) null else seats[tab]
-        if (seat != null && indicator.value != Rect.Zero) {
-            // Set here and not inside the coroutine: the effect above reads it during the
-            // applyChanges of this same frame, and a dispatch is not ordered against
-            // composition.
-            commanded.value = seat
-            scope.launch {
-                indicator.animateTo(seat, travel)
-                // The shell decides where the app actually went; this only got the fill
-                // moving sooner. A navigation it refuses leaves the pill on a seat the app
-                // is not on and re-keys nothing, so the resolved seat is read back once the
-                // travel is over — by which time the route has long since settled. A tap
-                // that supersedes this one cancels this coroutine at the animateTo above,
-                // so a stale correction can never overtake a live one.
-                val resolved = seats[settled.value]
-                if (resolved != null && resolved != commanded.value) {
-                    commanded.value = resolved
-                    indicator.animateTo(resolved, travel)
-                }
-            }
+        val seat = seats[tab]
+        val shouldStartTravel = navShouldStartTravel(
+            indicator = indicator.value,
+            isRunning = indicator.isRunning,
+            target = target.value?.seat,
+            destination = seat,
+        )
+        if (seat != null && shouldStartTravel) {
+            val command = NavTravelCommand(tab, seat)
+            target.value = command
+            travelCommands.trySend(command)
         }
+        onSelect(tab)
     }
 
     Box(
         modifier
             .fillMaxWidth()
-            .flickGlass(colors)
+            .flickGlass(
+                colors = colors,
+                fill = navBarFill(colors),
+                showSheen = navShowsGlassSheen(colors),
+                backdropEffect = backdropEffect,
+            )
             .onGloballyPositioned { host.value = it }
             // The routes this floats over reserve their own room for it, and how much is
             // not a constant — see [LocalNavMetrics].
             .onSizeChanged { metrics.height = with(density) { it.height.toDp() } },
     ) {
-        // Measured and placed in the layout phase straight off the Animatable, so a
-        // travelling fill never recomposes the tab under the finger.
+        // This draw node owns the full bar bounds, which is also the coordinate space
+        // reported by the seats. A pill-sized layout cannot safely place its child at
+        // full-bar coordinates after the first seat.
         Box(
             Modifier
-                .layout { measurable, _ ->
+                .matchParentSize()
+                .drawBehind {
                     val bounds = indicator.value
-                    val width = bounds.width.roundToInt().coerceAtLeast(0)
-                    val height = bounds.height.roundToInt().coerceAtLeast(0)
-                    val placeable = measurable.measure(Constraints.fixed(width, height))
-                    layout(width, height) {
-                        placeable.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+                    if (!bounds.isEmpty) {
+                        drawRoundRect(
+                            color = colors.primary,
+                            topLeft = bounds.topLeft,
+                            size = bounds.size,
+                            cornerRadius = CornerRadius(bounds.height / 2f),
+                        )
                     }
-                }
-                .background(colors.primary, PillShape),
+                },
         )
         Row(
             modifier = Modifier
@@ -260,6 +278,7 @@ private fun NavItem(
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val inactiveInk = navInactiveInk(colors)
     val reduceMotion = rememberReduceMotion()
     val motionScheme = MaterialTheme.motionScheme
     // Both tints stay State and are spent in the draw phase, exactly as the library's
@@ -270,12 +289,12 @@ private fun NavItem(
     // The icon rides the travelling fill, so its ink must not resolve before the fill has
     // arrived under it — a slower effects spec, never a spatial one.
     val iconTint = animateColorAsState(
-        targetValue = if (active) colors.onPrimary else colors.onSurfaceDim,
+        targetValue = if (active) colors.onPrimary else inactiveInk,
         animationSpec = Motion.orSnap(reduceMotion, motionScheme.slowEffectsSpec<Color>()),
         label = "navIcon",
     )
     val labelTint = animateColorAsState(
-        targetValue = if (active) colors.onSurface else colors.onSurfaceDim,
+        targetValue = if (active) navActiveLabelInk(colors) else inactiveInk,
         animationSpec = Motion.orSnap(reduceMotion, motionScheme.defaultEffectsSpec<Color>()),
         label = "navLabel",
     )
@@ -365,6 +384,56 @@ private fun NavItem(
 private const val NavPressScale = 0.92f
 private const val NavPressWashAlpha = 0.16f
 private val NavPressWashRadius = 20.dp
+private const val NavTravelDampingRatio = 0.82f
+private const val NavTravelStiffness = 1_000f
+
+/** Haze owns the dark material; the dock and light navigation keep the shared glass fill. */
+internal fun navBarFill(colors: FlickColors): Color =
+    if (colors.isLight) colors.glass else Color.Transparent
+
+/** Ordered stabilizer then brand tint, applied to the blurred route by Haze. */
+internal fun navBarHazeTints(colors: FlickColors): List<Color> =
+    if (colors.isLight) {
+        emptyList()
+    } else {
+        listOf(
+            Color.Black.copy(alpha = DarkNavStabilizerAlpha),
+            colors.sparkInverse.copy(alpha = DarkNavTintAlpha),
+        )
+    }
+
+/** One equivalent translucent scrim for platforms where background blur is unavailable. */
+internal fun navBarFallbackTint(colors: FlickColors): Color =
+    navBarHazeTints(colors).fold(Color.Transparent) { base, tint -> tint.compositeOver(base) }
+
+/** The dim ink is too quiet on the dark navigation bar's saturated live-blue fill. */
+internal fun navInactiveInk(colors: FlickColors): Color =
+    if (colors.isLight) colors.onSurfaceDim else Color.White
+
+/** Active labels sit below the gold indicator and therefore remain ink on glass. */
+internal fun navActiveLabelInk(colors: FlickColors): Color =
+    if (colors.isLight) colors.onSurface else Color.White
+
+/** The dark bar's blue tint is its glass treatment; a white sheen would wash it out. */
+internal fun navShowsGlassSheen(colors: FlickColors): Boolean = colors.isLight
+
+private const val DarkNavStabilizerAlpha = 0.40f
+private const val DarkNavTintAlpha = 0.60f
+private const val DarkNavNoiseFactor = 0.06f
+private val DarkNavBlurRadius = 26.dp
+
+private data class NavTravelCommand(val tab: NavTab, val seat: Rect)
+
+/** A recorded target only suppresses a duplicate while its animation is still alive. */
+internal fun navShouldStartTravel(
+    indicator: Rect,
+    isRunning: Boolean,
+    target: Rect?,
+    destination: Rect?,
+): Boolean =
+    destination != null &&
+        indicator != Rect.Zero &&
+        (target != destination || (!isRunning && indicator != destination))
 
 /**
  * How tall the nav actually came out. The bar is drawn OVER the routes rather than inset

@@ -33,10 +33,10 @@ class ResolutionLabelTest {
         assertEquals("SD", resolutionLabelFor(640, 480))
     }
 
-    // Both quality chips match by exact string, so an unmeasured file must fall out of
-    // them rather than being filed under a bucket nobody established.
+    // Resolution labels describe only a measured boundary; an unmeasured file must not
+    // inherit a quality claim merely because the library surface needs a compact label.
     @Test
-    fun `an unknown label belongs to neither quality filter`() {
+    fun `an unknown label is distinct from measured resolution labels`() {
         assertNotEquals(FourKLabel, UnknownResolutionLabel)
         assertNotEquals(FullHdLabel, UnknownResolutionLabel)
     }
