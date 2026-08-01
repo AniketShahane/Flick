@@ -287,9 +287,10 @@ fun FlickApp(
                 AnimatedContent(
                     modifier = Modifier
                         .fillMaxSize()
-                        .then(
-                            if (colors.isLight) Modifier else Modifier.hazeSource(navHazeState),
-                        ),
+                        // One source for the one small navigation effect. Keeping this at
+                        // the route boundary lets both themes show the real content behind
+                        // the pill without adding blur nodes to the scrolling children.
+                        .hazeSource(navHazeState),
                     targetState = route,
                     transitionSpec = {
                         if (reduceMotion) {

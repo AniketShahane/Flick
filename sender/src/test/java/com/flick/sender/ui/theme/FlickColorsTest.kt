@@ -351,15 +351,12 @@ class FlickColorsTest {
      */
     private fun FlickColors.glassOnPage() = glass.over(canvas)
 
-    private fun FlickColors.glassOnExtremeStill() =
-        glass.over(if (isLight) Color.Black else Color.White)
-
     /**
      * …and the sheen laid over the glass is part of the glass, which this file learned the
      * hard way. [FlickGradients.navSheenDark] runs DOWN the pill and closes on a pale blue
      * stop, so the bar's labels sit in the interpolating tail of it rather than on bare
-     * glass. Measuring the ink against the fill alone put `onSurfaceDim` at 4.88:1 while the
-     * device drew it at 4.31:1 — a label under the floor, passing.
+     * glass. Measuring the ink against the previous fill alone put `onSurfaceDim` at 4.88:1
+     * while the device drew it at 4.31:1 — a label under the floor, passing.
      *
      * The two fractions are where the bar's own layout puts things, as a share of its height:
      * an icon spans roughly 21-51% down (11 dp row padding, 6 dp box padding, a 24 dp glyph)
@@ -375,15 +372,20 @@ class FlickColorsTest {
     private fun FlickColors.sheenedAtLabel(backdrop: Color): Color {
         // Read from the real stop position rather than a copy of it, so moving the wash in
         // the gradient moves this with it — the two drifting apart is the whole defect.
-        val share = ((LABEL_DEPTH - NavSheenFootStart) / (1f - NavSheenFootStart)).coerceAtLeast(0f)
-        return NavSheenDarkFoot.copy(alpha = NavSheenDarkFoot.alpha * share).over(glass.over(backdrop))
+        val footStart = if (isLight) NavSheenClearStart else NavSheenFootStart
+        val foot = if (isLight) NavSheenLightFoot else NavSheenDarkFoot
+        val share = ((LABEL_DEPTH - footStart) / (1f - footStart)).coerceAtLeast(0f)
+        return foot.copy(alpha = foot.alpha * share).over(glass.over(backdrop))
     }
 
     private fun FlickColors.sheenedAtIcon(backdrop: Color): Color {
-        // Between the 0x2E opening stop and the 0x0A stop at 0.44, both plain white.
-        val opening = 0x2E / 255f
-        val mid = 0x0A / 255f
-        val alpha = opening + (ICON_DEPTH / 0.44f) * (mid - opening)
+        // The icon begins after the tight rim, between its shoulder and the faint body
+        // stop. Read the real colours and positions so the contrast proof follows the
+        // shader if that optical highlight is retuned.
+        val share = (ICON_DEPTH - NavSheenLipEnd) / (NavSheenBodyEnd - NavSheenLipEnd)
+        val shoulder = if (isLight) NavSheenLightShoulder else NavSheenDarkShoulder
+        val body = if (isLight) NavSheenLightBody else NavSheenDarkBody
+        val alpha = shoulder.alpha + share * (body.alpha - shoulder.alpha)
         return Color.White.copy(alpha = alpha).over(glass.over(backdrop))
     }
 
@@ -406,6 +408,18 @@ class FlickColorsTest {
                 spread >= 40,
             )
         }
+    }
+
+    /** Persistent floating chrome must leave real backdrop in the material, not only fake it with a sheen. */
+    @Test fun theFloatingChromeLetsTheBackdropParticipate() {
+        assertTrue(
+            "light glass is ${(LightFlickColors.glass.alpha * 100).toInt()}% opaque — it reads as a solid fill",
+            LightFlickColors.glass.alpha <= 230f / 255f,
+        )
+        assertTrue(
+            "dark glass is ${(DarkFlickColors.glass.alpha * 100).toInt()}% opaque — it reads as a solid fill",
+            DarkFlickColors.glass.alpha <= 248f / 255f,
+        )
     }
 
     /**
@@ -447,8 +461,8 @@ class FlickColorsTest {
      * app never puts it on is what this file says not to do two rules up.
      *
      * Worth the measurement it replaces: the accent blue would have failed here anyway, at
-     * 2.64:1 on the icon row over the page. Amber holds 5.06:1 and 3.61:1 there, and 4.71:1
-     * and 3.39:1 with a blown-out still behind it.
+     * 2.64:1 on the icon row over the page. Amber holds 5.18:1 and 3.97:1 there, and 4.68:1
+     * and 3.61:1 with a blown-out still behind it.
      */
     @Test fun everyInkOnTheDarkGlassHoldsWhateverIsBehindIt() {
         val c = DarkFlickColors
@@ -488,17 +502,23 @@ class FlickColorsTest {
      */
     @Test fun theLightGlassNeverDropsBelowWhereItStandsToday() {
         val c = LightFlickColors
-        val backdrops = listOf("the page" to c.glassOnPage(), "a black still" to c.glassOnExtremeStill())
-        for ((name, b) in backdrops) {
-            assertTrue(
-                "light: onSurface on the glass over $name is ${contrast(c.onSurface, b)}",
-                contrast(c.onSurface, b) >= 11.3f,
+        val backdrops = listOf("the page" to c.canvas, "a black still" to Color.Black)
+        for ((name, backdrop) in backdrops) {
+            val surfaces = listOf(
+                "the label row over $name" to c.sheenedAtLabel(backdrop),
+                "the icon row over $name" to c.sheenedAtIcon(backdrop),
             )
-            assertTrue(
-                "light: onSurfaceDim on the glass over $name is ${contrast(c.onSurfaceDim, b)} — " +
-                    "the light glass regressed",
-                contrast(c.onSurfaceDim, b) >= 4.25f,
-            )
+            for ((surfaceName, surface) in surfaces) {
+                assertTrue(
+                    "light: onSurface on $surfaceName is ${contrast(c.onSurface, surface)}",
+                    contrast(c.onSurface, surface) >= 11.3f,
+                )
+                assertTrue(
+                    "light: onSurfaceDim on $surfaceName is ${contrast(c.onSurfaceDim, surface)} — " +
+                        "the light glass regressed",
+                    contrast(c.onSurfaceDim, surface) >= 4.25f,
+                )
+            }
         }
     }
 

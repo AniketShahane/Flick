@@ -6,6 +6,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -16,7 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
@@ -24,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -36,6 +40,8 @@ import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.navBottomClearance
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.PillMorphShape
+import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
@@ -57,8 +63,8 @@ fun PhoneSettingsScreen(
     val castingItem by controller.castingItem.collectAsState()
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
-    // to clear both of them while a cast is live — otherwise the diagnostics row sits
-    // under a bar that answers taps meant for it. The nav's height is measured rather than
+    // to clear both of them while a cast is live — otherwise the screen's final controls sit
+    // under a bar that answers taps meant for them. The nav's height is measured rather than
     // assumed, because the label's line box grows with the font scale.
     val bottomClearance = navBottomClearance(
         barHeight = LocalNavMetrics.current.height,
@@ -75,15 +81,36 @@ fun PhoneSettingsScreen(
             .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = bottomClearance),
         verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = stringResource(R.string.settings_heading),
-                style = FlickText.displayLarge.copy(color = colors.onSurface),
-            )
-            Text(
-                text = stringResource(R.string.advisories_sub),
-                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_heading),
+                    style = FlickText.displayLarge.copy(color = colors.onSurface),
+                )
+                Text(
+                    text = stringResource(R.string.advisories_sub),
+                    style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+                )
+            }
+            FilledTonalButton(
+                onClick = { controller.toggleDiagnostics(true) },
+                shapes = ButtonDefaults.shapes(shape = PillMorphShape, pressedShape = PressedPillShape),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = colors.primaryContainer,
+                    contentColor = colors.onPrimaryContainer,
+                ),
+                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 15.dp),
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(text = stringResource(R.string.diagnostics_title), style = FlickText.labelMedium)
+            }
         }
         // One node, not a run of siblings: the advisories carry their own spacing between
         // the cards, and this screen's 22 dp rhythm must not be inserted between them.
@@ -91,7 +118,6 @@ fun PhoneSettingsScreen(
             batteryExempt = batteryExempt,
             onOpenWifiSettings = onOpenWifiSettings,
             onRequestBatteryExemption = onRequestBatteryExemption,
-            onOpenDiagnostics = { controller.toggleDiagnostics(true) },
         )
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
     }

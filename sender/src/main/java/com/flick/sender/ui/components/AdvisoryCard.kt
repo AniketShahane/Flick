@@ -4,9 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -26,13 +29,86 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickCorners
+import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
+import com.flick.sender.ui.theme.Primary
+import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 
 enum class AdvisoryTone { CAUTION, INFO }
+
+/** Separate from [AdvisoryCard] so matching pairing never enlarges the Wi-Fi warning. */
+@Composable
+fun BatteryOptimizationCard(
+    title: String,
+    body: String,
+    primaryLabel: String,
+    onPrimary: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalFlickColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(FlickCorners.qrCard))
+            .background(colors.inverseSurface)
+            .padding(22.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            BatteryOptimizationGlyph()
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = FlickText.bodyLarge.copy(color = colors.onInverseSurface),
+                )
+                Text(
+                    text = body,
+                    style = FlickText.bodyMedium.copy(color = colors.onInverseSurfaceDim),
+                    modifier = Modifier.padding(top = 7.dp),
+                )
+            }
+        }
+        InverseCardAction(
+            text = primaryLabel,
+            accessibilityLabel = primaryLabel,
+            container = colors.primary,
+            contentColor = colors.onPrimary,
+            onClick = onPrimary,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun BatteryOptimizationGlyph(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(92.dp)
+            .clip(RoundedCornerShape(FlickCorners.statCard))
+            .background(Primary),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Battery,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(58.dp),
+        )
+        Icon(
+            imageVector = FlickIcons.Bolt,
+            contentDescription = null,
+            tint = Spark,
+            modifier = Modifier.size(28.dp),
+        )
+    }
+}
 
 /**
  * A tinted, actionable advisory (S11) — never a modal, never a toast wall. Names

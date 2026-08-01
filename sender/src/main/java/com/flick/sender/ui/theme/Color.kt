@@ -311,15 +311,15 @@ val NavShadowOnNight = Color(0x8C000000)
  * the gradient runs DOWN the pill, so a wash at its end lands where the tab labels are.
  *
  * Measured on a device, with the stop interpolating from 62%, a label's local background came
- * out `#38456B` against the bare glass's `#313D61` — `onSurfaceDim` at 4.31:1 where the glass
- * alone gives 4.88:1. Under the 4.5 floor for text, on the role in the bar with the least
- * headroom to begin with.
+ * out `#38456B` against the then-bare glass's `#313D61` — `onSurfaceDim` at 4.31:1 where
+ * that glass alone gave 4.88:1. Under the 4.5 floor for text, on the role in the bar with
+ * the least headroom to begin with.
  *
  * Weakening the stop was the obvious answer and the wrong one: it would have cost the cool
  * edge the pill is meant to have and still only reached 4.47:1 over a bright still. The bar's
  * bottom 14% is row padding with nothing drawn in it, so the fix is to hold the wash off the
  * text entirely rather than to dilute it — full strength, below the labels, where the glass
- * meets its own rim. Ink then sits on bare glass: 4.88:1 on the page and 4.54:1 with a
+ * meets its own rim. Ink now sits on bare glass: 5.00:1 on the page and 4.52:1 with a
  * blown-out still behind it, both clear.
  *
  * Worth keeping next to the values: this shipped because FlickColorsTest measured ink against
@@ -330,6 +330,22 @@ val NavSheenDarkFoot = Color(0x1F96B4FF)
 
 /** See [NavSheenDarkFoot]: below this the pill is padding, so a wash there touches no ink. */
 const val NavSheenFootStart = 0.86f
+
+/** A tight specular lip: bright at the rim, already quiet before any control ink begins. */
+internal const val NavSheenLipEnd = 0.08f
+
+/** End of the faint body reflection shared by both glass treatments. */
+internal const val NavSheenBodyEnd = 0.44f
+
+internal const val NavSheenClearStart = 0.62f
+
+internal val NavSheenLightShoulder = Color(0x52FFFFFF)
+internal val NavSheenLightBody = Color(0x0FFFFFFF)
+internal val NavSheenLightFoot = Color(0x2996B4FF)
+
+internal val NavSheenDarkRim = Color(0x52FFFFFF)
+internal val NavSheenDarkShoulder = Color(0x1FFFFFFF)
+internal val NavSheenDarkBody = Color(0x08FFFFFF)
 
 val LightFlickColors = FlickColors(
     isLight = true,
@@ -342,7 +358,10 @@ val LightFlickColors = FlickColors(
     inverseSurface = Ink,
     onInverseSurface = CanvasLight,
     onInverseSurfaceDim = Color(0xFF9FB0D8),
-    glass = Color(0xEBCFE0FF),
+    // Two points more backdrop than the old 92% fill. The slightly lighter tint keeps
+    // both inks above their previous contrast over a black poster while the page and
+    // artwork contribute enough colour for this to read as glass instead of blue plastic.
+    glass = Color(0xE6D4E7FF),
     glassBorder = Color(0x8CFFFFFF),
     onSurface = Ink,
     onSurfaceDim = InkDim,
@@ -505,29 +524,25 @@ val DarkFlickColors = FlickColors(
     onInverseSurface = NightCanvas,
     onInverseSurfaceDim = InkDim,
     // The floating chrome — the nav pill and the Now-Playing dock — and the one role that
-    // stayed a grey when the rest of this set became a blue. It carried 28 channel steps
-    // of colour against the light glass's 48, so the piece of chrome that floats over
-    // everything was the piece that dropped the brand. This holds the set's 225° anchor at
-    // a spread of 48 — the same amount of blue light mode carries, at this lightness — and
-    // separates 1.35:1 from surfaceRaisedAlt where it used to manage 1.10:1, which is a
-    // pill sitting flat on the page rather than floating over it.
+    // stayed a grey when the rest of this set became a blue. It carried 28 channel steps,
+    // so the piece of chrome that floats over everything was the piece that dropped the
+    // brand. This holds the set's 225° anchor at a spread of 49 — comparable to light
+    // glass's 43 — and separates 1.32:1 from surfaceRaisedAlt where it once managed
+    // 1.10:1, which is a pill sitting flat on the page rather than floating over it.
     //
-    // 98% opaque rather than 94%: this is drawn over a scrolling poster grid, and the 6%
-    // that showed through moved the inactive nav label across a full stop — 5.98:1 on the
-    // page, 4.84:1 once a blown-out still was behind it. A surface that carries controls
-    // cannot have a contrast figure that depends on which poster is under it. Nothing is
-    // given up, because the frosted read was never the backdrop: Compose cannot sample
-    // one, so it is the sheen, the hairline and the shadow doing that work (see
-    // [flickGlass]) and all three are untouched.
+    // 97% opaque rather than the old 98%: enough backdrop participates to stop the fill
+    // reading as solid plastic, without handing control contrast to whichever poster is
+    // underneath it. The slightly darker red channel holds `onSurfaceDim` above 4.5:1 even
+    // over a blown-out still; the sheen, hairline and shadow complete the frosted read (see
+    // [flickGlass]).
     //
     // It stays COOL under the gold selection fill, which is a decision rather than an
-    // oversight: 49% relative chroma against the fill's 76%, so the loud thing on the pill
+    // oversight: 51% relative chroma against the fill's 76%, so the loud thing on the pill
     // is still the fill and not the material it travels on. Warming the glass to match the
     // gold is the same inversion `theGlassStaysQuieterThanTheFillThatTravelsOnIt` was
     // written to catch, only the other way round.
-    glass = Color(0xFA323E62),
-    // Held at 18%: the rim steps 1.71:1 off the new fill against 1.77:1 off the old one,
-    // so the hairline reads as it did without being retuned for it.
+    glass = Color(0xF8303D61),
+    // Held at 18% so the hairline remains restrained beside the brighter specular lip.
     glassBorder = Color(0x2EFFFFFF),
     onSurface = NightInk,
     onSurfaceDim = NightInkDim,
@@ -620,17 +635,22 @@ object FlickGradients {
         1f to Color(0x9E000000),
     )
 
-    /** 168° sheen laid over the nav-bar glass fill on a light surface. */
+    /**
+     * 168° reflection over light glass. The highlight is concentrated in the first 8%
+     * like a specular rim, then falls below control ink instead of whitening the whole bar.
+     */
     val navSheen: Brush = angledGradient(
         168f,
-        0f to Color(0x99FFFFFF),
-        0.44f to Color(0x14FFFFFF),
-        0.62f to Color(0x00FFFFFF),
-        1f to Color(0x2996B4FF),
+        0f to Color(0xB8FFFFFF),
+        NavSheenLipEnd to NavSheenLightShoulder,
+        NavSheenBodyEnd to NavSheenLightBody,
+        NavSheenClearStart to Color(0x00FFFFFF),
+        1f to NavSheenLightFoot,
     )
 
     /**
-     * The same sheen for a dark glass, at a fraction of the weight.
+     * The same tight specular rim for dark glass, at a fraction of the weight through the
+     * body. It reuses the existing shader pass: no extra compositing layer or live blur.
      *
      * 60% white is a gloss on a pale blue fill and a blown highlight on a dark one — the
      * pill's top edge came out nearly white while everything around it was near-black,
@@ -639,9 +659,10 @@ object FlickGradients {
      */
     val navSheenDark: Brush = angledGradient(
         168f,
-        0f to Color(0x2EFFFFFF),
-        0.44f to Color(0x0AFFFFFF),
-        0.62f to Color(0x00FFFFFF),
+        0f to NavSheenDarkRim,
+        NavSheenLipEnd to NavSheenDarkShoulder,
+        NavSheenBodyEnd to NavSheenDarkBody,
+        NavSheenClearStart to Color(0x00FFFFFF),
         // Transparent all the way to the rim, so the closing wash never reaches the labels
         // sitting at ~73%. See [NavSheenDarkFoot] for the measurement that put it here.
         NavSheenFootStart to Color(0x00FFFFFF),

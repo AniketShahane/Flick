@@ -3,11 +3,10 @@
 package com.flick.sender.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +24,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
@@ -53,8 +54,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -81,7 +80,8 @@ import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
-import com.flick.sender.ui.theme.flickRipple
+import com.flick.sender.ui.theme.PillMorphShape
+import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 
@@ -98,8 +98,6 @@ fun ConnectScreen(controller: FlickController) {
     val manualPairAttempt by controller.manualPairAttempt.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
-    val manualLabel = stringResource(R.string.connect_manual)
-    val diagnosticsLabel = stringResource(R.string.a11y_diagnostics)
     // Two states rather than one: a sheet the screen closes has an exit to play before it
     // may leave the composition. See [SheetSwitch].
     val manual = rememberSheetSwitch()
@@ -192,7 +190,7 @@ fun ConnectScreen(controller: FlickController) {
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the last device row and the
-    // footer actions sit under a bar that answers taps meant for them.
+    // pairing card sit under a bar that answers taps meant for them.
     val bottomClearance = 116.dp + if (castingItem != null) NowPlayingDockClearance else 0.dp
 
     Column(
@@ -206,10 +204,35 @@ fun ConnectScreen(controller: FlickController) {
         verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text(
-                text = stringResource(R.string.connect_heading),
-                style = FlickText.displayLarge.copy(color = colors.onSurface),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = stringResource(R.string.connect_heading),
+                    style = FlickText.displayLarge.copy(color = colors.onSurface),
+                    modifier = Modifier.weight(1f),
+                )
+                FilledTonalButton(
+                    onClick = { controller.toggleDiagnostics(true) },
+                    shapes = ButtonDefaults.shapes(
+                        shape = PillMorphShape,
+                        pressedShape = PressedPillShape,
+                    ),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = colors.primaryContainer,
+                        contentColor = colors.onPrimaryContainer,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 15.dp, vertical = 15.dp),
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.diagnostics_title),
+                        style = FlickText.labelMedium,
+                    )
+                }
+            }
             PrivacyPill()
         }
 
@@ -260,30 +283,8 @@ fun ConnectScreen(controller: FlickController) {
 
         PairQrCard(
             onScan = { scan.open() },
-            onEnterCode = {
-                val single = devices.singleOrNull { it.tvId != null }
-                if (single != null) controller.selectDevice(single) else manual.open()
-            },
+            onEnterAddress = { manual.open() },
         )
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FooterAction(
-                text = stringResource(R.string.connect_manual),
-                accessibilityLabel = manualLabel,
-                onClick = { manual.open() },
-            )
-            // The pairing screen is where failures surface, so the log has to be
-            // openable from here — the advisories sheet has no reachable trigger.
-            FooterAction(
-                text = stringResource(R.string.connect_diagnostics),
-                accessibilityLabel = diagnosticsLabel,
-                onClick = { controller.toggleDiagnostics(true) },
-            )
-        }
     }
 
     val target = pairTarget
@@ -669,31 +670,6 @@ private fun PairingIndicator() {
     } else {
         LoadingIndicator(modifier = Modifier.size(28.dp), color = colors.primary)
     }
-}
-
-/** Quiet text action. Interactive copy has to clear 4.5:1, so it uses the dim ink. */
-@Composable
-private fun FooterAction(
-    text: String,
-    accessibilityLabel: String,
-    onClick: () -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    val interaction = remember { MutableInteractionSource() }
-    Text(
-        text = text,
-        style = FlickText.labelMedium.copy(color = colors.onSurfaceDim, textAlign = TextAlign.Center),
-        modifier = Modifier
-            .clip(PillShape)
-            .semantics { contentDescription = accessibilityLabel }
-            .clickable(
-                interactionSource = interaction,
-                indication = flickRipple(colors.primary),
-                onClick = onClick,
-            )
-            .heightIn(min = 48.dp)
-            .padding(horizontal = 14.dp, vertical = 15.dp),
-    )
 }
 
 /**

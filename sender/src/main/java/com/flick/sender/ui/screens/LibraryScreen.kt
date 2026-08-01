@@ -94,14 +94,16 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -345,7 +347,9 @@ internal fun LibraryScreen(
                 state = uiState.grid,
                 modifier = Modifier
                     .fillMaxSize()
-                    .navigationBarsPadding(),
+                    .navigationBarsPadding()
+                    .semantics { testTagsAsResourceId = true }
+                    .testTag(LibraryGridTestTag),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = bottomClearance),
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
                 verticalArrangement = Arrangement.spacedBy(13.dp),
@@ -1520,6 +1524,7 @@ private val TileMinWidth = 150.dp
 // kind: handed a header's slot, a tile is rebuilt from nothing rather than updated.
 private const val TileContent = "tile"
 private const val SectionContent = "section"
+private const val LibraryGridTestTag = "library_grid"
 
 /** The face arriving grows into place rather than appearing at full size. */
 private const val PillSwapScale = 0.9f

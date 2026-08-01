@@ -10,36 +10,28 @@ import kotlin.math.pow
 
 class FlickBottomNavStyleTest {
 
-    @Test fun darkNavigationCompositesItsHazeTintsInTheDrawOrder() {
-        val c = DarkFlickColors
-        val backdrops = listOf(
-            "canvas" to c.canvas,
-            "black still" to Color.Black,
-            "white still" to Color.White,
-        )
+    @Test fun liveBlurUsesOnlyHazeOptimalAndroidVersions() {
+        assertTrue(!navBackdropBlurEnabled(32))
+        assertTrue(navBackdropBlurEnabled(33))
+    }
 
-        for ((name, backdrop) in backdrops) {
-            val drawn = navBarHazeTints(c).fold(backdrop) { base, tint -> tint.over(base) }
+    @Test fun bothThemesLeaveSixtyPercentOfTheBackdropInTheGlass() {
+        for (c in listOf(LightFlickColors, DarkFlickColors)) {
+            val fallback = navBarFallbackTint(c)
             assertTrue(
-                "$name: inactive nav ink is ${contrast(navInactiveInk(c), drawn)} on the drawn glass",
-                contrast(navInactiveInk(c), drawn) >= 4.5f,
+                "${if (c.isLight) "light" else "dark"}: backdrop visibility is ${1f - fallback.alpha}",
+                kotlin.math.abs((1f - fallback.alpha) - NavBackdropVisibility) < 0.001f,
             )
-            assertTrue(
-                "$name: active label ink is ${contrast(navActiveLabelInk(c), drawn)} on the glass",
-                contrast(navActiveLabelInk(c), drawn) >= 4.5f,
-            )
-            assertTrue(
-                "$name: gold selection is ${contrast(c.primary, drawn)} against the drawn glass",
-                contrast(c.primary, drawn) >= 3f,
-            )
+            assertEquals(Color.Transparent, navBarFill(c))
+            assertTrue(navShowsGlassSheen(c))
         }
     }
 
-    @Test fun darkNavigationUsesTranslucentStabilizerThenReadyBlue() {
+    @Test fun darkNavigationUsesARestrainedStabilizerThenReadyBlue() {
         assertEquals(
             listOf(
-                Color.Black.copy(alpha = 0.40f),
-                DarkFlickColors.sparkInverse.copy(alpha = 0.60f),
+                Color.Black.copy(alpha = 0.14f),
+                DarkFlickColors.sparkInverse.copy(alpha = 0.30232558f),
             ),
             navBarHazeTints(DarkFlickColors),
         )
@@ -47,28 +39,27 @@ class FlickBottomNavStyleTest {
         assertEquals(Color.White, navInactiveInk(DarkFlickColors))
         assertEquals(Color.White, navActiveLabelInk(DarkFlickColors))
         assertTrue(contrast(DarkFlickColors.onPrimary, DarkFlickColors.primary) >= 4.5f)
-        assertTrue(!navShowsGlassSheen(DarkFlickColors))
+        assertTrue(navShowsGlassSheen(DarkFlickColors))
     }
 
-    @Test fun unsupportedBlurFallbackMatchesTheTintStackAndRemainsTranslucent() {
-        val c = DarkFlickColors
-        val fallback = navBarFallbackTint(c)
-        assertTrue("fallback became opaque", fallback.alpha < 1f)
-        assertTrue("fallback became too faint to carry controls", fallback.alpha >= 0.70f)
-
-        for (backdrop in listOf(c.canvas, Color.Black, Color.White)) {
-            val stacked = navBarHazeTints(c).fold(backdrop) { base, tint -> tint.over(base) }
-            val fallbackDrawn = fallback.over(backdrop)
+    @Test fun eachFallbackMatchesItsTintStackAndHoldsControlsOnItsPage() {
+        for (c in listOf(LightFlickColors, DarkFlickColors)) {
+            val fallback = navBarFallbackTint(c)
+            val stacked = navBarHazeTints(c).fold(c.canvas) { base, tint -> tint.over(base) }
+            val fallbackDrawn = fallback.over(c.canvas)
             assertColorNear(stacked, fallbackDrawn)
             assertTrue(contrast(navInactiveInk(c), fallbackDrawn) >= 4.5f)
+            assertTrue(contrast(navActiveLabelInk(c), fallbackDrawn) >= 4.5f)
             assertTrue(contrast(c.primary, fallbackDrawn) >= 3f)
         }
     }
 
-    @Test fun lightNavigationKeepsTheExistingSharedGlassTreatment() {
-        assertEquals(LightFlickColors.glass, navBarFill(LightFlickColors))
-        assertEquals(emptyList<Color>(), navBarHazeTints(LightFlickColors))
-        assertEquals(Color.Transparent, navBarFallbackTint(LightFlickColors))
+    @Test fun lightNavigationUsesItsPaleBlueAsATranslucentHazeTint() {
+        assertEquals(
+            listOf(LightFlickColors.glass.copy(alpha = 0.40f)),
+            navBarHazeTints(LightFlickColors),
+        )
+        assertEquals(0.40f, navBarFallbackTint(LightFlickColors).alpha, 0.001f)
         assertEquals(LightFlickColors.onSurfaceDim, navInactiveInk(LightFlickColors))
         assertEquals(LightFlickColors.onSurface, navActiveLabelInk(LightFlickColors))
         assertTrue(navShowsGlassSheen(LightFlickColors))

@@ -115,6 +115,25 @@ object FlickIcons {
         roundRect(4.4f, 10.4f, 19.6f, 20.4f, 2.8f)
     }
 
+    val Battery: ImageVector = strokeIcon("Battery", width = 1.9f) {
+        moveTo(9f, 3f); lineTo(15f, 3f)
+        moveTo(8f, 5f); lineTo(16f, 5f)
+        quadTo(18f, 5f, 18f, 7f); lineTo(18f, 19f)
+        quadTo(18f, 21f, 16f, 21f); lineTo(8f, 21f)
+        quadTo(6f, 21f, 6f, 19f); lineTo(6f, 7f)
+        quadTo(6f, 5f, 8f, 5f); close()
+    }
+
+    val Bolt: ImageVector = fillIcon("Bolt") {
+        moveTo(13.2f, 2.5f)
+        lineTo(6.6f, 13.2f)
+        lineTo(11.1f, 13.2f)
+        lineTo(10.2f, 21.5f)
+        lineTo(17.4f, 10.7f)
+        lineTo(12.9f, 10.7f)
+        close()
+    }
+
     val Tune: ImageVector = fillIcon("Tune") {
         roundRect(3f, 6.1f, 21f, 7.9f, 0.9f)
         circle(8.6f, 7f, 2.7f)

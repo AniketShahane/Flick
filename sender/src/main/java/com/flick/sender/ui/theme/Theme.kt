@@ -189,10 +189,10 @@ private fun flickColorScheme(
 )
 
 /**
- * Glass treatment shared by the floating chrome. [backdropEffect] is reserved for a
- * real background effect, such as the dark navigation bar's Haze blur; it is inserted
- * inside the rounded clip after the shadow and before the material's own tints. The
- * default remains the existing layered glass used by light navigation and the dock.
+ * Glass treatment shared by the floating chrome. [backdropEffect] inserts a real background
+ * effect, such as the dark navigation bar's Haze blur, inside the rounded clip. The material
+ * above it stays contrast-stabilized and translucent; a tight specular rim falls into a
+ * raking sheen where that treatment is enabled.
  */
 fun Modifier.flickGlass(
     colors: FlickColors,

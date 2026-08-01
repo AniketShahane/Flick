@@ -50,8 +50,6 @@
     <string name="connect_pair_card_title">Or use the code on your TV</string>
     <string name="connect_pair_card_slots">····</string>
     <string name="connect_pair_card_note">Point your camera at the TV\'s QR, or tap to type the code. Nothing is uploaded.</string>
-    <string name="connect_manual">enter address manually</string>
-    <string name="connect_diagnostics">diagnostics</string>
     <string name="pair_code_heading">Enter the code on %1$s</string>
     <string name="pair_code_sub">It\'s the 4-digit code on your TV screen.</string>
     <string name="pair_code_endpoint">Pairing with %1$s</string>
@@ -226,19 +224,17 @@
     <string name="advisory_band_body">4K peaks may outrun this band. Switch this phone to your 5 GHz network for guaranteed zero-buffer.</string>
     <string name="advisory_band_primary">Switch network</string>
     <string name="advisory_band_secondary">Cast anyway</string>
-    <string name="advisory_battery_title">Let Flick serve with the screen off.</string>
+    <string name="advisory_battery_title">Keep casting</string>
     <!-- The button opens Android's own battery list rather than the one-tap exemption
          dialog: that dialog needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which Play
          restricts to alarms, VoIP and companion devices, and casting is on none of those
          lists. So the copy has to name the extra step — a card that says "Allow" and then
          hands over a list of every app on the phone reads as the button having failed. -->
-    <string name="advisory_battery_body">Android\'s battery saver can pause the stream mid-movie; exempting Flick keeps it alive to the credits. Android only offers this from its own list — find Flick there and choose Don\'t optimise.</string>
+    <string name="advisory_battery_body">Find Flick in battery settings and choose Don\'t optimise so Android won\'t pause your stream.</string>
     <string name="advisory_battery_primary">Open battery settings</string>
     <string name="advisory_battery_secondary">Later</string>
     <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
     <string name="advisories_alltuned">You\'re all tuned up.</string>
-    <string name="advisory_diagnostics_row">Open diagnostics</string>
-
     <!-- In-app diagnostics log (the phone-side channel; adb logcat is not available to users). -->
     <string name="diagnostics_title">Diagnostics</string>
     <string name="diagnostics_sub">The last 200 lines Flick recorded on this phone. Nothing secret is written here.</string>
@@ -293,7 +289,6 @@
     <string name="a11y_video_item">Open %1$s</string>
     <string name="a11y_cancel_connecting">Cancel connection</string>
     <string name="a11y_network_status">Network status: %1$s</string>
-    <string name="a11y_connect_pair_card">Enter the 4-digit code shown on your TV</string>
     <string name="a11y_library_tune">Signal and setup</string>
     <string name="a11y_library_band_advisory">You are on 2.4 GHz Wi-Fi. Open signal and setup.</string>
     <string name="a11y_np_remaining">Time remaining: %1$s</string>
@@ -308,25 +303,26 @@
     <!-- ===== QR scanner ===== -->
     <!-- S1 · Pairing card actions. -->
     <string name="connect_pair_card_title_scan">Pair with your TV</string>
-    <string name="connect_pair_card_note_scan">Scan the QR on the TV, or type the 4-digit code it shows. Nothing is uploaded.</string>
+    <string name="connect_pair_card_note_scan">Scan the QR on the TV, or enter its address manually. Nothing is uploaded.</string>
     <string name="connect_pair_scan">Scan QR code</string>
-    <string name="connect_pair_type">Type the code</string>
+    <string name="connect_pair_manual">Enter address</string>
 
     <!-- S1 · Scanner sheet. -->
     <string name="scan_heading">Scan the QR on your TV</string>
     <string name="scan_sub">Hold your phone up to the TV\'s pairing screen. You still type the 4-digit code afterwards — the scan only fills in the address.</string>
-    <string name="scan_manual_instead">Type the code instead</string>
+    <string name="scan_manual_instead">Enter address instead</string>
     <string name="scan_permission_title">Camera access</string>
     <string name="scan_permission_body">Flick uses the camera only to read the QR code on your TV. Nothing is recorded, saved or uploaded.</string>
     <string name="scan_permission_allow">Allow camera</string>
-    <string name="scan_permission_denied">Flick can\'t scan without the camera. Allow it, or type the code shown on your TV.</string>
-    <string name="scan_permission_blocked">Camera access is turned off for Flick. Turn it on in Settings, or type the code shown on your TV.</string>
+    <string name="scan_permission_denied">Flick can\'t scan without the camera. Allow it, or enter the TV address manually.</string>
+    <string name="scan_permission_blocked">Camera access is turned off for Flick. Turn it on in Settings, or enter the TV address manually.</string>
     <string name="scan_open_settings">Open settings</string>
-    <string name="scan_unavailable">This phone\'s camera isn\'t available right now. Type the code shown on your TV.</string>
+    <string name="scan_unavailable">This phone\'s camera isn\'t available right now. Enter the TV address manually.</string>
 
     <!-- S1 · Scanner accessibility. -->
-    <string name="a11y_scan_viewfinder">Camera viewfinder. Point the back of the phone at the QR code on your TV. Typing the code works just as well.</string>
+    <string name="a11y_scan_viewfinder">Camera viewfinder. Point the back of the phone at the QR code on your TV. Entering its address manually works too.</string>
     <string name="a11y_connect_pair_scan">Scan the QR code shown on your TV</string>
+    <string name="a11y_connect_pair_manual">Enter a TV address manually</string>
 
     <!-- ===== External subtitles ===== -->
     <!-- Subtitles sheet · chrome. -->

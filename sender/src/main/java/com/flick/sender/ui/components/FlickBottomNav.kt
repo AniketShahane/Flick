@@ -1,5 +1,6 @@
 package com.flick.sender.ui.components
 
+import android.os.Build
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
@@ -114,18 +115,19 @@ internal fun FlickBottomNav(
     // command that launched the current travel.
     val settled = rememberUpdatedState(selected)
     val currentReduceMotion = rememberUpdatedState(reduceMotion)
-    val darkHazeStyle = remember(colors) {
+    val glassHazeStyle = remember(colors) {
         HazeStyle(
             tints = navBarHazeTints(colors).map { HazeTint(it) },
-            blurRadius = DarkNavBlurRadius,
-            noiseFactor = DarkNavNoiseFactor,
+            blurRadius = NavBlurRadius,
+            noiseFactor = NavNoiseFactor,
             fallbackTint = HazeTint(navBarFallbackTint(colors)),
         )
     }
-    val backdropEffect = if (colors.isLight) {
-        null
-    } else {
-        Modifier.hazeEffect(state = hazeState, style = darkHazeStyle)
+    val backdropEffect = Modifier.hazeEffect(state = hazeState, style = glassHazeStyle) {
+        // Android 13+ is Haze's optimal native path. Older releases keep the same
+        // translucent tint as a fallback without the global pre-draw invalidation or
+        // RenderScript work that can make a scrolling grid pay for a small glass pill.
+        blurEnabled = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
     }
 
     // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
@@ -387,14 +389,17 @@ private val NavPressWashRadius = 20.dp
 private const val NavTravelDampingRatio = 0.82f
 private const val NavTravelStiffness = 1_000f
 
-/** Haze owns the dark material; the dock and light navigation keep the shared glass fill. */
-internal fun navBarFill(colors: FlickColors): Color =
-    if (colors.isLight) colors.glass else Color.Transparent
+/** Haze owns the nav material in both themes; an opaque fill would hide its backdrop. */
+internal fun navBarFill(colors: FlickColors): Color = Color.Transparent
 
-/** Ordered stabilizer then brand tint, applied to the blurred route by Haze. */
+/**
+ * Tint over the blurred route. Forty percent material leaves sixty percent of the
+ * backdrop participating; dark mode splits that budget between a small luminance
+ * stabilizer and the bright Ready blue.
+ */
 internal fun navBarHazeTints(colors: FlickColors): List<Color> =
     if (colors.isLight) {
-        emptyList()
+        listOf(colors.glass.copy(alpha = NavTintOpacity))
     } else {
         listOf(
             Color.Black.copy(alpha = DarkNavStabilizerAlpha),
@@ -414,13 +419,19 @@ internal fun navInactiveInk(colors: FlickColors): Color =
 internal fun navActiveLabelInk(colors: FlickColors): Color =
     if (colors.isLight) colors.onSurface else Color.White
 
-/** The dark bar's blue tint is its glass treatment; a white sheen would wash it out. */
-internal fun navShowsGlassSheen(colors: FlickColors): Boolean = colors.isLight
+/** The tight rim is static and makes the translucent material legible in either theme. */
+internal fun navShowsGlassSheen(colors: FlickColors): Boolean = true
 
-private const val DarkNavStabilizerAlpha = 0.40f
-private const val DarkNavTintAlpha = 0.60f
-private const val DarkNavNoiseFactor = 0.06f
-private val DarkNavBlurRadius = 26.dp
+internal const val NavBackdropVisibility = 0.60f
+private const val NavTintOpacity = 1f - NavBackdropVisibility
+private const val DarkNavStabilizerAlpha = 0.14f
+private const val DarkNavTintAlpha =
+    (NavTintOpacity - DarkNavStabilizerAlpha) / (1f - DarkNavStabilizerAlpha)
+private const val NavNoiseFactor = 0.04f
+private val NavBlurRadius = 20.dp
+
+internal fun navBackdropBlurEnabled(sdkInt: Int): Boolean =
+    sdkInt >= Build.VERSION_CODES.TIRAMISU
 
 private data class NavTravelCommand(val tab: NavTab, val seat: Rect)
 
