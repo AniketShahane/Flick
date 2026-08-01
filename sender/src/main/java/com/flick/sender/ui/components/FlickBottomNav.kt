@@ -7,6 +7,7 @@ import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -72,6 +74,7 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
@@ -110,8 +113,8 @@ internal fun FlickBottomNav(
     )
     val indicator = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
     val scope = rememberCoroutineScope()
-    // Route-driven changes keep one conflated command stream. Taps start inline below, and
-    // Animatable's mutation lock cancels whichever route or tap travel they supersede.
+    // Route-driven changes keep one conflated command stream. Presses and taps start inline
+    // below, and Animatable's mutation lock cancels whichever travel they supersede.
     val travelCommands = remember { Channel<NavTravelCommand>(Channel.CONFLATED) }
     val target = remember { mutableStateOf<NavTravelCommand?>(null) }
     // The seat the shell actually resolved, readable from a coroutine that outlives the
@@ -155,17 +158,6 @@ internal fun FlickBottomNav(
             } else {
                 indicator.animateTo(command.seat, travel)
             }
-
-            // A route-driven command still reads the resolved seat back after the trip, so
-            // an external navigation change cannot strand the fill on a refused route.
-            val resolvedTab = settled.value
-            if (resolvedTab != command.tab && target.value == command) {
-                seats[resolvedTab]?.let { resolvedSeat ->
-                    val correction = NavTravelCommand(resolvedTab, resolvedSeat)
-                    target.value = correction
-                    travelCommands.trySend(correction)
-                }
-            }
         }
     }
 
@@ -174,38 +166,34 @@ internal fun FlickBottomNav(
     // restart its spring when the route catches up one frame later.
     LaunchedEffect(selected, seatEpoch, reduceMotion) {
         val destination = seats[selected] ?: return@LaunchedEffect
-        val command = NavTravelCommand(selected, destination)
-        if (target.value != command || reduceMotion) {
+        val command = NavTravelCommand(selected, destination, NavTravelOrigin.AUTHORITATIVE)
+        if (!target.value.hasSameDestination(command) || reduceMotion) {
             target.value = command
             travelCommands.trySend(command)
         }
     }
 
-    // Start the tap's travel inline until the first frame-clock suspension. Going through
-    // the route would add the arriving screen's work; going through the command channel
-    // adds another dispatcher turn before the animation can even latch its first frame.
-    val onTap: (NavTab) -> Unit = { tab ->
-        val seat = seats[tab]
-        val shouldStartTravel = navShouldStartTravel(
-            indicator = indicator.value,
-            isRunning = indicator.isRunning,
-            target = target.value?.seat,
-            destination = seat,
-        )
-        if (seat != null && shouldStartTravel) {
-            val command = NavTravelCommand(tab, seat)
-            target.value = command
-            scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                if (currentReduceMotion.value || indicator.value == Rect.Zero) {
-                    indicator.snapTo(command.seat)
-                } else {
-                    indicator.animateTo(command.seat, travel)
-                }
+    val launchTravel: (NavTravelCommand, Boolean) -> Unit = { command, correctAfter ->
+        target.value = command
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (currentReduceMotion.value || indicator.value == Rect.Zero) {
+                indicator.snapTo(command.seat)
+            } else {
+                indicator.animateTo(command.seat, travel)
+            }
 
+            if (correctAfter && target.value == command) {
+                // A preview can already be home when the click commits it. Give the shell
+                // two frame turns to publish the route before treating a mismatch as refusal.
+                if (settled.value != command.tab) repeat(2) { withFrameNanos { } }
                 val resolvedTab = settled.value
                 if (resolvedTab != command.tab && target.value == command) {
                     seats[resolvedTab]?.let { resolvedSeat ->
-                        val correction = NavTravelCommand(resolvedTab, resolvedSeat)
+                        val correction = NavTravelCommand(
+                            resolvedTab,
+                            resolvedSeat,
+                            NavTravelOrigin.AUTHORITATIVE,
+                        )
                         target.value = correction
                         if (currentReduceMotion.value) {
                             indicator.snapTo(resolvedSeat)
@@ -216,7 +204,55 @@ internal fun FlickBottomNav(
                 }
             }
         }
+    }
+
+    // The press is the first trustworthy intent signal and arrives before clickable waits
+    // for finger-up. It moves only the visual fill; the route still changes exclusively on
+    // click, and a cancelled gesture returns the fill to that authoritative route.
+    val onPress: (NavTab) -> Unit = onPress@{ tab ->
+        if (currentReduceMotion.value) return@onPress
+        val seat = seats[tab]
+        val shouldStartTravel = navShouldStartTravel(
+            indicator = indicator.value,
+            isRunning = indicator.isRunning,
+            target = target.value?.seat,
+            destination = seat,
+        )
+        if (seat != null && shouldStartTravel) {
+            launchTravel(NavTravelCommand(tab, seat, NavTravelOrigin.PREVIEW), false)
+        }
+    }
+
+    val onTap: (NavTab) -> Unit = { tab ->
+        val seat = seats[tab]
+        val previous = target.value
+        val shouldStartTravel = navShouldStartTravel(
+            indicator = indicator.value,
+            isRunning = indicator.isRunning,
+            target = previous?.seat,
+            destination = seat,
+        )
+        val commitsPreview = previous.isPreviewOf(tab, seat)
+        if (seat != null && (shouldStartTravel || commitsPreview)) {
+            launchTravel(NavTravelCommand(tab, seat, NavTravelOrigin.COMMITTED), true)
+        }
         onSelect(tab)
+    }
+    val onCancelledPress: (NavTab) -> Unit = { tab ->
+        val preview = target.value
+        if (preview?.origin == NavTravelOrigin.PREVIEW && preview.tab == tab) {
+            val resolvedTab = settled.value
+            seats[resolvedTab]?.let { resolvedSeat ->
+                launchTravel(
+                    NavTravelCommand(
+                        resolvedTab,
+                        resolvedSeat,
+                        NavTravelOrigin.AUTHORITATIVE,
+                    ),
+                    false,
+                )
+            }
+        }
     }
 
     Box(
@@ -264,6 +300,8 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.LIBRARY,
                 host = host,
                 onSeat = { reportSeat(NavTab.LIBRARY, it) },
+                onPress = { onPress(NavTab.LIBRARY) },
+                onCancelPress = { onCancelledPress(NavTab.LIBRARY) },
                 onClick = { onTap(NavTab.LIBRARY) },
             )
             NavItem(
@@ -272,6 +310,8 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.DEVICES,
                 host = host,
                 onSeat = { reportSeat(NavTab.DEVICES, it) },
+                onPress = { onPress(NavTab.DEVICES) },
+                onCancelPress = { onCancelledPress(NavTab.DEVICES) },
                 onClick = { onTap(NavTab.DEVICES) },
             )
             NavItem(
@@ -280,6 +320,8 @@ internal fun FlickBottomNav(
                 active = selected == NavTab.SETTINGS,
                 host = host,
                 onSeat = { reportSeat(NavTab.SETTINGS, it) },
+                onPress = { onPress(NavTab.SETTINGS) },
+                onCancelPress = { onCancelledPress(NavTab.SETTINGS) },
                 onClick = { onTap(NavTab.SETTINGS) },
             )
         }
@@ -293,6 +335,8 @@ private fun NavItem(
     active: Boolean,
     host: State<LayoutCoordinates?>,
     onSeat: (Rect) -> Unit,
+    onPress: () -> Unit,
+    onCancelPress: () -> Unit,
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -321,6 +365,24 @@ private fun NavItem(
     // No haptic here: the shell decides whether a tap moved at all — a re-tap of the
     // seat already carrying the fill is silent. FlickApp fires the pulse from onSelect.
     val interaction = remember { MutableInteractionSource() }
+    val currentOnPress = rememberUpdatedState(onPress)
+    val currentOnCancelPress = rememberUpdatedState(onCancelPress)
+    LaunchedEffect(interaction) {
+        val presses = mutableSetOf<PressInteraction.Press>()
+        interaction.interactions.collect { event ->
+            when (event) {
+                is PressInteraction.Press -> {
+                    if (presses.add(event) && presses.size == 1) currentOnPress.value()
+                }
+                is PressInteraction.Release -> presses.remove(event.press)
+                is PressInteraction.Cancel -> {
+                    if (presses.remove(event.press) && presses.isEmpty()) {
+                        currentOnCancelPress.value()
+                    }
+                }
+            }
+        }
+    }
     // Material's ripple dilutes whatever ink it is handed, and on this palette
     // onSurface is near-white — which lands on the glass as a grey blob. The seat
     // answers a touch by pressing in under it instead, washed in the same brand tint
@@ -332,25 +394,10 @@ private fun NavItem(
     val wash = rememberPressAmount(interaction, motionScheme.fastEffectsSpec())
     val washColor = colors.primary
 
-    Column(
+    Box(
         modifier = Modifier
             .width(76.dp)
             .heightIn(min = 48.dp)
-            .pressScale(interaction, target = NavPressScale)
-            .drawBehind {
-                // Read in the draw scope, so a press repaints one seat rather than
-                // recomposing the bar it sits in.
-                val alpha = if (active) 0f else wash.value * NavPressWashAlpha
-                if (alpha > 0f) {
-                    drawRoundRect(
-                        color = washColor,
-                        topLeft = Offset.Zero,
-                        size = size,
-                        cornerRadius = CornerRadius(NavPressWashRadius.toPx()),
-                        alpha = alpha,
-                    )
-                }
-            }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -358,41 +405,72 @@ private fun NavItem(
                 onClick = onClick,
             )
             .semantics(mergeDescendants = true) { selected = active },
-        horizontalAlignment = Alignment.CenterHorizontally,
+        contentAlignment = Alignment.TopCenter,
     ) {
+        // This unscaled sibling owns the indicator geometry. Measuring the icon inside the
+        // pressed layer made its animated scale look like a seat remeasurement, which let
+        // the route effect cancel the press-start travel on every frame.
         Box(
             modifier = Modifier
+                .size(NavIndicatorSeatWidth, NavIndicatorSeatHeight)
                 // Reported in the bar's own space: the fill is drawn once, above, and
                 // has to be placed against a seat rather than inside it.
                 .onGloballyPositioned { coordinates ->
                     host.value?.let { onSeat(it.localBoundingBoxOf(coordinates, clipBounds = false)) }
-                }
-                .padding(horizontal = 22.dp, vertical = 6.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            // Painted rather than composed as an Icon: the tint is a draw-scope colour
-            // filter here, and `Icon` can only take one resolved in composition. The label
-            // carries the name, so this glyph announces nothing a reader would hear twice.
-            val painter = rememberVectorPainter(icon)
-            Box(
-                Modifier.size(24.dp).drawBehind {
-                    with(painter) { draw(size, colorFilter = ColorFilter.tint(iconTint.value)) }
                 },
+        )
+        Column(
+            modifier = Modifier
+                .width(76.dp)
+                .heightIn(min = 48.dp)
+                .pressScale(interaction, target = NavPressScale)
+                .drawBehind {
+                    // Read in the draw scope, so a press repaints one seat rather than
+                    // recomposing the bar it sits in.
+                    val alpha = if (active) 0f else wash.value * NavPressWashAlpha
+                    if (alpha > 0f) {
+                        drawRoundRect(
+                            color = washColor,
+                            topLeft = Offset.Zero,
+                            size = size,
+                            cornerRadius = CornerRadius(NavPressWashRadius.toPx()),
+                            alpha = alpha,
+                        )
+                    }
+                },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier.padding(
+                    horizontal = NavIndicatorHorizontalPadding,
+                    vertical = NavIndicatorVerticalPadding,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Painted rather than composed as an Icon: the tint is a draw-scope colour
+                // filter here, and `Icon` can only take one resolved in composition. The label
+                // carries the name, so this glyph announces nothing a reader would hear twice.
+                val painter = rememberVectorPainter(icon)
+                Box(
+                    Modifier.size(NavIconSize).drawBehind {
+                        with(painter) { draw(size, colorFilter = ColorFilter.tint(iconTint.value)) }
+                    },
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            // The ink is handed over as a producer rather than as a style, so the tint animation
+            // resolves at draw time and never recomposes the label.
+            //
+            // One line always: the seat is a fixed 76 dp and the three of them are a lockup, so
+            // at an accessibility font scale the label gives up its tail rather than its row.
+            BasicText(
+                text = label,
+                style = FlickText.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = labelInk,
             )
         }
-        Spacer(Modifier.height(6.dp))
-        // The ink is handed over as a producer rather than as a style, so the tint animation
-        // resolves at draw time and never recomposes the label.
-        //
-        // One line always: the seat is a fixed 76 dp and the three of them are a lockup, so
-        // at an accessibility font scale the label gives up its tail rather than its row.
-        BasicText(
-            text = label,
-            style = FlickText.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = labelInk,
-        )
     }
 }
 
@@ -402,6 +480,11 @@ private fun NavItem(
 private const val NavPressScale = 0.92f
 private const val NavPressWashAlpha = 0.16f
 private val NavPressWashRadius = 20.dp
+private val NavIconSize = 24.dp
+private val NavIndicatorHorizontalPadding = 22.dp
+private val NavIndicatorVerticalPadding = 6.dp
+private val NavIndicatorSeatWidth = NavIconSize + NavIndicatorHorizontalPadding * 2
+private val NavIndicatorSeatHeight = NavIconSize + NavIndicatorVerticalPadding * 2
 private const val NavTravelDampingRatio = 0.82f
 private const val NavTravelStiffness = 1_000f
 
@@ -449,7 +532,19 @@ private val NavBlurRadius = 20.dp
 internal fun navBackdropBlurEnabled(sdkInt: Int): Boolean =
     sdkInt >= Build.VERSION_CODES.TIRAMISU
 
-private data class NavTravelCommand(val tab: NavTab, val seat: Rect)
+internal enum class NavTravelOrigin { PREVIEW, COMMITTED, AUTHORITATIVE }
+
+internal data class NavTravelCommand(
+    val tab: NavTab,
+    val seat: Rect,
+    val origin: NavTravelOrigin,
+)
+
+internal fun NavTravelCommand?.hasSameDestination(other: NavTravelCommand): Boolean =
+    this != null && tab == other.tab && seat == other.seat
+
+internal fun NavTravelCommand?.isPreviewOf(tab: NavTab, seat: Rect?): Boolean =
+    this != null && origin == NavTravelOrigin.PREVIEW && this.tab == tab && this.seat == seat
 
 /** A recorded target only suppresses a duplicate while its animation is still alive. */
 internal fun navShouldStartTravel(
