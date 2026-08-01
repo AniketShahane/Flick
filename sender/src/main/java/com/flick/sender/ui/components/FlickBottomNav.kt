@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -69,9 +70,11 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.launch
 
 /**
  * The floating glass navigation pill (design §5.4). It is drawn over the route rather
@@ -106,9 +109,9 @@ internal fun FlickBottomNav(
         stiffness = NavTravelStiffness,
     )
     val indicator = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
-    // One conflated command stream owns every call to animateTo. A second command cancels
-    // the collector's current child and immediately becomes the only destination in play;
-    // no canceled coroutine can leave a separate "commanded" flag pretending it arrived.
+    val scope = rememberCoroutineScope()
+    // Route-driven changes keep one conflated command stream. Taps start inline below, and
+    // Animatable's mutation lock cancels whichever route or tap travel they supersede.
     val travelCommands = remember { Channel<NavTravelCommand>(Channel.CONFLATED) }
     val target = remember { mutableStateOf<NavTravelCommand?>(null) }
     // The seat the shell actually resolved, readable from a coroutine that outlives the
@@ -153,9 +156,8 @@ internal fun FlickBottomNav(
                 indicator.animateTo(command.seat, travel)
             }
 
-            // A tap is allowed to lead navigation, but the route remains authoritative. If
-            // the shell refused the request, enqueue the resolved seat through this SAME
-            // owner after the outward trip rather than starting a competing animation.
+            // A route-driven command still reads the resolved seat back after the trip, so
+            // an external navigation change cannot strand the fill on a refused route.
             val resolvedTab = settled.value
             if (resolvedTab != command.tab && target.value == command) {
                 seats[resolvedTab]?.let { resolvedSeat ->
@@ -179,14 +181,9 @@ internal fun FlickBottomNav(
         }
     }
 
-    // The tap, which is a whole frame earlier than the route it causes.
-    // rememberCoroutineScope dispatches onto the composition's own frame clock, and that
-    // clock drains its trampoline BEFORE its frame callbacks in the same Choreographer
-    // pass — so a launch from a click handler, which runs in the input phase, reaches
-    // animateTo while the tapped frame's own time is still the frame time. The first drawn
-    // frame after the tap is already a moved one, and because the spring runs on the wall
-    // clock, whatever that expensive frame costs is absorbed by the travel instead of
-    // being added in front of it.
+    // Start the tap's travel inline until the first frame-clock suspension. Going through
+    // the route would add the arriving screen's work; going through the command channel
+    // adds another dispatcher turn before the animation can even latch its first frame.
     val onTap: (NavTab) -> Unit = { tab ->
         val seat = seats[tab]
         val shouldStartTravel = navShouldStartTravel(
@@ -198,7 +195,26 @@ internal fun FlickBottomNav(
         if (seat != null && shouldStartTravel) {
             val command = NavTravelCommand(tab, seat)
             target.value = command
-            travelCommands.trySend(command)
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                if (currentReduceMotion.value || indicator.value == Rect.Zero) {
+                    indicator.snapTo(command.seat)
+                } else {
+                    indicator.animateTo(command.seat, travel)
+                }
+
+                val resolvedTab = settled.value
+                if (resolvedTab != command.tab && target.value == command) {
+                    seats[resolvedTab]?.let { resolvedSeat ->
+                        val correction = NavTravelCommand(resolvedTab, resolvedSeat)
+                        target.value = correction
+                        if (currentReduceMotion.value) {
+                            indicator.snapTo(resolvedSeat)
+                        } else {
+                            indicator.animateTo(resolvedSeat, travel)
+                        }
+                    }
+                }
+            }
         }
         onSelect(tab)
     }
