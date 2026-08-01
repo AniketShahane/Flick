@@ -2,7 +2,11 @@ package com.flick.sender.ui.components
 
 import android.app.ActivityManager
 import android.content.Context
+import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
+import android.os.Build
+import android.os.CancellationSignal
+import android.util.Size as AndroidSize
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -61,10 +65,15 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.DataSource
 import coil.decode.VideoFrameDecoder
+import coil.fetch.DrawableResult
+import coil.fetch.Fetcher
 import coil.memory.MemoryCache
 import coil.request.ImageRequest
+import coil.request.Options
 import coil.request.videoFrameMillis
+import coil.size.Dimension
 import coil.size.Precision
 import com.flick.sender.R
 import com.flick.sender.model.HdrType
@@ -81,6 +90,8 @@ import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -102,15 +113,12 @@ fun rememberVideoImageLoader(): ImageLoader {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }
             .crossfade(true)
-            // Stated rather than inherited. Coil's default budget is a fraction of the
-            // heap that has moved between its own releases, and what has to fit here is
-            // fixed by this app: a full grid of ~2 MB stills plus the one the detail
-            // backdrop is flying to. A miss is not a re-read of a file — it is another
-            // frame extracted out of a multi-GB 4K file by the same process that is
-            // serving those bytes over HTTP.
+            // An absolute ceiling keeps a large-heap phone from turning a proportional
+            // default into an oversized gallery cache. The proportional half still lets
+            // the platform's low-memory verdict shrink it further.
             .memoryCache {
                 MemoryCache.Builder(appContext)
-                    .maxSizePercent(framePinBudget(appContext))
+                    .maxSizeBytes(frameCacheBudgetBytes(appContext))
                     .build()
             }
             .build()
@@ -119,33 +127,102 @@ fun rememberVideoImageLoader(): ImageLoader {
 }
 
 /**
- * Share of the heap the decoded stills may pin — a quarter of it, which holds a grid and
- * the backdrop it flies into on the ~96 MB heap a mid-range phone gives this process.
- *
- * The low-RAM branch is the platform's own verdict on the device, and raising a bitmap
- * budget on a phone that has declared itself short of memory is not this loader's call: it
- * keeps the share Coil would have chosen there.
+ * The smaller of a conservative heap share and a hard byte ceiling. Low-RAM devices get
+ * both a smaller share and a smaller ceiling.
  */
-private fun framePinBudget(context: Context): Double {
+private fun frameCacheBudgetBytes(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-    return if (activityManager?.isLowRamDevice == true) FramePinLowRam else FramePinBudget
+    return frameCacheBudgetBytes(
+        memoryClassMb = activityManager?.memoryClass?.takeIf { it > 0 } ?: DefaultMemoryClassMb,
+        lowRam = activityManager?.isLowRamDevice == true,
+    )
 }
 
-private const val FramePinBudget = 0.25
-private const val FramePinLowRam = 0.15
+internal fun frameCacheBudgetBytes(memoryClassMb: Int, lowRam: Boolean): Int {
+    val heapBytes = memoryClassMb.coerceAtLeast(1).toLong() * BytesPerMiB
+    val proportional = heapBytes / if (lowRam) LowRamBudgetDivisor else FrameBudgetDivisor
+    val cap = if (lowRam) LowRamFrameCacheCapBytes else FrameCacheCapBytes
+    return minOf(proportional, cap.toLong()).toInt()
+}
 
-// ONE size for every surface, and it is not a per-surface choice to make. Coil keys the
-// memory cache on the file and validates the entry against the pixel size the request
-// asks for, so a smaller grid decode is rejected by the detail backdrop's larger request
-// and extracted again — the blank frame a shared-element flight cannot survive — while a
-// second size under the same key would simply evict the first. A tile is oversampled at
-// these pixels and the backdrop is upscaled from them; that is the cost of the two being
-// the same object in flight.
-//
-// 16:9 at 960 is ~2.07 MB as ARGB_8888, which is what the loader's pin budget above is
-// sized against.
+private const val BytesPerMiB = 1_048_576L
+private const val DefaultMemoryClassMb = 96
+private const val FrameBudgetDivisor = 8L
+private const val LowRamBudgetDivisor = 12L
+private const val FrameCacheCapBytes = 16 * 1_048_576
+private const val LowRamFrameCacheCapBytes = 8 * 1_048_576
+
+// Cast surfaces keep the exact one-third 960x540 frame. Library and Detail ask MediaStore
+// for the same provider-cached scene at their own sizes; pre-Q and provider failures fall
+// through to the exact one-third decoder. Detail reads the library entry as its placeholder.
 private const val FrameWidthPx = 960
 private const val FrameHeightPx = 540
+private const val LibraryFrameWidthPx = 512
+private const val LibraryFrameHeightPx = 288
+
+private object MediaStoreThumbnailFetcher : Fetcher.Factory<Uri> {
+    override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return Fetcher {
+            suspendCancellableCoroutine { continuation ->
+                val cancellationSignal = CancellationSignal()
+                continuation.invokeOnCancellation { cancellationSignal.cancel() }
+                val target = options.thumbnailTargetSize()
+                val result = try {
+                    val bitmap = options.context.contentResolver.loadThumbnail(
+                        data,
+                        target,
+                        cancellationSignal,
+                    )
+                    DrawableResult(
+                        drawable = BitmapDrawable(options.context.resources, bitmap),
+                        isSampled = true,
+                        dataSource = DataSource.DISK,
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                if (continuation.isActive) continuation.resume(result)
+            }
+        }
+    }
+}
+
+private fun Options.thumbnailTargetSize(): AndroidSize = AndroidSize(
+    (size.width as? Dimension.Pixels)?.px ?: LibraryFrameWidthPx,
+    (size.height as? Dimension.Pixels)?.px ?: LibraryFrameHeightPx,
+)
+
+internal fun libraryThumbnailCacheKey(
+    uri: String,
+    dateModifiedSeconds: Long,
+    generationModified: Long?,
+    mediaStoreVersion: String?,
+    sizeBytes: Long,
+    durationMs: Long,
+    width: Int,
+    height: Int,
+): String {
+    val revision = if (generationModified != null && mediaStoreVersion != null) {
+        "generation:${mediaStoreVersion.length}:$mediaStoreVersion:$generationModified"
+    } else {
+        "legacy:$dateModifiedSeconds:$sizeBytes:$durationMs:${width}x$height"
+    }
+    return "library-thumb-v2:${uri.length}:$uri:$revision"
+}
+
+private fun libraryThumbnailCacheKey(item: MediaItem): String = libraryThumbnailCacheKey(
+    uri = item.uriKey,
+    dateModifiedSeconds = item.dateModifiedSeconds,
+    generationModified = item.generationModified,
+    mediaStoreVersion = item.mediaStoreVersion,
+    sizeBytes = item.sizeBytes,
+    durationMs = item.durationMs,
+    width = item.width,
+    height = item.height,
+)
+
+private fun heroFrameCacheKey(item: MediaItem): String = "${libraryThumbnailCacheKey(item)}:hero"
 
 /** Shared-element key for a library item's still, matched by Library and Detail. */
 fun posterKey(itemId: Long): String = "poster-$itemId"
@@ -163,9 +240,19 @@ fun rememberVideoFrameRequest(
     uri: Uri?,
     durationMs: Long,
     crossfade: Boolean = false,
+    memoryCacheKey: String? = null,
+    placeholderMemoryCacheKey: String? = null,
+    preferMediaStoreThumbnail: Boolean = false,
 ): ImageRequest? {
     val context = LocalContext.current
-    return remember(uri, durationMs, crossfade) {
+    return remember(
+        uri,
+        durationMs,
+        crossfade,
+        memoryCacheKey,
+        placeholderMemoryCacheKey,
+        preferMediaStoreThumbnail,
+    ) {
         uri?.let {
             ImageRequest.Builder(context)
                 .data(it)
@@ -174,10 +261,43 @@ fun rememberVideoFrameRequest(
                 .size(FrameWidthPx, FrameHeightPx)
                 .precision(Precision.INEXACT)
                 .crossfade(crossfade)
+                .apply {
+                    memoryCacheKey?.let { key -> memoryCacheKey(key) }
+                    placeholderMemoryCacheKey?.let { key -> placeholderMemoryCacheKey(key) }
+                    if (preferMediaStoreThumbnail) {
+                        fetcherFactory(MediaStoreThumbnailFetcher, Uri::class.java)
+                    }
+                }
                 .build()
         }
     }
 }
+
+@Composable
+private fun rememberLibraryThumbnailRequest(item: MediaItem): ImageRequest {
+    val context = LocalContext.current
+    val cacheKey = libraryThumbnailCacheKey(item)
+    return remember(item.uri, item.durationMs, cacheKey) {
+        ImageRequest.Builder(context)
+            .data(item.uri)
+            .videoFrameMillis((item.durationMs / 3L).coerceAtLeast(1_000L))
+            .size(LibraryFrameWidthPx, LibraryFrameHeightPx)
+            .precision(Precision.INEXACT)
+            .memoryCacheKey(cacheKey)
+            .fetcherFactory(MediaStoreThumbnailFetcher, Uri::class.java)
+            .crossfade(true)
+            .build()
+    }
+}
+
+@Composable
+fun rememberDetailVideoFrameRequest(item: MediaItem): ImageRequest = rememberVideoFrameRequest(
+    uri = item.uri,
+    durationMs = item.durationMs,
+    memoryCacheKey = heroFrameCacheKey(item),
+    placeholderMemoryCacheKey = libraryThumbnailCacheKey(item),
+    preferMediaStoreThumbnail = true,
+)!!
 
 /**
  * The spring every shared frame travels on, spelled out rather than taken from the motion
@@ -334,7 +454,7 @@ fun VideoTile(
     val colors = LocalFlickColors.current
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
-    val request = rememberVideoFrameRequest(item.uri, item.durationMs, crossfade = true)
+    val request = rememberLibraryThumbnailRequest(item)
     val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
     // The still is held back rather than dimmed: a scrim on top would fight the one the
     // badges already read against, and a frame at full chroma beside a refusal chip reads

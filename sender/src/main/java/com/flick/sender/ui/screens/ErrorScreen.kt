@@ -42,6 +42,8 @@ import com.flick.sender.R
 import com.flick.sender.model.CastErrorKind
 import com.flick.sender.model.CastFailure
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.LinkVerdict
+import com.flick.sender.ui.Format
 import com.flick.sender.ui.components.StatusKind
 import com.flick.sender.ui.components.StatusPill
 import com.flick.sender.ui.theme.FlickCorners
@@ -59,7 +61,7 @@ import com.flick.sender.ui.theme.pressScale
  */
 internal enum class CastErrorFace {
     UNSUPPORTED_CONTAINER, UNSUPPORTED_VIDEO, UNSUPPORTED_HDR, DAMAGED_FILE, UNREADABLE_SOURCE,
-    DECODER_UNAVAILABLE, TV_APP_CLOSED, TV_BUSY, UPDATE_REQUIRED, SLOW_START,
+    DECODER_UNAVAILABLE, TV_APP_CLOSED, TV_BUSY, UPDATE_REQUIRED, SLOW_START, SLOW_LINK,
     NOT_SERVING, UNREACHABLE, NO_LAN, GENERIC,
 }
 
@@ -71,6 +73,14 @@ internal data class CastErrorPresentation(
     val primary: CastErrorAction,
     val secondary: CastErrorAction?,
 )
+
+/**
+ * The two throughputs the slow-link body quotes, already formatted. Pre-formatted
+ * because these numbers are the whole claim the face makes — both have to carry the
+ * same unit spelling, which is [com.flick.sender.ui.Format.bitrate]'s job, not this
+ * file's, and this way the copy stays a `when` over faces rather than over verdicts.
+ */
+internal data class LinkFacts(val required: String, val measured: String)
 
 /**
  * The receiver's terminal code → the face and the moves the user is offered.
@@ -89,8 +99,9 @@ internal fun castErrorPresentation(
     kind: CastErrorKind,
     failure: CastFailure,
     canPlayOnPhone: Boolean,
+    linkStarved: Boolean,
 ): CastErrorPresentation {
-    val face = castErrorFace(failure.code, kind)
+    val face = castErrorFace(failure.code, kind, linkStarved)
     val (offered, alternative) = face.moves()
     val primary = offered.available(canPlayOnPhone)
     val secondary = alternative?.available(canPlayOnPhone)?.takeIf { it != primary }
@@ -107,8 +118,18 @@ internal fun castErrorPresentation(
  * Codes are matched before kinds because a kind is a summary: `errorKind` folds every
  * media diagnosis into GENERIC, which is exactly how a container the TV cannot open came
  * to be presented as "something went wrong".
+ *
+ * [linkStarved] splits `startup_timeout` in two without touching the wire. The receiver
+ * reports the same code either way — it timed out and cannot know why — and the phone,
+ * which served the bytes, is the only side that measured the path. This is the technique
+ * `unsupported_video_codec` already uses in the other direction: one code, resolved to
+ * the face the evidence supports. Nothing here is a capability, so no release is coupled.
  */
-internal fun castErrorFace(code: String, kind: CastErrorKind): CastErrorFace = when (code) {
+internal fun castErrorFace(
+    code: String,
+    kind: CastErrorKind,
+    linkStarved: Boolean,
+): CastErrorFace = when (code) {
     "unsupported_container" -> CastErrorFace.UNSUPPORTED_CONTAINER
     "unsupported_video_codec", "unsupported_video_format" -> CastErrorFace.UNSUPPORTED_VIDEO
     "unsupported_hdr_profile" -> CastErrorFace.UNSUPPORTED_HDR
@@ -118,7 +139,7 @@ internal fun castErrorFace(code: String, kind: CastErrorKind): CastErrorFace = w
     "tv_backgrounded" -> CastErrorFace.TV_APP_CLOSED
     "active_cast_busy" -> CastErrorFace.TV_BUSY
     "update_required" -> CastErrorFace.UPDATE_REQUIRED
-    "startup_timeout" -> CastErrorFace.SLOW_START
+    "startup_timeout" -> if (linkStarved) CastErrorFace.SLOW_LINK else CastErrorFace.SLOW_START
     else -> when (kind) {
         CastErrorKind.REACHABLE_NOT_SERVING -> CastErrorFace.NOT_SERVING
         CastErrorKind.UNREACHABLE -> CastErrorFace.UNREACHABLE
@@ -140,6 +161,10 @@ private fun CastErrorFace.moves(): Pair<CastErrorAction, CastErrorAction?> = whe
     CastErrorFace.UNSUPPORTED_HDR,
     CastErrorFace.DECODER_UNAVAILABLE,
     -> CastErrorAction.PLAY_ON_PHONE to CastErrorAction.BACK_TO_LIBRARY
+    // The one timeout where the phone is led with rather than the library: the file and
+    // the TV are both fine and only the path between them was short, so the same bytes
+    // decoded locally are the move that provably works right now.
+    CastErrorFace.SLOW_LINK -> CastErrorAction.PLAY_ON_PHONE to CastErrorAction.BACK_TO_LIBRARY
     // Still offered, but not led with: a file the TV could not parse, or one that never
     // reached a frame, is a poor bet to send the user off to watch somewhere else.
     CastErrorFace.DAMAGED_FILE,
@@ -181,7 +206,18 @@ fun ErrorScreen(
     val failedItem by controller.failureItem.collectAsState()
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
 
-    val presentation = castErrorPresentation(kind, failure, canPlayOnPhone = failedItem != null)
+    // The verdict the controller froze at the terminal, never the live one: teardown
+    // resets the monitor, so by the time this screen composes the live flow reads Unknown
+    // and every slow link would arrive here wearing the startup-timeout face.
+    val failureVerdict by controller.failureLinkVerdict.collectAsState()
+    val starved = failureVerdict as? LinkVerdict.Starved
+
+    val presentation = castErrorPresentation(
+        kind,
+        failure,
+        canPlayOnPhone = failedItem != null,
+        linkStarved = starved != null,
+    )
     val face = presentation.face
     val amber = face.tone() == StatusKind.CAUTION
     val dotColor = if (amber) colors.caution else colors.trouble
@@ -212,8 +248,11 @@ fun ErrorScreen(
         }
     }
 
+    val linkFacts = starved?.let {
+        LinkFacts(required = Format.bitrate(it.requiredBps), measured = Format.bitrate(it.measuredBps))
+    }
     val title = face.title(tvName)
-    val body = face.body(tvName, retryable = failure.retryable)
+    val body = face.body(tvName, retryable = failure.retryable, link = linkFacts)
     val pillText = face.pill()
     val primary = presentation.primary
     val secondary = presentation.secondary
@@ -336,6 +375,7 @@ private fun CastErrorFace.tone(): StatusKind = when (this) {
     CastErrorFace.DECODER_UNAVAILABLE,
     CastErrorFace.TV_BUSY,
     CastErrorFace.SLOW_START,
+    CastErrorFace.SLOW_LINK,
     CastErrorFace.NOT_SERVING,
     -> StatusKind.CAUTION
     CastErrorFace.TV_APP_CLOSED,
@@ -358,6 +398,7 @@ private fun CastErrorFace.title(tvName: String): String = when (this) {
     CastErrorFace.TV_BUSY -> stringResource(R.string.error_busy_title, tvName)
     CastErrorFace.UPDATE_REQUIRED -> stringResource(R.string.error_update_title)
     CastErrorFace.SLOW_START -> stringResource(R.string.error_timeout_title)
+    CastErrorFace.SLOW_LINK -> stringResource(R.string.error_slowlink_title)
     CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_title)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_title, tvName)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_title)
@@ -368,9 +409,14 @@ private fun CastErrorFace.title(tvName: String): String = when (this) {
  * [retryable] reaches only the generic face, and only because the shipped generic body
  * ends in "Try again" — words that have no button under them on a failure that offers no
  * retry. Every other body describes what happened and promises nothing.
+ *
+ * [link] reaches only [CastErrorFace.SLOW_LINK], the one body that quotes measurements.
+ * A null there cannot arrive through [castErrorFace] — the same `Starved` verdict decides
+ * the face and carries both numbers — but the two are separate arguments, so the branch
+ * falls back to the sentence that is true either way rather than to a formatted blank.
  */
 @Composable
-private fun CastErrorFace.body(tvName: String, retryable: Boolean): String = when (this) {
+private fun CastErrorFace.body(tvName: String, retryable: Boolean, link: LinkFacts?): String = when (this) {
     CastErrorFace.UNSUPPORTED_CONTAINER -> stringResource(R.string.error_container_body, tvName)
     CastErrorFace.UNSUPPORTED_VIDEO -> stringResource(R.string.error_video_body, tvName)
     CastErrorFace.UNSUPPORTED_HDR -> stringResource(R.string.error_hdr_body, tvName)
@@ -381,6 +427,11 @@ private fun CastErrorFace.body(tvName: String, retryable: Boolean): String = whe
     CastErrorFace.TV_BUSY -> stringResource(R.string.error_busy_body)
     CastErrorFace.UPDATE_REQUIRED -> stringResource(R.string.error_update_body, tvName)
     CastErrorFace.SLOW_START -> stringResource(R.string.error_timeout_body, tvName)
+    CastErrorFace.SLOW_LINK -> if (link != null) {
+        stringResource(R.string.error_slowlink_body, tvName, link.required, link.measured)
+    } else {
+        stringResource(R.string.error_timeout_body, tvName)
+    }
     CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_body, tvName)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_body)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_body)
@@ -403,6 +454,7 @@ private fun CastErrorFace.pill(): String = when (this) {
     CastErrorFace.TV_BUSY -> stringResource(R.string.error_busy_pill)
     CastErrorFace.UPDATE_REQUIRED -> stringResource(R.string.error_update_pill)
     CastErrorFace.SLOW_START -> stringResource(R.string.error_timeout_pill)
+    CastErrorFace.SLOW_LINK -> stringResource(R.string.error_slowlink_pill)
     CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_pill)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_pill)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_pill)

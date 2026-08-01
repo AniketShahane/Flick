@@ -52,4 +52,13 @@ object Format {
     /** bits/s → `61.4 Mb/s`. */
     fun megabits(bitsPerSec: Long): String =
         String.format(Locale.US, "%.1f Mb/s", bitsPerSec / 1_000_000.0)
+
+    /**
+     * bits/s → `12.4 Mbps`, for the link-capacity copy. Spelt out rather than [megabits]
+     * because these strings read as sentences, and every one of them puts two of these
+     * numbers next to each other for comparison — so the unit has to be the same glyphs
+     * both times and has to live in exactly one place.
+     */
+    fun bitrate(bitsPerSec: Long): String =
+        String.format(Locale.US, "%.1f Mbps", bitsPerSec.coerceAtLeast(0L) / 1_000_000.0)
 }

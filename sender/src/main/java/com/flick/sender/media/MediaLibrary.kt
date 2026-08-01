@@ -36,11 +36,19 @@ object MediaLibrary {
         // same release, and the library's folder feature is absent below it rather than
         // guessed at from a file path.
         val hasFolders = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val hasGeneration = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        val mediaStoreVersion = if (hasGeneration) {
+            runCatching { MediaStore.getVersion(context) }.getOrNull()
+        } else {
+            null
+        }
         val projection = buildList {
             add(MediaStore.Video.Media._ID)
             add(MediaStore.Video.Media.DISPLAY_NAME)
             add(MediaStore.Video.Media.DURATION)
             add(MediaStore.Video.Media.SIZE)
+            add(MediaStore.Video.Media.DATE_MODIFIED)
+            if (hasGeneration) add(MediaStore.MediaColumns.GENERATION_MODIFIED)
             add(MediaStore.Video.Media.WIDTH)
             add(MediaStore.Video.Media.HEIGHT)
             if (hasFolders) {
@@ -58,6 +66,12 @@ object MediaLibrary {
                 val nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
                 val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
                 val sizeCol = c.getColumnIndex(MediaStore.Video.Media.SIZE)
+                val modifiedCol = c.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                val generationCol = if (hasGeneration) {
+                    c.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                } else {
+                    -1
+                }
                 val wCol = c.getColumnIndex(MediaStore.Video.Media.WIDTH)
                 val hCol = c.getColumnIndex(MediaStore.Video.Media.HEIGHT)
                 val bucketCol = if (hasFolders) {
@@ -87,6 +101,9 @@ object MediaLibrary {
                         // a claim it can recognise as missing in exactly one form.
                         durationMs = unsignedColumn(c, durCol),
                         sizeBytes = if (sizeCol >= 0 && !c.isNull(sizeCol)) c.getLong(sizeCol) else -1L,
+                        dateModifiedSeconds = unsignedColumn(c, modifiedCol),
+                        generationModified = generationColumn(c, generationCol),
+                        mediaStoreVersion = mediaStoreVersion,
                         width = pixelColumn(c, wCol),
                         height = pixelColumn(c, hCol),
                         bucket = if (bucketCol >= 0) c.getString(bucketCol) else null,
@@ -113,6 +130,9 @@ object MediaLibrary {
      */
     private fun bucketColumn(cursor: Cursor, index: Int): Long? =
         if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else null
+
+    private fun generationColumn(cursor: Cursor, index: Int): Long? =
+        if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index).takeIf { it >= 0L } else null
 
     private fun unsignedColumn(cursor: Cursor, index: Int): Long =
         if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index).coerceAtLeast(0L) else 0L

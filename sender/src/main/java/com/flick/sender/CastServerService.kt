@@ -21,11 +21,14 @@ import com.flick.sender.util.FlickLog
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -45,6 +48,13 @@ class CastServerService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val resourceOwnership = GenerationResourceOwnership()
+
+    // The throughput sampler. It belongs to the service and not to a screen because the
+    // only other caller of TransferTelemetry's fold is a LaunchedEffect inside the signal
+    // sheet: with that sheet closed — which is nearly always — the byte counters keep
+    // counting but the derived RATE never advances, so anything reading it would measure
+    // nothing. This lives exactly as long as the served session does.
+    private var samplerJob: Job? = null
 
     // The LAN IP the live socket is bound to, so a later subtitle retarget composes
     // its URL against the same origin the video URL already uses.
@@ -129,6 +139,7 @@ class CastServerService : Service() {
                                     return@synchronized
                                 }
                                 TransferTelemetry.reset()
+                                startSampler()
                                 resourceOwnership.claimLocks(session)
                                 acquireLocks()
                                 servedHost = bindHost
@@ -236,6 +247,7 @@ class CastServerService : Service() {
             releaseLocks()
         }
         if (release.server) {
+            stopSampler()
             httpServer.stop()
             // Tearing down the socket is what revokes the subtitle token; drop the
             // published URL in the same step so nothing can advertise a dead capability.
@@ -248,10 +260,33 @@ class CastServerService : Service() {
         synchronized(lockGuard) {
             resourceOwnership.releaseAll()
             releaseLocks()
+            stopSampler()
             httpServer.stop()
             servedHost = null
             SubtitleServingState.clear()
         }
+    }
+
+    // --- Throughput sampler -------------------------------------------------
+
+    /**
+     * Tick the transfer fold once a second for as long as bytes can move. One second is
+     * the resolution the capacity verdict is written against; anything slower averages a
+     * buffer fill together with the throttle that follows it.
+     */
+    private fun startSampler() {
+        samplerJob?.cancel()
+        samplerJob = serviceScope.launch {
+            while (isActive) {
+                delay(SAMPLE_INTERVAL_MS)
+                TransferTelemetry.sampleNow()
+            }
+        }
+    }
+
+    private fun stopSampler() {
+        samplerJob?.cancel()
+        samplerJob = null
     }
 
     // --- Wake / Wi-Fi locks -------------------------------------------------
@@ -376,6 +411,7 @@ class CastServerService : Service() {
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
         private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
         private const val SOURCE_SERVER_START_FAILED = "source_server_start_failed"
+        private const val SAMPLE_INTERVAL_MS = 1_000L
 
         // 16 bytes = 128 bits of SecureRandom entropy per session token.
         private const val TOKEN_BYTES = 16

@@ -8,17 +8,13 @@
   since it no longer has the bars balancing it on the left.
 
   The path is the 64-unit grid triangle at 1.15x, one notch above the colour
-  mark's 1.1x so it carries the same weight without the bars. The group applies
-  the same 0.7552083 the colour mark now takes, about (54,54) — translate
-  54 x (1 - 0.7552083) = 13.21875 — so the 1.15/1.1 relationship survives the
-  rescale and the themed icon still reads at the size of the icon it stands in
-  for. Sizing it against the mask instead would leave the tinted mark visibly
-  larger than the coloured one it replaces.
+  mark's 1.1x so it carries the same weight without the bars. Its source painted
+  bounds are 42.55 x 49.45 units including the round stroke. The group scale is
+  48 / 49.45 = 0.97067745, giving a 41.30 x 48.00 themed mark. Scaling about
+  (54,54) requires 54 x (1 - 0.97067745) = 1.5834177 translation on both axes.
 
-  No disc: the system masks and re-tints this layer itself, and it is that mask,
-  not our r=33 disc, that bounds it. Farthest point is a rear vertex, 19.127 from
-  centre plus the 3.908 scaled stroke half-width = 23.03, well inside the
-  33-unit guaranteed circle.
+  The farthest possible painted point is 29.60 from centre, leaving 3.40 units
+  inside Android's radius-33 safe zone before the system masks and re-tints it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -27,10 +23,10 @@
     android:viewportHeight="108">
 
     <group
-        android:scaleX="0.7552083"
-        android:scaleY="0.7552083"
-        android:translateX="13.21875"
-        android:translateY="13.21875">
+        android:scaleX="0.97067745"
+        android:scaleY="0.97067745"
+        android:translateX="1.5834177"
+        android:translateY="1.5834177">
 
         <path
             android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"

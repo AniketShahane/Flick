@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
@@ -38,6 +40,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
@@ -46,8 +49,12 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.LinkCapacityPolicy
+import com.flick.sender.net.LinkVerdict
+import com.flick.sender.ui.Format
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
+import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
@@ -93,11 +100,18 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
         value = if (uri != null) MediaProbe.detectHdr(context, uri) else null
     }
 
-    val neededMbps = when (item?.resolutionLabel) {
-        "4K" -> 41
-        "1080p" -> 18
-        "HD" -> 10
-        else -> 8
+    // Full scale is what THIS film needs to cross the wire — container bytes over container
+    // duration — so a full bar is the link carrying it in real time and half a bar is the
+    // buffer draining at half speed. The resolution ladder is the fallback for a row
+    // MediaStore never measured: it is a claim about a class of file, not about this one.
+    val requiredBps = remember(item) {
+        item?.let { LinkCapacityPolicy.requiredBitrateBps(it.sizeBytes, it.durationMs) }
+    }
+    val neededMbps = requiredBps?.div(1_000_000.0) ?: when (item?.resolutionLabel) {
+        "4K" -> 41.0
+        "1080p" -> 18.0
+        "HD" -> 10.0
+        else -> 8.0
     }
     val throughputMbps = signal.throughputBitsPerSec / 1_000_000.0
     // TransferTelemetry only counts bytes this phone's server actually wrote, and it
@@ -105,8 +119,15 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
     val serving = signal.serving
     val throughputFraction = (throughputMbps / neededMbps).coerceIn(0.0, 1.0).toFloat()
 
+    // Starved is the only verdict with a face. Marginal is above real time and drives no UI
+    // anywhere in the app; Proven and Unknown leave the sheet exactly as it reads today.
+    val starved = controller.linkVerdict.collectAsState().value as? LinkVerdict.Starved
+
     val unknown = stringResource(R.string.media_unknown)
     val signalColor = if (signal.healthy) colors.link else colors.caution
+    // The band decides the Wi-Fi row's ink; the bar is the one instrument measuring
+    // throughput against the film, so it answers to the measurement as well as the band.
+    val throughputColor = if (starved != null) colors.caution else signalColor
     val networkStatus = stringResource(R.string.a11y_network_status, signal.chipText())
 
     BottomSheet(
@@ -137,9 +158,16 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
                 unit = stringResource(R.string.quality_unit_mbps),
                 known = serving,
                 fraction = { if (serving) throughputFraction else 0f },
-                barColor = signalColor,
+                barColor = throughputColor,
             )
             BufferGauge(playbackState = playbackState, casting = item != null)
+        }
+
+        // Directly under the pair, because it is the sentence the two gauges add up to:
+        // the reserve gauge is falling because the throughput gauge is short.
+        starved?.let {
+            Spacer(Modifier.height(11.dp))
+            StarvedNote(measuredBps = it.measuredBps, requiredBps = it.requiredBps)
         }
 
         Spacer(Modifier.height(18.dp))
@@ -204,6 +232,53 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
                 .heightIn(min = 48.dp)
                 .padding(vertical = 17.dp),
         )
+    }
+}
+
+/**
+ * The two numbers the gauges above are drawn from, stated once in words — this is the seat
+ * a curious user opened the sheet to find.
+ *
+ * Deliberately not a tinted advisory: a saturated fill would be the loudest thing in an
+ * instrument panel, and the instruments have already said it in colour. It carries no
+ * action because this sheet is a readout — the fix is offered where a decision is being
+ * made, not where a measurement is being reported — and nothing here stops or downgrades
+ * the playback it is describing.
+ */
+@Composable
+private fun StarvedNote(measuredBps: Long, requiredBps: Long) {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlickCorners.qualityCard))
+            .background(colors.fillCard)
+            .padding(17.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            imageVector = FlickIcons.Warning,
+            contentDescription = null,
+            tint = colors.caution,
+            modifier = Modifier.size(21.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = stringResource(R.string.buffering_title_starved),
+                style = FlickText.bodySmall.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    color = colors.caution,
+                ),
+            )
+            Text(
+                text = stringResource(
+                    R.string.buffering_body_starved,
+                    Format.bitrate(measuredBps),
+                    Format.bitrate(requiredBps),
+                ),
+                style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+            )
+        }
     }
 }
 

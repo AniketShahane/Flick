@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.flick.sender.ui.theme.FlickCorners
@@ -125,6 +126,7 @@ fun AdvisoryCard(
     tone: AdvisoryTone,
     primaryLabel: String,
     onPrimary: () -> Unit,
+    titleStyle: TextStyle = FlickText.bodySmall.copy(fontWeight = FontWeight.ExtraBold),
     modifier: Modifier = Modifier,
     secondaryLabel: String? = null,
     onSecondary: (() -> Unit)? = null,
@@ -154,7 +156,7 @@ fun AdvisoryCard(
         Column {
             Text(
                 text = title,
-                style = FlickText.bodySmall.copy(fontWeight = FontWeight.ExtraBold, color = ink),
+                style = titleStyle.copy(color = ink),
             )
             Text(
                 text = body,

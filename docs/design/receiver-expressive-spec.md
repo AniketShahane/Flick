@@ -658,109 +658,75 @@ button, and the fixed "21:47" clock (use the real time).
 
 ## 8. Launcher icon & banner
 
-Both are currently the **old vermilion** mark (`#FF4B24`) and must be rebuilt in
-the new brand:
+The launcher asset follows the adaptive-icon contract: Flick supplies full-bleed
+colour layers and the platform launcher owns the visible shape. Circle, squircle,
+rounded-square, square, and OEM treatments such as Samsung One UI therefore mask
+the same artwork natively instead of clipping or rescaling a smaller shape baked
+into the background.
 
-- `res/drawable/ic_launcher.xml` — blue play triangle `#1240E8` with three amber
-  `#FFB61E` motion streaks (alphas 0.5 / 0.85 / 0.5) on the `#04070F` canvas,
-  matching the design's SVG geometry on the 64-unit grid: streaks at
-  `(9,22.5,13×5)`, `(4,31.5,11×5)`, `(9,40.5,13×5)` r=2.5; triangle
-  `M28,15 L56,32 L28,49` with a 9-unit round-join stroke.
-- Add a proper **adaptive icon**: `res/mipmap-anydpi-v26/ic_launcher.xml` with
-  `ic_launcher_background` + `ic_launcher_foreground` (the mark inset to the 66 dp
-  safe zone of the 108 dp canvas), and point the manifest at `@mipmap/ic_launcher`.
-  Keep a `@drawable/ic_launcher` fallback for pre-26 tooling paths.
-- The background layer is a **disc, not a plate** — `res/drawable/ic_launcher_disc.xml`,
-  `#04070F` at r = 33 about (54, 54), transparent outside it. Flick is round
-  because it chose to be, not because the device's mask said so.
-- `res/drawable/banner.xml` — 320 × 180 dp leanback banner: the mark plus a real
-  "flick" wordmark drawn as paths (not the current grey placeholder bars) on
-  `#04070F`, with the amber streaks reading at TV-launcher size.
-- `res/values/themes.xml` — window/status/navigation background `#FF04070F`.
+- `res/mipmap-anydpi-v26/ic_launcher.xml` uses the full-bleed
+  `@color/ic_launcher_background`, `ic_launcher_foreground`, and the dedicated
+  `ic_launcher_monochrome`. The receiver canvas is `#04070F`; the sender canvas
+  is `#F2F6FF` in the light resource set and `#171D2E` in the night set. The
+  receiver manifest points both icon roles at `@mipmap/ic_launcher`; the sender
+  uses `@mipmap/ic_launcher` for `android:icon` and `@mipmap/ic_launcher_round`
+  for `android:roundIcon`.
+- `res/drawable/ic_launcher.xml` is the flat fallback for tooling paths. It is a
+  `layer-list` of the same full-bleed colour and foreground, so it cannot drift
+  from the adaptive artwork and does not bake in a launcher mask.
+- `res/drawable/banner.xml` remains the 320 × 180 dp Leanback banner: the mark
+  plus the real "flick" wordmark drawn as paths on `#04070F`, with the amber
+  streaks legible at TV-launcher size. `android:banner` continues to point to it.
+- `res/values/themes.xml` keeps window, status, and navigation backgrounds on
+  `#FF04070F`.
 
-Keep everything vector and self-contained; no raster assets.
+Keep the APK artwork vector and self-contained; no raster launcher assets.
 
-### 8a. The 33-unit disc
+### 8a. Foreground geometry and safe zone
 
-An adaptive layer is 108 × 108. The system reserves the outer 18 on every side for
-parallax and bleed, so only the central 72 × 72 is ever shown — a mask reaches
-36 units from (54, 54) at its edge midpoints — and only the inner **66-unit
-circle, r = 33, is guaranteed** to survive whatever mask the launcher applies.
+Adaptive foregrounds use a 108 × 108 canvas centred at (54, 54). Android's
+guaranteed safe region is the central 66-unit circle, radius 33. Background colour
+bleeds beyond every possible mask; only the painted foreground geometry needs to
+fit inside that safe region.
 
-The disc was r = 36 and is now **r = 33**. 36 is the largest circle the visible
-area can hold, which is precisely the problem: its edge is tangent to every stock
-mask at those four midpoints, with no tolerance whatever. A launcher that scales
-the layer before masking — One UI does this to third-party icons — a mask drawn a
-hair inside the full 72, or plain antialiasing along a boundary two shapes share,
-each cut the disc flat there, and the icon reads as a squircle. That is the
-Galaxy S25 Ultra report: the circle was correct in the artwork and clipped on the
-device.
+The full-colour mark keeps the blue play triangle `#1240E8` and three amber
+`#FFB61E` motion streaks on the 64-unit source grid. Their wide composition is
+intentional: about 51.2 × 39.0 after scaling, close to Material's 52 × 36 wide
+keyline rather than a square glyph.
 
-33 is the largest radius lying **wholly inside** the guaranteed circle, so no
-mask can reach the edge. The 3 units cost diameter, not shape — under a circular
-mask the icon is 91.7% the width of a full-bleed neighbour. They do not cost a
-ring of wallpaper, which was the old objection to any smaller disc: nothing draws
-the mask boundary, so what is left is simply a smaller circle.
+- `:receiver` maps the source grid with scale `0.90625` and translation `(25,
+  25)`, placing its centre exactly at (54, 54). Its painted bounds are about
+  **51.21 × 38.97**; the triangle tip is the farthest point at **25.84** from
+  centre, leaving **7.16** units inside the radius-33 safe boundary.
+- `:sender` bakes 1.1× into its path coordinates, so its equivalent source-grid
+  scale `0.90625` is applied by a group scale of `0.8238636` and translation
+  `(9.5113636, 9.5113636)`. Its painted width is **51.20**; the middle streak's
+  left cap reaches about **25.67** from centre, leaving about **7.3** units.
 
-Both modules take the same disc. `:receiver`'s icon is barely seen — the TV
-launcher shows `android:banner`, and this drawable surfaces only in Settings and
-the installer — but the two modules have carried one disc file all along, and
-letting them diverge to reclaim 3 units there would trade a real invariant for
-nothing anyone looks at. Their fills stay different: `#04070F` on the TV,
-`#F2F6FF` on the phone with the blue mark and amber streaks.
+Stroke widths, round caps, and joins travel with each group transform, preserving
+the mark's internal proportions.
 
-The mark shrinks with it. `:receiver` held 0.7177 of the old radius and `:sender`
-0.866 — the phone's mark crowded the edge, which is the second half of the same
-report. Both are now the **64-unit grid at 0.8307292**, i.e. `:receiver`'s former
-0.90625 stepped down by the disc's own 33/36, so the TV icon is the drawing it
-always was at 91.7% and the phone icon is rescaled to match that proportion.
-`:sender` reaches it with a `<group>`, since its path data bakes in 1.1×:
-`0.8307292 / 1.1 = 0.7552083` about (54, 54), translate `54 × (1 − 0.7552083) =
-13.21875`. Stroke widths and round caps ride the group matrix, so it is a
-rescale, not a redraw — every internal ratio survives untouched.
+### 8b. Themed icon
 
-Extents after the change, measured from the path data with the stroke overhang
-resolved (the outer boundary of a round-join stroke is the shape plus a disc of
-half the stroke width, so the extreme is the farthest point of the outline plus
-that half-width) — all four against the r = 33 disc:
+`<monochrome>` points to a dedicated solid triangle rather than the colour
+foreground. Android preserves source alpha while replacing colour, so reusing the
+foreground would retain the streaks' 0.5 / 0.85 alpha as ghosted theme-colour
+bands. The one-colour triangle drops those bars, is re-centred on (54, 54), and is
+identical in both modules.
 
-| Layer | Extreme | Where | Clearance | Of radius |
-| --- | --- | --- | --- | --- |
-| `:receiver` foreground | **23.68** | triangle's right tip, 19.946 + 3.738 | 9.32 | 0.718 |
-| `:sender` foreground | **23.53** | middle bar's left cap, 21.456 + 2.077 | 9.47 | 0.713 |
-| `:receiver` monochrome | **23.03** | rear vertex, 19.127 + 3.908 | 9.97 | 0.698 |
-| `:sender` monochrome | **23.03** | rear vertex, 19.127 + 3.908 | 9.97 | 0.698 |
+The source triangle's painted bounds, including its round stroke, are 42.55 ×
+49.45. Both modules apply scale `48 / 49.45 = 0.97067745` and translation
+`(1.5834177, 1.5834177)`, producing a centred **41.30 × 48.00** themed mark. Its
+conservative maximum radius is **29.60**, leaving **3.40** units inside the
+radius-33 safe boundary before the launcher masks and re-tints it.
 
-`:receiver`'s tip lands on 19.946 rather than the vertex's nominal 19.938 because
-that layer draws the outset shape as an explicit outline and its tip arc centres
-on 56.01, not 56 — 0.01 of hand-drawing rounded into the path years before the
-group ever scaled it.
+### 8c. Play listing asset
 
-`<monochrome>` never carries the disc — the system masks and re-tints that layer
-itself, so it stays artwork on transparency, bounded by the mask rather than by
-our disc. It also must not be the colour foreground: the launcher keeps the
-layer's alpha and replaces only its colour, so the streaks' 0.5 / 0.85 fills
-would survive as ghosted bands. Both modules point it at a dedicated silhouette,
-the triangle alone, re-centred on (54, 54) and drawn at 1.15× the grid — one
-notch above the colour mark's 1.1× — to hold its weight without the bars
-balancing it. It takes the same 0.7552083 group as `:sender`'s colour mark so
-that 1.15 / 1.1 relationship survives the rescale: sized against the mask instead
-it would stay at 30.50 and the tinted mark would read visibly larger than the
-coloured one it stands in for.
-
-`@drawable/ic_launcher` — the flat pre-adaptive fallback, unreachable on-device at
-minSdk 26 — is a `layer-list` of the same two layers rather than its own
-transcription of the grid, so it follows the new radius for free and cannot drift.
-
-The Play Store **listing** icon is none of this. It is a separate 512 × 512
-32-bit PNG uploaded in Play Console — never extracted from the APK — and Play
-masks and rounds it itself, so a disc on transparency is the wrong export: the
-corners are Play's to cut, not ours. Fill the square with the canvas colour and
-centre the mark at the same fraction of the frame that it holds of the disc —
-now **0.72 for both modules**, where it used to be 0.87 on the phone and 0.72 on
-the TV. The store silhouette is then Play's rounded square while the launcher
-stays a circle; that divergence is the platform's, and trying to fake a circle
-into the listing icon only buys a dark ring around it.
+The Play Store listing icon is separate from the APK resources: a 512 × 512
+32-bit PNG uploaded in Play Console, not extracted from the adaptive icon. Export
+it as a full square filled with the app's canvas colour and centre the mark using
+the current launcher geometry. Do not add a transparent custom silhouette; Play
+owns and applies the listing mask independently.
 
 ---
 

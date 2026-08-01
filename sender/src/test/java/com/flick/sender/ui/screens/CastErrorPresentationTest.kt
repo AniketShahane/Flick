@@ -16,8 +16,24 @@ import org.junit.Test
  */
 class CastErrorPresentationTest {
 
-    private fun face(code: String, kind: CastErrorKind = CastErrorKind.GENERIC): CastErrorFace =
-        castErrorFace(code, kind)
+    private fun face(
+        code: String,
+        kind: CastErrorKind = CastErrorKind.GENERIC,
+        linkStarved: Boolean = false,
+    ): CastErrorFace = castErrorFace(code, kind, linkStarved)
+
+    private fun present(
+        code: String,
+        kind: CastErrorKind = CastErrorKind.GENERIC,
+        retryable: Boolean = false,
+        canPlayOnPhone: Boolean = true,
+        linkStarved: Boolean = false,
+    ): CastErrorPresentation = castErrorPresentation(
+        kind,
+        CastFailure(code = code, retryable = retryable),
+        canPlayOnPhone = canPlayOnPhone,
+        linkStarved = linkStarved,
+    )
 
     @Test
     fun `media diagnoses get their own faces`() {
@@ -36,6 +52,44 @@ class CastErrorPresentationTest {
         assertEquals(CastErrorFace.TV_BUSY, face("active_cast_busy"))
         assertEquals(CastErrorFace.UPDATE_REQUIRED, face("update_required"))
         assertEquals(CastErrorFace.SLOW_START, face("startup_timeout"))
+    }
+
+    // The whole of the local re-facing: one code, two faces, decided by what the phone
+    // measured while it was serving. Nothing else on the wire may move when it flips.
+    @Test
+    fun `a starved link re-faces the startup timeout and nothing else`() {
+        assertEquals(CastErrorFace.SLOW_LINK, face("startup_timeout", linkStarved = true))
+        assertEquals(CastErrorFace.SLOW_START, face("startup_timeout", linkStarved = false))
+        for (code in WireCodes + "a_code_from_a_newer_receiver") {
+            if (code == "startup_timeout") continue
+            for (kind in CastErrorKind.entries) {
+                assertEquals(
+                    "$code/$kind changed face on a starved link",
+                    face(code, kind, linkStarved = false),
+                    face(code, kind, linkStarved = true),
+                )
+            }
+        }
+    }
+
+    // `startup_timeout` still arrives retryable, and a short link is the one timeout where
+    // a second attempt is worth leading with — but the phone must be the move under it.
+    @Test
+    fun `the slow link face keeps retry and offers the phone beneath it`() {
+        val retried = present("startup_timeout", retryable = true, linkStarved = true)
+        assertEquals(CastErrorFace.SLOW_LINK, retried.face)
+        assertEquals(CastErrorAction.RETRY, retried.primary)
+        assertEquals(CastErrorAction.PLAY_ON_PHONE, retried.secondary)
+
+        // The same face with the retry withdrawn leads with the phone rather than the
+        // library: the file and the TV are both fine, so those bytes still decode here.
+        val permanent = present("startup_timeout", linkStarved = true)
+        assertEquals(CastErrorAction.PLAY_ON_PHONE, permanent.primary)
+        assertEquals(CastErrorAction.BACK_TO_LIBRARY, permanent.secondary)
+
+        val noFile = present("startup_timeout", linkStarved = true, canPlayOnPhone = false)
+        assertEquals(CastErrorAction.BACK_TO_LIBRARY, noFile.primary)
+        assertNull(noFile.secondary)
     }
 
     // The codes with no diagnosis of their own keep the kind the controller derived.
@@ -61,11 +115,7 @@ class CastErrorPresentationTest {
     fun `an unrecognised code degrades to the generic face`() {
         assertEquals(CastErrorFace.GENERIC, face("unsupported_audio_atmos_v9"))
         assertEquals(CastErrorFace.UNREACHABLE, face("", CastErrorKind.UNREACHABLE))
-        val presentation = castErrorPresentation(
-            CastErrorKind.GENERIC,
-            CastFailure(code = "quantum_desync", retryable = false),
-            canPlayOnPhone = true,
-        )
+        val presentation = present("quantum_desync")
         assertEquals(CastErrorFace.GENERIC, presentation.face)
         assertEquals(CastErrorAction.BACK_TO_LIBRARY, presentation.primary)
         assertNull(presentation.secondary)
@@ -74,11 +124,7 @@ class CastErrorPresentationTest {
     // The observed failure, end to end: permanent, precisely named, and never a retry.
     @Test
     fun `unsupported container offers the phone and the library, never a retry`() {
-        val presentation = castErrorPresentation(
-            CastErrorKind.GENERIC,
-            CastFailure(code = "unsupported_container", retryable = false),
-            canPlayOnPhone = true,
-        )
+        val presentation = present("unsupported_container")
         assertEquals(CastErrorFace.UNSUPPORTED_CONTAINER, presentation.face)
         assertEquals(CastErrorAction.PLAY_ON_PHONE, presentation.primary)
         assertEquals(CastErrorAction.BACK_TO_LIBRARY, presentation.secondary)
@@ -88,13 +134,11 @@ class CastErrorPresentationTest {
     fun `no code that is not retryable may offer a retry`() {
         for (code in WireCodes + "a_code_from_a_newer_receiver") {
             for (kind in CastErrorKind.entries) {
-                val presentation = castErrorPresentation(
-                    kind,
-                    CastFailure(code = code, retryable = false),
-                    canPlayOnPhone = true,
-                )
-                assertNotEquals("$code/$kind primary", CastErrorAction.RETRY, presentation.primary)
-                assertNotEquals("$code/$kind secondary", CastErrorAction.RETRY, presentation.secondary)
+                for (starved in listOf(false, true)) {
+                    val presentation = present(code, kind, linkStarved = starved)
+                    assertNotEquals("$code/$kind primary", CastErrorAction.RETRY, presentation.primary)
+                    assertNotEquals("$code/$kind secondary", CastErrorAction.RETRY, presentation.secondary)
+                }
             }
         }
     }
@@ -102,13 +146,11 @@ class CastErrorPresentationTest {
     @Test
     fun `a retryable failure leads with retry and keeps its permanent move`() {
         for (code in WireCodes) {
-            val presentation = castErrorPresentation(
-                CastErrorKind.GENERIC,
-                CastFailure(code = code, retryable = true),
-                canPlayOnPhone = true,
-            )
-            assertEquals(code, CastErrorAction.RETRY, presentation.primary)
-            assertNotNullAndNotRetry(code, presentation.secondary)
+            for (starved in listOf(false, true)) {
+                val presentation = present(code, retryable = true, linkStarved = starved)
+                assertEquals(code, CastErrorAction.RETRY, presentation.primary)
+                assertNotNullAndNotRetry(code, presentation.secondary)
+            }
         }
     }
 
@@ -118,13 +160,16 @@ class CastErrorPresentationTest {
     fun `play on phone is never offered without a file to play`() {
         for (code in WireCodes) {
             for (retryable in listOf(true, false)) {
-                val presentation = castErrorPresentation(
-                    CastErrorKind.GENERIC,
-                    CastFailure(code = code, retryable = retryable),
-                    canPlayOnPhone = false,
-                )
-                assertNotEquals("$code primary", CastErrorAction.PLAY_ON_PHONE, presentation.primary)
-                assertNotEquals("$code secondary", CastErrorAction.PLAY_ON_PHONE, presentation.secondary)
+                for (starved in listOf(false, true)) {
+                    val presentation = present(
+                        code,
+                        retryable = retryable,
+                        canPlayOnPhone = false,
+                        linkStarved = starved,
+                    )
+                    assertNotEquals("$code primary", CastErrorAction.PLAY_ON_PHONE, presentation.primary)
+                    assertNotEquals("$code secondary", CastErrorAction.PLAY_ON_PHONE, presentation.secondary)
+                }
             }
         }
     }
@@ -135,12 +180,13 @@ class CastErrorPresentationTest {
             for (kind in CastErrorKind.entries) {
                 for (retryable in listOf(true, false)) {
                     for (canPlay in listOf(true, false)) {
-                        val presentation =
-                            castErrorPresentation(kind, CastFailure(code, retryable), canPlay)
-                        assertTrue(
-                            "$code/$kind/$retryable/$canPlay repeated a move",
-                            presentation.secondary != presentation.primary,
-                        )
+                        for (starved in listOf(false, true)) {
+                            val presentation = present(code, kind, retryable, canPlay, starved)
+                            assertTrue(
+                                "$code/$kind/$retryable/$canPlay/$starved repeated a move",
+                                presentation.secondary != presentation.primary,
+                            )
+                        }
                     }
                 }
             }
@@ -151,7 +197,9 @@ class CastErrorPresentationTest {
     fun `every face is reachable from some wire code`() {
         val faces = buildSet {
             for (code in WireCodes) {
-                for (kind in CastErrorKind.entries) add(castErrorFace(code, kind))
+                for (kind in CastErrorKind.entries) {
+                    for (starved in listOf(false, true)) add(castErrorFace(code, kind, starved))
+                }
             }
         }
         assertEquals(CastErrorFace.entries.toSet(), faces)

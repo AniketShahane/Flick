@@ -560,4 +560,33 @@
     <!-- Not every face on this screen is a network fault, and the pill under a container
          rejection is not a network reading. -->
     <string name="a11y_cast_status">Cast status: %1$s</string>
+
+    <!-- Link capacity. Every one of these quotes measured numbers or it does not appear.
+         Throughput arguments are pre-formatted "12.4 Mbps" strings (Format.bitrate) so the
+         unit lives in one place. Nothing here ever refuses or stops a cast. -->
+    <string name="link_advisory_title">This film may outrun this Wi-Fi.</string>
+    <!-- The fix clause names both moves and prescribes neither band. This card is raised
+         whenever usable throughput is under the film's bitrate, which a 5 GHz phone at range
+         with a collapsed MCS reaches too — "switch to 5 GHz" would then be advice it has
+         already taken. %2$s already names the band it is actually on. -->
+    <string name="link_advisory_body">It streams at about %1$s and this phone\'s %2$s link realistically carries around %3$s. Moving the phone nearer the router, or onto 5 GHz, is what changes that.</string>
+    <string name="link_starting_title">Your Wi-Fi is delivering this slower than it plays.</string>
+    <string name="link_starting_body">%1$s needs about %2$s to play without stalling and this link is carrying %3$s. Flick keeps trying until it times out — moving the phone nearer the router, or onto 5 GHz, is what changes the answer.</string>
+    <string name="link_starting_wait">Keep waiting</string>
+    <string name="error_slowlink_title">Your Wi-Fi couldn\'t keep up</string>
+    <string name="error_slowlink_body">%1$s never reached its first frame. This film needs about %2$s and the link carried %3$s while Flick was serving it. Nothing is wrong with the file or the TV.</string>
+    <string name="error_slowlink_pill">Wi-Fi under capacity</string>
+    <string name="buffering_title_starved">The reserve is draining</string>
+    <string name="buffering_body_starved">This link is carrying %1$s and the film needs about %2$s, so the buffer is emptying rather than topping up.</string>
+    <string name="link_stalling_title">This Wi-Fi is under this film\'s bitrate.</string>
+    <string name="link_stalling_body">%1$s stalled three times in two minutes. It needs about %2$s and this link is carrying %3$s. Flick will not reduce the quality, because it never transcodes — moving the phone nearer the router, or onto 5 GHz, is the fix.</string>
+    <!-- The escalation trigger is the stall count alone, so the card is also owed on a file
+         whose bitrate was never measurable and on a link that PROVED it carries the film and
+         stalled anyway (a VBR peak the average cannot see). The title above is a bitrate
+         verdict and would be flatly contradicted by that second case, so the unquoted card
+         gets its own, which claims only the stalls the user just watched. -->
+    <string name="link_stalling_title_unmeasured">This film keeps stopping to buffer.</string>
+    <string name="link_stalling_body_unmeasured">%1$s stalled three times in two minutes. Flick will not reduce the quality, because it never transcodes — moving the phone nearer the router, or onto 5 GHz, is what usually changes it.</string>
+    <string name="link_stalling_dismiss">Keep watching</string>
+    <string name="a11y_link_advisory">Link capacity advisory: %1$s</string>
 </resources>

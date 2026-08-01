@@ -90,7 +90,11 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.LinkStall
+import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.AdvisoryCard
+import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
@@ -150,6 +154,11 @@ private fun RemoteScreen(
     // every 2 s and must stop at the leaves that show it, not rebuild the whole remote
     // (including the scrub bar under a live drag).
     val signal = rememberSignalState()
+    // Both kept as State for the third time on this screen, and for the third reason: a
+    // Starved verdict republishes with a fresh measurement every second, and the two
+    // leaves that quote it are the only things here that may be rebuilt for it.
+    val linkVerdict = controller.linkVerdict.collectAsState()
+    val linkStall = controller.linkStall.collectAsState()
     val configuration = LocalConfiguration.current
     val compactWidth = isCompactWidth(configuration.screenWidthDp)
     val fontScale = configuration.fontScale
@@ -235,11 +244,25 @@ private fun RemoteScreen(
                 modifier = Modifier.padding(horizontal = RemoteGutter),
             )
 
+            // Outside the scroll container, for the same reason minimize is: three stalls
+            // the user already watched are not news they should have to scroll up for. It
+            // arrives without a transition on purpose — the height plan below is computed
+            // from the box this card leaves over, so an animated height would re-plan the
+            // poster on every frame of its own entrance.
+            LinkStallCard(
+                stall = linkStall,
+                title = item?.name,
+                onDismiss = controller::dismissLinkStall,
+                modifier = Modifier
+                    .padding(horizontal = RemoteGutter, vertical = 12.dp)
+                    .fillMaxWidth(),
+            )
+
             // Swap to the full buffering face only when NOT scrubbing: a scrub itself
             // drives the TV into STATE_BUFFERING (seek fill), and replacing the bar
             // mid-drag would strand the gesture (onScrubEnd never fires, scrubbing sticks).
             if (showBuffering) {
-                BufferingContent(signal = signal)
+                BufferingContent(signal = signal, link = linkVerdict)
             } else {
                 BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
                     // Measured, not read off the display: this is the box the stack is
@@ -869,11 +892,20 @@ private fun RowScope.Segment(
     }
 }
 
+/**
+ * The refill face. Its shipped copy promises that the reserve is absorbing a dip and that
+ * nothing is being downgraded — true of a buffer topping up, and false of a link that is
+ * under the film's bitrate, where the reserve is what is being spent. So the verdict picks
+ * the sentence: the promise is only made when the measurement supports it.
+ *
+ * Narrowed through derivedStateOf because Marginal republishes every second and must drive
+ * nothing; only a Starved reading, which the body quotes, reaches this at all.
+ */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
+private fun ColumnScope.BufferingContent(signal: State<SignalInfo>, link: State<LinkVerdict>) {
     val colors = LocalFlickColors.current
-    val chip = signal.value.chipText()
+    val starved by remember(link) { derivedStateOf { link.value as? LinkVerdict.Starved } }
     val reduceMotion = rememberReduceMotion()
     // The TV is filling its reserve; nothing here is transcoding, so the indicator
     // carries no percentage and morphs rather than fills.
@@ -911,26 +943,90 @@ private fun ColumnScope.BufferingContent(signal: State<SignalInfo>) {
         }
         Spacer(Modifier.height(20.dp))
         Text(
-            stringResource(R.string.buffering_title),
+            stringResource(
+                if (starved != null) R.string.buffering_title_starved else R.string.buffering_title,
+            ),
             style = FlickText.headlineSmall.copy(color = colors.onSurface),
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            stringResource(R.string.buffering_body),
+            text = starved?.let {
+                stringResource(
+                    R.string.buffering_body_starved,
+                    Format.bitrate(it.measuredBps),
+                    Format.bitrate(it.requiredBps),
+                )
+            } ?: stringResource(R.string.buffering_body),
             style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(18.dp))
-        Text(
-            stringResource(R.string.buffering_chip, chip),
-            style = FlickText.monoSmall.copy(color = colors.caution),
-            modifier = Modifier
-                .clip(PillShape)
-                .background(colors.caution.copy(alpha = 0.14f))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        )
+        // "brief dip" is a claim that the dip ends, and the starved body has already named
+        // the rate this link is carrying. Under that verdict the chip would be the wrong
+        // word and a second, differently-averaged number for the same thing.
+        if (starved == null) {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                stringResource(R.string.buffering_chip, signal.value.chipText()),
+                style = FlickText.monoSmall.copy(color = colors.caution),
+                modifier = Modifier
+                    .clip(PillShape)
+                    .background(colors.caution.copy(alpha = 0.14f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
     }
+}
+
+/**
+ * Three refills the user watched inside two minutes, none of them a seek's. Raised by that
+ * count ALONE: average container bitrate is the weakest input this feature has, and a
+ * starvation the arithmetic cannot see is still three stalls. The verdict only picks the
+ * copy — with no measurement to quote, the numbers are withheld rather than guessed, and
+ * so is the whole card for a film this screen cannot name, since both bodies open on its
+ * title.
+ *
+ * Dismissible and nothing else. It never pauses, seeks or touches the player: the quality
+ * it says will not drop is a fact about direct play, not a promise this card is making.
+ */
+@Composable
+private fun LinkStallCard(
+    stall: State<LinkStall>,
+    title: String?,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val current = stall.value
+    if (!current.raised || title == null) return
+    // LinkStall.quotesNumbers, spelt as the two figures themselves so the body cannot be
+    // built from one that the predicate did not cover.
+    val required = current.requiredBps
+    val measured = current.measuredBps
+    val quoted = required != null && measured != null
+    AdvisoryCard(
+        icon = FlickIcons.Wifi,
+        // Title and body are chosen by one condition, never separately: the quoted title is
+        // a bitrate verdict, and this card is raised by the stall count alone — so on a link
+        // that proved it carries the film and stalled anyway, that title would be asserting
+        // the opposite of what this phone measured.
+        title = stringResource(
+            if (quoted) R.string.link_stalling_title else R.string.link_stalling_title_unmeasured,
+        ),
+        body = if (quoted) {
+            stringResource(
+                R.string.link_stalling_body,
+                title,
+                Format.bitrate(required),
+                Format.bitrate(measured),
+            )
+        } else {
+            stringResource(R.string.link_stalling_body_unmeasured, title)
+        },
+        tone = AdvisoryTone.CAUTION,
+        primaryLabel = stringResource(R.string.link_stalling_dismiss),
+        onPrimary = onDismiss,
+        modifier = modifier,
+    )
 }
 
 

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      Fill of the launcher-icon disc (@drawable/ic_launcher_disc): the Flick
-      canvas, blue-black and never #000.
+      Full-bleed adaptive-icon canvas. The launcher supplies the device mask;
+      Flick supplies the blue-black fill, never #000.
     -->
     <color name="ic_launcher_background">#FF04070F</color>
 </resources>

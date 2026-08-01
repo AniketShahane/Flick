@@ -20,29 +20,32 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** What the signal chip / quality sheet show — this phone's own link + throughput. */
+/**
+ * What the signal chip / quality sheet show — this phone's own link + throughput.
+ *
+ * The Wi-Fi reading is carried whole rather than unpacked into fields, because
+ * [com.flick.sender.net.LinkCapacityPolicy.preCastAdvisory] takes the record: a surface
+ * that had to rebuild one from three properties would be inventing the fourth.
+ */
 data class SignalInfo(
     val throughputBitsPerSec: Long,
-    val band: WifiBand?,
-    val linkSpeedMbps: Int,
-    val rssiDbm: Int,
+    val link: WifiLinkInfo?,
 ) {
+    val band: WifiBand? get() = link?.band
+    val linkSpeedMbps: Int get() = link?.linkSpeedMbps ?: 0
+    val rssiDbm: Int get() = link?.rssiDbm ?: 0
+
     val healthy: Boolean get() = band != WifiBand.GHZ_24
     val on24GHz: Boolean get() = band == WifiBand.GHZ_24
 
     /** False when Wi-Fi is not the active transport: band and RSSI are then unknown, not zero. */
-    val hasLink: Boolean get() = band != null
+    val hasLink: Boolean get() = link != null
 
     /** True only while this phone's server is actually writing bytes. */
     val serving: Boolean get() = throughputBitsPerSec > 0L
 
     @Composable
-    fun bandLabel(): String = when (band) {
-        WifiBand.GHZ_6 -> stringResource(R.string.wifi_band_6ghz)
-        WifiBand.GHZ_5 -> stringResource(R.string.wifi_band_5ghz)
-        WifiBand.GHZ_24 -> stringResource(R.string.wifi_band_24ghz)
-        null -> stringResource(R.string.wifi_band_generic)
-    }
+    fun bandLabel(): String = wifiBandLabel(band)
 
     @Composable
     fun chipText(): String = when {
@@ -65,6 +68,19 @@ data class SignalInfo(
 }
 
 /**
+ * The band a reading was taken on, named. Top-level because the pre-cast advisory holds a
+ * [WifiBand] and no [SignalInfo] — it is a verdict about one link, not a live chip — and
+ * two spellings of "5 GHz" in one app is one too many.
+ */
+@Composable
+fun wifiBandLabel(band: WifiBand?): String = when (band) {
+    WifiBand.GHZ_6 -> stringResource(R.string.wifi_band_6ghz)
+    WifiBand.GHZ_5 -> stringResource(R.string.wifi_band_5ghz)
+    WifiBand.GHZ_24 -> stringResource(R.string.wifi_band_24ghz)
+    null -> stringResource(R.string.wifi_band_generic)
+}
+
+/**
  * Polls the phone's Wi-Fi link + the media-server throughput every ~2s and publishes
  * the result as [State] rather than a value. Nothing here is read at composition scope,
  * so the poll invalidates only the leaves that actually read `.value` — screens that
@@ -77,6 +93,11 @@ fun rememberSignalState(): State<SignalInfo> {
     val wifi = remember { mutableStateOf<WifiLinkInfo?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
+            // NOT the measurement — CastServerService owns a 1 Hz sampler for that, and it
+            // is the only fold alive while nothing is composed. This one is what brings the
+            // reading back DOWN: nothing resets the telemetry when a session ends, so with
+            // the service's sampler cancelled the last rate served would stand as the
+            // current one until the next cast called reset().
             TransferTelemetry.refresh()
             wifi.value = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) }
             delay(2000L)
@@ -84,13 +105,7 @@ fun rememberSignalState(): State<SignalInfo> {
     }
     return remember(stats, wifi) {
         derivedStateOf(structuralEqualityPolicy()) {
-            val link = wifi.value
-            SignalInfo(
-                throughputBitsPerSec = stats.value.bitsPerSec,
-                band = link?.band,
-                linkSpeedMbps = link?.linkSpeedMbps ?: 0,
-                rssiDbm = link?.rssiDbm ?: 0,
-            )
+            SignalInfo(throughputBitsPerSec = stats.value.bitsPerSec, link = wifi.value)
         }
     }
 }

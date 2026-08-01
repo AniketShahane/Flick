@@ -4,14 +4,14 @@
   install the app gets the adaptive mark. @drawable/ic_launcher stays in the tree
   as the flat fallback for tooling paths that resolve a plain drawable.
 
-  The background is a disc rather than the flat @color: a full-bleed layer takes
-  the launcher's mask, which makes Flick a circle on one device and a squircle or
-  teardrop on the next. @drawable/ic_launcher_disc puts the circle in the artwork
-  so the shape is ours everywhere. <monochrome> deliberately keeps no disc — the
-  system masks and re-tints that layer itself.
+  The full-bleed background deliberately leaves the outline to the launcher, so
+  Flick follows circle, squircle, rounded-square, square, and OEM masks such as
+  Samsung One UI without a smaller shape baked into the artwork. The colour and
+  monochrome marks remain inside the central 66-unit safe zone; the system masks
+  and re-tints <monochrome> itself.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_disc" />
+    <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
     <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

@@ -6,21 +6,18 @@
   coordinate below is that grid scaled 1.1x and shifted so the box centres on
   (54,54).
 
-  1.1 was too large. It put the farthest point 31.16 out — 87% of the old r=36
-  disc's radius — and the mark crowded the edge. The group brings it to the
-  proportion :receiver carries: 0.90625 (the TV mark's grid scale) x 33/36 (the
-  disc's radius, old to new) = 0.8307292 of the grid, which the baked-in 1.1
-  reaches at 0.8307292 / 1.1 = 0.7552083. The scale is about (54,54), so the
-  translate is 54 x (1 - 0.7552083) = 13.21875 on both axes.
+  The group restores the shared 0.90625 source-grid scale used by :receiver.
+  Because these coordinates already contain the 1.1x enlargement, the group
+  scale is 0.90625 / 1.1 = 0.8238636. Scaling about (54,54) requires a
+  translation of 54 x (1 - 0.8238636) = 9.5113636 on both axes.
 
   It is a rescale, not a redraw: stroke widths and round caps ride the group
   matrix along with the coordinates, so the bars stay exact stadiums and every
   internal ratio — bar to triangle, gap to stroke, tip to cap — is untouched.
 
-  Farthest point from centre after the group: the middle bar's left cap, centre
-  21.456 out plus its 2.077 scaled cap radius = 23.53. The triangle's tip is next
-  at 19.730 + 3.738 = 23.47. Both clear the r=33 disc by ~9.5, so nothing here
-  lands on transparency.
+  The 56.5-unit source visual width becomes 56.5 x 0.90625 = 51.203125 units.
+  Its farthest point is the middle bar's left cap, 25.67 from centre, leaving
+  7.3 units inside Android's radius-33 safe zone under every adaptive mask.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -29,10 +26,10 @@
     android:viewportHeight="108">
 
     <group
-        android:scaleX="0.7552083"
-        android:scaleY="0.7552083"
-        android:translateX="13.21875"
-        android:translateY="13.21875">
+        android:scaleX="0.8238636"
+        android:scaleY="0.8238636"
+        android:translateX="9.5113636"
+        android:translateY="9.5113636">
 
         <!--
           The speed bars are 5.5 tall with a 2.75 corner radius, i.e. exact

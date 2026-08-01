@@ -12,16 +12,16 @@
   and drawn at 1.15x the 64-unit grid — one notch above :sender's 1.1x colour
   mark — to hold the same weight without them.
 
-  The group applies the same 0.7552083 :sender's colour mark now takes, about
-  (54,54): translate 54 x (1 - 0.7552083) = 13.21875. That keeps the 1.15/1.1
-  relationship through the rescale, so the tinted mark still reads at the size of
-  the coloured one it stands in for. Same geometry as the :sender silhouette to
-  the coordinate — one brand, one themed mark; only the colour literal differs,
-  since :receiver carries no launcher colour resources.
+  Its source painted bounds are 42.55 x 49.45 units including the round stroke.
+  The group scale is 48 / 49.45 = 0.97067745, giving a 41.30 x 48.00 themed
+  mark. Scaling about (54,54) requires 54 x (1 - 0.97067745) = 1.5834177
+  translation on both axes, matching :sender's themed layer to the coordinate.
 
-  No disc here: the system masks and tints this layer itself, and it is that
-  mask, not our r=33 disc, that bounds it. Farthest point is a rear vertex,
-  19.127 from centre plus the 3.908 scaled stroke half-width = 23.03.
+  The farthest possible painted point is 29.60 from centre, leaving 3.40 units
+  inside Android's radius-33 safe zone before the system masks and re-tints it.
+
+  The system masks and tints this layer itself; its solid alpha avoids preserving
+  the colour foreground's intentionally translucent streaks as ghosted bands.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -30,10 +30,10 @@
     android:viewportHeight="108">
 
     <group
-        android:scaleX="0.7552083"
-        android:scaleY="0.7552083"
-        android:translateX="13.21875"
-        android:translateY="13.21875">
+        android:scaleX="0.97067745"
+        android:scaleY="0.97067745"
+        android:translateX="1.5834177"
+        android:translateY="1.5834177">
 
         <path
             android:pathData="M37.9,34.45 L70.1,54 L37.9,73.55 Z"

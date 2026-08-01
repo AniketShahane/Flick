@@ -1,6 +1,7 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
+import android.provider.Settings
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterTransition
@@ -42,9 +43,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,11 +73,15 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.LinkCapacityPolicy
+import com.flick.sender.net.PreCastLinkAdvisory
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.AdvisoryCard
+import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickGesture
 import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.posterKey
-import com.flick.sender.ui.components.rememberVideoFrameRequest
+import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.CinemaDeep
 import com.flick.sender.ui.theme.FlickCorners
@@ -125,7 +132,24 @@ fun DetailScreen(
     }
     val refusal = unplayable[item.uriKey]
 
-    val request = rememberVideoFrameRequest(item.uri, item.durationMs)
+    // What this file needs, against what this phone's link realistically carries. Polled
+    // rather than read once, so the card clears by itself when the user takes its advice:
+    // "Switch network" leaves for the system Wi-Fi list and comes back to this same
+    // composition, and a one-shot read would still be warning about the old link.
+    val signal = rememberSignalState()
+    val requiredBps = remember(item.sizeBytes, item.durationMs) {
+        LinkCapacityPolicy.requiredBitrateBps(item.sizeBytes, item.durationMs)
+    }
+    // Structural, so the RSSI moving one dBm — which it does on every poll — cannot
+    // recompose the sheet behind the flying poster. Unwrapped here rather than read in the
+    // branch below because raising or lowering the card IS a rebuild of the sheet's body.
+    val advisory = remember(signal, requiredBps) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            LinkCapacityPolicy.preCastAdvisory(requiredBps, signal.value.link)
+        }
+    }.value
+
+    val request = rememberDetailVideoFrameRequest(item)
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }
@@ -255,14 +279,36 @@ fun DetailScreen(
             // is here rather than beside the poster because the flick has to point at the
             // CTA, and because the poster overhead is still flying in from the Library
             // when this route opens; FlickGesture holds its own first cycle back for that.
+            //
+            // The link advisory takes that same seat when it is raised, and does not open a
+            // new one. One seat between the promise and the CTA: an invitation to press
+            // when there is nothing to say, the sentence when there is. Adding a block
+            // instead would put a fourth arrival into the moment the poster, the sheet and
+            // the loop already share, and would push the CTA down a sheet that is capped at
+            // 640 dp and already scrolls.
+            //
+            // A refusal outranks it. A file this TV has already refused will not play at any
+            // bitrate, so warning about the Wi-Fi carrying it is advice about a problem the
+            // user cannot reach from here.
             if (refusal != null) {
                 RefusalCard(refusal)
                 Spacer(Modifier.height(17.dp))
             } else {
                 DirectPlayCard()
                 Spacer(Modifier.height(17.dp))
-                FlickGesture()
-                Spacer(Modifier.height(9.dp))
+                if (advisory != null) {
+                    LinkAdvisory(
+                        advisory = advisory,
+                        onSwitchNetwork = {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                        },
+                        onCastAnyway = { if (!castStart.isCommitting()) controller.flickToTv(item) },
+                    )
+                    Spacer(Modifier.height(17.dp))
+                } else {
+                    FlickGesture()
+                    Spacer(Modifier.height(9.dp))
+                }
             }
 
             FlickToTvButton(
@@ -396,6 +442,54 @@ private fun refusalBody(code: String): Int = when (code) {
 
 /** The note is a second register, not a second paragraph of the same weight. */
 private const val RefusalNoteAlpha = 0.82f
+
+/**
+ * The pre-cast link advisory. It is not a gate and there is none anywhere in this feature:
+ * before the first byte moves the phone knows only the negotiated PHY rate, which
+ * over-reports usable throughput by 2–4x, so a refusal built on it would refuse casts that
+ * play perfectly. The CTA below is untouched — same enabled state, same action.
+ *
+ * [AdvisoryTone.INFO] rather than the caution fill the band advisory wears, and the reason
+ * is the card it always stands under: on the light palette [DirectPlayCard]'s `spark`
+ * (#FFB61E) and `caution` (#FFA23A) are one hue step apart, so two saturated warm fills in
+ * one column read as a single orange block. Caution is also the seat this sheet already
+ * gives [RefusalCard], which is the harder claim — that this TV cannot play this file at
+ * all — and the two must not wear the same clothes.
+ *
+ * "Cast anyway" is the cast, not a dismissal: it runs the CTA's own action under the CTA's
+ * own guard. A label that says cast and only hides a card would be the one dishonest thing
+ * on this screen, and on a short window this card can be the last thing above the fold.
+ */
+@Composable
+private fun LinkAdvisory(
+    advisory: PreCastLinkAdvisory,
+    onSwitchNetwork: () -> Unit,
+    onCastAnyway: () -> Unit,
+) {
+    val title = stringResource(R.string.link_advisory_title)
+    val body = stringResource(
+        R.string.link_advisory_body,
+        Format.bitrate(advisory.requiredBps),
+        wifiBandLabel(advisory.band),
+        Format.bitrate(advisory.usableBps),
+    )
+    // Unmerged: the card carries two real buttons, and merging to speak the sentence once
+    // would take both of them off TalkBack's traversal.
+    val spoken = stringResource(R.string.a11y_link_advisory, "$title $body")
+    AdvisoryCard(
+        icon = FlickIcons.Wifi,
+        title = title,
+        body = body,
+        tone = AdvisoryTone.INFO,
+        primaryLabel = stringResource(R.string.advisory_band_primary),
+        onPrimary = onSwitchNetwork,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = spoken },
+        secondaryLabel = stringResource(R.string.advisory_band_secondary),
+        onSecondary = onCastAnyway,
+    )
+}
 
 /**
  * The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected.

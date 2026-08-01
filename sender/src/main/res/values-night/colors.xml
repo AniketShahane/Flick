@@ -35,12 +35,12 @@
       the home screen outright, and the flick:// pairing filter would have to be duplicated
       on every alias.
     -->
-    <!-- DarkFlickColors.surfaceRaised — a dark slate DISC, not the near-black canvas, so
-         the r=33 circle still reads as an object on a dark wallpaper. -->
+    <!-- DarkFlickColors.surfaceRaised — a dark slate that lets the launcher-owned shape
+         remain distinct from both dark wallpaper and the near-black app canvas. -->
     <color name="ic_launcher_background">#FF171D2E</color>
-    <!-- The action gold: 10.92:1 on that disc, 12.46:1 on the #0C0F18 splash plate. -->
+    <!-- The action gold: 10.92:1 on that background, 12.46:1 on the #0C0F18 splash plate. -->
     <color name="ic_launcher_mark">#FFFFC93D</color>
-    <!-- The accent blue: 2.23:1 and 3.87:1 on the disc at the drawable's 0.45/0.75
+    <!-- The accent blue: 2.23:1 and 3.87:1 on that background at the drawable's 0.45/0.75
          strokeAlpha. Decorative, exactly as in FlickMark — the triangle is the mark. -->
     <color name="ic_launcher_spark">#FF6E93FF</color>
     <!-- ic_launcher_monochrome is deliberately absent, so the default bucket supplies it:

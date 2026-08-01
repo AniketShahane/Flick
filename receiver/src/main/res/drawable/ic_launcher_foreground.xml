@@ -4,18 +4,16 @@
   themed icon is ic_launcher_monochrome, not this file — the launcher keeps a
   monochrome layer's alpha, and the streaks below are deliberately translucent.
 
-  The group maps the 64-unit grid to (54,54): p -> 0.8307292p + 27.4166667, so
-  the grid centre (32,32) lands on the canvas centre. The scale is the former
-  0.90625 stepped down by 33/36, the same ratio the disc took, so the mark keeps
-  exactly the proportion it held against r=36 — 0.7177 of the radius. This icon
-  is the drawing it always was, 8.3% smaller with its disc; :sender's mark was
-  rescaled to match it, since that proportion is the one that reads.
+  The group maps the 64-unit grid to (54,54): p -> 0.90625p + 25, so the grid
+  centre (32,32) lands exactly on the canvas centre. The artwork's visual x range
+  is 4..60.51 before the transform and about 51.21 units after it, up from 46.95,
+  which gives the mark native launcher weight without crowding the mask.
 
   The extreme is the triangle's right tip. The outline below is the outset shape
   drawn out by hand, so its tip arc centres on 56.01 rather than the vertex's
-  exact 56: 19.946 from centre, plus the 4.5-unit outset scaled to 3.738 = 23.68.
-  The middle streak's left cap is next at 23.33. Both sit 9.3 inside the r=33
-  background disc, so nothing here lands on transparency.
+  exact 56: its farthest edge is about 25.84 from centre after scaling. The middle
+  streak's left cap is next at about 25.45. Both remain inside the adaptive icon's
+  guaranteed 33-unit safe circle with more than 7 units of clearance.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -24,10 +22,10 @@
     android:viewportHeight="108">
 
     <group
-        android:scaleX="0.8307292"
-        android:scaleY="0.8307292"
-        android:translateX="27.4166667"
-        android:translateY="27.4166667">
+        android:scaleX="0.90625"
+        android:scaleY="0.90625"
+        android:translateX="25"
+        android:translateY="25">
 
         <!-- motion streaks: (9,22.5,13x5) (4,31.5,11x5) (9,40.5,13x5), r=2.5 -->
         <path

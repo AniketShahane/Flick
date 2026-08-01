@@ -3,6 +3,7 @@ package com.flick.sender.net
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import com.flick.sender.CastServerService
 import com.flick.sender.MediaMeta
 import com.flick.sender.R
@@ -10,6 +11,7 @@ import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
 import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.SubtitleServingState
+import com.flick.sender.TransferTelemetry
 import com.flick.sender.media.LibraryFolder
 import com.flick.sender.media.LibraryFolderChoice
 import com.flick.sender.media.LibraryFolderId
@@ -207,6 +209,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // launch so the only way to reach them is to spend them. Cleared with the launch.
     private var pendingPairCode: String? = null
     private val unplayableMemory = UnplayableMemory()
+    private val linkMonitor = LinkCapacityMonitor { SystemClock.elapsedRealtime() }
 
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
     val route: StateFlow<Route> = _route.asStateFlow()
@@ -243,9 +246,39 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val playback = session.state; val pulses = session.pulses
 
+    /** What this phone has proven about the link carrying the live cast. Never terminal. */
+    val linkVerdict: StateFlow<LinkVerdict> = linkMonitor.verdict
+
+    /** The stalling card: raised by the rebuffer count alone, dismissible, never blocking. */
+    val linkStall: StateFlow<LinkStall> = linkMonitor.stall
+
+    // Captured at the terminal, before teardown resets the monitor: the error face has to
+    // read the link as it was when the cast died, not as an idle phone reads it after.
+    private val _failureLinkVerdict = MutableStateFlow<LinkVerdict>(LinkVerdict.Unknown)
+    val failureLinkVerdict: StateFlow<LinkVerdict> = _failureLinkVerdict.asStateFlow()
+
     init {
         scope.launch { control.frames.collect(::onFrame) }
         scope.launch { session.haptics.collect { haptics.play(it) } }
+        scope.launch { TransferTelemetry.samples.collect(linkMonitor::onSample) }
+        scope.launch { session.state.collect(linkMonitor::onPlayback) }
+        // Only the transitions: Marginal republishes every second with a fresh measurement,
+        // and 200 lines of ring buffer is the whole phone-side diagnostics channel.
+        scope.launch {
+            var lastKind: String? = null
+            linkMonitor.verdict.collect { verdict ->
+                val kind = verdict.javaClass.simpleName
+                if (kind == lastKind) return@collect
+                lastKind = kind
+                val detail = when (verdict) {
+                    is LinkVerdict.Proven -> " peakBps=${verdict.peakBps}"
+                    is LinkVerdict.Marginal -> " measuredBps=${verdict.measuredBps} requiredBps=${verdict.requiredBps}"
+                    is LinkVerdict.Starved -> " measuredBps=${verdict.measuredBps} requiredBps=${verdict.requiredBps}"
+                    LinkVerdict.Unknown -> ""
+                }
+                FlickLog.i("cast", "link verdict=$kind$detail")
+            }
+        }
         scope.launch {
             ServerStateHolder.terminalEvent.collect { event ->
                 event?.takeIf { it.castId == currentCastId }?.let(::onSourceTerminal)
@@ -400,6 +433,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             val resumeMs = session.state.value.confirmedMs.coerceAtLeast(0L)
                 .let { if (item.durationMs > 0L) it.coerceAtMost(item.durationMs) else it }
             control.armLoadSubtitle(castId, subUrl, selection?.displayName, selection?.language)
+            linkMonitor.onReload()
             session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)
         }
     }
@@ -782,6 +816,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
         _castFailure.value = null
         _failureItem.value = null
+        _failureLinkVerdict.value = LinkVerdict.Unknown
         // openDetail cannot drop a selection while a cast is live — that cast owns the
         // file it is serving — so a film browsed to mid-cast reaches here still carrying
         // the previous film's subtitle. Casting it must not inherit those cues, which
@@ -804,6 +839,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val sizeBytes = item.sizeBytes.takeIf { it > 0L }
                     ?: withContext(Dispatchers.IO) { MediaMeta.resolveSize(appContext.contentResolver, item.uri) }
                 if (sizeBytes <= 0L) throw CastStartupFailure("source_unavailable")
+                // Container bitrate, from the only two numbers that are known before a byte
+                // moves. A null here is a file this feature will never have an opinion about.
+                linkMonitor.beginCast(castId, LinkCapacityPolicy.requiredBitrateBps(sizeBytes, item.durationMs))
                 publishCastStart(CastStartState.StartingSource(castId))
                 ServerStateHolder.beginStarting(castId)
                 CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)
@@ -847,7 +885,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         CastServerService.stop(appContext, castId)
         // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
         // retarget or disarm the subtitle its load is about to carry.
-        if (currentCastId == castId) { subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) publishCastStart(CastStartState.Idle) }
+        if (currentCastId == castId) { subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null; _castingItem.value = null; session.clear(); linkMonitor.reset(); if (clearStart) publishCastStart(CastStartState.Idle) }
     }
     /** Cast ids are fingerprinted, never printed: they address a live media session. */
     private fun publishCastStart(state: CastStartState) {
@@ -861,10 +899,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             CastStartState.Idle -> null
         }
         FlickLog.i("cast", "state=${state.javaClass.simpleName} castIdFp=${FlickLog.fp(castId)}")
+        // Called rather than collected: a conflating StateFlow can hand a collector a value
+        // the coordinator has already moved past, and a stale terminal must never stop the
+        // monitor measuring the cast that replaced it.
+        linkMonitor.onCastStart(state)
         _castStart.value = state
     }
     private fun terminal(castId: String, code: String, retryable: Boolean = false, httpStatus: Int? = null) {
         if (currentCastId != castId) return
+        _failureLinkVerdict.value = linkMonitor.verdict.value
         val item = _castingItem.value
         val offerRetry = castRetryOffered(retryable, item != null)
         retryItem = item.takeIf { offerRetry }
@@ -911,6 +954,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
     fun retryCast() { retryItem?.let { item -> retryItem = null; flickToTv(item) } }
+    /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
+    fun dismissLinkStall() = linkMonitor.dismissStall()
     private fun requestRemoteStop(castId: String) { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId)) }
     private fun failPendingResume(code: String) {
         val item = pendingCast

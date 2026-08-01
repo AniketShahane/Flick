@@ -13,6 +13,12 @@ data class MediaItem(
     val name: String,
     val durationMs: Long,
     val sizeBytes: Long,
+    /** MediaStore's seconds-since-epoch source revision for thumbnail invalidation. */
+    val dateModifiedSeconds: Long,
+    /** Row generation paired with [mediaStoreVersion], or null below API 30. */
+    val generationModified: Long?,
+    /** Opaque database generation namespace, or null below API 30/provider failure. */
+    val mediaStoreVersion: String?,
     val width: Int,
     val height: Int,
     val bucket: String?,

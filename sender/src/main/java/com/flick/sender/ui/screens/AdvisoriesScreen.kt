@@ -52,6 +52,7 @@ internal fun Advisories(
             AdvisoryCard(
                 icon = FlickIcons.Wifi,
                 title = stringResource(R.string.advisory_band_title),
+                titleStyle = FlickText.titleSmall,
                 body = stringResource(R.string.advisory_band_body),
                 tone = AdvisoryTone.CAUTION,
                 primaryLabel = stringResource(R.string.advisory_band_primary),

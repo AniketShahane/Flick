@@ -1,5 +1,6 @@
 package com.flick.sender.ui.screens
 
+import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterTransition
@@ -23,7 +24,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
@@ -32,16 +35,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -54,6 +61,10 @@ import com.flick.sender.R
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.LinkVerdict
+import com.flick.sender.ui.Format
+import com.flick.sender.ui.components.AdvisoryCard
+import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.StatusKind
@@ -65,6 +76,7 @@ import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
+import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PosterShadow
@@ -83,8 +95,49 @@ fun ConnectingScreen(
     val castStart by controller.castStart.collectAsState()
     val tv by controller.connectedTv.collectAsState()
     val item by controller.castingItem.collectAsState()
+    val context = LocalContext.current
     val cancelDescription = stringResource(R.string.a11y_cancel_connecting)
     val connectingDescription = stringResource(R.string.a11y_pairing_status, stringResource(R.string.connecting_status))
+
+    // Held as State and narrowed to one boolean here: a verdict republishes with a fresh
+    // measurement every second, and this screen is a morphing indicator and a travelling
+    // light that must not be rebuilt to move a number the card reads for itself. There is
+    // no timer of this screen's own and none is owed — LinkCapacityPolicy.MIN_WINDOW_MS is
+    // what puts the earliest possible Starved on the far side of a 6 s window.
+    val linkVerdict = controller.linkVerdict.collectAsState()
+    val starvedLink by remember(linkVerdict) {
+        derivedStateOf { linkVerdict.value is LinkVerdict.Starved }
+    }
+    // The dismissal is this screen's own — the monitor has no hook for it, because "keep
+    // waiting" answers one wait rather than saying anything about the link. Held against
+    // the cast it was given for, so a retry of the same film is told again: the attempt
+    // that answer was about is over.
+    var keptWaitingFor by rememberSaveable { mutableStateOf<String?>(null) }
+    val film = item
+    // AwaitingFirstFrame alone: acceptance upstream is given 2 s, which cannot outlast the
+    // 2 s warm-up and 6 s window a Starved verdict costs, so naming that state too would
+    // only claim one this can never be reached in. A file with no name has no sentence to
+    // put in the body, and nothing here is guessed.
+    val starting = castStart as? CastStartState.AwaitingFirstFrame
+    val showSlowLink = starvedLink && film != null &&
+        starting != null && starting.castId != keptWaitingFor
+
+    // Handing the file to another player is the user ending this attempt, so the cast is
+    // torn down — but only once that player has actually taken it. Nothing on this screen
+    // touches the 18 s first-frame deadline that still owns the outcome.
+    val playHere: () -> Unit = {
+        val uri = film?.uri
+        if (uri != null) {
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "video/*")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                )
+            }.onSuccess { controller.cancelCast() }
+        }
+    }
+    val slowLinkScroll = rememberScrollState()
 
     // Bound to the handshake's own terminal states, never to arriving here: the route
     // only reaches this screen mid-handshake, so the seeded previous value keeps the
@@ -125,10 +178,10 @@ fun ConnectingScreen(
         val motionScheme = MaterialTheme.motionScheme
         val reduceMotion = rememberReduceMotion()
         BoxWithConstraints(Modifier.fillMaxSize().background(FlickGradients.connectingBackdrop)) {
-            // The column does not scroll, so a short window has to shed something to
-            // keep Cancel on screen. It sheds the decorative diagram and the wide gaps,
-            // never the frame: the frame is the surface the remote's poster flies from,
-            // and a landing with no departure is the moment lost.
+            // A short window sheds something rather than scrolling for it: Cancel has to
+            // be under the thumb, not below the fold. It sheds the decorative diagram and
+            // the wide gaps, never the frame — the frame is the surface the remote's
+            // poster flies from, and a landing with no departure is the moment lost.
             val roomy = connectingIsRoomy(maxHeight.value, LocalDensity.current.fontScale)
             // The status pill owns the foot of the window; centring the column in what is
             // left is the only thing keeping Cancel out from under it.
@@ -142,6 +195,12 @@ fun ConnectingScreen(
                 Column(
                     Modifier
                         .fillMaxWidth()
+                        // Centred while it fits and scrolling when it does not, the same
+                        // arrangement the error face carries. The slow-link card costs
+                        // this column another ~170 dp — more than the shedding above can
+                        // buy back at a large type scale — and the row it would push off
+                        // is Cancel.
+                        .verticalScroll(slowLinkScroll)
                         .padding(horizontal = 36.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(if (roomy) 24.dp else 13.dp),
@@ -156,7 +215,9 @@ fun ConnectingScreen(
                         width = if (roomy) CastFrameWidth else CastFrameCompactWidth,
                         height = if (roomy) CastFrameHeight else CastFrameCompactHeight,
                     )
-                    if (roomy) HandoffDiagram()
+                    // The diagram is decoration and the card is news, so the card takes its
+                    // room rather than being stacked under it.
+                    if (roomy && !showSlowLink) HandoffDiagram()
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(9.dp),
@@ -195,6 +256,20 @@ fun ConnectingScreen(
                             )
                         }
                     }
+                    // Between the stage line it amends and the indicator that answers it:
+                    // the card says Flick keeps trying, and the shape below it is still
+                    // moving while it does.
+                    // showSlowLink already carries both non-null checks, and the compiler
+                    // narrows film and starting through it.
+                    if (showSlowLink) {
+                        StartingLinkCard(
+                            verdict = linkVerdict,
+                            title = film.name,
+                            onPlayHere = playHere,
+                            onKeepWaiting = { keptWaitingFor = starting.castId },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     HandshakeIndicator(stageIndex = stageIndex)
                     FlickSubtleButton(
                         text = stringResource(R.string.connecting_cancel),
@@ -215,6 +290,47 @@ fun ConnectingScreen(
             }
         }
     }
+}
+
+/**
+ * What the phone has measured of its own serving socket, once that measurement is under
+ * the film's bitrate for a whole window. Information, never a decision: the 18 s deadline
+ * upstream still owns the outcome, so a first frame at second 17 starts the film and takes
+ * this away with it.
+ *
+ * Both numbers or nothing. The copy says "this link is carrying" and names no culprit —
+ * a byte counter on the serving socket cannot separate a slow router from a slow
+ * `content://` provider, and only the pre-cast advisory, which reads the band directly,
+ * is allowed to name one.
+ *
+ * A composable of its own so the verdict is read here: the reading moves every second and
+ * the loop, the morph and the shared-element frame above must not be rebuilt for it.
+ */
+@Composable
+private fun StartingLinkCard(
+    verdict: State<LinkVerdict>,
+    title: String,
+    onPlayHere: () -> Unit,
+    onKeepWaiting: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val starved = verdict.value as? LinkVerdict.Starved ?: return
+    AdvisoryCard(
+        icon = FlickIcons.Wifi,
+        title = stringResource(R.string.link_starting_title),
+        body = stringResource(
+            R.string.link_starting_body,
+            title,
+            Format.bitrate(starved.requiredBps),
+            Format.bitrate(starved.measuredBps),
+        ),
+        tone = AdvisoryTone.CAUTION,
+        primaryLabel = stringResource(R.string.error_action_play_here),
+        onPrimary = onPlayHere,
+        modifier = modifier,
+        secondaryLabel = stringResource(R.string.link_starting_wait),
+        onSecondary = onKeepWaiting,
+    )
 }
 
 /** The still that will land on the remote, held at card size while the TV answers. */
