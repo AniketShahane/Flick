@@ -167,6 +167,41 @@ content:// media ── CastServerService ── HTTP ranges ──> Media3 hard
 
 The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/`FileChannel`; it does not cache or copy the whole file. The TV's Ktor CIO WebSocket server carries pairing/control/state only and cannot browse files or request arbitrary URLs.
 
+## Optional one-time tips
+
+Flick can offer three fixed, flat-price, one-time Stripe Payment Links: $3, $8, and $15.
+They are voluntary tips for the Flick app already provided; no app feature or service is
+included and nothing unlocks. The three URLs are read at build time from local properties or
+the dedicated environment variables:
+
+| Tier | `local.properties` | CI environment |
+|---|---|---|
+| $3 | `support.stripe3Url` | `FLICK_SUPPORT_STRIPE_3_URL` |
+| $8 | `support.stripe8Url` | `FLICK_SUPPORT_STRIPE_8_URL` |
+| $15 | `support.stripe15Url` | `FLICK_SUPPORT_STRIPE_15_URL` |
+
+The catalog is strict all-or-nothing: every URL must be an exact validated
+`https://buy.stripe.com/...` link with no credentials, port, query, or fragment, or Flick
+renders neither the Settings entry nor the earned Library invitation.
+
+The prompt count advances only at the sender's first-frame commit after the current cast
+generation guard. After the threshold, the invitation is claimed synchronously and can appear
+only when that same Active cast ends normally and returns to Library (local stop, matching TV
+`stopped`, or matching source-server stop). It is never automatic during playback, pairing,
+cancellation, failure, generic navigation, or first launch. The claim is persisted before the
+transient Library card is shown, so rotation keeps the card through the application-scoped
+controller while process death cannot repeat it.
+
+Each option opens its configured URL without parameters, identity, analytics, cast data, or
+payment state. Flick launches a Custom Tab first and falls back to a browsable browser intent;
+it neither receives payment results nor stores payment data. Stripe must be configured with
+three one-time fixed-price links, optional personal-information, shipping-address, and custom
+collection switched off, and its support, privacy, and refund policies completed before a link
+is supplied to the app. A Payment Link token does not encode its price or recurrence in a form
+the APK can verify. Release verification must therefore open all three final links and confirm
+that they are live, one-time USD checkouts for exactly $3, $8, and $15 respectively, with no
+optional items or upsells, before those URLs are used for a distribution build.
+
 ## Media HTTP contract
 
 `CastServerService` creates a fresh 128-bit URL-safe token per start and binds port 8080 on the exact currently owned RFC1918 address observed by the authenticated TV. `MediaHttpServer` publishes URI and token as one immutable atomic session so retargeting cannot mix an old authorization token with a new source.

@@ -25,6 +25,8 @@ import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.TvAvailability
+import com.flick.sender.support.SupportCatalog
+import com.flick.sender.support.SupportPromptStore
 import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -119,6 +121,13 @@ private val FileFaultCodes = setOf(
 
 internal fun marksFileUnplayable(code: String): Boolean = code in FileFaultCodes
 
+/** A completed first-frame cast may earn the one-time invitation only from an Active session. */
+internal fun supportInvitationEligibleForNormalCompletion(
+    castId: String,
+    currentCastId: String?,
+    state: CastStartState,
+): Boolean = currentCastId == castId && (state as? CastStartState.Active)?.castId == castId
+
 /**
  * Files a receiver refused, held for the life of the process and no longer.
  *
@@ -154,6 +163,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     val session = PlaybackSession(control, scope, appContext.getString(R.string.media_title_generic))
     private val haptics = FlickHaptics(appContext)
     private val store = PairingStore(appContext)
+    private val supportPromptStore = SupportPromptStore(appContext)
     private val libraryFolderStore = LibraryFolderStore(appContext)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
@@ -183,6 +193,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     val pendingPairLaunch: StateFlow<PendingPairLaunch?> = _pendingPairLaunch.asStateFlow()
     private val _showQualitySheet = MutableStateFlow(false); val showQualitySheet = _showQualitySheet.asStateFlow()
     private val _showDiagnostics = MutableStateFlow(false); val showDiagnostics = _showDiagnostics.asStateFlow()
+    private val _showSupportSheet = MutableStateFlow(false); val showSupportSheet = _showSupportSheet.asStateFlow()
+    private val _showSupportInvitation = MutableStateFlow(false); val showSupportInvitation = _showSupportInvitation.asStateFlow()
     val devices = nsd.devices
     // Read here, at construction, rather than by the screen: the first library this
     // publishes is already narrowed, so a scoped library never opens on everything and
@@ -395,8 +407,29 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun restoreNowPlaying() {
         if (canRestoreNowPlaying()) _route.value = Route.NowPlaying
     }
-    fun toggleQualitySheet(show: Boolean) { _showQualitySheet.value = show }
-    fun toggleDiagnostics(show: Boolean) { _showDiagnostics.value = show }
+    fun toggleQualitySheet(show: Boolean) {
+        _showQualitySheet.value = show
+        if (show) {
+            _showDiagnostics.value = false
+            _showSupportSheet.value = false
+        }
+    }
+    fun toggleDiagnostics(show: Boolean) {
+        _showDiagnostics.value = show
+        if (show) {
+            _showQualitySheet.value = false
+            _showSupportSheet.value = false
+        }
+    }
+    fun toggleSupportSheet(show: Boolean) {
+        _showSupportSheet.value = show
+        if (show) {
+            _showQualitySheet.value = false
+            _showDiagnostics.value = false
+            dismissSupportInvitation()
+        }
+    }
+    fun dismissSupportInvitation() { _showSupportInvitation.value = false }
 
     /**
      * A launch this app did not read itself — a deep link from any installed app, or a
@@ -744,7 +777,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
-                readyCommit = true; publishCastStart(CastStartState.Active(castId)); _route.value = Route.NowPlaying
+                readyCommit = true
+                supportPromptStore.recordSuccess()
+                publishCastStart(CastStartState.Active(castId)); _route.value = Route.NowPlaying
                 // A first frame is the only thing that can outrank a previous refusal.
                 _unplayableFiles.value = unplayableMemory.clear(item.uriKey)
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
@@ -754,7 +789,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun cancelCast() = cancelCast(silent = false)
     private fun cancelCast(silent: Boolean) { currentCastId?.let { id -> castJob?.cancel(); cleanup(id, stopRemoteIfLoaded = true); if (!silent) _route.value = Route.Library } }
-    fun stopCast() { currentCastId?.let { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", it)); cleanup(it) }; _route.value = Route.Library }
+    fun stopCast() {
+        currentCastId?.let { castId ->
+            control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId))
+            completeCastToLibrary(castId)
+        } ?: run { _route.value = Route.Library }
+    }
     private fun cleanup(castId: String, clearStart: Boolean = true, stopRemoteIfLoaded: Boolean = false) {
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
@@ -763,6 +803,19 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
         // retarget or disarm the subtitle its load is about to carry.
         if (currentCastId == castId) { subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null; _castingItem.value = null; session.clear(); if (clearStart) publishCastStart(CastStartState.Idle) }
+    }
+    /** Normal terminals deliberately capture their Active ownership before [cleanup] clears it. */
+    private fun completeCastToLibrary(castId: String) {
+        val eligibleForInvitation = supportInvitationEligibleForNormalCompletion(
+            castId = castId,
+            currentCastId = currentCastId,
+            state = _castStart.value,
+        )
+        cleanup(castId)
+        _route.value = Route.Library
+        if (eligibleForInvitation && SupportCatalog.configured() != null && supportPromptStore.consumeIfEligible()) {
+            _showSupportInvitation.value = true
+        }
     }
     /** Cast ids are fingerprinted, never printed: they address a live media session. */
     private fun publishCastStart(state: CastStartState) {
@@ -809,7 +862,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             "loadAccepted" -> accepted?.complete(frame)
             "loadReady" -> ready?.complete(frame)
             "loadFailed", "error" -> terminal(id, frame.getString("code"), frame.getBoolean("retryable"), if (frame.has("httpStatus")) frame.getInt("httpStatus") else null)
-            "stopped" -> { cleanup(id); _route.value = Route.Library }
+            "stopped" -> completeCastToLibrary(id)
         }
     }
     private fun onSourceTerminal(event: com.flick.sender.SourceServerEvent) {
@@ -817,8 +870,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         requestRemoteStop(id)
         when (event.kind) {
             SourceServerTerminalKind.STOPPED -> {
-                cleanup(id)
-                _route.value = Route.Library
+                completeCastToLibrary(id)
             }
             SourceServerTerminalKind.FAILED -> terminal(id, "media_bind_failed")
         }

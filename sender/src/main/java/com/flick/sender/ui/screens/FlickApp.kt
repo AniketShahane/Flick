@@ -54,6 +54,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
 import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.SenderNavigationPolicy
+import com.flick.sender.support.SupportCatalog
 import com.flick.sender.ui.components.FlickBottomNav
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
@@ -76,9 +77,10 @@ import kotlinx.coroutines.delay
  * carries the channel a control publishes an origin on, so the layer below can spend
  * whatever was published without knowing which control did it.
  */
-private enum class Overlay(val revealTarget: RevealTarget) {
+private enum class Overlay(val revealTarget: RevealTarget?) {
     QUALITY(RevealTarget.QUALITY),
     DIAGNOSTICS(RevealTarget.DIAGNOSTICS),
+    SUPPORT(null),
 }
 
 /**
@@ -103,12 +105,14 @@ private class ShellHistory(var destination: ShellDestination, var seat: NavTab)
 @Composable
 fun FlickApp(
     controller: FlickController,
+    supportCatalog: SupportCatalog?,
     batteryExempt: Boolean,
     themePreference: ThemePreference,
     onSelectTheme: (ThemePreference) -> Unit,
     onRequestVideoPermission: () -> Unit,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenCheckout: (String) -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
@@ -121,6 +125,7 @@ fun FlickApp(
     val castingItem by controller.castingItem.collectAsState()
     val showQuality by controller.showQualitySheet.collectAsState()
     val showDiagnostics by controller.showDiagnostics.collectAsState()
+    val showSupportSheet by controller.showSupportSheet.collectAsState()
     val reduceMotion = rememberReduceMotion()
     // Nav haptics are decided here, not inside the nav bar: only the shell knows whether
     // a tap moved the app or landed on the seat it was already on.
@@ -220,6 +225,7 @@ fun FlickApp(
     // Controller overlay flows are intentionally independent because pairing and
     // playback own their own state. The shell projects them as one visual layer.
     val activeOverlay = when {
+        supportCatalog != null && showSupportSheet -> Overlay.SUPPORT
         showDiagnostics -> Overlay.DIAGNOSTICS
         showQuality -> Overlay.QUALITY
         else -> null
@@ -266,6 +272,7 @@ fun FlickApp(
         when (activeOverlay) {
             Overlay.QUALITY -> controller.toggleQualitySheet(false)
             Overlay.DIAGNOSTICS -> controller.toggleDiagnostics(false)
+            Overlay.SUPPORT -> controller.toggleSupportSheet(false)
             null -> Unit
         }
     }
@@ -386,6 +393,8 @@ fun FlickApp(
                             Route.Connect -> ConnectScreen(controller)
                             Route.Library -> LibraryScreen(
                                 controller = controller,
+                                supportAvailable = supportCatalog != null,
+                                onOpenSupport = { controller.toggleSupportSheet(true) },
                                 onRequestVideoPermission = onRequestVideoPermission,
                                 uiState = libraryUi,
                                 sharedScope = sharedScope,
@@ -393,6 +402,8 @@ fun FlickApp(
                             )
                             Route.Settings -> PhoneSettingsScreen(
                                 controller = controller,
+                                supportAvailable = supportCatalog != null,
+                                onOpenSupport = { controller.toggleSupportSheet(true) },
                                 batteryExempt = batteryExempt,
                                 themePreference = themePreference,
                                 onSelectTheme = onSelectTheme,
@@ -521,7 +532,7 @@ fun FlickApp(
                     // would hand the travelling disc the null a spent channel now returns
                     // and snap it back to the surface's own centre mid-flight.
                     val bornAt = remember(overlay) {
-                        overlay?.let { qualityRevealOrigin.consume(it.revealTarget) }
+                        overlay?.revealTarget?.let { qualityRevealOrigin.consume(it) }
                     }
                     Box(
                         Modifier
@@ -540,6 +551,16 @@ fun FlickApp(
                                 Overlay.DIAGNOSTICS -> DiagnosticsSheet(
                                     onDismiss = { controller.toggleDiagnostics(false) },
                                 )
+                                Overlay.SUPPORT -> supportCatalog?.let { catalog ->
+                                    SupportFlickSheet(
+                                        catalog = catalog,
+                                        onDismiss = { controller.toggleSupportSheet(false) },
+                                        onOpenCheckout = { checkoutUrl ->
+                                            controller.toggleSupportSheet(false)
+                                            onOpenCheckout(checkoutUrl)
+                                        },
+                                    )
+                                }
                                 null -> Unit
                             }
                         }

@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -24,7 +26,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -35,6 +39,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.navBottomClearance
 import com.flick.sender.ui.theme.FlickText
+import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
@@ -47,6 +52,8 @@ import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 @Composable
 fun PhoneSettingsScreen(
     controller: FlickController,
+    supportAvailable: Boolean,
+    onOpenSupport: () -> Unit,
     batteryExempt: Boolean,
     themePreference: ThemePreference,
     onSelectTheme: (ThemePreference) -> Unit,
@@ -94,6 +101,34 @@ fun PhoneSettingsScreen(
             onOpenDiagnostics = { controller.toggleDiagnostics(true) },
         )
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
+        if (supportAvailable) {
+            SupportFlickSection(onOpen = onOpenSupport)
+        }
+    }
+}
+
+/** An always-available, quiet path after the earned library invitation is gone. */
+@Composable
+private fun SupportFlickSection(onOpen: () -> Unit) {
+    val colors = LocalFlickColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlickCorners.qualityCard))
+            .background(colors.fillCard)
+            .clickable(role = Role.Button, onClick = onOpen)
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 17.dp, vertical = 15.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.settings_support_title),
+            style = FlickText.titleMedium.copy(color = colors.onSurface),
+        )
+        Text(
+            text = stringResource(R.string.settings_support_summary),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+        )
     }
 }
 

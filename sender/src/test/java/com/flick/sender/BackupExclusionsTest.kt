@@ -188,6 +188,9 @@ class BackupExclusionsTest {
             "flick_subtitles" to
                 "remembers which subtitle file was picked for a video — a SAF URI whose grant " +
                     "does not survive the move, so it carries no authority anywhere else",
+            "flick_support" to
+                "holds only a saturated successful-cast count and a one-way prompt-consumed " +
+                    "marker; it contains no checkout URL, credential, or payment data",
         )
 
         /** `getSharedPreferences("name"` or `getSharedPreferences(CONSTANT`. */
