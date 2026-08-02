@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -134,12 +135,18 @@ fun SubtitlesPanel(
     entryKey: Int = 0,
     modifier: Modifier = Modifier,
 ) {
-    val entryFocus = remember { FocusRequester() }
-    val entered = remember { mutableStateOf(false) }
-    LaunchedEffect(entryKey) { landTvFocus(entryFocus, entryFocus) { entered.value } }
-
     val selectedIndex = tracks.indexOfFirst { it.isSelected }
     val offSelected = selectedIndex < 0
+    val selectedChoiceFocus = remember { FocusRequester() }
+    val lastChoiceFocus = remember { FocusRequester() }
+    val sizeFocus = remember { FocusRequester() }
+    val entryFocus = if (tracks.isEmpty() || selectedIndex == tracks.lastIndex) {
+        lastChoiceFocus
+    } else {
+        selectedChoiceFocus
+    }
+    val entered = remember { mutableStateOf(false) }
+    LaunchedEffect(entryKey) { landTvFocus(entryFocus, entryFocus) { entered.value } }
 
     // The panel is one beacon group: the close button, the track rows and the
     // three size cells share ONE ring that glides between them. The host sits
@@ -200,7 +207,12 @@ fun SubtitlesPanel(
                 label = stringResource(R.string.subtitles_off),
                 meta = null,
                 selected = offSelected,
-                focusRequester = if (offSelected) entryFocus else null,
+                focusRequester = when {
+                    tracks.isEmpty() -> lastChoiceFocus
+                    offSelected -> selectedChoiceFocus
+                    else -> null
+                },
+                downFocusRequester = if (tracks.isEmpty()) sizeFocus else null,
                 onClick = { onSelectTrack(null) },
             )
             tracks.forEachIndexed { index, track ->
@@ -209,7 +221,12 @@ fun SubtitlesPanel(
                         ?: stringResource(R.string.subtitles_track_fallback, track.trackNumber),
                     meta = trackMeta(track),
                     selected = track.isSelected,
-                    focusRequester = if (index == selectedIndex) entryFocus else null,
+                    focusRequester = when {
+                        index == tracks.lastIndex -> lastChoiceFocus
+                        index == selectedIndex -> selectedChoiceFocus
+                        else -> null
+                    },
+                    downFocusRequester = if (index == tracks.lastIndex) sizeFocus else null,
                     onClick = { onSelectTrack(track.id) },
                 )
             }
@@ -227,7 +244,15 @@ fun SubtitlesPanel(
                 maxLines = 1,
             )
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusProperties {
+                        // Size is the final rank in this modal. Return to the
+                        // immediately preceding subtitle choice and never leave
+                        // the panel through its bottom edge.
+                        up = lastChoiceFocus
+                        down = FocusRequester.Cancel
+                    },
                 horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
             ) {
                 SubtitleSize.ALL.forEach { option ->
@@ -235,6 +260,7 @@ fun SubtitlesPanel(
                     FlickTvButton(
                         onClick = { onSelectSize(option) },
                         modifier = Modifier.weight(1f),
+                        focusRequester = if (on) sizeFocus else null,
                         selected = on,
                         shape = FlickShape.Sm,
                         containerColor = if (on) FlickColor.OnSurface else null,
@@ -271,10 +297,18 @@ private fun TrackRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
 ) {
     FlickTvRow(
         onClick = onClick,
         modifier = modifier
+            .then(
+                if (downFocusRequester != null) {
+                    Modifier.focusProperties { down = downFocusRequester }
+                } else {
+                    Modifier
+                },
+            )
             .fillMaxWidth()
             .padding(horizontal = FocusRingBleed),
         focusRequester = focusRequester,

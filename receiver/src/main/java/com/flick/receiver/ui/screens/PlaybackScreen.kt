@@ -523,7 +523,9 @@ fun PlaybackScreen(
                 deviceLabel = deviceLabel,
                 diagnostics = diagnostics,
                 safeArea = safeArea,
-                interactive = chromeVisible,
+                // A side panel is modal: keep the status chrome visible, but do
+                // not leave END SESSION in the focus or accessibility graph.
+                interactive = transportVisible,
                 transportVisible = transportVisible,
                 onEndSession = onEndSession,
                 endSessionFocusRequester = endSessionFocus,
@@ -1063,7 +1065,10 @@ private fun PlaybackSidePanel(
 
     Box(
         modifier = modifier
-            .focusProperties { canFocus = open }
+            .focusProperties {
+                canFocus = open
+                exit = { if (open) FocusRequester.Cancel else FocusRequester.Default }
+            }
             .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
     ) {
         // The panel's glass is born at the card that summoned it and pulled back
