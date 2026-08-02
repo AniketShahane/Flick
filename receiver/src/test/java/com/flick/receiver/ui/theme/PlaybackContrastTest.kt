@@ -1,6 +1,7 @@
 package com.flick.receiver.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import com.flick.receiver.ui.screens.PAUSED_REST_FILL_ALPHA
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,38 +101,31 @@ class PlaybackContrastTest {
 
     @Test fun theRestingPauseKeyIsLegibleAtBothEndsOfTheFilm() {
         // What replaced the chip: the play key left at the foot of the frame with
-        // its FILL at half strength and its ink solid. This is the guard on that
-        // split — dropping the ink to the same half would look tidier in code and
-        // would be unreadable on a snow field.
+        // its FILL at 80 % and its ink solid. This is the guard on that
+        // split — fading the ink along with the fill would weaken the only state
+        // signal left on screen.
         //
         // The chrome is down whenever this is lit, so the only thing between the
         // key and the film is the paused dim; there is no scrim to borrow.
         //
         // GRAPHIC_FLOOR is WCAG 1.4.11's graphical-object floor rather than the
         // 4.5:1 body floor: this is a 56 dp key carrying a 28 dp glyph, not copy.
-        val fill = FlickColor.Spark.copy(alpha = PAUSED_REST_FILL_ALPHA)
-
-        // Bright: the ink carries it, against the fill and against the frame.
         val bright = FlickColor.CanvasPlayback.copy(alpha = pausedDim).over(Color.White)
-        val onBright = fill.over(bright)
-        assertGraphic("resting glyph on its fill", FlickColor.OnSpark, onBright)
-        assertGraphic("resting glyph on a bright frame", FlickColor.OnSpark, bright)
-
-        // Dark: the ink has nowhere left to go, so the amber silhouette carries it.
         val dark = FlickColor.CanvasPlayback.copy(alpha = pausedDim).over(Color.Black)
-        assertGraphic("resting key on a dark frame", fill.over(dark), dark)
+        for (tone in listOf(FlickColor.SparkLight, FlickColor.SparkBright, FlickColor.Spark)) {
+            val fill = tone.copy(alpha = PAUSED_REST_FILL_ALPHA)
+
+            // Bright: the solid ink carries the glyph at every gradient stop.
+            assertGraphic("resting glyph on its fill", FlickColor.OnSpark, fill.over(bright))
+            assertGraphic("resting glyph on a bright frame", FlickColor.OnSpark, bright)
+
+            // Dark: the amber silhouette carries the key at every gradient stop.
+            assertGraphic("resting key on a dark frame", fill.over(dark), dark)
+        }
     }
 
-    @Test fun aUniformHalfOpacityKeyWouldNotHaveReachedTheFloor() {
-        // The reason the fill and the ink are split, and the guard against the
-        // tidier-looking version. Put the WHOLE key behind one 50 % layer and the
-        // amber and its ink converge: on a bright frame they land under the floor
-        // whether or not the paused dim is helping.
-        fun halved(ink: Color, bed: Color) = ink.copy(alpha = 0.5f).over(bed)
-        for (bed in listOf(Color.White, FlickColor.CanvasPlayback.copy(alpha = pausedDim).over(Color.White))) {
-            val measured = contrast(halved(FlickColor.Spark, bed), halved(FlickColor.OnSpark, bed))
-            assertTrue("uniform 50 %% key measured %.2f:1".format(measured), measured < GRAPHIC_FLOOR)
-        }
+    @Test fun theRestingPauseFillUsesTheRequestedEightyPercentOpacity() {
+        assertEquals(0.8f, PAUSED_REST_FILL_ALPHA, TOLERANCE)
     }
 
     private fun assertGraphic(what: String, ink: Color, plate: Color) {
@@ -255,9 +249,6 @@ class PlaybackContrastTest {
 
         /** WCAG 1.4.11 — the floor for a graphical object rather than for copy. */
         const val GRAPHIC_FLOOR = 3f
-
-        /** `PlaybackScreen.PAUSED_REST_ALPHA`, which is private to that file. */
-        const val PAUSED_REST_FILL_ALPHA = 0.5f
 
         /** The receiver's reference canvas: 1920 × 1080 at density 2. */
         const val CANVAS_WIDTH_DP = 960f

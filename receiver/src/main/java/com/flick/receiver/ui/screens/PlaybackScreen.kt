@@ -49,6 +49,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
@@ -107,6 +109,7 @@ import com.flick.receiver.ui.theme.glassState
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.ui.theme.seekAccentIntensity
 import com.flick.receiver.ui.theme.seekBurstWash
+import com.flick.receiver.ui.theme.sparkShadow
 import com.flick.receiver.ui.theme.topScrimBrush
 import kotlinx.coroutines.delay
 import java.util.Date
@@ -206,22 +209,27 @@ private const val STATE_CHIP_TOP_FRACTION = 0.28f
  * or playing, because a paused film is exactly when a viewer wants to step
  * through it without a panel in the way.
  *
- * The half goes on the FILL and not on the whole key, and that is a measurement
- * rather than a preference. Put the whole key behind one 50 % layer and the amber
- * fill and its `OnSpark` glyph composite to **2.72:1** over a dimmed white frame
- * and **2.32:1** over an undimmed one — under the 3:1 graphical floor, on the one
- * thing left on screen. Keeping the ink solid puts the read where it survives:
+ * The 80 % goes on the FILL and not on the whole key. Keeping the ink solid makes
+ * the state survive both ends of an arbitrary frame while the brighter fill and
+ * the primary key's small amber shadow keep it visibly active:
  *
  * | frame (with the 0.34 paused dim) | `OnSpark` glyph vs its fill | fill vs frame |
  * |---|---|---|
- * | white | **7.29:1** (6.44:1 against the frame) | 1.13:1 |
- * | black | 2.46:1 | **3.41:1** |
+ * | white | solid dark ink carries the glyph | bright amber silhouette |
+ * | black | solid dark ink stays distinct | amber silhouette carries the key |
  *
- * Whichever way the frame goes, one of the two elements carries at 3:1 or better,
- * and on the bright frame — the case §5.3 actually worries about — it is the
- * glyph, by a wide margin. See `PlaybackContrastTest`.
+ * See `PlaybackContrastTest` for the measured 3:1 graphical floor.
  */
-private const val PAUSED_REST_ALPHA = 0.5f
+internal const val PAUSED_REST_FILL_ALPHA = 0.8f
+
+/** A fixed brush: no shader is rebuilt as the live playback surface invalidates. */
+private val PausedRestFill = Brush.verticalGradient(
+    listOf(
+        FlickColor.SparkLight.copy(alpha = PAUSED_REST_FILL_ALPHA),
+        FlickColor.SparkBright.copy(alpha = PAUSED_REST_FILL_ALPHA),
+        FlickColor.Spark.copy(alpha = PAUSED_REST_FILL_ALPHA),
+    ),
+)
 
 /**
  * The rebuffer plate's loader. Smaller than [FlickLoader]'s own default: this
@@ -450,26 +458,6 @@ fun PlaybackScreen(
             }
         }
 
-        // The paused key at rest. Composed only while the film is paused, and lit
-        // only once the chrome has gone: the same amber key, at the foot of the
-        // frame the transport left, held at [PAUSED_REST_ALPHA].
-        if (phase == PlaybackPhase.Paused) {
-            val restPresence = animateFloatAsState(
-                targetValue = if (chromeVisible) 0f else 1f,
-                animationSpec = if (reducedMotion) tween(durationMillis = 0) else {
-                    FlickMotion.chromeFadeIn()
-                },
-                label = "pausedRestPresence",
-            )
-            RestingPauseKey(
-                presence = { restPresence.value },
-                announced = !chromeVisible,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(safeArea),
-            )
-        }
-
         // ±10 s remote-seek feedback, restyled as the design's side burst. The
         // label stays the real accumulated delta, not a fixed "±10s".
         //
@@ -635,6 +623,28 @@ fun PlaybackScreen(
                 }
             }
         }
+
+        // This state signal is deliberately the top playback sibling. Media3's
+        // SubtitleView lives inside videoContent's AndroidView, while the seek,
+        // chrome and side-panel overlays are later Compose siblings; zIndex makes
+        // the ordering explicit instead of relying on their source order.
+        if (phase == PlaybackPhase.Paused) {
+            val restPresence = animateFloatAsState(
+                targetValue = if (chromeVisible) 0f else 1f,
+                animationSpec = if (reducedMotion) tween(durationMillis = 0) else {
+                    FlickMotion.chromeFadeIn()
+                },
+                label = "pausedRestPresence",
+            )
+            RestingPauseKey(
+                presence = { restPresence.value },
+                announced = !chromeVisible,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(safeArea)
+                    .zIndex(1f),
+            )
+        }
     }
 }
 
@@ -651,8 +661,8 @@ fun PlaybackScreen(
  * sits over a live decoder. `ModulateAlpha` is explicit because the default
  * strategy would buy an offscreen buffer for a 56 dp key the moment its alpha left
  * 1 — and because modulating per draw op is what keeps the composite at rest
- * exactly what [PAUSED_REST_ALPHA] describes: a half-strength fill under solid
- * ink, not a half-strength everything.
+ * exactly what [PAUSED_REST_FILL_ALPHA] describes: an 80 %-strength fill under
+ * solid ink, not 80 % applied to the entire key.
  */
 @Composable
 private fun RestingPauseKey(
@@ -668,8 +678,9 @@ private fun RestingPauseKey(
                 alpha = presence()
                 compositingStrategy = CompositingStrategy.ModulateAlpha
             }
+            .sparkShadow(FlickShape.Play)
             .clip(FlickShape.Play)
-            .background(FlickColor.Spark.copy(alpha = PAUSED_REST_ALPHA))
+            .background(PausedRestFill)
             .then(
                 if (announced) {
                     Modifier.semantics { contentDescription = label }

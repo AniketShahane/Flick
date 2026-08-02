@@ -62,9 +62,11 @@ class PlaybackChromeSemanticsTest {
 
         composeRule.onNodeWithContentDescription("Film surface").assertExists()
         composeRule.onNodeWithContentDescription("Play").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Paused").assertExists()
 
         composeRule.runOnIdle { setChromeVisible(true) }
         composeRule.onNodeWithContentDescription("Play").assertExists().assertIsFocused()
+        composeRule.onNodeWithContentDescription("Paused").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Skip back 10 seconds").assertExists()
         composeRule.onNodeWithContentDescription("Skip forward 10 seconds").assertExists()
         composeRule.onNodeWithContentDescription("Volume").assertExists()
