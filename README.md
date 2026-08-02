@@ -2,6 +2,16 @@
 
 Flick is a two-app Android project for casting your own local 4K/1080p video from an Android phone to Android TV. The phone serves the original bytes over the home LAN and the TV hardware-decodes them. Flick never transcodes and never screen-mirrors.
 
+## Business, tips, and customer support
+
+Flick is a free Android application developed and operated by Aniket Shahane. It provides direct-play casting of a user's own local videos from an Android phone to Android TV; it does not sell or provide movies, television shows, or other media.
+
+Users may optionally leave a one-time tip for the Flick app already provided. A tip does not purchase or unlock any feature, content, service, priority support, or recognition. Flick does not sell physical goods, subscriptions, recurring services, or promotional offers.
+
+For product help, bug reports, or other customer support, [open a GitHub issue](https://github.com/AniketShahane/Flick/issues/new). Do not include card numbers, payment credentials, receipt numbers, or other private payment information in a public issue.
+
+**Refund and dispute policy:** Voluntary tips are generally non-refundable after they are processed. Duplicate, accidental, unauthorized, or legally required refund requests will be reviewed and, when appropriate, returned to the original payment method. Use the private support contact shown on the Stripe payment receipt for payment and refund requests. Returns and cancellations do not apply because Flick provides no physical goods, subscriptions, or recurring charges. This policy does not limit any rights provided by applicable law.
+
 Control protocol v2 is implemented in both apps at `versionCode=3` / `versionName=0.2.1`. Install the sender and receiver together; mixed builds are unsupported. The normative protocol is [docs/design/control-channel.md](docs/design/control-channel.md).
 
 ## Project structure
