@@ -101,6 +101,64 @@ class SessionReloadTest {
         assertEquals(1, player.reloads)
     }
 
+    @Test fun aRolledBackSubtitleCanBeRetriedIdentically() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+
+        session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, SUBTITLE)
+        player.reportSubtitleDropped(player.lastReloadMediaId!!, SUBTITLE)
+        val retry = session.onReloadMedia(
+            LEASE,
+            CAST,
+            URL,
+            TITLE,
+            DURATION_MS,
+            RESUME_MS,
+            SUBTITLE,
+        )
+
+        assertTrue(retry is ControlCastResult.Ready)
+        assertEquals(2, player.reloads)
+    }
+
+    @Test fun aStaleRollbackCannotClearANewerSubtitleInTheSameCast() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val newer = SUBTITLE.copy(url = "http://192.168.42.10:8080/s/new-token")
+
+        session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, SUBTITLE)
+        val mediaId = player.lastReloadMediaId!!
+        session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, newer)
+        player.reportSubtitleDropped(mediaId, SUBTITLE)
+
+        assertNull(session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, newer))
+        assertEquals(2, player.reloads)
+    }
+
+    @Test fun aStaleRollbackCannotClearANewerCastGeneration() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+
+        session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, SUBTITLE)
+        val staleMediaId = player.lastReloadMediaId!!
+        session.onLoadMedia(LEASE + 1L, CAST_B, URL, TITLE, DURATION_MS, 0L, SUBTITLE)
+        runCurrent()
+        player.renderFirstFrame()
+        player.reportSubtitleDropped(staleMediaId, SUBTITLE)
+
+        assertNull(
+            session.onReloadMedia(
+                LEASE + 1L,
+                CAST_B,
+                URL,
+                TITLE,
+                DURATION_MS,
+                RESUME_MS,
+                SUBTITLE,
+            ),
+        )
+    }
+
     @Test fun anOrdinaryRetransmitStillReplaysAndNeverTouchesThePlayer() = runTest {
         val player = RecordingPlayer()
         val session = activeSession(player, SUBTITLE)
@@ -202,6 +260,7 @@ class SessionReloadTest {
 
     private companion object {
         const val CAST = "cast-a"
+        const val CAST_B = "cast-b"
         const val LEASE = 1L
         const val URL = "http://192.168.42.10:8080/v/token"
         const val TITLE = "Film"
@@ -235,9 +294,16 @@ private class RecordingPlayer : SessionPlayer {
     private var firstFrame: (() -> Unit)? = null
     private var startupError: ((PlaybackException) -> Unit)? = null
     private var playbackFailure: ((PlaybackException) -> Unit)? = null
+    private var subtitleDropped: ((String, ExternalSubtitle) -> Unit)? = null
 
     override fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
         playbackFailure = listener
+    }
+
+    override fun setExternalSubtitleDroppedListener(
+        listener: ((String, ExternalSubtitle) -> Unit)?,
+    ) {
+        subtitleDropped = listener
     }
 
     override fun recordProbeLatency(latencyMs: Long) = Unit
@@ -300,5 +366,9 @@ private class RecordingPlayer : SessionPlayer {
 
     fun failPlayback(error: PlaybackException) {
         playbackFailure?.invoke(error)
+    }
+
+    fun reportSubtitleDropped(mediaId: String, subtitle: ExternalSubtitle) {
+        subtitleDropped?.invoke(mediaId, subtitle)
     }
 }

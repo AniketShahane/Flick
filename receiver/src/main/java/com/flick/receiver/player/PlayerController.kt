@@ -54,6 +54,7 @@ import java.io.IOException
  */
 interface SessionPlayer {
     fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?)
+    fun setExternalSubtitleDroppedListener(listener: ((String, ExternalSubtitle) -> Unit)?)
     fun recordProbeLatency(latencyMs: Long)
 
     /** Cold start: adopts a NEW player instance and reports the exact first frame. */
@@ -164,11 +165,13 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Media id of the current session, so a rebuilt item keeps its first-frame identity. */
     private var currentMediaId: String? = null
 
-    /** A load against [currentSubtitle]'s URL has failed at least once. */
-    private var subtitleLoadFailed: Boolean = false
+    private val subtitleFailureState = ExternalSubtitleFailureState()
 
-    /** The subtitle has already been dropped once for this session; never drop twice. */
-    private var subtitleDropped: Boolean = false
+    /** One-shot deadline for an Active cast's in-place external-subtitle attach/swap. */
+    private val subtitleReloadWatchdog = SubtitleReloadWatchdog()
+    private var nextSubtitleReloadAttemptToken = 0L
+    private var pendingSubtitleReloadDeadline: Runnable? = null
+    private var pendingSubtitleReloadAttemptToken: Long? = null
 
     // --- Bounded auto-recovery state (all touched on the main thread only) ------
     private val recoveryHandler = Handler(Looper.getMainLooper())
@@ -206,6 +209,7 @@ class PlayerController(context: Context) : SessionPlayer {
     private var startupCallbacks: StartupCallbacks? = null
     private val firstFrameGate = FirstFrameGate()
     private var playbackFailureListener: ((PlaybackException) -> Unit)? = null
+    private var externalSubtitleDroppedListener: ((String, ExternalSubtitle) -> Unit)? = null
 
     // --- Listeners -----------------------------------------------------------
 
@@ -238,6 +242,21 @@ class PlayerController(context: Context) : SessionPlayer {
                 }
             }
             instrumentation.playbackState = playbackState
+            val livePlayer = player
+            val attemptToken = livePlayer?.currentMediaItem?.subtitleReloadAttemptToken()
+            if (livePlayer != null && attemptToken != null &&
+                attemptToken == pendingSubtitleReloadAttemptToken &&
+                livePlayer.playbackState == playbackState
+            ) {
+                if (subtitleReloadWatchdog.onPlaybackState(
+                        attemptToken,
+                        currentMediaId,
+                        ready = playbackState == Player.STATE_READY,
+                    )
+                ) {
+                    cancelSubtitleReloadDeadline(clearState = false)
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -335,20 +354,83 @@ class PlayerController(context: Context) : SessionPlayer {
      * media, same media id, same position, minus the subtitle.
      */
     private fun dropFailedExternalSubtitle(): Boolean {
-        if (currentSubtitle == null || subtitleDropped || !subtitleLoadFailed) return false
+        if (!subtitleFailureState.shouldRollbackAfterPlayerError(currentSubtitle != null)) return false
+        return dropExternalSubtitle("external load failed")
+    }
+
+    /** Re-prepare the same live player at the same position, without the text source. */
+    private fun dropExternalSubtitle(reason: String): Boolean {
+        val droppedSubtitle = currentSubtitle ?: return false
+        if (!subtitleFailureState.canRollback(hasSubtitle = true)) return false
         val exo = player ?: return false
         val url = currentUrl ?: return false
-        subtitleDropped = true
-        subtitleLoadFailed = false
+        cancelSubtitleReloadDeadline()
+        // A recovery queued for the item that still contained the failed subtitle
+        // must not re-prepare over this one-shot rollback.
+        cancelPendingRecovery()
+        subtitleFailureState.recordRollback()
         currentSubtitle = null
-        val resumePositionMs = exo.currentPosition.coerceAtLeast(0L)
+        val resumePositionMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+            ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = exo.playWhenReady
-        FlickLog.w("subtitle", "external load failed; continuing without external subtitle")
-        exo.setMediaItem(mediaItemFor(url, currentMediaId, subtitle = null))
+        savedPositionMs = resumePositionMs
+        pendingPlayWhenReady = resumePlayWhenReady
+        lastGoodPositionMs = resumePositionMs
+        FlickLog.w("subtitle", "$reason; continuing without external subtitle")
+        exo.setMediaItem(
+            mediaItemFor(url, currentMediaId, subtitle = null),
+            /* resetPosition = */ false,
+        )
         if (resumePositionMs > 0L) exo.seekTo(resumePositionMs)
         exo.prepare()
         exo.playWhenReady = resumePlayWhenReady
+        currentMediaId?.let { externalSubtitleDroppedListener?.invoke(it, droppedSubtitle) }
         return true
+    }
+
+    /**
+     * An external subtitle is optional, so a silent Media3 re-prepare stall gets
+     * a much shorter budget than the phone-control lease. A playing reload must
+     * become READY and put a new frame on the existing surface. This also applies
+     * while paused: Media3 renders the first post-stream-change frame without
+     * changing playWhenReady, and READY alone can still leave a blank surface.
+     */
+    private fun armSubtitleReloadDeadline(
+        exo: ExoPlayer,
+        attemptToken: Long,
+        mediaId: String,
+    ) {
+        cancelSubtitleReloadDeadline()
+        subtitleReloadWatchdog.arm(
+            token = attemptToken,
+            mediaId = mediaId,
+            // setMediaItem is deliberately called before this method. Sampling
+            // the resulting non-READY state prevents the old item's READY value
+            // from satisfying the new generation.
+            alreadyReloading = exo.playbackState != Player.STATE_READY,
+        )
+        pendingSubtitleReloadAttemptToken = attemptToken
+        lateinit var deadline: Runnable
+        deadline = Runnable {
+            if (pendingSubtitleReloadDeadline !== deadline) return@Runnable
+            pendingSubtitleReloadDeadline = null
+            pendingSubtitleReloadAttemptToken = null
+            if (player !== exo) {
+                subtitleReloadWatchdog.cancel()
+                return@Runnable
+            }
+            if (!subtitleReloadWatchdog.consumeDeadline(attemptToken, currentMediaId)) return@Runnable
+            dropExternalSubtitle("external reload did not resume within ${SUBTITLE_RELOAD_DEADLINE_MS}ms")
+        }
+        pendingSubtitleReloadDeadline = deadline
+        recoveryHandler.postDelayed(deadline, SUBTITLE_RELOAD_DEADLINE_MS)
+    }
+
+    private fun cancelSubtitleReloadDeadline(clearState: Boolean = true) {
+        pendingSubtitleReloadDeadline?.let { recoveryHandler.removeCallbacks(it) }
+        pendingSubtitleReloadDeadline = null
+        pendingSubtitleReloadAttemptToken = null
+        if (clearState) subtitleReloadWatchdog.cancel()
     }
 
     private fun recordPlaybackError(error: PlaybackException) {
@@ -366,15 +448,22 @@ class PlayerController(context: Context) : SessionPlayer {
             output: Any,
             renderTimeMs: Long,
         ) {
-            val callbacks = startupCallbacks ?: return
             val mediaPeriodId = eventTime.currentMediaPeriodId
-            val mediaId = if (mediaPeriodId == null) null else runCatching {
+            val renderedMediaItem = if (mediaPeriodId == null) null else runCatching {
                 val period = Timeline.Period()
                 eventTime.currentTimeline.getPeriodByUid(mediaPeriodId.periodUid, period)
                 val window = Timeline.Window()
                 eventTime.currentTimeline.getWindow(period.windowIndex, window)
-                window.mediaItem.mediaId
+                window.mediaItem
             }.getOrNull()
+            val mediaId = renderedMediaItem?.mediaId
+            val attemptToken = renderedMediaItem?.subtitleReloadAttemptToken()
+            if (attemptToken == pendingSubtitleReloadAttemptToken &&
+                subtitleReloadWatchdog.onPresented(attemptToken, mediaId)
+            ) {
+                cancelSubtitleReloadDeadline(clearState = false)
+            }
+            val callbacks = startupCallbacks ?: return
             // Fail closed if Media3 cannot identify the period. The startup
             // deadline will issue a terminal result rather than readying B from
             // a late A renderer event.
@@ -446,11 +535,25 @@ class PlayerController(context: Context) : SessionPlayer {
             wasCanceled: Boolean,
         ) {
             if (wasCanceled) return
-            val subtitleUrl = currentSubtitle?.url ?: return
-            if (loadEventInfo.dataSpec.uri.toString() == subtitleUrl ||
-                loadEventInfo.uri.toString() == subtitleUrl
-            ) {
-                subtitleLoadFailed = true
+            val attemptToken = subtitleReloadAttemptToken(eventTime)
+            if (isCurrentExternalSubtitleLoad(loadEventInfo, attemptToken)) {
+                subtitleFailureState.recordLoadFailure()
+            }
+        }
+
+        override fun onLoadCompleted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+        ) {
+            // The one short text retry may succeed; don't let its earlier error
+            // make a later, unrelated media error drop a now-healthy subtitle.
+            val attemptToken = subtitleReloadAttemptToken(eventTime)
+            if (isCurrentExternalSubtitleLoad(loadEventInfo, attemptToken)) {
+                subtitleFailureState.recordLoadSuccess()
+                if (subtitleReloadWatchdog.onSubtitleLoaded(attemptToken, currentMediaId)) {
+                    cancelSubtitleReloadDeadline(clearState = false)
+                }
             }
         }
 
@@ -462,6 +565,28 @@ class PlayerController(context: Context) : SessionPlayer {
         ) {
             instrumentation.decoderName = decoderName
         }
+    }
+
+    private fun isCurrentExternalSubtitleLoad(
+        loadEventInfo: LoadEventInfo,
+        attemptToken: Long?,
+    ): Boolean {
+        val subtitleUrl = currentSubtitle?.url ?: return false
+        val uriMatches = loadEventInfo.dataSpec.uri.toString() == subtitleUrl ||
+            loadEventInfo.uri.toString() == subtitleUrl
+        if (!uriMatches) return false
+        return attemptToken == pendingSubtitleReloadAttemptToken
+    }
+
+    private fun subtitleReloadAttemptToken(eventTime: AnalyticsListener.EventTime): Long? {
+        val mediaPeriodId = eventTime.mediaPeriodId ?: return null
+        return runCatching {
+            val period = Timeline.Period()
+            eventTime.timeline.getPeriodByUid(mediaPeriodId.periodUid, period)
+            val window = Timeline.Window()
+            eventTime.timeline.getWindow(period.windowIndex, window)
+            window.mediaItem.subtitleReloadAttemptToken()
+        }.getOrNull()
     }
 
     private fun resetAudioFormat() {
@@ -678,11 +803,11 @@ class PlayerController(context: Context) : SessionPlayer {
 
         // Generous LAN direct-play retry policy replacing Media3's default (3
         // tries). ~100s of quiet capped-backoff retrying rides out router blips,
-        // phone roams and brief peer-block episodes, and every byte-range retry is a
-        // perfect resume; how much of that the viewer never sees is whatever the
-        // device's own byte budget covers at the file's bitrate. 4xx
-        // (except 416 Range-Not-Satisfiable) fail fast so the diagnosis UI takes
-        // over instead of hammering a dead/blocking endpoint.
+        // phone roams and brief peer-block episodes, and every video byte-range
+        // retry is a perfect resume. A sideloaded text file is optional and gets
+        // one short retry instead; making it share this ~100s budget can hold the
+        // merged source in prepare long after the video itself is healthy. 4xx
+        // (except 416 Range-Not-Satisfiable) still fail fast.
         val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy(MAX_LOAD_RETRY_COUNT) {
             override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
                 // Preserve the default policy's fail-fast classification for non-HTTP
@@ -715,7 +840,10 @@ class PlayerController(context: Context) : SessionPlayer {
                     val code = exception.responseCode
                     if (code in 400..499 && code != 416) return C.TIME_UNSET
                 }
-                return minOf(1000L * (loadErrorInfo.errorCount + 1), MAX_LOAD_RETRY_DELAY_MS)
+                return lanLoadRetryDelayMs(
+                    trackType = loadErrorInfo.mediaLoadData.trackType,
+                    errorCount = loadErrorInfo.errorCount,
+                )
             }
         }
 
@@ -777,9 +905,15 @@ class PlayerController(context: Context) : SessionPlayer {
      * leaves Media3's default, which the first-frame gate can never match — the
      * restore path deliberately keeps that property.
      */
-    private fun mediaItemFor(url: String, mediaId: String?, subtitle: ExternalSubtitle?): MediaItem {
+    private fun mediaItemFor(
+        url: String,
+        mediaId: String?,
+        subtitle: ExternalSubtitle?,
+        tag: Any? = null,
+    ): MediaItem {
         val builder = MediaItem.Builder().setUri(url)
         if (mediaId != null) builder.setMediaId(mediaId)
+        if (tag != null) builder.setTag(tag)
         if (subtitle != null) {
             builder.setSubtitleConfigurations(
                 listOf(
@@ -798,8 +932,7 @@ class PlayerController(context: Context) : SessionPlayer {
     private fun resetSubtitleState(subtitle: ExternalSubtitle?, mediaId: String?) {
         currentSubtitle = subtitle
         currentMediaId = mediaId
-        subtitleLoadFailed = false
-        subtitleDropped = false
+        subtitleFailureState.reset()
         // A capability verdict belongs to the file it was reached about: the next cast
         // gets to be judged on its own tracks. This is every load and reload path.
         videoShortfallReported = false
@@ -849,6 +982,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
+        cancelSubtitleReloadDeadline()
         val exo = player ?: run {
             releaseMediaSession()
             return
@@ -871,6 +1005,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
+        cancelSubtitleReloadDeadline()
         cancelPendingRecovery()
         releaseMediaSession()
         val exo = player ?: return
@@ -891,6 +1026,7 @@ class PlayerController(context: Context) : SessionPlayer {
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
+        cancelSubtitleReloadDeadline()
         cancelPendingRecovery()
         recoveryGateCount = 0
         lastGoodPositionMs = 0L
@@ -922,6 +1058,7 @@ class PlayerController(context: Context) : SessionPlayer {
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
+        cancelSubtitleReloadDeadline()
         cancelPendingRecovery()
         recoveryGateCount = 0
         instrumentation.reset()
@@ -962,6 +1099,7 @@ class PlayerController(context: Context) : SessionPlayer {
         mediaId: String,
         subtitle: ExternalSubtitle?,
     ): Boolean {
+        cancelSubtitleReloadDeadline()
         val exo = player ?: return false
         startupCallbacks = null
         firstFrameGate.clear()
@@ -989,7 +1127,21 @@ class PlayerController(context: Context) : SessionPlayer {
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .build()
         }
-        exo.setMediaItem(mediaItemFor(url, mediaId, subtitle), /* resetPosition = */ false)
+        val attemptToken = if (subtitle != null) ++nextSubtitleReloadAttemptToken else null
+        val reloadedMediaItem = mediaItemFor(
+            url = url,
+            mediaId = mediaId,
+            subtitle = subtitle,
+            tag = attemptToken?.let(::SubtitleReloadAttemptTag),
+        )
+        exo.setMediaItem(reloadedMediaItem, /* resetPosition = */ false)
+        if (subtitle != null) {
+            armSubtitleReloadDeadline(
+                exo = exo,
+                attemptToken = checkNotNull(attemptToken),
+                mediaId = mediaId,
+            )
+        }
         if (resumeMs > 0L) exo.seekTo(resumeMs)
         exo.prepare()
         exo.playWhenReady = resumePlayWhenReady
@@ -1003,9 +1155,16 @@ class PlayerController(context: Context) : SessionPlayer {
         playbackFailureListener = listener
     }
 
+    override fun setExternalSubtitleDroppedListener(
+        listener: ((String, ExternalSubtitle) -> Unit)?,
+    ) {
+        externalSubtitleDroppedListener = listener
+    }
+
     override fun stop() {
         clearStartupListener()
         pendingPlayWhenReady = false
+        cancelSubtitleReloadDeadline()
         cancelPendingRecovery()
         stableReadySinceMs = 0L
         // Terminal stop must withdraw the platform session as well as clear the
@@ -1253,16 +1412,21 @@ class PlayerController(context: Context) : SessionPlayer {
         // own budget: it is covered outright at 40 Mbps and below on the verified
         // hardware, and only partly on a TV whose heap forced the budget down.
         const val MAX_LOAD_RETRY_COUNT = 20
-        const val MAX_LOAD_RETRY_DELAY_MS = 5_000L
-
         // Bounded fatal-error auto-recovery: backoff per attempt (1-4), then give up.
         private val RECOVERY_BACKOFF_MS = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L)
         val MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.size
 
         // Re-arm the recovery budget after this long uninterrupted in STATE_READY.
         const val RECOVERY_RESET_STABLE_MS = 30_000L
+
+        // Well below the phone's control-lease loss floor, but long enough for a
+        // fresh 4K decoder prepare on the verified Google TV Streamer.
+        const val SUBTITLE_RELOAD_DEADLINE_MS = 12_000L
     }
 }
+
+private fun MediaItem.subtitleReloadAttemptToken(): Long? =
+    (localConfiguration?.tag as? SubtitleReloadAttemptTag)?.token
 
 /**
  * The subtitle route is `/s/{token}`, so the URL carries no extension and the

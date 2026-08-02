@@ -220,6 +220,7 @@ class SessionController(
 
     init {
         controller.setPlaybackFailureListener(::onPlaybackError)
+        controller.setExternalSubtitleDroppedListener(::onExternalSubtitleDropped)
     }
 
     fun attachTerminal(emit: (String, CastFailureCode, Boolean, Int?, Boolean) -> Unit) { terminal = emit }
@@ -454,6 +455,14 @@ class SessionController(
         val id = castId ?: return
         if (stage !is MediaStage.Active) return
         fail(id, generation, PlaybackFailureClassifier.classify(error), retryable = true, beforeReady = false)
+    }
+
+    /** A stale player callback must not rewrite a newer subtitle or cast generation. */
+    private fun onExternalSubtitleDropped(mediaId: String, subtitle: ExternalSubtitle) {
+        val id = castId ?: return
+        if (mediaId != mediaIdFor(id, generation)) return
+        if (preparedSubtitle != subtitle) return
+        preparedSubtitle = null
     }
 
     private fun fail(
