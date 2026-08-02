@@ -264,6 +264,44 @@ class OpenSubtitlesWireTest {
         )
     }
 
+    @Test fun structuredFilenameFieldsReachTheTextSearchInCanonicalOrder() {
+        val parameters = OpenSubtitlesWire.textSearchParameters(
+            query = "Example Show",
+            year = 2025,
+            season = 1,
+            episode = 3,
+            language = OpenSubtitlesLanguage.ENGLISH,
+        )
+        assertEquals(
+            listOf(
+                "episode_number" to "3",
+                "languages" to "en",
+                "query" to "example show",
+                "season_number" to "1",
+                "year" to "2025",
+            ),
+            OpenSubtitlesWire.canonicalQuery(parameters),
+        )
+    }
+
+    @Test fun invalidParsedYearIsOmittedWithoutChangingEpisodeParameters() {
+        assertEquals(
+            listOf(
+                "query" to "Example Show",
+                "languages" to "en",
+                "season_number" to 2,
+                "episode_number" to 5,
+            ),
+            OpenSubtitlesWire.textSearchParameters(
+                query = "Example Show",
+                year = 2200,
+                season = 2,
+                episode = 5,
+                language = OpenSubtitlesLanguage.ENGLISH,
+            ),
+        )
+    }
+
     @Test fun valuesAreLowerCased() {
         // A term derived from a filename is almost never already lower-case.
         assertEquals(

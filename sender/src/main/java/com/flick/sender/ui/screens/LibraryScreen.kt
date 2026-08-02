@@ -128,6 +128,7 @@ import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.PairedTv
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickMark
@@ -734,7 +735,7 @@ private fun LinkPill(
     }
     val model = LinkPillModel(state = state, line = line, playing = phase == PlaybackPhase.PLAYING)
 
-    val restoreLabel = castingItem?.let { stringResource(R.string.a11y_restore_now_playing, it.name) }
+    val restoreLabel = castingItem?.let { stringResource(R.string.a11y_restore_now_playing, it.displayName()) }
     val connectLabel = stringResource(R.string.a11y_open_connect)
     val description = when (state) {
         LinkPillState.CASTING -> restoreLabel

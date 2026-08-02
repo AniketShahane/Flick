@@ -93,6 +93,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkStall
 import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
@@ -463,14 +464,15 @@ private fun ColumnScope.RemoteContent(
     animatedScope: AnimatedVisibilityScope?,
 ) {
     val colors = LocalFlickColors.current
+    val displayName = item?.displayName()
 
     // Structural signals — derived so a pointer-rate playhead update (targetMs) never
     // recomposes this scope; those reads happen via lambdas in the draw/layout phase.
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
     val playing by remember { derivedStateOf { playbackState.value.playing } }
     val syncing by remember { derivedStateOf { playbackState.value.syncing } }
-    val title by remember(item) {
-        derivedStateOf { item?.name ?: playbackState.value.title ?: "" }
+    val title by remember(item, displayName) {
+        derivedStateOf { displayName ?: playbackState.value.title ?: "" }
     }
 
     val unknown = stringResource(R.string.media_unknown)
@@ -701,6 +703,7 @@ private fun ColumnScope.Poster(
     animatedScope: AnimatedVisibilityScope?,
 ) {
     val colors = LocalFlickColors.current
+    val displayName = item?.displayName()
     val imageLoader = rememberVideoImageLoader()
     val shape = RoundedCornerShape(FlickCorners.poster)
     val request = rememberVideoFrameRequest(item?.uri, item?.durationMs ?: 0L)
@@ -720,7 +723,7 @@ private fun ColumnScope.Poster(
         if (request != null) {
             AsyncImage(
                 model = request,
-                contentDescription = item?.name,
+                contentDescription = displayName,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
                 // In the shared overlay: the flight starts outside this rounded clip, so

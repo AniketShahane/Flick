@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 
 package com.flick.sender.ui.screens
 
@@ -34,6 +34,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
@@ -46,6 +51,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,6 +64,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -76,15 +84,20 @@ import com.flick.sender.media.SubtitleFiles
 import com.flick.sender.media.SubtitleFolder
 import com.flick.sender.media.SubtitleFolderStore
 import com.flick.sender.media.SubtitleMatchKind
+import com.flick.sender.media.VideoNames
 import com.flick.sender.net.ApiKeySource
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.OnlineSubtitle
 import com.flick.sender.net.OpenSubtitlesClient
 import com.flick.sender.net.OpenSubtitlesKeyStore
+import com.flick.sender.net.OpenSubtitlesLanguage
+import com.flick.sender.net.OpenSubtitlesSearchPolicy
+import com.flick.sender.net.OpenSubtitlesTextState
 import com.flick.sender.net.SubtitleFetchOutcome
 import com.flick.sender.net.SubtitleLoginOutcome
 import com.flick.sender.net.SubtitleQuota
 import com.flick.sender.net.SubtitleSearchOutcome
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -99,6 +112,7 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import java.util.Locale
 
 /** Where a subtitle can come from, in the order the sheet offers them. */
@@ -147,6 +161,7 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
 
     val item by controller.castingItem.collectAsState()
     val videoName = item?.name
+    val videoDisplayName = item?.displayName()
     val attached = controller.selectedSubtitle.collectAsState().value
     val attachedName = attached?.displayName
     val attachedUri = attached?.uri
@@ -173,7 +188,7 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
         )
         Spacer(Modifier.height(5.dp))
         Text(
-            text = videoName?.let { stringResource(R.string.subs_for_video, it) }
+            text = videoDisplayName?.let { stringResource(R.string.subs_for_video, it) }
                 ?: stringResource(R.string.subs_for_nothing),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
             maxLines = 2,
@@ -230,12 +245,14 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                         attachedUri = attachedUri,
                         onAttach = ::attach,
                     )
-                    SubtitleSource.ONLINE -> OnlinePane(
-                        videoName = videoName,
-                        videoUri = item?.uri,
-                        videoSizeBytes = item?.sizeBytes ?: -1L,
-                        onAttach = ::attach,
-                    )
+                    SubtitleSource.ONLINE -> key(item?.uri) {
+                        OnlinePane(
+                            videoName = videoName,
+                            videoUri = item?.uri,
+                            videoSizeBytes = item?.sizeBytes ?: -1L,
+                            onAttach = ::attach,
+                        )
+                    }
                 }
             }
         }
@@ -629,25 +646,40 @@ private fun ColumnScope.OnlinePane(
     // Deliberately NOT rememberSaveable: saved instance state is written out by the
     // system, and a password must never be one of the things it writes down.
     var password by remember { mutableStateOf("") }
-    var query by remember(videoName) {
-        mutableStateOf(videoName?.let { SubtitleFiles.searchQuery(it) }.orEmpty())
-    }
-    val marker = remember(videoName) { videoName?.let { SubtitleFiles.episodeOf(it) } }
-    var season by remember(videoName) { mutableStateOf(marker?.first?.toString().orEmpty()) }
-    var episode by remember(videoName) { mutableStateOf(marker?.second?.toString().orEmpty()) }
+    val parsedName = remember(videoName) { videoName?.let(VideoNames::parse) }
+    var query by remember(videoName) { mutableStateOf(parsedName?.searchQuery.orEmpty()) }
+    var year by remember(videoName) { mutableStateOf(parsedName?.year?.toString().orEmpty()) }
+    var season by remember(videoName) { mutableStateOf(parsedName?.season?.toString().orEmpty()) }
+    var episode by remember(videoName) { mutableStateOf(parsedName?.episode?.toString().orEmpty()) }
+    var language by remember { mutableStateOf(OpenSubtitlesSearchPolicy.DefaultLanguage) }
     var results by remember { mutableStateOf<List<OnlineSubtitle>?>(null) }
     var quota by remember { mutableStateOf<SubtitleQuota?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var searching by remember { mutableStateOf(false) }
     var downloading by remember { mutableStateOf(false) }
     var signingIn by remember { mutableStateOf(false) }
+    var searchGeneration by remember { mutableIntStateOf(0) }
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+
+    fun invalidateSearch() {
+        searchGeneration++
+        searchJob?.cancel()
+        searchJob = null
+        searching = false
+        results = null
+        error = null
+    }
 
     // The fingerprint of the file being cast, or null when there is no file, it is too
-    // small, or the provider will not seek. Nothing waits on it: the search is offered
-    // immediately and simply carries the hash once it exists.
+    // small, or the provider will not seek. Search waits for this bounded read so its
+    // first request cannot race ahead as a weaker text-only lookup.
     var fingerprint by remember(videoUri) { mutableStateOf<String?>(null) }
+    var fingerprintChecking by remember(videoUri) { mutableStateOf(videoUri != null) }
     LaunchedEffect(videoUri) {
-        fingerprint = videoUri?.let { MovieHash.of(context, it, videoSizeBytes) }
+        val computed = videoUri?.let { MovieHash.of(context, it, videoSizeBytes) }
+        fingerprintChecking = false
+        if (computed != fingerprint) invalidateSearch()
+        fingerprint = computed
     }
 
     val offline = stringResource(R.string.subs_error_offline)
@@ -693,11 +725,50 @@ private fun ColumnScope.OnlinePane(
         style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
     )
     Spacer(Modifier.height(14.dp))
+    OnlineLanguageSelector(
+        selected = language,
+        enabled = !downloading,
+        onSelect = { selected ->
+            if (selected != language) {
+                invalidateSearch()
+                language = selected
+            }
+        },
+    )
+    Spacer(Modifier.height(8.dp))
     OutlinedTextField(
         value = query,
-        onValueChange = { query = it },
+        onValueChange = { value ->
+            if (value != query) invalidateSearch()
+            query = value
+        },
         label = { Text(stringResource(R.string.subs_online_query_label)) },
         singleLine = true,
+        shape = RoundedCornerShape(FlickCorners.tuneBtn),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    val normalizedQuery = OpenSubtitlesSearchPolicy.textQuery(query)
+    val yearValue = year.toIntOrNull()
+    val seasonValue = season.toIntOrNull()
+    val episodeValue = episode.toIntOrNull()
+    val yearValid = year.isBlank() || yearValue?.let(OpenSubtitlesSearchPolicy::validYear) == true
+    val seasonValid = season.isBlank() || seasonValue?.let(OpenSubtitlesSearchPolicy::validSeason) == true
+    val episodeValid = episode.isBlank() || episodeValue?.let(OpenSubtitlesSearchPolicy::validEpisode) == true
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = year,
+        onValueChange = { value ->
+            val filtered = value.filter(Char::isDigit).take(4)
+            if (filtered != year) invalidateSearch()
+            year = filtered
+        },
+        label = { Text(stringResource(R.string.subs_online_year_label)) },
+        isError = !yearValid,
+        supportingText = {
+            if (!yearValid) Text(stringResource(R.string.subs_online_year_invalid))
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         shape = RoundedCornerShape(FlickCorners.tuneBtn),
         modifier = Modifier.fillMaxWidth(),
     )
@@ -705,8 +776,16 @@ private fun ColumnScope.OnlinePane(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             value = season,
-            onValueChange = { season = it.filter(Char::isDigit).take(2) },
+            onValueChange = { value ->
+                val filtered = value.filter(Char::isDigit).take(2)
+                if (filtered != season) invalidateSearch()
+                season = filtered
+            },
             label = { Text(stringResource(R.string.subs_online_season_label)) },
+            isError = !seasonValid,
+            supportingText = {
+                if (!seasonValid) Text(stringResource(R.string.subs_online_season_invalid))
+            },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             shape = RoundedCornerShape(FlickCorners.tuneBtn),
@@ -714,13 +793,39 @@ private fun ColumnScope.OnlinePane(
         )
         OutlinedTextField(
             value = episode,
-            onValueChange = { episode = it.filter(Char::isDigit).take(3) },
+            onValueChange = { value ->
+                val filtered = value.filter(Char::isDigit).take(3)
+                if (filtered != episode) invalidateSearch()
+                episode = filtered
+            },
             label = { Text(stringResource(R.string.subs_online_episode_label)) },
+            isError = !episodeValid,
+            supportingText = {
+                if (!episodeValid) Text(stringResource(R.string.subs_online_episode_invalid))
+            },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             shape = RoundedCornerShape(FlickCorners.tuneBtn),
             modifier = Modifier.weight(1f),
         )
+    }
+
+    val numericInputsValid = yearValid && seasonValid && episodeValid
+    val canSearchText = normalizedQuery.state == OpenSubtitlesTextState.READY
+    val canSearchHash = fingerprint != null
+    val queryGuidance = when {
+        fingerprintChecking -> R.string.subs_online_fingerprint_reading
+        normalizedQuery.state == OpenSubtitlesTextState.TOO_SHORT && canSearchHash ->
+            R.string.subs_online_query_short_hash_only
+        normalizedQuery.state == OpenSubtitlesTextState.TOO_SHORT ->
+            R.string.subs_online_query_too_short
+        normalizedQuery.state == OpenSubtitlesTextState.EMPTY && !canSearchHash ->
+            R.string.subs_online_query_or_fingerprint_unavailable
+        else -> null
+    }
+    queryGuidance?.let { message ->
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(message), style = FlickText.bodySmall.copy(color = colors.onSurfaceDim))
     }
 
     Spacer(Modifier.height(12.dp))
@@ -731,29 +836,49 @@ private fun ColumnScope.OnlinePane(
             text = stringResource(R.string.subs_online_search),
             // A file Flick can fingerprint is searchable even with the title box empty:
             // the hash names it better than any typed words would.
-            enabled = query.isNotBlank() || fingerprint != null,
+            enabled = !fingerprintChecking && numericInputsValid && (canSearchText || canSearchHash),
             onClick = {
+                val generation = searchGeneration + 1
+                searchGeneration = generation
+                searchJob?.cancel()
                 error = null
+                results = null
                 searching = true
-                scope.launch {
-                    val outcome = client.search(
-                        query = query,
-                        season = season.toIntOrNull(),
-                        episode = episode.toIntOrNull(),
-                        movieHash = fingerprint,
-                    )
-                    searching = false
-                    when (outcome) {
-                        is SubtitleSearchOutcome.Found -> results = outcome.results
-                        SubtitleSearchOutcome.NoKey -> key = null
-                        SubtitleSearchOutcome.Offline -> error = offline
-                        SubtitleSearchOutcome.BadKey -> error = refusedKey()
-                        SubtitleSearchOutcome.SignInExpired -> {
-                            session = null
-                            error = signInExpired
+                val requestedQuery = query
+                val requestedYear = yearValue
+                val requestedSeason = seasonValue
+                val requestedEpisode = episodeValue
+                val requestedFingerprint = fingerprint
+                val requestedLanguage = language
+                searchJob = scope.launch {
+                    try {
+                        val outcome = client.search(
+                            query = requestedQuery,
+                            year = requestedYear,
+                            season = requestedSeason,
+                            episode = requestedEpisode,
+                            movieHash = requestedFingerprint,
+                            movieByteSize = videoSizeBytes,
+                            language = requestedLanguage,
+                        )
+                        if (generation != searchGeneration) return@launch
+                        when (outcome) {
+                            is SubtitleSearchOutcome.Found -> results = outcome.results
+                            SubtitleSearchOutcome.NoKey -> key = null
+                            SubtitleSearchOutcome.Offline -> error = offline
+                            SubtitleSearchOutcome.BadKey -> error = refusedKey()
+                            SubtitleSearchOutcome.SignInExpired -> {
+                                session = null
+                                error = signInExpired
+                            }
+                            SubtitleSearchOutcome.RateLimited -> error = rateLimited
+                            SubtitleSearchOutcome.Unavailable -> error = unavailable
                         }
-                        SubtitleSearchOutcome.RateLimited -> error = rateLimited
-                        SubtitleSearchOutcome.Unavailable -> error = unavailable
+                    } finally {
+                        if (generation == searchGeneration) {
+                            searching = false
+                            searchJob = null
+                        }
                     }
                 }
             },
@@ -946,6 +1071,47 @@ private fun ColumnScope.OnlinePane(
             text = stringResource(R.string.subs_online_key_show),
             onClick = { showKeyEntry = true },
         )
+    }
+}
+
+@Composable
+internal fun OnlineLanguageSelector(
+    selected: OpenSubtitlesLanguage,
+    enabled: Boolean,
+    onSelect: (OpenSubtitlesLanguage) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val labels = stringArrayResource(R.array.subs_online_language_names)
+    val selectedLabel = labels[selected.ordinal]
+    val accessibilityLabel = stringResource(R.string.a11y_subs_online_language, selectedLabel)
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { if (enabled) expanded = !expanded },
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            enabled = enabled,
+            label = { Text(stringResource(R.string.subs_online_language_label)) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            shape = RoundedCornerShape(FlickCorners.tuneBtn),
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
+                .fillMaxWidth()
+                .semantics { contentDescription = accessibilityLabel },
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            OpenSubtitlesLanguage.entries.forEach { language ->
+                DropdownMenuItem(
+                    text = { Text(labels[language.ordinal]) },
+                    onClick = {
+                        expanded = false
+                        onSelect(language)
+                    },
+                )
+            }
+        }
     }
 }
 

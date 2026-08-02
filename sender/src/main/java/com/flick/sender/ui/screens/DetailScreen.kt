@@ -76,6 +76,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickGesture
@@ -122,8 +123,9 @@ fun DetailScreen(
     // Geometry and opacity on separate clocks: the sheet's own scrim is fixed here, so its
     // transparency is the only thing standing between the frame and the copy over it.
     val fade = rememberSheetFade()
+    val displayName = item.displayName()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
-    val castDescription = stringResource(R.string.a11y_cast_video, item.name, tvName)
+    val castDescription = stringResource(R.string.a11y_cast_video, displayName, tvName)
     val dismissDescription = stringResource(R.string.a11y_back_to_library)
     // Null until the probe answers. Starting at NONE would print "SDR" — a verdict — for
     // every file in the window between opening this sheet and reading its container.
@@ -225,7 +227,7 @@ fun DetailScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
-                        text = item.name,
+                        text = displayName,
                         style = FlickText.titleLarge.copy(color = colors.onSurface),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,

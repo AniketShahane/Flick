@@ -52,6 +52,7 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
@@ -129,6 +130,7 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
     // throughput against the film, so it answers to the measurement as well as the band.
     val throughputColor = if (starved != null) colors.caution else signalColor
     val networkStatus = stringResource(R.string.a11y_network_status, signal.chipText())
+    val displayName = item?.displayName()
 
     BottomSheet(
         onDismiss = onDismiss,
@@ -139,7 +141,7 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
         Text(stringResource(R.string.quality_title), style = FlickText.headlineMedium.copy(color = colors.onSurface))
         Spacer(Modifier.height(5.dp))
         Text(
-            text = item?.name?.let { stringResource(R.string.quality_sub, it, signal.bandLabel()) }
+            text = displayName?.let { stringResource(R.string.quality_sub, it, signal.bandLabel()) }
                 ?: stringResource(R.string.quality_sub_idle),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
         )

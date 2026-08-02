@@ -119,7 +119,7 @@ class SubtitleFilesTest {
         assertEquals(1 to 1, SubtitleFiles.episodeOf("The.Office.S01E01.1080p.mkv"))
         assertEquals(2 to 5, SubtitleFiles.episodeOf("Show.s02e05.WEB.mkv"))
         assertNull(SubtitleFiles.episodeOf("Arrival.2016.mkv"))
-        // A name that is nothing but release tags still has to produce a query.
-        assertTrue(SubtitleFiles.searchQuery("1080p.WEB.mkv").isNotEmpty())
+        // Technical tags alone are no title; a movie hash may still search this file.
+        assertTrue(SubtitleFiles.searchQuery("1080p.WEB.mkv").isEmpty())
     }
 }

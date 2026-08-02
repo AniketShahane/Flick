@@ -68,6 +68,7 @@ import coil.compose.AsyncImage
 import com.flick.sender.R
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackUiState
+import com.flick.sender.ui.displayName
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
@@ -310,12 +311,13 @@ private fun DockBar(
     onPlayPause: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
+    val displayName = item.displayName()
     val shape = RoundedCornerShape(DockCorner)
     val openSource = remember { MutableInteractionSource() }
     val imageLoader = rememberVideoImageLoader()
     val request = rememberVideoFrameRequest(item.uri, item.durationMs)
     val playing by remember(playback) { derivedStateOf { playback.value.playing } }
-    val description = stringResource(R.string.a11y_now_playing_dock, item.name, tvName)
+    val description = stringResource(R.string.a11y_now_playing_dock, displayName, tvName)
     val openLabel = stringResource(R.string.a11y_open_remote)
     val track = colors.fillTrack
     // The played hairline is the scrub bar's own fill in miniature, so it takes the media
@@ -383,7 +385,7 @@ private fun DockBar(
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = item.name,
+                        text = displayName,
                         style = FlickText.labelLarge.copy(color = colors.onSurface),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

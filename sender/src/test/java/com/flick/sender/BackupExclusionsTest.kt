@@ -185,6 +185,9 @@ class BackupExclusionsTest {
                 "excluded, but for a non-security reason: the scope names a folder of one " +
                     "phone's storage — now a RELATIVE_PATH, which on another phone either " +
                     "matches nothing or matches a same-named folder holding different films",
+            "flick_video_names" to
+                "a display-only readability choice is about the person and deliberately " +
+                    "travels with them; it contains no filename, path, or credential",
             "flick_subtitles" to
                 "remembers which subtitle file was picked for a video — a SAF URI whose grant " +
                     "does not survive the move, so it carries no authority anywhere else",

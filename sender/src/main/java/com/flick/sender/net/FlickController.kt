@@ -21,6 +21,10 @@ import com.flick.sender.media.LibraryScope
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
 import com.flick.sender.media.MediaLibraryLoadGate
+import com.flick.sender.media.VideoNamePreferenceController
+import com.flick.sender.media.VideoNamePreferenceStore
+import com.flick.sender.media.VideoNames
+import com.flick.sender.media.labelResource
 import com.flick.sender.model.CastErrorKind
 import com.flick.sender.model.CastFailure
 import com.flick.sender.model.ConnectionStatus
@@ -187,6 +191,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val haptics = FlickHaptics(appContext)
     private val store = PairingStore(appContext)
     private val libraryFolderStore = LibraryFolderStore(appContext)
+    private val videoNameStore = VideoNamePreferenceStore(appContext)
+    private val videoNamePreference =
+        VideoNamePreferenceController(videoNameStore.simplified(), videoNameStore::save)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
     private var pairingJob: Job? = null
@@ -244,6 +251,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _failureItem = MutableStateFlow<MediaItem?>(null); val failureItem = _failureItem.asStateFlow()
     private val _unplayableFiles = MutableStateFlow<Map<String, String>>(emptyMap()); val unplayableFiles = _unplayableFiles.asStateFlow()
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
+    val simplifiedVideoNames = videoNamePreference.simplified
     val playback = session.state; val pulses = session.pulses
 
     /** What this phone has proven about the link carrying the live cast. Never terminal. */
@@ -291,6 +299,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     fun onStart() { nsd.start() }
+    fun selectSimplifiedVideoNames(simplified: Boolean) =
+        videoNamePreference.select(simplified)
+
     fun onMediaAccess(access: MediaAccess) {
         val load = libraryGate.begin(access)
         libraryJob?.cancel()
@@ -424,7 +435,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // A retarget that never landed leaves the load with no subtitle rather than
             // a URL that would 404 on the TV; the video is never at risk either way.
             val subUrl = subtitleUrlFor(videoUrl, served?.url)
-            val title = ControlProtocolV2.normalizedLabel(item.name, 200)
+            val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
                 ?: appContext.getString(R.string.media_title_generic)
             // MediaStore's duration and the container's can disagree by a frame, so near
             // the end of a film the TV-confirmed position can exceed the value that goes
@@ -859,7 +870,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 FlickLog.i("cast", "source ready ${FlickLog.endpoint(videoUrl)} subtitle=${subUrl != null}")
                 accepted = CompletableDeferred(); ready = CompletableDeferred(); publishCastStart(CastStartState.AwaitingAcceptance(castId))
                 loadSentCastId = castId
-                val title = ControlProtocolV2.normalizedLabel(item.name, 200)
+                val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
                     ?: appContext.getString(R.string.media_title_generic)
                 control.armLoadSubtitle(castId, subUrl, subtitle?.displayName, subtitle?.language)
                 session.loadMedia(castId, videoUrl, title, item.durationMs, 0L)
@@ -875,6 +886,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             finally { if (!readyCommit) cleanup(castId) }
         }
     }
+
+    private fun displayedVideoName(rawName: String): String {
+        if (!simplifiedVideoNames.value) return VideoNames.safeFileName(rawName)
+        val parsed = VideoNames.parse(rawName)
+        val edition = parsed.edition?.let { appContext.getString(it.labelResource()) }
+        return VideoNames.format(parsed, edition)
+    }
+
     fun cancelCast() = cancelCast(silent = false)
     private fun cancelCast(silent: Boolean) { currentCastId?.let { id -> castJob?.cancel(); cleanup(id, stopRemoteIfLoaded = true); if (!silent) _route.value = Route.Library } }
     fun stopCast() { currentCastId?.let { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", it)); cleanup(it) }; _route.value = Route.Library }

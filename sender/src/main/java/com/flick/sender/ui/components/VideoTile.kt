@@ -79,6 +79,7 @@ import com.flick.sender.R
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.displayName
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
@@ -452,6 +453,7 @@ fun VideoTile(
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val colors = LocalFlickColors.current
+    val displayName = item.displayName()
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
     val request = rememberLibraryThumbnailRequest(item)
@@ -496,7 +498,7 @@ fun VideoTile(
             // out of the shared node and cross-fade with the route.
             AsyncImage(
                 model = request,
-                contentDescription = item.name,
+                contentDescription = displayName,
                 imageLoader = imageLoader,
                 contentScale = ContentScale.Crop,
                 colorFilter = frameFilter,
@@ -536,7 +538,7 @@ fun VideoTile(
         }
         Column {
             Text(
-                text = item.name,
+                text = displayName,
                 style = FlickText.labelLarge.copy(color = colors.onSurface),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

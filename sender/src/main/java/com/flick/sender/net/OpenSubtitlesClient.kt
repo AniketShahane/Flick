@@ -3,7 +3,6 @@ package com.flick.sender.net
 import android.content.Context
 import android.net.Uri
 import com.flick.sender.BuildConfig
-import com.flick.sender.media.MovieHash
 import com.flick.sender.media.SubtitleFiles
 import com.flick.sender.util.FlickLog
 import io.ktor.client.HttpClient
@@ -15,7 +14,6 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.client.request.url
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
@@ -48,7 +46,14 @@ import java.io.File
  * and excluded from cloud backup and device transfer, so everything in here stays on this
  * phone. Nothing in this file is ever written to a log, an exception or a notification.
  */
-class OpenSubtitlesKeyStore(context: Context) {
+internal interface OpenSubtitlesCredentials {
+    fun resolved(): ResolvedApiKey?
+    fun session(): OpenSubtitlesSession?
+    fun saveSession(session: OpenSubtitlesSession): Boolean
+    fun clearSession(): Boolean
+}
+
+internal class OpenSubtitlesKeyStore(context: Context) : OpenSubtitlesCredentials {
     private val prefs = context.applicationContext
         .getSharedPreferences("flick_subtitles_online", Context.MODE_PRIVATE)
 
@@ -63,22 +68,22 @@ class OpenSubtitlesKeyStore(context: Context) {
      * The key a request will carry, or null when this build shipped none and the user has
      * pasted none. A null is the honest, expected state of a clone of this repository.
      */
-    fun resolved(): ResolvedApiKey? =
+    override fun resolved(): ResolvedApiKey? =
         OpenSubtitlesWire.resolveKey(userKey(), BuildConfig.OPENSUBTITLES_API_KEY)
 
-    fun session(): OpenSubtitlesSession? = OpenSubtitlesWire.restoredSession(
+    override fun session(): OpenSubtitlesSession? = OpenSubtitlesWire.restoredSession(
         token = prefs.getString(SESSION_TOKEN, null),
         username = prefs.getString(SESSION_USER, null),
         expiresAtMillis = prefs.getLong(SESSION_EXPIRY, 0L),
     )
 
-    fun saveSession(session: OpenSubtitlesSession): Boolean = prefs.edit()
+    override fun saveSession(session: OpenSubtitlesSession): Boolean = prefs.edit()
         .putString(SESSION_TOKEN, session.token)
         .putString(SESSION_USER, session.username)
         .putLong(SESSION_EXPIRY, session.expiresAtMillis)
         .commit()
 
-    fun clearSession(): Boolean = prefs.edit()
+    override fun clearSession(): Boolean = prefs.edit()
         .remove(SESSION_TOKEN)
         .remove(SESSION_USER)
         .remove(SESSION_EXPIRY)
@@ -156,6 +161,15 @@ sealed interface SubtitleLoginOutcome {
     data object Unavailable : SubtitleLoginOutcome
 }
 
+/** Records the exact search request below orchestration without replacing its policy. */
+internal fun interface OpenSubtitlesSearchTransport {
+    suspend fun get(
+        url: String,
+        apiKey: String,
+        session: OpenSubtitlesSession?,
+    ): SubtitleSearchOutcome
+}
+
 /**
  * Search and download against api.opensubtitles.com.
  *
@@ -163,11 +177,24 @@ sealed interface SubtitleLoginOutcome {
  * which is why sign-in is offered at all — one app key's daily downloads shared across
  * every install is not an allowance anybody can use. Nothing here runs without a key.
  */
-class OpenSubtitlesClient(
-    context: Context,
-    private val keys: OpenSubtitlesKeyStore = OpenSubtitlesKeyStore(context),
+class OpenSubtitlesClient private constructor(
+    private val appContext: Context?,
+    private val keys: OpenSubtitlesCredentials,
+    private val searchTransport: OpenSubtitlesSearchTransport?,
 ) {
-    private val appContext = context.applicationContext
+    constructor(context: Context) : this(
+        context.applicationContext,
+        OpenSubtitlesKeyStore(context),
+        null,
+    )
+
+    internal constructor(context: Context, keys: OpenSubtitlesKeyStore) :
+        this(context.applicationContext, keys, null)
+
+    internal constructor(
+        keys: OpenSubtitlesCredentials,
+        searchTransport: OpenSubtitlesSearchTransport,
+    ) : this(null, keys, searchTransport)
 
     /**
      * Redirects are refused for every call this client makes.
@@ -180,13 +207,14 @@ class OpenSubtitlesClient(
      * answers 3xx — is taken by hand in [fetch], once, and only to another allow-listed
      * OpenSubtitles address.
      */
-    private val http by lazy { HttpClient(CIO) { followRedirects = false } }
+    private val lazyHttp = lazy { HttpClient(CIO) { followRedirects = false } }
+    private val http: HttpClient get() = lazyHttp.value
 
     /** The signed-in account, or null. Reading it drops a session whose life is over. */
     fun session(): OpenSubtitlesSession? = liveSession()
 
     fun close() {
-        runCatching { http.close() }
+        if (lazyHttp.isInitialized()) runCatching { http.close() }
     }
 
     /**
@@ -256,31 +284,39 @@ class OpenSubtitlesClient(
      */
     suspend fun search(
         query: String,
+        year: Int? = null,
         season: Int?,
         episode: Int?,
         movieHash: String? = null,
+        movieByteSize: Long = -1L,
+        language: OpenSubtitlesLanguage = OpenSubtitlesSearchPolicy.DefaultLanguage,
     ): SubtitleSearchOutcome = withContext(Dispatchers.IO) {
         val key = keys.resolved() ?: return@withContext SubtitleSearchOutcome.NoKey
-        val term = query.trim()
-        val hash = movieHash?.takeIf { MovieHash.isWellFormed(it) }
-        if (term.isEmpty() && hash == null) return@withContext SubtitleSearchOutcome.Found(emptyList())
+        val term = OpenSubtitlesSearchPolicy.textQuery(query)
+        val hashParameters = OpenSubtitlesWire.hashSearchParameters(movieHash, movieByteSize, language)
+        val textParameters = OpenSubtitlesWire.textSearchParameters(
+            query = query,
+            year = year,
+            season = season,
+            episode = episode,
+            language = language,
+        )
+        if (term.value == null && hashParameters.isEmpty()) {
+            return@withContext SubtitleSearchOutcome.Found(emptyList())
+        }
 
-        val hashOutcome = hash?.let { subtitles(key.value, listOf("moviehash" to it)) }
+        val hashOutcome = hashParameters.takeIf { it.isNotEmpty() }?.let { subtitles(key.value, it) }
         // A refused key or a spent session is the same fault for both halves; answering it
         // once is better than running the text query with a credential just refused.
         if (hashOutcome != null && hashOutcome.isCredentialFault()) return@withContext hashOutcome
         val hashResults = (hashOutcome as? SubtitleSearchOutcome.Found)?.results.orEmpty()
-        if (term.isEmpty()) {
+        if (!OpenSubtitlesSearchPolicy.shouldRunTextFallback(hashResults, term)) {
             return@withContext SubtitleSearchOutcome.Found(OpenSubtitlesWire.ordered(hashResults))
         }
 
         val text = subtitles(
             key = key.value,
-            query = buildList {
-                add("query" to term)
-                season?.let { add("season_number" to it) }
-                episode?.let { add("episode_number" to it) }
-            },
+            query = textParameters,
         )
         when {
             text is SubtitleSearchOutcome.Found ->
@@ -343,7 +379,7 @@ class OpenSubtitlesClient(
         }
         val name = cacheFileName(subtitle.fileName)
         val written = runCatching {
-            val directory = File(appContext.cacheDir, CACHE_DIR)
+            val directory = File(appContext?.cacheDir ?: return@runCatching null, CACHE_DIR)
             directory.mkdirs()
             pruneCache(directory)
             File(directory, name).apply { writeBytes(bytes) }
@@ -354,36 +390,46 @@ class OpenSubtitlesClient(
     /** One `/subtitles` request. [query] is the only thing the two searches differ in. */
     private suspend fun subtitles(key: String, query: List<Pair<String, Any>>): SubtitleSearchOutcome {
         val session = liveSession()
-        val response = attempt {
-            http.get("$API/subtitles") {
-                apiHeaders(key, session)
-                // Appended already encoded, because `parameter()` writes a space as %20 and
-                // the server's canonical form is `+`. See [OpenSubtitlesWire.canonicalQuery]
-                // for the whole normal form and why a 301 here costs the entire search.
-                url {
-                    OpenSubtitlesWire.canonicalQuery(query).forEach { (name, value) ->
-                        encodedParameters.append(name, value.encodeURLParameter(spaceToPlus = true))
-                    }
-                }
+        // Built before the transport boundary so production CIO and the JVM request
+        // recorder exercise the exact same canonical spelling.
+        val target = buildString {
+            append("$API/subtitles?")
+            OpenSubtitlesWire.canonicalQuery(query).forEachIndexed { index, (name, value) ->
+                if (index > 0) append('&')
+                append(name)
+                append('=')
+                append(value.encodeURLParameter(spaceToPlus = true))
             }
+        }
+        val injected = searchTransport
+        if (injected != null) {
+            return injected.get(target, key, session)
+        }
+        val response = attempt {
+            http.get(target) { apiHeaders(key, session) }
         } ?: return SubtitleSearchOutcome.Offline
         FlickLog.i("http", "opensubtitles search status=${response.status.value}")
-        when (response.status.value) {
-            200 -> Unit
-            401 -> return if (session != null) {
+        searchStatusFailure(response.status.value, session)?.let { return it }
+        val body = response.readBody(MAX_JSON_BYTES) ?: return SubtitleSearchOutcome.Offline
+        val text = body.bytes?.toString(Charsets.UTF_8) ?: return SubtitleSearchOutcome.Unavailable
+        return runCatching { parseSearch(text) }
+            .fold({ SubtitleSearchOutcome.Found(it) }, { SubtitleSearchOutcome.Unavailable })
+    }
+
+    private fun searchStatusFailure(
+        status: Int,
+        session: OpenSubtitlesSession?,
+    ): SubtitleSearchOutcome? = when (status) {
+        200 -> null
+        401 -> if (session != null) {
                 keys.clearSession()
                 SubtitleSearchOutcome.SignInExpired
             } else {
                 SubtitleSearchOutcome.BadKey
             }
-            403 -> return SubtitleSearchOutcome.BadKey
-            429 -> return SubtitleSearchOutcome.RateLimited
-            else -> return SubtitleSearchOutcome.Unavailable
-        }
-        val body = response.readBody(MAX_JSON_BYTES) ?: return SubtitleSearchOutcome.Offline
-        val text = body.bytes?.toString(Charsets.UTF_8) ?: return SubtitleSearchOutcome.Unavailable
-        return runCatching { parseSearch(text) }
-            .fold({ SubtitleSearchOutcome.Found(it) }, { SubtitleSearchOutcome.Unavailable })
+        403 -> SubtitleSearchOutcome.BadKey
+        429 -> SubtitleSearchOutcome.RateLimited
+        else -> SubtitleSearchOutcome.Unavailable
     }
 
     /**

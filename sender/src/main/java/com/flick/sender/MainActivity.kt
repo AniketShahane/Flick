@@ -41,6 +41,7 @@ import com.flick.sender.media.MediaAccess
 import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.ui.screens.FlickApp
+import com.flick.sender.ui.LocalSimplifiedVideoNames
 import com.flick.sender.ui.theme.AppearanceController
 import com.flick.sender.ui.theme.DarkFlickColors
 import com.flick.sender.ui.theme.FlickTheme
@@ -228,6 +229,7 @@ private fun FlickRoot(
 ) {
     val context = LocalContext.current
     val event by events.collectAsState()
+    val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
 
     // POST_NOTIFICATIONS (API 33+) so the foreground-service notification shows.
     val notifLauncher = rememberLauncherForActivityResult(
@@ -274,28 +276,30 @@ private fun FlickRoot(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    FlickApp(
-        controller = controller,
-        batteryExempt = batteryExempt,
-        themePreference = appearance.preference,
-        onSelectTheme = appearance::select,
-        onRequestVideoPermission = { videoLauncher.launch(videoPermissions()) },
-        onOpenWifiSettings = {
-            runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-        },
-        // The OS list, NOT ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS. That intent
-        // is the one-tap dialog, and it requires the REQUEST_IGNORE_BATTERY_-
-        // OPTIMIZATIONS permission, which Play grants only to alarms/timers, VoIP,
-        // companion-device pairing and task automation. This screen needs no
-        // permission and no Console declaration; it costs the user one extra tap to
-        // pick Flick out of the list. The resume observer above re-reads the real
-        // exemption state either way, so the advisory still clears on its own.
-        onRequestBatteryExemption = {
-            runCatching {
-                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            }
-        },
-    )
+    CompositionLocalProvider(LocalSimplifiedVideoNames provides simplifiedVideoNames) {
+        FlickApp(
+            controller = controller,
+            batteryExempt = batteryExempt,
+            themePreference = appearance.preference,
+            onSelectTheme = appearance::select,
+            onRequestVideoPermission = { videoLauncher.launch(videoPermissions()) },
+            onOpenWifiSettings = {
+                runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+            },
+            // The OS list, NOT ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS. That intent
+            // is the one-tap dialog, and it requires the REQUEST_IGNORE_BATTERY_-
+            // OPTIMIZATIONS permission, which Play grants only to alarms/timers, VoIP,
+            // companion-device pairing and task automation. This screen needs no
+            // permission and no Console declaration; it costs the user one extra tap to
+            // pick Flick out of the list. The resume observer above re-reads the real
+            // exemption state either way, so the advisory still clears on its own.
+            onRequestBatteryExemption = {
+                runCatching {
+                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            },
+        )
+    }
 }
 
 private fun videoPermissions(): Array<String> = when {

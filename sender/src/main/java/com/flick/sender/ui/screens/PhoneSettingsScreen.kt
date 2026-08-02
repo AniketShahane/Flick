@@ -3,16 +3,19 @@ package com.flick.sender.ui.screens
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonGroup
@@ -20,6 +23,7 @@ import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
@@ -29,8 +33,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,6 +68,7 @@ fun PhoneSettingsScreen(
 ) {
     val colors = LocalFlickColors.current
     val castingItem by controller.castingItem.collectAsState()
+    val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the screen's final controls sit
@@ -119,7 +127,53 @@ fun PhoneSettingsScreen(
             onOpenWifiSettings = onOpenWifiSettings,
             onRequestBatteryExemption = onRequestBatteryExemption,
         )
+        VideoNamesSection(
+            simplified = simplifiedVideoNames,
+            onSelect = controller::selectSimplifiedVideoNames,
+        )
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
+    }
+}
+
+@Composable
+internal fun VideoNamesSection(simplified: Boolean, onSelect: (Boolean) -> Unit) {
+    val colors = LocalFlickColors.current
+    val title = stringResource(R.string.settings_video_names_title)
+    val summary = stringResource(R.string.settings_video_names_summary)
+    val spoken = stringResource(R.string.settings_video_names_a11y, title, summary)
+    val state = stringResource(
+        if (simplified) R.string.settings_video_names_on else R.string.settings_video_names_off,
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                contentDescription = spoken
+                stateDescription = state
+            }
+            .toggleable(
+                value = simplified,
+                role = Role.Switch,
+                onValueChange = onSelect,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(title, style = FlickText.titleMedium.copy(color = colors.onSurface))
+            Text(
+                text = summary,
+                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Switch(
+            checked = simplified,
+            onCheckedChange = null,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
     }
 }
 

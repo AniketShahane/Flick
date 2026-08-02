@@ -119,8 +119,6 @@ object SubtitleFiles {
     )
 
     private val RegionQualified = Regex("^([A-Za-z]{2,3})[-_]([A-Za-z]{2,4})$")
-    private val Year = Regex("^(19|20)\\d{2}$")
-    private val SeasonEpisode = Regex("^[sS](\\d{1,2})[eE](\\d{1,3})$")
 
     /** Lower-cased extension without the dot, or null when the name carries none. */
     fun extensionOf(displayName: String): String? {
@@ -211,29 +209,13 @@ object SubtitleFiles {
         return null
     }
 
-    /**
-     * The title an online search should be run with: everything up to the first
-     * release-noise token, year or SxxEyy marker.
-     */
-    fun searchQuery(videoDisplayName: String): String {
-        val segments = baseName(videoDisplayName).split(*Separators).filter { it.isNotBlank() }
-        val title = segments.takeWhile { segment ->
-            val token = segment.lowercase()
-            !Year.matches(token) && !SeasonEpisode.matches(segment) && token !in ReleaseNoise
-        }
-        return (if (title.isEmpty()) segments else title).joinToString(" ").trim()
-    }
+    fun searchQuery(videoDisplayName: String): String = VideoNames.parse(videoDisplayName).searchQuery
 
     /** Season and episode read off an SxxEyy marker, or null when the name has none. */
-    fun episodeOf(videoDisplayName: String): Pair<Int, Int>? {
-        baseName(videoDisplayName).split(*Separators).forEach { segment ->
-            val marker = SeasonEpisode.matchEntire(segment) ?: return@forEach
-            val season = marker.groupValues[1].toIntOrNull() ?: return@forEach
-            val episode = marker.groupValues[2].toIntOrNull() ?: return@forEach
-            return season to episode
+    fun episodeOf(videoDisplayName: String): Pair<Int, Int>? =
+        VideoNames.parse(videoDisplayName).let { parsed ->
+            if (parsed.season != null && parsed.episode != null) parsed.season to parsed.episode else null
         }
-        return null
-    }
 
     /** Ranked best-first: an exact base name beats a prefix, which beats token overlap. */
     fun bestFirst(matched: List<SubtitleMatch>): List<SubtitleMatch> =

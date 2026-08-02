@@ -172,6 +172,16 @@
     <string name="pair_error_endpoint_changed">This TV\'s address just changed. Check it matches your TV, then enter the code again.</string>
     <string name="sender_device_generic">Phone</string>
     <string name="media_title_generic">Video</string>
+    <string name="media_edition_directors_cut">Director\'s Cut</string>
+    <string name="media_edition_extended_cut">Extended Cut</string>
+    <string name="media_edition_final_cut">Final Cut</string>
+    <string name="media_edition_special">Special Edition</string>
+    <string name="media_edition_ultimate">Ultimate Edition</string>
+    <string name="media_edition_collectors">Collector\'s Edition</string>
+    <string name="media_edition_theatrical">Theatrical Cut</string>
+    <string name="media_edition_imax">IMAX Edition</string>
+    <string name="media_edition_unrated">Unrated</string>
+    <string name="media_edition_redux">Redux</string>
     <string name="media_hdr_dolby_vision">Dolby Vision</string>
     <string name="media_hdr10">HDR10</string>
     <string name="media_sdr">SDR</string>
@@ -231,6 +241,11 @@
          lists. So the copy has to name the extra step — a card that says "Allow" and then
          hands over a list of every app on the phone reads as the button having failed. -->
     <string name="advisory_battery_body">Find Flick in battery settings and choose Don\'t optimise so Android won\'t pause your stream.</string>
+    <string name="settings_video_names_title">Readable video names</string>
+    <string name="settings_video_names_summary">Show clean titles for recognised releases and hide the final video extension. Display only — Flick never renames your files.</string>
+    <string name="settings_video_names_a11y">%1$s. %2$s</string>
+    <string name="settings_video_names_on">On</string>
+    <string name="settings_video_names_off">Off</string>
     <string name="advisory_battery_primary">Open battery settings</string>
     <string name="advisory_battery_secondary">Later</string>
     <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
@@ -366,9 +381,18 @@
 
     <!-- Subtitles sheet · online search. -->
     <string name="subs_online_body">Search OpenSubtitles and attach the result. Flick sends the title below, and a fingerprint of the video file when it can read one — that is what finds a subtitle already in sync with this exact release.</string>
+    <string name="subs_online_language_label">Subtitle language</string>
     <string name="subs_online_query_label">Title</string>
+    <string name="subs_online_year_label">Year</string>
     <string name="subs_online_season_label">Season</string>
     <string name="subs_online_episode_label">Episode</string>
+    <string name="subs_online_year_invalid">Use a year from 1870 to 2099.</string>
+    <string name="subs_online_season_invalid">Use a season from 1 to 99.</string>
+    <string name="subs_online_episode_invalid">Use an episode from 1 to 999.</string>
+    <string name="subs_online_query_too_short">Enter at least 3 characters, or search with a readable file fingerprint.</string>
+    <string name="subs_online_query_short_hash_only">That title is too short for OpenSubtitles. This search will use only the exact file fingerprint.</string>
+    <string name="subs_online_fingerprint_reading">Reading the file fingerprint for a more exact search…</string>
+    <string name="subs_online_query_or_fingerprint_unavailable">Enter a title. Flick can’t read a fingerprint for this file.</string>
     <string name="subs_online_search">Search</string>
     <string name="subs_online_searching">Searching…</string>
     <string name="subs_online_downloading">Downloading…</string>
@@ -416,6 +440,116 @@
     <string name="a11y_subs_attach">Attach %1$s</string>
     <string name="a11y_subs_remove">Remove the attached subtitle</string>
     <string name="a11y_subs_attached">Attached</string>
+    <string name="a11y_subs_online_language">Subtitle language, %1$s</string>
+
+    <!-- OpenSubtitles /infos/languages catalog, in OpenSubtitlesLanguage enum order. -->
+    <string-array name="subs_online_language_names">
+        <item>Abkhazian</item>
+        <item>Afrikaans</item>
+        <item>Albanian</item>
+        <item>Amharic</item>
+        <item>Arabic</item>
+        <item>Aragonese</item>
+        <item>Armenian</item>
+        <item>Assamese</item>
+        <item>Asturian</item>
+        <item>Azerbaijani</item>
+        <item>Basque</item>
+        <item>Belarusian</item>
+        <item>Bengali</item>
+        <item>Bosnian</item>
+        <item>Breton</item>
+        <item>Bulgarian</item>
+        <item>Burmese</item>
+        <item>Catalan</item>
+        <item>Chinese bilingual</item>
+        <item>Chinese (Cantonese)</item>
+        <item>Chinese (simplified)</item>
+        <item>Chinese (traditional)</item>
+        <item>Croatian</item>
+        <item>Czech</item>
+        <item>Danish</item>
+        <item>Dari</item>
+        <item>Dutch</item>
+        <item>English</item>
+        <item>Esperanto</item>
+        <item>Estonian</item>
+        <item>Extremaduran</item>
+        <item>Finnish</item>
+        <item>French</item>
+        <item>Gaelic</item>
+        <item>Galician</item>
+        <item>Georgian</item>
+        <item>German</item>
+        <item>Greek</item>
+        <item>Hebrew</item>
+        <item>Hindi</item>
+        <item>Hungarian</item>
+        <item>Icelandic</item>
+        <item>Igbo</item>
+        <item>Indonesian</item>
+        <item>Interlingua</item>
+        <item>Irish</item>
+        <item>Italian</item>
+        <item>Japanese</item>
+        <item>Kannada</item>
+        <item>Kazakh</item>
+        <item>Khmer</item>
+        <item>Korean</item>
+        <item>Kurdish</item>
+        <item>Latvian</item>
+        <item>Lithuanian</item>
+        <item>Luxembourgish</item>
+        <item>Macedonian</item>
+        <item>Malay</item>
+        <item>Malayalam</item>
+        <item>Manipuri</item>
+        <item>Marathi</item>
+        <item>Mongolian</item>
+        <item>Montenegrin</item>
+        <item>Navajo</item>
+        <item>Nepali</item>
+        <item>Northern Sami</item>
+        <item>Norwegian</item>
+        <item>Occitan</item>
+        <item>Odia</item>
+        <item>Persian</item>
+        <item>Polish</item>
+        <item>Portuguese</item>
+        <item>Portuguese (BR)</item>
+        <item>Portuguese (MZ)</item>
+        <item>Pushto</item>
+        <item>Romanian</item>
+        <item>Russian</item>
+        <item>Santali</item>
+        <item>Serbian</item>
+        <item>Sindhi</item>
+        <item>Sinhalese</item>
+        <item>Slovak</item>
+        <item>Slovenian</item>
+        <item>Somali</item>
+        <item>South Azerbaijani</item>
+        <item>Spanish</item>
+        <item>Spanish (EU)</item>
+        <item>Spanish (LA)</item>
+        <item>Swahili</item>
+        <item>Swedish</item>
+        <item>Syriac</item>
+        <item>Tagalog</item>
+        <item>Tamil</item>
+        <item>Tatar</item>
+        <item>Telugu</item>
+        <item>Tetum</item>
+        <item>Thai</item>
+        <item>Toki Pona</item>
+        <item>Turkish</item>
+        <item>Turkmen</item>
+        <item>Ukrainian</item>
+        <item>Urdu</item>
+        <item>Uzbek</item>
+        <item>Vietnamese</item>
+        <item>Welsh</item>
+    </string-array>
 
     <!-- ===== External subtitles — wire ===== -->
     <!-- Wire label for a sideloaded subtitle whose file name normalizes to nothing

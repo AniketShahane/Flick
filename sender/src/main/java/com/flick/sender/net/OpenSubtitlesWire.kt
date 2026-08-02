@@ -175,6 +175,35 @@ object OpenSubtitlesWire {
             .map { (name, value) -> name to value.toString().lowercase(Locale.ROOT) }
             .sortedBy { it.first }
 
+    fun textSearchParameters(
+        query: String,
+        year: Int?,
+        season: Int?,
+        episode: Int?,
+        language: OpenSubtitlesLanguage,
+    ): List<Pair<String, Any>> = buildList {
+        val term = OpenSubtitlesSearchPolicy.textQuery(query).value ?: return@buildList
+        add("query" to term)
+        add("languages" to language.code)
+        year?.takeIf(OpenSubtitlesSearchPolicy::validYear)?.let { add("year" to it) }
+        season?.takeIf(OpenSubtitlesSearchPolicy::validSeason)?.let { add("season_number" to it) }
+        episode?.takeIf(OpenSubtitlesSearchPolicy::validEpisode)?.let { add("episode_number" to it) }
+    }
+
+    fun hashSearchParameters(
+        movieHash: String?,
+        movieByteSize: Long,
+        language: OpenSubtitlesLanguage,
+    ): List<Pair<String, Any>> {
+        val hash = movieHash?.takeIf { com.flick.sender.media.MovieHash.isWellFormed(it) }
+            ?: return emptyList()
+        return buildList {
+            add("moviehash" to hash)
+            movieByteSize.takeIf { it > 0L }?.let { add("moviebytesize" to it) }
+            add("languages" to language.code)
+        }
+    }
+
     /**
      * Hash matches first.
      *
