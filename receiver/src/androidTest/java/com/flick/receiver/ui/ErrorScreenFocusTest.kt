@@ -15,14 +15,13 @@ class ErrorScreenFocusTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun secondary_action_receives_initial_focus_when_primary_is_absent() {
+    fun dismiss_action_receives_initial_focus() {
         composeRule.setContent {
             FlickTvTheme {
                 ErrorScreen(
                     kind = ErrorKind.Unreachable,
                     deviceLabel = "Pixel",
-                    onPrimary = null,
-                    onSecondary = {},
+                    onDismiss = {},
                 )
             }
         }

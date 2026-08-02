@@ -219,8 +219,7 @@ class TvSafeAreaContainmentTest {
                 ErrorScreen(
                     kind = ErrorKind.Unreachable,
                     deviceLabel = "Pixel 9 Pro",
-                    onPrimary = {},
-                    onSecondary = {},
+                    onDismiss = {},
                 )
             }
         }
@@ -234,8 +233,7 @@ class TvSafeAreaContainmentTest {
                 ErrorScreen(
                     kind = ErrorKind.NotServing,
                     deviceLabel = "Pixel 9 Pro",
-                    onPrimary = null,
-                    onSecondary = {},
+                    onDismiss = {},
                 )
             }
         }
