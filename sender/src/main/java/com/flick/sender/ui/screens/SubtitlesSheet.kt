@@ -673,9 +673,12 @@ private fun ColumnScope.OnlinePane(
     // The fingerprint of the file being cast, or null when there is no file, it is too
     // small, or the provider will not seek. Search waits for this bounded read so its
     // first request cannot race ahead as a weaker text-only lookup.
-    var fingerprint by remember(videoUri) { mutableStateOf<String?>(null) }
-    var fingerprintChecking by remember(videoUri) { mutableStateOf(videoUri != null) }
-    LaunchedEffect(videoUri) {
+    var fingerprint by remember(videoUri) { mutableStateOf<MovieHash.Fingerprint?>(null) }
+    var fingerprintChecking by remember(videoUri, videoSizeBytes) {
+        mutableStateOf(videoUri != null)
+    }
+    LaunchedEffect(videoUri, videoSizeBytes) {
+        fingerprintChecking = videoUri != null
         val computed = videoUri?.let { MovieHash.of(context, it, videoSizeBytes) }
         fingerprintChecking = false
         if (computed != fingerprint) invalidateSearch()
@@ -857,8 +860,7 @@ private fun ColumnScope.OnlinePane(
                             year = requestedYear,
                             season = requestedSeason,
                             episode = requestedEpisode,
-                            movieHash = requestedFingerprint,
-                            movieByteSize = videoSizeBytes,
+                            movieFingerprint = requestedFingerprint,
                             language = requestedLanguage,
                         )
                         if (generation != searchGeneration) return@launch

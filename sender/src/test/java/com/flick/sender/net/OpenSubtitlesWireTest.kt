@@ -21,6 +21,8 @@ class OpenSubtitlesWireTest {
         hashMatch: Boolean = false,
         trusted: Boolean = false,
         aiTranslated: Boolean = false,
+        machineTranslated: Boolean = false,
+        foreignPartsOnly: Boolean = false,
         rating: Double = 0.0,
         votes: Int = 0,
         downloads: Int = id.toInt(),
@@ -36,6 +38,8 @@ class OpenSubtitlesWireTest {
         hashMatch = hashMatch,
         trusted = trusted,
         aiTranslated = aiTranslated,
+        machineTranslated = machineTranslated,
+        foreignPartsOnly = foreignPartsOnly,
         rating = rating,
         votes = votes,
         featureYear = year,
@@ -254,17 +258,33 @@ class OpenSubtitlesWireTest {
         assertEquals(listOf(1L, 2L), ordered.map { it.fileId })
     }
 
-    @Test fun ratingsDownloadsAndProvenanceBreakOtherwiseEqualTies() {
+    @Test fun completeHumanTrustedResultsBeatPopularLowQualityResults() {
         val ordered = OpenSubtitlesWire.ordered(
             listOf(
                 subtitle(1, downloads = 50_000),
                 subtitle(2, trusted = true, aiTranslated = true, rating = 9.5, votes = 20, downloads = 1),
                 subtitle(3, trusted = true, rating = 8.0, votes = 20, downloads = 100),
                 subtitle(4, trusted = true, rating = 8.0, votes = 20, downloads = 1_000),
+                subtitle(
+                    5,
+                    trusted = true,
+                    foreignPartsOnly = true,
+                    rating = 10.0,
+                    votes = 1_000,
+                    downloads = 100_000,
+                ),
+                subtitle(
+                    6,
+                    trusted = true,
+                    machineTranslated = true,
+                    rating = 10.0,
+                    votes = 1_000,
+                    downloads = 100_000,
+                ),
             ),
         )
 
-        assertEquals(listOf(2L, 4L, 3L, 1L), ordered.map { it.fileId })
+        assertEquals(listOf(4L, 3L, 1L, 6L, 2L, 5L), ordered.map { it.fileId })
     }
 
     @Test fun theHashSearchIsMergedAheadOfTheTextSearch() {

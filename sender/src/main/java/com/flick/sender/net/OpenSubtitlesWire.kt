@@ -194,15 +194,16 @@ object OpenSubtitlesWire {
     }
 
     fun hashSearchParameters(
-        movieHash: String?,
-        movieByteSize: Long,
+        fingerprint: com.flick.sender.media.MovieHash.Fingerprint?,
         language: OpenSubtitlesLanguage,
     ): List<Pair<String, Any>> {
-        val hash = movieHash?.takeIf { com.flick.sender.media.MovieHash.isWellFormed(it) }
-            ?: return emptyList()
+        val exact = fingerprint?.takeIf {
+            com.flick.sender.media.MovieHash.isWellFormed(it.hash) &&
+                it.sizeBytes >= com.flick.sender.media.MovieHash.MinBytes
+        } ?: return emptyList()
         return buildList {
-            add("moviehash" to hash)
-            movieByteSize.takeIf { it > 0L }?.let { add("moviebytesize" to it) }
+            add("moviehash" to exact.hash)
+            add("moviebytesize" to exact.sizeBytes)
             add("languages" to language.code)
             add("moviehash_match" to "only")
         }
@@ -210,8 +211,9 @@ object OpenSubtitlesWire {
 
     /**
      * Exact-file sync remains the first discriminator. Within the same match class,
-     * explicit feature agreement, trusted/human provenance, ratings and popularity make
-     * the API's quality signals deterministic instead of depending on response order.
+     * explicit feature agreement, complete/human/trusted provenance, then ratings and
+     * popularity make the API's quality signals deterministic instead of depending on
+     * response order.
      */
     fun ordered(
         results: List<OnlineSubtitle>,
@@ -223,12 +225,12 @@ object OpenSubtitlesWire {
             .thenByDescending { result ->
                 if (result.hashMatch) 1 else metadataAgreement(result, year, season, episode)
             }
+            .thenBy { it.foreignPartsOnly }
+            .thenBy { it.aiTranslated || it.machineTranslated }
+            .thenByDescending { it.trusted }
             .thenByDescending { result -> if (result.votes > 0) result.rating else 0.0 }
             .thenByDescending { it.votes }
             .thenByDescending { it.downloads }
-            .thenByDescending { it.trusted }
-            .thenBy { it.aiTranslated || it.machineTranslated }
-            .thenBy { it.foreignPartsOnly }
             .thenBy { it.fileId },
     )
 

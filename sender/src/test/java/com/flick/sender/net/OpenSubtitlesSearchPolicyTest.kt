@@ -1,5 +1,6 @@
 package com.flick.sender.net
 
+import com.flick.sender.media.MovieHash
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -151,7 +152,7 @@ class OpenSubtitlesSearchPolicyTest {
         assertEquals("Safe title", OpenSubtitlesSearchPolicy.textQuery("Safe\u202E title").value)
     }
 
-    @Test fun hashRequestAlwaysCarriesLanguageAndAddsPositiveMovieByteSize() {
+    @Test fun hashRequestRequiresAndCarriesTheFingerprintsPositiveMovieByteSize() {
         val hash = "8e245d9679d31e12"
         assertEquals(
             listOf(
@@ -162,22 +163,29 @@ class OpenSubtitlesSearchPolicyTest {
             ),
             OpenSubtitlesWire.canonicalQuery(
                 OpenSubtitlesWire.hashSearchParameters(
-                    movieHash = hash,
-                    movieByteSize = 987_654_321L,
+                    fingerprint = MovieHash.Fingerprint(hash, 987_654_321L),
                     language = OpenSubtitlesLanguage.ENGLISH,
                 ),
             ),
         )
         assertEquals(
-            listOf("languages" to "en", "moviehash" to hash, "moviehash_match" to "only"),
+            emptyList<Pair<String, String>>(),
             OpenSubtitlesWire.canonicalQuery(
-                OpenSubtitlesWire.hashSearchParameters(hash, -1L, OpenSubtitlesLanguage.ENGLISH),
+                OpenSubtitlesWire.hashSearchParameters(
+                    MovieHash.Fingerprint(hash, -1L),
+                    OpenSubtitlesLanguage.ENGLISH,
+                ),
             ),
         )
         assertTrue(
             OpenSubtitlesWire.hashSearchParameters(
-                "not-a-hash",
-                100L,
+                MovieHash.Fingerprint("not-a-hash", 100L),
+                OpenSubtitlesLanguage.ENGLISH,
+            ).isEmpty(),
+        )
+        assertTrue(
+            OpenSubtitlesWire.hashSearchParameters(
+                MovieHash.Fingerprint(hash, MovieHash.MinBytes - 1L),
                 OpenSubtitlesLanguage.ENGLISH,
             ).isEmpty(),
         )

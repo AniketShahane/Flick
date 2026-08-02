@@ -25,6 +25,9 @@ import java.util.Locale
  */
 object MovieHash {
 
+    /** The inseparable values OpenSubtitles uses to identify one exact byte stream. */
+    data class Fingerprint(val hash: String, val sizeBytes: Long)
+
     /**
      * Below this the two windows would overlap and the hash is not defined. A file this
      * small — or one whose size nothing will state — has no hash, which the caller reads
@@ -39,18 +42,18 @@ object MovieHash {
     private val WellFormed = Regex("^[0-9a-f]{16}$")
 
     /**
-     * The hash of a file of [sizeBytes] whose first and last windows are [head] and
-     * [tail], or null when the inputs cannot produce one. A short window is rejected
+     * The hash and exact [sizeBytes] of a file whose first and last windows are [head]
+     * and [tail], or null when the inputs cannot produce one. A short window is rejected
      * rather than padded: a nearly-right hash is a wrong hash, and a wrong hash asks the
      * server about somebody else's file.
      */
-    fun of(sizeBytes: Long, head: ByteArray, tail: ByteArray): String? {
+    fun of(sizeBytes: Long, head: ByteArray, tail: ByteArray): Fingerprint? {
         if (sizeBytes < MinBytes) return null
         if (head.size != WindowBytes || tail.size != WindowBytes) return null
         // Long addition in Kotlin already wraps two's-complement, which is exactly the
         // 64-bit overflow the format is defined in terms of.
         val sum = sizeBytes + sumOfWords(head) + sumOfWords(tail)
-        return format(sum)
+        return Fingerprint(hash = format(sum), sizeBytes = sizeBytes)
     }
 
     /** True for a value this object could have produced; the guard before a request. */
@@ -65,11 +68,11 @@ object MovieHash {
      * [sizeHint] is MediaStore's own size, used only when the descriptor will not state
      * one. The I/O runs on [Dispatchers.IO]: composition never waits on a disk read.
      */
-    suspend fun of(context: Context, uri: Uri, sizeHint: Long = -1L): String? =
+    suspend fun of(context: Context, uri: Uri, sizeHint: Long = -1L): Fingerprint? =
         withContext(Dispatchers.IO) {
             runCatching {
                 context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
-                    val size = descriptor.statSize.takeIf { it > 0L } ?: sizeHint
+                    val size = authoritativeSize(descriptor.statSize, sizeHint) ?: return@use null
                     if (size < MinBytes) return@use null
                     // Built from a descriptor Android does not let this stream own, so the
                     // ParcelFileDescriptor stays the single thing that closes the fd.
@@ -80,6 +83,10 @@ object MovieHash {
                 }
             }.getOrNull()
         }
+
+    /** Descriptor truth wins; the MediaStore hint is used only when no size is stated. */
+    internal fun authoritativeSize(statSize: Long, sizeHint: Long): Long? =
+        statSize.takeIf { it > 0L } ?: sizeHint.takeIf { it > 0L }
 
     /** Little-endian 64-bit words, summed with the wraparound the format specifies. */
     private fun sumOfWords(window: ByteArray): Long {

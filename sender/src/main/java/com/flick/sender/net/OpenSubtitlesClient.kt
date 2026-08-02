@@ -3,6 +3,7 @@ package com.flick.sender.net
 import android.content.Context
 import android.net.Uri
 import com.flick.sender.BuildConfig
+import com.flick.sender.media.MovieHash
 import com.flick.sender.media.SubtitleFiles
 import com.flick.sender.util.FlickLog
 import io.ktor.client.HttpClient
@@ -286,7 +287,7 @@ class OpenSubtitlesClient private constructor(
     }
 
     /**
-     * Searches for an exact [movieHash] first and by [query] only when that finds none.
+     * Searches for an exact [movieFingerprint] first and by [query] only when that finds none.
      *
      * The hash names THIS file, so a match is a subtitle already in sync with it. It is
      * also the half allowed to fail quietly: a hash the server has never seen, or a
@@ -297,15 +298,13 @@ class OpenSubtitlesClient private constructor(
         year: Int? = null,
         season: Int?,
         episode: Int?,
-        movieHash: String? = null,
-        movieByteSize: Long = -1L,
+        movieFingerprint: MovieHash.Fingerprint? = null,
         language: OpenSubtitlesLanguage = OpenSubtitlesSearchPolicy.DefaultLanguage,
     ): SubtitleSearchOutcome = withContext(Dispatchers.IO) {
         val key = keys.resolved() ?: return@withContext SubtitleSearchOutcome.NoKey
         val term = OpenSubtitlesSearchPolicy.textQuery(query)
         val hashParameters = OpenSubtitlesWire.hashSearchParameters(
-            movieHash = movieHash,
-            movieByteSize = movieByteSize,
+            fingerprint = movieFingerprint,
             language = language,
         )
         val textParameters = OpenSubtitlesWire.textSearchParameters(

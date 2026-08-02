@@ -28,7 +28,7 @@ class SubtitleMediaIdentityPolicyTest {
         assertTrue(source.contains("searchJob?.cancel()"))
         assertTrue(source.contains("results = null"))
         assertTrue(source.contains("if (generation != searchGeneration) return@launch"))
-        assertTrue(source.contains("movieByteSize = videoSizeBytes"))
+        assertTrue(source.contains("movieFingerprint = requestedFingerprint"))
         assertTrue(source.contains("language = requestedLanguage"))
     }
 

@@ -24,6 +24,9 @@ class MovieHashTest {
 
     private fun zeros() = ByteArray(window)
 
+    private fun hash(sizeBytes: Long, head: ByteArray, tail: ByteArray): String? =
+        MovieHash.of(sizeBytes, head, tail)?.hash
+
     /** [bytes] written at the start of an otherwise empty window. */
     private fun windowStarting(vararg bytes: Int) = zeros().apply {
         bytes.forEachIndexed { index, value -> this[index] = value.toByte() }
@@ -31,35 +34,36 @@ class MovieHashTest {
 
     @Test fun theSizeAloneIsTheHashOfAnEmptyFile() {
         // 0x20000 == 131072, and the answer is zero-padded to the 16 digits the API takes.
-        assertEquals("0000000000020000", MovieHash.of(minimumSize, zeros(), zeros()))
+        assertEquals("0000000000020000", hash(minimumSize, zeros(), zeros()))
+        assertEquals(minimumSize, MovieHash.of(minimumSize, zeros(), zeros())?.sizeBytes)
     }
 
     @Test fun wordsAreReadLittleEndian() {
         // {0x01,0x02} at the head of a window is the word 0x0201, never 0x0102000000000000.
         val head = windowStarting(0x01, 0x02)
-        assertEquals("0000000000020201", MovieHash.of(minimumSize, head, zeros()))
+        assertEquals("0000000000020201", hash(minimumSize, head, zeros()))
     }
 
     @Test fun everyWordInBothWindowsCounts() {
         // Byte 8 opens the second word, so this is 0x0201 in word 0 plus 0x03 in word 1,
         // and the same again out of the tail window.
         val head = windowStarting(0x01, 0x02, 0, 0, 0, 0, 0, 0, 0x03)
-        assertEquals("0000000000020408", MovieHash.of(minimumSize, head, head))
+        assertEquals("0000000000020408", hash(minimumSize, head, head))
     }
 
     @Test fun theSumWrapsAtSixtyFourBits() {
         // Two words of 2^63 sum to 2^64, which wraps to zero and leaves just the size.
         val half = windowStarting(0, 0, 0, 0, 0, 0, 0, 0x80)
-        assertEquals("0000000000020000", MovieHash.of(minimumSize, half, half))
+        assertEquals("0000000000020000", hash(minimumSize, half, half))
         // One of them alone must NOT wrap, or the test above would pass for the wrong reason.
-        assertEquals("8000000000020000", MovieHash.of(minimumSize, half, zeros()))
+        assertEquals("8000000000020000", hash(minimumSize, half, zeros()))
     }
 
     @Test fun aWrappedSumIsRenderedUnsigned() {
         // 0xFFFF…FF is -1 as a Long; the hash is the unsigned form of the total, so
         // 131072 - 1 has to read as 0x1ffff and never as a minus sign.
         val minusOne = zeros().apply { for (index in 0 until 8) this[index] = 0xFF.toByte() }
-        assertEquals("000000000001ffff", MovieHash.of(minimumSize, minusOne, zeros()))
+        assertEquals("000000000001ffff", hash(minimumSize, minusOne, zeros()))
     }
 
     @Test fun aFileUnderTwoWindowsHasNoHash() {
@@ -78,6 +82,20 @@ class MovieHashTest {
         assertNull(MovieHash.of(minimumSize, ByteArray(0), ByteArray(0)))
         // A longer window is equally wrong: it is not the window the format names.
         assertNull(MovieHash.of(minimumSize, ByteArray(window + 8), zeros()))
+    }
+
+    @Test fun descriptorSizeOverridesAStaleMediaStoreHint() {
+        val size = MovieHash.authoritativeSize(statSize = 500_000L, sizeHint = 900_000L)
+        val fingerprint = MovieHash.of(requireNotNull(size), zeros(), zeros())
+
+        assertEquals(500_000L, fingerprint?.sizeBytes)
+        assertEquals("000000000007a120", fingerprint?.hash)
+    }
+
+    @Test fun aPositiveHintIsUsedOnlyWhenTheDescriptorHasNoSize() {
+        assertEquals(900_000L, MovieHash.authoritativeSize(statSize = -1L, sizeHint = 900_000L))
+        assertNull(MovieHash.authoritativeSize(statSize = -1L, sizeHint = -1L))
+        assertNull(MovieHash.authoritativeSize(statSize = 0L, sizeHint = 0L))
     }
 
     @Test fun onlyTheApisOwnFormIsWellFormed() {

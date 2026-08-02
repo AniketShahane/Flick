@@ -1,5 +1,6 @@
 package com.flick.sender.net
 
+import com.flick.sender.media.MovieHash
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -39,8 +40,7 @@ class OpenSubtitlesClientSearchTest {
             year = 2024,
             season = null,
             episode = null,
-            movieHash = HASH,
-            movieByteSize = 8_765_432_100L,
+            movieFingerprint = MovieHash.Fingerprint(HASH, 8_765_432_100L),
             language = OpenSubtitlesLanguage.PORTUGUESE_BRAZIL,
         )
 
@@ -70,8 +70,7 @@ class OpenSubtitlesClientSearchTest {
             year = 2025,
             season = 3,
             episode = 12,
-            movieHash = HASH,
-            movieByteSize = 456_789L,
+            movieFingerprint = MovieHash.Fingerprint(HASH, 456_789L),
             language = OpenSubtitlesLanguage.CHINESE_TRADITIONAL,
         )
 
@@ -87,8 +86,8 @@ class OpenSubtitlesClientSearchTest {
         )
     }
 
-    @Test fun shortQueryRunsHashOnlyWithLanguageAndWithoutUnknownMovieByteSize() = runBlocking {
-        val recorder = Recorder(ArrayDeque(listOf(SubtitleSearchOutcome.Found(emptyList()))))
+    @Test fun shortQueryWithoutAnAtomicFingerprintMakesNoRequest() = runBlocking {
+        val recorder = Recorder(ArrayDeque<SubtitleSearchOutcome>())
         val client = OpenSubtitlesClient(Credentials(), recorder)
 
         val outcome = client.search(
@@ -96,14 +95,12 @@ class OpenSubtitlesClientSearchTest {
             year = null,
             season = null,
             episode = null,
-            movieHash = HASH,
-            movieByteSize = -1L,
             language = OpenSubtitlesLanguage.ENGLISH,
         )
 
         assertTrue(outcome is SubtitleSearchOutcome.Found)
         assertEquals(
-            listOf("$SUBTITLES?languages=en&moviehash=$HASH&moviehash_match=only"),
+            emptyList<String>(),
             recorder.urls,
         )
     }
