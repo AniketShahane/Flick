@@ -1067,7 +1067,7 @@ private fun PlaybackSidePanel(
         modifier = modifier
             .focusProperties {
                 canFocus = open
-                exit = { if (open) FocusRequester.Cancel else FocusRequester.Default }
+                onExit = { if (open) cancelFocusChange() }
             }
             .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
     ) {
