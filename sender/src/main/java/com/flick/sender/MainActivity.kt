@@ -2,6 +2,7 @@ package com.flick.sender
 
 import android.Manifest
 import android.app.UiModeManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,12 +36,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
+import com.flick.sender.support.SupportCatalog
 import com.flick.sender.ui.screens.FlickApp
 import com.flick.sender.ui.LocalSimplifiedVideoNames
 import com.flick.sender.ui.theme.AppearanceController
@@ -230,6 +234,7 @@ private fun FlickRoot(
     val context = LocalContext.current
     val event by events.collectAsState()
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
+    val supportCatalog = remember { SupportCatalog.configured() }
 
     // POST_NOTIFICATIONS (API 33+) so the foreground-service notification shows.
     val notifLauncher = rememberLauncherForActivityResult(
@@ -279,6 +284,7 @@ private fun FlickRoot(
     CompositionLocalProvider(LocalSimplifiedVideoNames provides simplifiedVideoNames) {
         FlickApp(
             controller = controller,
+            supportCatalog = supportCatalog,
             batteryExempt = batteryExempt,
             themePreference = appearance.preference,
             onSelectTheme = appearance::select,
@@ -298,7 +304,39 @@ private fun FlickRoot(
                     context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 }
             },
+            onOpenCheckout = { checkoutUrl ->
+                supportCatalog?.let { catalog ->
+                    launchSupportCheckout(context, catalog, checkoutUrl)
+                }
+            },
         )
+    }
+}
+
+/** Checkout is a browser hand-off only; callers may pass a URL only from the given catalog. */
+internal fun launchSupportCheckout(
+    context: Context,
+    catalog: SupportCatalog,
+    checkoutUrl: String,
+) {
+    if (catalog.options.none { it.checkoutUrl == checkoutUrl }) return
+    val uri = android.net.Uri.parse(checkoutUrl)
+    try {
+        CustomTabsIntent.Builder().build().launchUrl(context, uri)
+        return
+    } catch (_: ActivityNotFoundException) {
+        // Fall through to the platform browser intent.
+    } catch (_: RuntimeException) {
+        // A misbehaving browser provider must not strand this one-time hand-off.
+    }
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE),
+        )
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, R.string.support_checkout_unavailable, Toast.LENGTH_SHORT).show()
+    } catch (_: RuntimeException) {
+        Toast.makeText(context, R.string.support_checkout_unavailable, Toast.LENGTH_SHORT).show()
     }
 }
 

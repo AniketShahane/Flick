@@ -35,6 +35,27 @@ val openSubtitlesApiKey: String = run {
     (fromProperties ?: System.getenv("OPENSUBTITLES_API_KEY")).orEmpty().trim()
 }
 
+/**
+ * Public Stripe-hosted checkout URLs. A clone deliberately has no fallback links:
+ * support is offered only when every tier is configured and validated at runtime.
+ * Values are never printed because build logs are a poor place for deployment config.
+ */
+fun supportCheckoutUrl(propertyName: String, environmentName: String): String {
+    val local = rootProject.file("local.properties")
+    val fromProperties = if (local.isFile) {
+        Properties()
+            .apply { local.inputStream().use { load(it) } }
+            .getProperty(propertyName)
+    } else {
+        null
+    }
+    return (fromProperties ?: System.getenv(environmentName)).orEmpty().trim()
+}
+
+val supportStripe3Url = supportCheckoutUrl("support.stripe3Url", "FLICK_SUPPORT_STRIPE_3_URL")
+val supportStripe8Url = supportCheckoutUrl("support.stripe8Url", "FLICK_SUPPORT_STRIPE_8_URL")
+val supportStripe15Url = supportCheckoutUrl("support.stripe15Url", "FLICK_SUPPORT_STRIPE_15_URL")
+
 /** Java string-literal escaping: BuildConfig is generated source, not a resource. */
 fun javaStringLiteral(value: String): String = value
     .replace("\\", "\\\\")
@@ -59,6 +80,21 @@ android {
             "String",
             "OPENSUBTITLES_API_KEY",
             "\"${javaStringLiteral(openSubtitlesApiKey)}\"",
+        )
+        buildConfigField(
+            "String",
+            "SUPPORT_STRIPE_3_URL",
+            "\"${javaStringLiteral(supportStripe3Url)}\"",
+        )
+        buildConfigField(
+            "String",
+            "SUPPORT_STRIPE_8_URL",
+            "\"${javaStringLiteral(supportStripe8Url)}\"",
+        )
+        buildConfigField(
+            "String",
+            "SUPPORT_STRIPE_15_URL",
+            "\"${javaStringLiteral(supportStripe15Url)}\"",
         )
     }
 
@@ -159,6 +195,7 @@ dependencies {
     implementation(libs.androidx.material3.expressive)
     implementation(libs.androidx.activity.compose)
     implementation("dev.chrisbanes.haze:haze:1.7.2")
+    implementation("androidx.browser:browser:1.10.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Embedded LAN HTTP media server (Ktor 3.x, CIO engine — no Netty).

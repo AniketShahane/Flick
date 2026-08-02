@@ -590,6 +590,25 @@
 
     <string name="settings_heading">Signal\n&amp; setup.</string>
 
+    <!-- Optional one-time tips appear only when every hosted checkout URL is configured. -->
+    <string name="support_sheet_title">Keep Flick moving.</string>
+    <string name="support_sheet_body">Flick is free, private, and built by one person. If it earned a place in your movie night, leave a one-time tip. Nothing unlocks—this is simply a thank-you.</string>
+    <string name="support_option_3_amount">$3</string>
+    <string name="support_option_3_label">Send a spark</string>
+    <string name="support_option_8_amount">$8</string>
+    <string name="support_option_8_label">Keep it moving</string>
+    <string name="support_option_15_amount">$15</string>
+    <string name="support_option_15_label">Back the next build</string>
+    <string name="support_suggested">Suggested</string>
+    <string name="support_checkout_disclosure">Voluntary, one-time tip for the Flick app already provided. No app features or services are included.</string>
+    <string name="support_checkout_browser">Secure checkout by Stripe · Opens in browser</string>
+    <string name="support_invitation_body">If Flick helped make movie night easy, you can leave a one-time tip.</string>
+    <string name="support_invitation_open">See ways to support</string>
+    <string name="support_invitation_dismiss">Not now</string>
+    <string name="support_checkout_unavailable">Couldn’t open checkout. Try again when a browser is available.</string>
+    <string name="settings_support_title">Support Flick</string>
+    <string name="settings_support_summary">Leave a voluntary one-time tip</string>
+
     <!-- Appearance. "Match system" is the default because following the platform is what
          a user who has never opened this row already expects. -->
     <string name="settings_appearance_title">Appearance</string>

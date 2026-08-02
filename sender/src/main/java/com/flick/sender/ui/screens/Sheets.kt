@@ -180,13 +180,14 @@ fun BottomSheet(
     contentPadding: PaddingValues = SheetPadding,
     visible: Boolean = true,
     onLeaving: () -> Unit = {},
+    paneLabel: String? = null,
     header: (@Composable ColumnScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val dismissDescription = stringResource(R.string.a11y_dismiss_sheet)
-    val sheetTitle = stringResource(R.string.a11y_sheet)
+    val sheetTitle = paneLabel ?: stringResource(R.string.a11y_sheet)
     // Held for exactly as long as this sheet is composed — including the frames it
     // spends leaving — so the chrome above it comes back only once it is actually gone.
     val sheetDepth = LocalSheetDepth.current

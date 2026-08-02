@@ -203,6 +203,8 @@ internal fun rememberLibraryUiState(): LibraryUiState {
 @Composable
 internal fun LibraryScreen(
     controller: FlickController,
+    supportAvailable: Boolean,
+    onOpenSupport: () -> Unit,
     onRequestVideoPermission: () -> Unit,
     uiState: LibraryUiState,
     sharedScope: SharedTransitionScope? = null,
@@ -220,6 +222,8 @@ internal fun LibraryScreen(
     val mediaAccess by controller.mediaAccess.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
+    val showSupportInvitation by controller.showSupportInvitation.collectAsState()
+    val supportInvitationVisible = supportAvailable && showSupportInvitation
     // Empty until a receiver actually refuses a file, and back to empty on the next
     // launch: this is a witness list, not a verdict the library carries around.
     val unplayable by controller.unplayableFiles.collectAsState()
@@ -277,6 +281,9 @@ internal fun LibraryScreen(
             bottomClearance = bottomClearance,
             onChoose = onRequestVideoPermission,
             onRefresh = { controller.refreshMediaLibrary() },
+            showSupportInvitation = supportInvitationVisible,
+            onOpenSupport = onOpenSupport,
+            onDismissSupportInvitation = controller::dismissSupportInvitation,
         )
         return
     }
@@ -375,6 +382,14 @@ internal fun LibraryScreen(
                         signal = signal,
                         wifiLinkUp = wifiLinkUp,
                     )
+                }
+                if (supportInvitationVisible) {
+                    fullWidth {
+                        SupportInvitationCard(
+                            onOpenSupport = onOpenSupport,
+                            onDismiss = controller::dismissSupportInvitation,
+                        )
+                    }
                 }
                 fullWidth {
                     LibraryControls(
@@ -1416,6 +1431,9 @@ private fun EmptyState(
     bottomClearance: Dp,
     onChoose: () -> Unit,
     onRefresh: () -> Unit,
+    showSupportInvitation: Boolean,
+    onOpenSupport: () -> Unit,
+    onDismissSupportInvitation: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val locked = mediaAccess == MediaAccess.NONE
@@ -1456,6 +1474,13 @@ private fun EmptyState(
             signal = signal,
             wifiLinkUp = wifiLinkUp,
         )
+        if (showSupportInvitation) {
+            Spacer(Modifier.height(13.dp))
+            SupportInvitationCard(
+                onOpenSupport = onOpenSupport,
+                onDismiss = onDismissSupportInvitation,
+            )
+        }
         // Surplus spacers rather than a weighted hero: a weighted child is FIXED to the
         // room that is left over, so a hero taller than that room overflows both of its
         // edges and the column never grows enough to scroll it back. These collapse to
