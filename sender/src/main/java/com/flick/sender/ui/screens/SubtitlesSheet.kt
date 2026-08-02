@@ -909,14 +909,33 @@ private fun ColumnScope.OnlinePane(
             )
         }
         list.forEach { result ->
+            val feature = when {
+                result.season != null && result.episode != null ->
+                    stringResource(R.string.subs_online_result_episode, result.season, result.episode)
+                result.featureType.equals("movie", ignoreCase = true) ->
+                    stringResource(R.string.subs_online_result_movie)
+                else -> null
+            }
             val detail = listOfNotNull(
                 stringResource(R.string.subs_online_hash_match).takeIf { result.hashMatch },
+                stringResource(R.string.subs_online_foreign_only).takeIf { result.foreignPartsOnly },
+                stringResource(R.string.subs_online_machine).takeIf { result.machineTranslated },
+                stringResource(R.string.subs_online_ai).takeIf {
+                    result.aiTranslated && !result.machineTranslated
+                },
+                stringResource(R.string.subs_online_trusted).takeIf { result.trusted },
+                feature,
+                result.featureYear?.let { stringResource(R.string.subs_online_result_year, it) },
+                stringResource(R.string.subs_online_sdh).takeIf { result.hearingImpaired },
+                result.rating.takeIf { it > 0.0 && result.votes > 0 }
+                    ?.let { stringResource(R.string.subs_online_rating, it) },
                 languageLabel(result.language),
                 stringResource(R.string.subs_online_downloads, result.downloads),
             ).joinToString(" · ")
             SelectableRow(
                 title = result.fileName,
                 detail = detail,
+                detailMaxLines = 2,
                 attached = false,
                 onClick = {
                     // One download at a time: the API counts every call against the
@@ -1151,6 +1170,7 @@ private fun ColumnScope.KeyEntry(
 private fun SelectableRow(
     title: String,
     detail: String?,
+    detailMaxLines: Int = 1,
     attached: Boolean,
     onClick: () -> Unit,
 ) {
@@ -1190,7 +1210,7 @@ private fun SelectableRow(
                 Text(
                     it,
                     style = FlickText.monoSmall.copy(color = colors.onSurfaceDim),
-                    maxLines = 1,
+                    maxLines = detailMaxLines,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

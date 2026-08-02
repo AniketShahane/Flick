@@ -399,6 +399,15 @@
     <string name="subs_online_empty">OpenSubtitles has nothing for that title.</string>
     <string name="subs_online_downloads">%1$d downloads</string>
     <string name="subs_online_hash_match">Matches this exact file</string>
+    <string name="subs_online_trusted">Trusted source</string>
+    <string name="subs_online_ai">AI translated</string>
+    <string name="subs_online_machine">Machine translated</string>
+    <string name="subs_online_sdh">SDH</string>
+    <string name="subs_online_foreign_only">Foreign dialogue only</string>
+    <string name="subs_online_rating">%1$.1f rating</string>
+    <string name="subs_online_result_movie">Movie</string>
+    <string name="subs_online_result_episode">S%1$02dE%2$02d</string>
+    <string name="subs_online_result_year">%1$d</string>
 
     <!-- Subtitles sheet · online search, when this build carries no key at all. -->
     <string name="subs_online_no_key">This build of Flick carries no OpenSubtitles key, so it can\'t search from here. You can still attach a subtitle file yourself on the File tab — or paste your own key below, if you have one.</string>

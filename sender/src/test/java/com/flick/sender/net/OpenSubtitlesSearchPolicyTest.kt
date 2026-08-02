@@ -53,7 +53,11 @@ class OpenSubtitlesSearchPolicyTest {
 
     @Test fun movieSearchCarriesLanguageAndPositiveBoundedYear() {
         assertEquals(
-            listOf("languages" to "fr", "query" to "amélie & co.", "year" to "2001"),
+            listOf(
+                "languages" to "fr",
+                "query" to "amélie & co.",
+                "year" to "2001",
+            ),
             OpenSubtitlesWire.canonicalQuery(
                 OpenSubtitlesWire.textSearchParameters(
                     query = "  Amélie & Co.  ",
@@ -73,7 +77,7 @@ class OpenSubtitlesSearchPolicyTest {
                 "languages" to "en",
                 "query" to "example show",
                 "season_number" to "3",
-                "year" to "2025",
+                "type" to "episode",
             ),
             OpenSubtitlesWire.canonicalQuery(
                 OpenSubtitlesWire.textSearchParameters(
@@ -102,6 +106,34 @@ class OpenSubtitlesSearchPolicyTest {
         )
     }
 
+    @Test fun typeIsEpisodeOnlyWhenSeasonAndEpisodeAreBothKnown() {
+        val seasonOnly = OpenSubtitlesWire.canonicalQuery(
+            OpenSubtitlesWire.textSearchParameters(
+                query = "Example Show",
+                year = 2025,
+                season = 3,
+                episode = null,
+                language = OpenSubtitlesLanguage.ENGLISH,
+            ),
+        )
+        assertFalse(seasonOnly.any { it.first == "type" })
+    }
+
+    @Test fun aSeriesIdentityYearDoesNotFilterAnEpisodeSearch() {
+        val episode = OpenSubtitlesWire.canonicalQuery(
+            OpenSubtitlesWire.textSearchParameters(
+                query = "Doctor Who",
+                year = 2005,
+                season = 14,
+                episode = 1,
+                language = OpenSubtitlesLanguage.ENGLISH,
+            ),
+        )
+
+        assertFalse(episode.any { it.first == "year" })
+        assertEquals("episode", episode.single { it.first == "type" }.second)
+    }
+
     @Test fun shortOrBlankTextNeverProducesATextRequest() {
         assertTrue(OpenSubtitlesWire.textSearchParameters("ab", null, null, null, OpenSubtitlesLanguage.ENGLISH).isEmpty())
         assertTrue(OpenSubtitlesWire.textSearchParameters(" \n ", null, null, null, OpenSubtitlesLanguage.ENGLISH).isEmpty())
@@ -122,18 +154,33 @@ class OpenSubtitlesSearchPolicyTest {
     @Test fun hashRequestAlwaysCarriesLanguageAndAddsPositiveMovieByteSize() {
         val hash = "8e245d9679d31e12"
         assertEquals(
-            listOf("languages" to "en", "moviebytesize" to "987654321", "moviehash" to hash),
+            listOf(
+                "languages" to "en",
+                "moviebytesize" to "987654321",
+                "moviehash" to hash,
+                "moviehash_match" to "only",
+            ),
             OpenSubtitlesWire.canonicalQuery(
-                OpenSubtitlesWire.hashSearchParameters(hash, 987_654_321L, OpenSubtitlesLanguage.ENGLISH),
+                OpenSubtitlesWire.hashSearchParameters(
+                    movieHash = hash,
+                    movieByteSize = 987_654_321L,
+                    language = OpenSubtitlesLanguage.ENGLISH,
+                ),
             ),
         )
         assertEquals(
-            listOf("languages" to "en", "moviehash" to hash),
+            listOf("languages" to "en", "moviehash" to hash, "moviehash_match" to "only"),
             OpenSubtitlesWire.canonicalQuery(
                 OpenSubtitlesWire.hashSearchParameters(hash, -1L, OpenSubtitlesLanguage.ENGLISH),
             ),
         )
-        assertTrue(OpenSubtitlesWire.hashSearchParameters("not-a-hash", 100L, OpenSubtitlesLanguage.ENGLISH).isEmpty())
+        assertTrue(
+            OpenSubtitlesWire.hashSearchParameters(
+                "not-a-hash",
+                100L,
+                OpenSubtitlesLanguage.ENGLISH,
+            ).isEmpty(),
+        )
     }
 
     @Test fun exactHashStopsFallbackButHeuristicHashResultsDoNot() {

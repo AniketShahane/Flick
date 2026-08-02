@@ -16,13 +16,31 @@ import org.junit.Test
  */
 class OpenSubtitlesWireTest {
 
-    private fun subtitle(id: Long, hashMatch: Boolean = false) = OnlineSubtitle(
+    private fun subtitle(
+        id: Long,
+        hashMatch: Boolean = false,
+        trusted: Boolean = false,
+        aiTranslated: Boolean = false,
+        rating: Double = 0.0,
+        votes: Int = 0,
+        downloads: Int = id.toInt(),
+        year: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+    ) = OnlineSubtitle(
         fileId = id,
         fileName = "file-$id.srt",
         language = "en",
         release = "release-$id",
-        downloads = id.toInt(),
+        downloads = downloads,
         hashMatch = hashMatch,
+        trusted = trusted,
+        aiTranslated = aiTranslated,
+        rating = rating,
+        votes = votes,
+        featureYear = year,
+        season = season,
+        episode = episode,
     )
 
     // --- which key a request carries ----------------------------------------
@@ -187,11 +205,66 @@ class OpenSubtitlesWireTest {
 
     // --- what order results reach the sheet in -------------------------------
 
-    @Test fun hashMatchesRankFirstAndEverythingElseKeepsTheApisOrder() {
+    @Test fun hashMatchesRankFirst() {
         val ordered = OpenSubtitlesWire.ordered(
             listOf(subtitle(1), subtitle(2, hashMatch = true), subtitle(3), subtitle(4, hashMatch = true)),
         )
-        assertEquals(listOf(2L, 4L, 1L, 3L), ordered.map { it.fileId })
+        assertEquals(listOf(4L, 2L, 3L, 1L), ordered.map { it.fileId })
+    }
+
+    @Test fun matchingEpisodeMetadataBeatsAnExplicitlyDifferentEpisode() {
+        val ordered = OpenSubtitlesWire.ordered(
+            results = listOf(
+                subtitle(1, year = 2025, season = 2, episode = 4, downloads = 50_000),
+                subtitle(2, year = 2025, season = 2, episode = 3, downloads = 10),
+                subtitle(3),
+            ),
+            year = 2025,
+            season = 2,
+            episode = 3,
+        )
+
+        assertEquals(listOf(2L, 3L, 1L), ordered.map { it.fileId })
+    }
+
+    @Test fun exactFileMatchesUseQualitySignalsRatherThanFallibleFeatureMetadata() {
+        val ordered = OpenSubtitlesWire.ordered(
+            results = listOf(
+                subtitle(
+                    1,
+                    hashMatch = true,
+                    rating = 9.0,
+                    votes = 10,
+                    season = 9,
+                    episode = 9,
+                ),
+                subtitle(
+                    2,
+                    hashMatch = true,
+                    rating = 8.0,
+                    votes = 10,
+                    season = 2,
+                    episode = 3,
+                ),
+            ),
+            season = 2,
+            episode = 3,
+        )
+
+        assertEquals(listOf(1L, 2L), ordered.map { it.fileId })
+    }
+
+    @Test fun ratingsDownloadsAndProvenanceBreakOtherwiseEqualTies() {
+        val ordered = OpenSubtitlesWire.ordered(
+            listOf(
+                subtitle(1, downloads = 50_000),
+                subtitle(2, trusted = true, aiTranslated = true, rating = 9.5, votes = 20, downloads = 1),
+                subtitle(3, trusted = true, rating = 8.0, votes = 20, downloads = 100),
+                subtitle(4, trusted = true, rating = 8.0, votes = 20, downloads = 1_000),
+            ),
+        )
+
+        assertEquals(listOf(2L, 4L, 3L, 1L), ordered.map { it.fileId })
     }
 
     @Test fun theHashSearchIsMergedAheadOfTheTextSearch() {
@@ -200,7 +273,7 @@ class OpenSubtitlesWireTest {
             textResults = listOf(subtitle(20), subtitle(21)),
             limit = 30,
         )
-        assertEquals(listOf(11L, 10L, 20L, 21L), merged.map { it.fileId })
+        assertEquals(listOf(11L, 10L, 21L, 20L), merged.map { it.fileId })
     }
 
     @Test fun aFileBothSearchesFoundKeepsTheCopyThatKnowsItMatches() {
@@ -219,13 +292,12 @@ class OpenSubtitlesWireTest {
             textResults = listOf(subtitle(2), subtitle(3), subtitle(4)),
             limit = 2,
         )
-        assertEquals(listOf(1L, 2L), merged.map { it.fileId })
+        assertEquals(listOf(1L, 4L), merged.map { it.fileId })
     }
 
-    @Test fun aTextOnlySearchIsUnchangedByTheMerge() {
-        // The path that works today has to keep working when there is no hash at all.
+    @Test fun aTextOnlySearchUsesTheSameDeterministicQualityOrder() {
         val text = listOf(subtitle(1), subtitle(2), subtitle(3))
-        assertEquals(text, OpenSubtitlesWire.merged(emptyList(), text, 30))
+        assertEquals(listOf(3L, 2L, 1L), OpenSubtitlesWire.merged(emptyList(), text, 30).map { it.fileId })
     }
 
     // --- what is left of the day's allowance ---------------------------------
@@ -278,7 +350,7 @@ class OpenSubtitlesWireTest {
                 "languages" to "en",
                 "query" to "example show",
                 "season_number" to "1",
-                "year" to "2025",
+                "type" to "episode",
             ),
             OpenSubtitlesWire.canonicalQuery(parameters),
         )
@@ -291,6 +363,7 @@ class OpenSubtitlesWireTest {
                 "languages" to "en",
                 "season_number" to 2,
                 "episode_number" to 5,
+                "type" to "episode",
             ),
             OpenSubtitlesWire.textSearchParameters(
                 query = "Example Show",
@@ -319,9 +392,7 @@ class OpenSubtitlesWireTest {
         )
     }
 
-    @Test fun aHashSearchIsAlreadyCanonicalAndSurvivesUnchanged() {
-        // One lower-case hex parameter cannot be mis-ordered or mis-cased, which is why the
-        // hash half of the search was working while the text half returned nothing.
+    @Test fun aHashItselfIsCanonicalAndSurvivesUnchanged() {
         val hash = listOf("moviehash" to "8e245d9679d31e12")
         assertEquals(listOf("moviehash" to "8e245d9679d31e12"), OpenSubtitlesWire.canonicalQuery(hash))
     }

@@ -47,7 +47,8 @@ class OpenSubtitlesClientSearchTest {
         assertTrue(outcome is SubtitleSearchOutcome.Found)
         assertEquals(
             listOf(
-                "$SUBTITLES?languages=pt-br&moviebytesize=8765432100&moviehash=$HASH",
+                "$SUBTITLES?languages=pt-br&moviebytesize=8765432100&moviehash=$HASH" +
+                    "&moviehash_match=only",
             ),
             recorder.urls,
         )
@@ -77,8 +78,10 @@ class OpenSubtitlesClientSearchTest {
         assertTrue(outcome is SubtitleSearchOutcome.Found)
         assertEquals(
             listOf(
-                "$SUBTITLES?languages=zh-tw&moviebytesize=456789&moviehash=$HASH",
-                "$SUBTITLES?episode_number=12&languages=zh-tw&query=example+show&season_number=3&year=2025",
+                "$SUBTITLES?languages=zh-tw&moviebytesize=456789&moviehash=$HASH" +
+                    "&moviehash_match=only",
+                "$SUBTITLES?episode_number=12&languages=zh-tw&query=example+show" +
+                    "&season_number=3&type=episode",
             ),
             recorder.urls,
         )
@@ -100,7 +103,7 @@ class OpenSubtitlesClientSearchTest {
 
         assertTrue(outcome is SubtitleSearchOutcome.Found)
         assertEquals(
-            listOf("$SUBTITLES?languages=en&moviehash=$HASH"),
+            listOf("$SUBTITLES?languages=en&moviehash=$HASH&moviehash_match=only"),
             recorder.urls,
         )
     }

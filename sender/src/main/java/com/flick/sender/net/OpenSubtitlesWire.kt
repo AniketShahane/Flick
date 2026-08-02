@@ -183,11 +183,14 @@ object OpenSubtitlesWire {
         language: OpenSubtitlesLanguage,
     ): List<Pair<String, Any>> = buildList {
         val term = OpenSubtitlesSearchPolicy.textQuery(query).value ?: return@buildList
+        val isEpisode = season?.let(OpenSubtitlesSearchPolicy::validSeason) == true &&
+            episode?.let(OpenSubtitlesSearchPolicy::validEpisode) == true
         add("query" to term)
         add("languages" to language.code)
-        year?.takeIf(OpenSubtitlesSearchPolicy::validYear)?.let { add("year" to it) }
+        year?.takeIf { !isEpisode && OpenSubtitlesSearchPolicy.validYear(it) }?.let { add("year" to it) }
         season?.takeIf(OpenSubtitlesSearchPolicy::validSeason)?.let { add("season_number" to it) }
         episode?.takeIf(OpenSubtitlesSearchPolicy::validEpisode)?.let { add("episode_number" to it) }
+        if (isEpisode) add("type" to "episode")
     }
 
     fun hashSearchParameters(
@@ -201,20 +204,33 @@ object OpenSubtitlesWire {
             add("moviehash" to hash)
             movieByteSize.takeIf { it > 0L }?.let { add("moviebytesize" to it) }
             add("languages" to language.code)
+            add("moviehash_match" to "only")
         }
     }
 
     /**
-     * Hash matches first.
-     *
-     * A subtitle the server flagged `moviehash_match` was uploaded against this exact
-     * file, so it is already in sync with the bytes being cast. That is worth more than
-     * any download count, and the sheet must not bury it under a more popular guess at
-     * the same title. Ordering is stable, so everything else keeps the order the API
-     * chose — which is its own popularity ranking.
+     * Exact-file sync remains the first discriminator. Within the same match class,
+     * explicit feature agreement, trusted/human provenance, ratings and popularity make
+     * the API's quality signals deterministic instead of depending on response order.
      */
-    fun ordered(results: List<OnlineSubtitle>): List<OnlineSubtitle> =
-        results.sortedByDescending { it.hashMatch }
+    fun ordered(
+        results: List<OnlineSubtitle>,
+        year: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+    ): List<OnlineSubtitle> = results.sortedWith(
+        compareByDescending<OnlineSubtitle> { it.hashMatch }
+            .thenByDescending { result ->
+                if (result.hashMatch) 1 else metadataAgreement(result, year, season, episode)
+            }
+            .thenByDescending { result -> if (result.votes > 0) result.rating else 0.0 }
+            .thenByDescending { it.votes }
+            .thenByDescending { it.downloads }
+            .thenByDescending { it.trusted }
+            .thenBy { it.aiTranslated || it.machineTranslated }
+            .thenBy { it.foreignPartsOnly }
+            .thenBy { it.fileId },
+    )
 
     /**
      * Hash results ahead of text results, one row per file id, capped at [limit]. The two
@@ -225,14 +241,43 @@ object OpenSubtitlesWire {
         hashResults: List<OnlineSubtitle>,
         textResults: List<OnlineSubtitle>,
         limit: Int,
+        year: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
     ): List<OnlineSubtitle> {
         val out = ArrayList<OnlineSubtitle>(minOf(limit, hashResults.size + textResults.size))
         val seen = HashSet<Long>()
-        for (result in ordered(hashResults) + textResults) {
+        for (result in ordered(hashResults, year, season, episode) +
+            ordered(textResults, year, season, episode)
+        ) {
             if (out.size >= limit) break
             if (seen.add(result.fileId)) out += result
         }
         return out
+    }
+
+    /**
+     * The API is the authority on matching, but its result metadata lets Flick avoid
+     * promoting a different year or episode above one that agrees with the user's query.
+     * Missing metadata is neutral; only an explicit contradiction is weaker.
+     */
+    private fun metadataAgreement(
+        result: OnlineSubtitle,
+        year: Int?,
+        season: Int?,
+        episode: Int?,
+    ): Int {
+        val isEpisode = season?.let(OpenSubtitlesSearchPolicy::validSeason) == true &&
+            episode?.let(OpenSubtitlesSearchPolicy::validEpisode) == true
+        val expected = listOfNotNull(
+            year?.takeIf { !isEpisode && OpenSubtitlesSearchPolicy.validYear(it) }
+                ?.let { it to result.featureYear },
+            season?.takeIf(OpenSubtitlesSearchPolicy::validSeason)?.let { it to result.season },
+            episode?.takeIf(OpenSubtitlesSearchPolicy::validEpisode)?.let { it to result.episode },
+        )
+        if (expected.isEmpty()) return 1
+        if (expected.any { (wanted, actual) -> actual != null && actual != wanted }) return 0
+        return if (expected.all { (wanted, actual) -> actual == wanted }) 2 else 1
     }
 
     /**

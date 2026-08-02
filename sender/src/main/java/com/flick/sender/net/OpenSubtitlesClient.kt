@@ -109,6 +109,17 @@ data class OnlineSubtitle(
     val release: String,
     val downloads: Int,
     val hashMatch: Boolean = false,
+    val trusted: Boolean = false,
+    val aiTranslated: Boolean = false,
+    val machineTranslated: Boolean = false,
+    val hearingImpaired: Boolean = false,
+    val foreignPartsOnly: Boolean = false,
+    val rating: Double = 0.0,
+    val votes: Int = 0,
+    val featureType: String? = null,
+    val featureYear: Int? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
 )
 
 /** Every way a search can end. Each arm gets its own honest sentence in the sheet. */
@@ -275,12 +286,11 @@ class OpenSubtitlesClient private constructor(
     }
 
     /**
-     * Searches by [movieHash] first and by [query] second, hash answers ranked first.
+     * Searches for an exact [movieHash] first and by [query] only when that finds none.
      *
      * The hash names THIS file, so a match is a subtitle already in sync with it. It is
      * also the half allowed to fail quietly: a hash the server has never seen, or a
-     * request that does not land, leaves the text search — the one that works today —
-     * exactly as it was.
+     * request that does not land, leaves the structured text fallback available.
      */
     suspend fun search(
         query: String,
@@ -293,7 +303,11 @@ class OpenSubtitlesClient private constructor(
     ): SubtitleSearchOutcome = withContext(Dispatchers.IO) {
         val key = keys.resolved() ?: return@withContext SubtitleSearchOutcome.NoKey
         val term = OpenSubtitlesSearchPolicy.textQuery(query)
-        val hashParameters = OpenSubtitlesWire.hashSearchParameters(movieHash, movieByteSize, language)
+        val hashParameters = OpenSubtitlesWire.hashSearchParameters(
+            movieHash = movieHash,
+            movieByteSize = movieByteSize,
+            language = language,
+        )
         val textParameters = OpenSubtitlesWire.textSearchParameters(
             query = query,
             year = year,
@@ -311,7 +325,9 @@ class OpenSubtitlesClient private constructor(
         if (hashOutcome != null && hashOutcome.isCredentialFault()) return@withContext hashOutcome
         val hashResults = (hashOutcome as? SubtitleSearchOutcome.Found)?.results.orEmpty()
         if (!OpenSubtitlesSearchPolicy.shouldRunTextFallback(hashResults, term)) {
-            return@withContext SubtitleSearchOutcome.Found(OpenSubtitlesWire.ordered(hashResults))
+            return@withContext SubtitleSearchOutcome.Found(
+                OpenSubtitlesWire.ordered(hashResults, year, season, episode),
+            )
         }
 
         val text = subtitles(
@@ -321,13 +337,22 @@ class OpenSubtitlesClient private constructor(
         when {
             text is SubtitleSearchOutcome.Found ->
                 SubtitleSearchOutcome.Found(
-                    OpenSubtitlesWire.merged(hashResults, text.results, MAX_RESULTS),
+                    OpenSubtitlesWire.merged(
+                        hashResults = hashResults,
+                        textResults = text.results,
+                        limit = MAX_RESULTS,
+                        year = year,
+                        season = season,
+                        episode = episode,
+                    ),
                 )
             // A failed text query is still an honest failure — unless the hash already
             // answered, in which case the user gets the better results rather than an
             // error about the weaker half of the same search.
             hashResults.isNotEmpty() ->
-                SubtitleSearchOutcome.Found(OpenSubtitlesWire.ordered(hashResults))
+                SubtitleSearchOutcome.Found(
+                    OpenSubtitlesWire.ordered(hashResults, year, season, episode),
+                )
             else -> text
         }
     }
@@ -508,8 +533,27 @@ class OpenSubtitlesClient private constructor(
                 fileName = fileName,
                 language = attributes.optString("language").takeIf { it.isNotBlank() && it != "null" },
                 release = ControlProtocolV2.normalizedLabel(attributes.optString("release"), 120).orEmpty(),
-                downloads = attributes.optInt("download_count", 0),
+                downloads = attributes.optInt("download_count", 0).coerceAtLeast(0),
                 hashMatch = attributes.optBoolean("moviehash_match", false),
+                trusted = attributes.optBoolean("from_trusted", false),
+                aiTranslated = attributes.optBoolean("ai_translated", false),
+                machineTranslated = attributes.optBoolean("machine_translated", false),
+                hearingImpaired = attributes.optBoolean("hearing_impaired", false),
+                foreignPartsOnly = attributes.optBoolean("foreign_parts_only", false),
+                rating = attributes.optDouble("ratings", 0.0).takeIf { it.isFinite() } ?: 0.0,
+                votes = attributes.optInt("votes", 0).coerceAtLeast(0),
+                featureType = attributes.optJSONObject("feature_details")
+                    ?.optString("feature_type")
+                    ?.let { ControlProtocolV2.normalizedLabel(it, 16) },
+                featureYear = attributes.optJSONObject("feature_details")
+                    ?.optInt("year", -1)
+                    ?.takeIf(OpenSubtitlesSearchPolicy::validYear),
+                season = attributes.optJSONObject("feature_details")
+                    ?.optInt("season_number", -1)
+                    ?.takeIf(OpenSubtitlesSearchPolicy::validSeason),
+                episode = attributes.optJSONObject("feature_details")
+                    ?.optInt("episode_number", -1)
+                    ?.takeIf(OpenSubtitlesSearchPolicy::validEpisode),
             )
         }
         return out
