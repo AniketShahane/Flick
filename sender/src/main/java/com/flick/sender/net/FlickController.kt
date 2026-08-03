@@ -21,6 +21,13 @@ import com.flick.sender.media.LibraryScope
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
 import com.flick.sender.media.MediaLibraryLoadGate
+import com.flick.sender.media.PlaybackMediaFingerprint
+import com.flick.sender.media.PlaybackProgressMutation
+import com.flick.sender.media.PlaybackProgressRecorder
+import com.flick.sender.media.PlaybackProgressState
+import com.flick.sender.media.PlaybackProgressStore
+import com.flick.sender.media.PlaybackProgressWrite
+import com.flick.sender.media.PlaybackResumePolicy
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
 import com.flick.sender.media.VideoNames
@@ -123,6 +130,25 @@ data class LibraryView(
  */
 data class SelectedSubtitle(val uri: Uri, val displayName: String, val language: String?)
 sealed interface CastStartState { data object Idle : CastStartState; data class ConnectingControl(val castId: String) : CastStartState; data class StartingSource(val castId: String) : CastStartState; data class AwaitingAcceptance(val castId: String) : CastStartState; data class AwaitingFirstFrame(val castId: String) : CastStartState; data class Active(val castId: String) : CastStartState; data class Failed(val castId: String, val code: String) : CastStartState }
+internal data class CastRequest(val item: MediaItem, val startMs: Long, val startOver: Boolean = false)
+internal data class RetryStart(val startMs: Long, val startOver: Boolean)
+
+internal object CastRetryPolicy {
+    fun start(
+        originalStartMs: Long,
+        originalStartOver: Boolean,
+        active: Boolean,
+        confirmedMs: Long,
+        durationMs: Long,
+    ): RetryStart = if (active) {
+        RetryStart(
+            PlaybackResumePolicy.eligiblePosition(confirmedMs, durationMs) ?: 0L,
+            startOver = false,
+        )
+    } else {
+        RetryStart(originalStartMs, originalStartOver)
+    }
+}
 
 /**
  * Whether a failure may carry a Retry action. [retryable] is the receiver's verdict on
@@ -200,6 +226,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val haptics = FlickHaptics(appContext)
     private val store = PairingStore(appContext)
     private val supportPromptStore = SupportPromptStore(appContext)
+    private val playbackProgressStore = PlaybackProgressStore(appContext, scope)
+    private val playbackProgressRecorder = PlaybackProgressRecorder()
     private val libraryFolderStore = LibraryFolderStore(appContext)
     private val videoNameStore = VideoNamePreferenceStore(appContext)
     private val videoNamePreference =
@@ -210,6 +238,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var castJob: Job? = null
     private var libraryJob: Job? = null
     private var subtitleJob: Job? = null
+    private var progressResolutionJob: Job? = null
     private var subtitleOwnerUri: Uri? = null
     private val pairingGate = PairingAttemptGate()
     private val manualPairAttemptLedger = ManualPairAttemptLedger()
@@ -219,8 +248,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var currentCastId: String? = null
     private var accepted: CompletableDeferred<JSONObject>? = null
     private var ready: CompletableDeferred<JSONObject>? = null
-    private var pendingCast: MediaItem? = null
-    private var retryItem: MediaItem? = null
+    private var pendingCast: CastRequest? = null
+    private var retryItem: CastRequest? = null
+    private var currentRequest: CastRequest? = null
     private var loadSentCastId: String? = null
     // The four digits a scanned v4 QR carried, held here rather than in the published
     // launch so the only way to reach them is to spend them. Cleared with the launch.
@@ -265,6 +295,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val simplifiedVideoNames = videoNamePreference.simplified
     val playback = session.state; val pulses = session.pulses
+    internal val playbackProgress = playbackProgressStore.state
 
     /** What this phone has proven about the link carrying the live cast. Never terminal. */
     val linkVerdict: StateFlow<LinkVerdict> = linkMonitor.verdict
@@ -844,20 +875,50 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
+    internal fun resumePosition(item: MediaItem, state: PlaybackProgressState): Long? {
+        val ready = state as? PlaybackProgressState.Ready ?: return null
+        val checkpoint = ready.checkpoints[PlaybackMediaFingerprint.of(item)] ?: return null
+        return PlaybackResumePolicy.eligiblePosition(checkpoint.positionMs, item.durationMs)
+    }
+
     fun flickToTv(item: MediaItem) {
+        progressResolutionJob?.cancel()
+        when (val progress = playbackProgress.value) {
+            PlaybackProgressState.Loading -> {
+                progressResolutionJob = scope.launch {
+                    val ready = playbackProgress.first { it is PlaybackProgressState.Ready }
+                    progressResolutionJob = null
+                    flickToTv(CastRequest(item, resumePosition(item, ready) ?: 0L))
+                }
+            }
+            is PlaybackProgressState.Ready ->
+                flickToTv(CastRequest(item, resumePosition(item, progress) ?: 0L))
+        }
+    }
+
+    fun startOver(item: MediaItem) {
+        progressResolutionJob?.cancel()
+        progressResolutionJob = null
+        flickToTv(CastRequest(item, 0L, startOver = true))
+    }
+
+    private fun flickToTv(request: CastRequest) {
+        val item = request.item
         val tv = _connectedTv.value ?: run { openConnect(); return }
         if (control.authenticatedEndpoint() == null) {
             store.get(tv.tvId)?.takeIf { !it.needsRepair }?.let { pairing ->
-                pendingCast = item
+                pendingCast = request
                 resume(pairing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
             } ?: openConnect()
             return
         }
-        startCast(item)
+        startCast(request)
     }
-    private fun startCast(item: MediaItem) {
+    private fun startCast(request: CastRequest) {
+        val item = request.item
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
+        currentRequest = request
         _castFailure.value = null
         _failureItem.value = null
         _failureLinkVerdict.value = LinkVerdict.Unknown
@@ -906,14 +967,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
                     ?: appContext.getString(R.string.media_title_generic)
                 control.armLoadSubtitle(castId, subUrl, subtitle?.displayName, subtitle?.language)
-                session.loadMedia(castId, videoUrl, title, item.durationMs, 0L)
+                session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)
                 withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
                 readyCommit = true
                 supportPromptStore.recordSuccess()
-                publishCastStart(CastStartState.Active(castId)); _route.value = Route.NowPlaying
+                publishCastStart(CastStartState.Active(castId))
+                playbackProgressRecorder.activate(
+                    castId,
+                    PlaybackMediaFingerprint.of(item),
+                    startOver = request.startOver,
+                )?.let(::enqueueProgress)
+                _route.value = Route.NowPlaying
                 // A first frame is the only thing that can outrank a previous refusal.
                 _unplayableFiles.value = unplayableMemory.clear(item.uriKey)
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
@@ -944,7 +1011,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         CastServerService.stop(appContext, castId)
         // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
         // retarget or disarm the subtitle its load is about to carry.
-        if (currentCastId == castId) { subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null; _castingItem.value = null; session.clear(); linkMonitor.reset(); if (clearStart) publishCastStart(CastStartState.Idle) }
+        if (currentCastId == castId) {
+            playbackProgressRecorder.finish(castId)?.let(::enqueueProgress)
+            subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
+            currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
+            if (clearStart) publishCastStart(CastStartState.Idle)
+        }
     }
     /** Normal terminals deliberately capture their Active ownership before [cleanup] clears it. */
     private fun completeCastToLibrary(castId: String) {
@@ -981,8 +1053,19 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (currentCastId != castId) return
         _failureLinkVerdict.value = linkMonitor.verdict.value
         val item = _castingItem.value
+        val request = currentRequest
         val offerRetry = castRetryOffered(retryable, item != null)
-        retryItem = item.takeIf { offerRetry }
+        retryItem = request?.takeIf { offerRetry }?.let { original ->
+            val playback = session.state.value
+            val retryStart = CastRetryPolicy.start(
+                originalStartMs = original.startMs,
+                originalStartOver = original.startOver,
+                active = (_castStart.value as? CastStartState.Active)?.castId == castId,
+                confirmedMs = playback.confirmedMs,
+                durationMs = playback.durationMs,
+            )
+            original.copy(startMs = retryStart.startMs, startOver = retryStart.startOver)
+        }
         _failureItem.value = item
         // Only ever the file's own fault, and only ever for the file that was on the
         // wire: a marked item stays castable, so this is a memory, not a gate.
@@ -1005,6 +1088,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             return
         }
         session.onFrame(frame); val id = frame.optString("castId", ""); if (id != currentCastId) return
+        if (frame.optString("t") == "state" && (_castStart.value as? CastStartState.Active)?.castId == id) {
+            val state = session.state.value
+            playbackProgressRecorder.onConfirmed(
+                id,
+                state.confirmedMs,
+                state.durationMs,
+                state.phase,
+            )?.let(::enqueueProgress)
+        }
         when (frame.optString("t")) {
             "loadAccepted" -> accepted?.complete(frame)
             "loadReady" -> ready?.complete(frame)
@@ -1024,16 +1116,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
-    fun retryCast() { retryItem?.let { item -> retryItem = null; flickToTv(item) } }
+    fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()
     private fun requestRemoteStop(castId: String) { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId)) }
+    private fun enqueueProgress(write: PlaybackProgressWrite) {
+        playbackProgressStore.enqueue(write.fingerprint, write.mutation) { success ->
+            playbackProgressRecorder.acknowledge(write, success)
+        }
+    }
     private fun failPendingResume(code: String) {
-        val item = pendingCast
+        val request = pendingCast
         pendingCast = null
-        if (item != null) {
-            retryItem = item
-            _failureItem.value = item
+        if (request != null) {
+            retryItem = request
+            _failureItem.value = request.item
             _castFailure.value = CastFailure(code, retryable = true)
             _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
         } else _pairError.value = PairErrorKind.UNREACHABLE
@@ -1055,7 +1152,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun publishBusyFailure() {
         retryItem = pendingCast
-        _failureItem.value = pendingCast ?: _castingItem.value
+        _failureItem.value = pendingCast?.item ?: _castingItem.value
         pendingCast = null
         _castFailure.value = CastFailure("active_cast_busy", retryable = retryItem != null)
         _route.value = Route.Failure(errorKind("active_cast_busy"), _castFailure.value!!)

@@ -201,6 +201,16 @@ class SessionReloadTest {
 
     // --- The cold start this must not regress --------------------------------
 
+    @Test fun aColdStartForwardsTheResumePositionUnchanged() = runTest {
+        val player = RecordingPlayer()
+        val session = SessionController(player, backgroundScope, { true }, { ProbeResult.Ok(PROBE_MS) })
+
+        session.onLoadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, null)
+        runCurrent()
+
+        assertEquals(RESUME_MS, player.lastStartupPositionMs)
+    }
+
     @Test fun aColdStartStillArmsTheDeadlineAndStillFailsWithoutAFirstFrame() = runTest {
         val player = RecordingPlayer()
         val session = SessionController(player, backgroundScope, { true }, { ProbeResult.Ok(PROBE_MS) })
@@ -286,6 +296,7 @@ private class RecordingPlayer : SessionPlayer {
     var stops = 0
     var lastStartupSubtitle: ExternalSubtitle? = null
     var lastStartupMediaId: String? = null
+    var lastStartupPositionMs = -1L
     var lastReloadUrl: String? = null
     var lastReloadPositionMs = -1L
     var lastReloadMediaId: String? = null
@@ -318,6 +329,7 @@ private class RecordingPlayer : SessionPlayer {
     ) {
         instance++
         startups++
+        lastStartupPositionMs = startMs
         lastStartupSubtitle = subtitle
         lastStartupMediaId = mediaId
         firstFrame = onFirstFrame

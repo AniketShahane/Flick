@@ -2,6 +2,8 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="flick_pairings.xml" />
     <exclude domain="sharedpref" path="flick_subtitles_online.xml" />
+    <!-- Hashed checkpoints still name MediaStore revisions that exist only on this phone. -->
+    <exclude domain="file" path="datastore/flick_playback_progress.preferences_pb" />
     <!--
       The library scope names a folder of THIS phone's storage. Since the chooser became a
       tree it is written as a normalised RELATIVE_PATH — "Movies/Marvel" — with the older
