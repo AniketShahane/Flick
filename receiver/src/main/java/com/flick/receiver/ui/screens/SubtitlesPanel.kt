@@ -151,10 +151,23 @@ fun SubtitlesPanel(
     }
     val sizeFocus = remember { FocusRequester() }
     val selectedChoiceFocus = if (offSelected) offFocus else trackFocuses[selectedIndex]
+    val selectedChoiceKey: Any = if (offSelected) OffChoice else trackIdentities[selectedIndex]
     val lastChoiceFocus = trackFocuses.lastOrNull() ?: offFocus
     val entered = remember { mutableStateOf(false) }
+    val choiceFocus = remember { ChoiceFocus() }
+    // Evaluated HERE, during the composition that drops the row, because this is
+    // the last moment the answer still exists: once the node goes, Compose parks
+    // focus on another row, and "parked because the row died" and "the viewer
+    // walked here" are the same state. The effect below runs after that, so it
+    // cannot tell them apart — it can only be told.
+    val displaced = choiceFocus.displacedBy(trackIdentities)
     LaunchedEffect(entryKey, selectedChoiceFocus, trackIdentities) {
-        landTvFocus(selectedChoiceFocus, selectedChoiceFocus) { entered.value }
+        // Two different questions, and only one of them is "has the panel got
+        // focus at all". A displaced viewer is already holding a row — the wrong
+        // one — so the entry test would report success without moving anything.
+        landTvFocus(selectedChoiceFocus, selectedChoiceFocus) {
+            if (displaced) choiceFocus.current == selectedChoiceKey else entered.value
+        }
     }
 
     // The panel is one beacon group: the close button, the track rows and the
@@ -219,6 +232,7 @@ fun SubtitlesPanel(
                 focusRequester = offFocus,
                 downFocusRequester = trackFocuses.firstOrNull() ?: sizeFocus,
                 onClick = { onSelectTrack(null) },
+                modifier = Modifier.reportChoiceFocus(choiceFocus, OffChoice),
             )
             tracks.forEachIndexed { index, track ->
                 key(trackIdentities[index]) {
@@ -231,6 +245,7 @@ fun SubtitlesPanel(
                         upFocusRequester = trackFocuses.getOrNull(index - 1) ?: offFocus,
                         downFocusRequester = trackFocuses.getOrNull(index + 1) ?: sizeFocus,
                         onClick = { onSelectTrack(track.id) },
+                        modifier = Modifier.reportChoiceFocus(choiceFocus, trackIdentities[index]),
                     )
                 }
             }
@@ -287,6 +302,56 @@ fun SubtitlesPanel(
     }
     }
 }
+
+/** The OFF row's key in [ChoiceFocus]. It has no media track to name it. */
+internal object OffChoice
+
+/**
+ * Which choice row — OFF or one track — holds focus, so a live track refresh can
+ * tell a viewer it DISPLACED from one it merely changed the list around.
+ *
+ * Media3 re-reads the text tracks twice a second, and a track can vanish
+ * mid-film. When the vanished row is the focused one, Compose parks focus on the
+ * first row in the scroll group; the panel still reports `hasFocus`, so the entry
+ * latch sees a landed panel and leaves the viewer sitting on OFF. Recording which
+ * row that was is the only way to distinguish it afterwards — see [displacedBy]
+ * for why the answer must be taken during composition.
+ *
+ * Deliberately NOT snapshot state. It is written from focus callbacks and read
+ * during composition; making it observable would recompose the whole panel on
+ * every D-pad step over a live decoder, which is the cost `FlickTvButton`'s
+ * painted focus states exist to avoid. Nothing observes it, so a write can never
+ * schedule a recomposition and the read can never loop.
+ */
+internal class ChoiceFocus {
+
+    /** The focused choice row, or null while focus is on size or the close key. */
+    var current: Any? = null
+        private set
+
+    fun report(key: Any, focused: Boolean) {
+        if (focused) current = key else if (current == key) current = null
+    }
+
+    /**
+     * True only when focus sits on a TRACK row that [identities] no longer
+     * carries.
+     *
+     * The two exclusions are the whole point. Focus on OFF, on a size cell or on
+     * the close key is never displaced — the viewer put it there, and a track
+     * appearing or disappearing around them must not move it. Neither is focus on
+     * a track that survived the refresh: that is the "preserves the focused
+     * logical track when it survives" half of the same contract.
+     */
+    fun displacedBy(identities: List<SubtitleTrackFocusIdentity>): Boolean {
+        val held = current
+        return held is SubtitleTrackFocusIdentity && held !in identities
+    }
+}
+
+/** Reports this row's focus to [choiceFocus]; sits above the row's focus target. */
+private fun Modifier.reportChoiceFocus(choiceFocus: ChoiceFocus, key: Any): Modifier =
+    this.onFocusChanged { choiceFocus.report(key, it.isFocused) }
 
 /**
  * The design puts the meta beside the label; even at 14 sp mono

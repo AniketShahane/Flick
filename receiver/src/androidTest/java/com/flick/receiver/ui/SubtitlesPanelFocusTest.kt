@@ -222,6 +222,61 @@ class SubtitlesPanelFocusTest {
         composeRule.onNodeWithText("Bravo").assertIsFocused()
     }
 
+    /**
+     * The refresh that re-lands a displaced viewer must not touch one who simply
+     * is not on a track row. Focus here is on a size cell, so the vanishing track
+     * is not the one being held and nothing may move.
+     */
+    @Test
+    fun focus_on_the_size_cells_survives_an_unrelated_track_disappearing() {
+        val alpha = subtitle("0:0", "Alpha", selected = true, number = 1)
+        val bravo = subtitle("0:1", "Bravo", selected = false, number = 2)
+        var tracks by mutableStateOf(listOf(alpha, bravo))
+        setSubtitlesPanel(tracks = { tracks })
+
+        composeRule.onNodeWithText("Alpha").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Bravo").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Medium").assertIsFocused()
+
+        composeRule.runOnIdle { tracks = listOf(alpha) }
+        composeRule.onNodeWithText("Medium").assertIsFocused()
+    }
+
+    /** The same exclusion for OFF, which is a choice row but never a track. */
+    @Test
+    fun focus_on_off_survives_an_unrelated_track_appearing() {
+        val alpha = subtitle("0:0", "Alpha", selected = false, number = 1)
+        val bravo = subtitle("0:1", "Bravo", selected = false, number = 2)
+        var tracks by mutableStateOf(listOf(alpha))
+        setSubtitlesPanel(tracks = { tracks })
+
+        composeRule.onNodeWithText("Off").assertIsFocused()
+        composeRule.runOnIdle { tracks = listOf(alpha, bravo) }
+        composeRule.onNodeWithText("Off").assertIsFocused()
+    }
+
+    /**
+     * Media3's tracks are re-read twice a second and the mapper builds fresh
+     * [SubtitleTrackInfo] objects each time. Identity is carried by the immutable
+     * TrackGroup, so an unchanged list must not restart the entry latch at all —
+     * this is the case that runs continuously for the whole film.
+     */
+    @Test
+    fun an_equal_track_refresh_moves_nothing() {
+        val alpha = subtitle("0:0", "Alpha", selected = true, number = 1)
+        val bravo = subtitle("0:1", "Bravo", selected = false, number = 2)
+        var tracks by mutableStateOf(listOf(alpha, bravo))
+        setSubtitlesPanel(tracks = { tracks })
+
+        composeRule.onNodeWithText("Alpha").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Bravo").assertIsFocused()
+
+        repeat(3) {
+            composeRule.runOnIdle { tracks = listOf(alpha.copy(), bravo.copy()) }
+            composeRule.onNodeWithText("Bravo").assertIsFocused()
+        }
+    }
+
     private fun setPlaybackWithOpenSubtitles(tracks: List<SubtitleTrackInfo>) {
         composeRule.setContent {
             var openPanel by remember { mutableStateOf(PlaybackPanel.Subtitles) }
