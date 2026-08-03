@@ -233,6 +233,10 @@ class PlayerController(context: Context) : SessionPlayer {
     var autoVideoRotationDegrees by mutableStateOf(0)
         private set
 
+    /** What the viewer is owed about this film's orientation — see [orientationHintFor]. */
+    var orientationHint by mutableStateOf<OrientationHint?>(null)
+        private set
+
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
     // new session, so a chip can never describe the previous film.
@@ -723,19 +727,26 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     private fun readAutoVideoRotation(tracks: Tracks) {
         val exo = player ?: return
-        val auto = autoRotation(
-            mediaShapeFrom(
-                tracks = tracks,
-                durationMs = exo.duration.takeIf { it != C.TIME_UNSET && it > 0L },
-                // We attach exactly one, and it is not evidence about the file.
-                sideloadedTextTracks = if (currentSubtitle != null) 1 else 0,
-            ),
+        val shape = mediaShapeFrom(
+            tracks = tracks,
+            durationMs = exo.duration.takeIf { it != C.TIME_UNSET && it > 0L },
+            // We attach exactly one, and it is not evidence about the file.
+            sideloadedTextTracks = if (currentSubtitle != null) 1 else 0,
         )
+        val auto = autoRotation(shape)
         // A re-prepare publishes Tracks.EMPTY before the new selection arrives, and
         // "there is no picture yet" is not a verdict about the film. Reading it as
         // one would clear the correction, re-prepare to clear it, and loop.
         // A new cast is reset explicitly instead.
         if (auto.verdict == AutoRotationVerdict.NoVideoTrack) return
+        // Published here rather than beside the degrees below, because the case the
+        // hint exists for is the one this function does NOT act on: a portrait
+        // picture the evidence rule left alone changes no degrees at all.
+        val hint = orientationHintFor(shape, auto, videoRotation)
+        if (hint != orientationHint) {
+            orientationHint = hint
+            FlickLog.i("player", "orientationHint=${hint ?: "none"} verdict=${auto.verdict}")
+        }
         if (auto.extraDegrees == autoVideoRotationDegrees) return
         autoVideoRotationDegrees = auto.extraDegrees
         FlickLog.i(
@@ -802,6 +813,7 @@ class PlayerController(context: Context) : SessionPlayer {
     private fun resetVideoRotation() {
         videoRotation = VideoRotation.Auto
         autoVideoRotationDegrees = 0
+        orientationHint = null
         rotationOverride.setExtraDegrees(0)
     }
 

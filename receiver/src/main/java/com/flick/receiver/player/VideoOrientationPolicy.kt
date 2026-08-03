@@ -180,6 +180,36 @@ fun effectiveRotationDegrees(containerDegrees: Int, extraDegrees: Int): Int {
     return (container + extra) % 360
 }
 
+/** Which way a picture lies. [Neither] is a square frame, or one that cannot be read. */
+enum class PictureShape { Landscape, Portrait, Neither }
+
+/**
+ * The shape of the picture the TV is actually SHOWING, once [extraDegrees] has
+ * been added to the container's own turn.
+ *
+ * Derived from the container rather than read back off a decoded frame, and that
+ * is the point: the only reason to ask is to say something about a film at the
+ * moment it starts, and media3 publishes the presented size no earlier than the
+ * first output format. The two agree — `MediaCodecVideoRenderer` configures the
+ * decoder with the rotation and swaps width against height for a quarter turn
+ * while building its `VideoSize` — so this is the same reading, one step sooner.
+ *
+ * A turn off the quarter-turn grid is [Neither]: `MediaFormat.KEY_ROTATION`
+ * accepts nothing else, so what the panel would do with it is not knowable here.
+ */
+fun presentedShape(video: VideoTrackShape?, extraDegrees: Int): PictureShape {
+    if (video == null || video.widthPx <= 0 || video.heightPx <= 0) return PictureShape.Neither
+    val turn = quarterTurn(effectiveRotationDegrees(video.rotationDegrees, extraDegrees))
+        ?: return PictureShape.Neither
+    val coded = codedShape(video)
+    if (turn != 90 && turn != 270) return coded
+    return when (coded) {
+        PictureShape.Landscape -> PictureShape.Portrait
+        PictureShape.Portrait -> PictureShape.Landscape
+        PictureShape.Neither -> PictureShape.Neither
+    }
+}
+
 /** [degrees] normalized into {0, 90, 180, 270}, or null if it is not a quarter turn. */
 private fun quarterTurn(degrees: Int): Int? {
     val wrapped = ((degrees % 360) + 360) % 360
@@ -191,10 +221,18 @@ private fun quarterTurn(degrees: Int): Int? {
  * 16:9 picture and not a 4:3 one. Square is neither landscape nor portrait and
  * is left to the container.
  */
-private fun codedFrameIsLandscape(video: VideoTrackShape): Boolean {
+private fun codedShape(video: VideoTrackShape): PictureShape {
     val ratio = if (video.pixelWidthHeightRatio > 0f) video.pixelWidthHeightRatio else 1f
-    return video.widthPx * ratio > video.heightPx
+    val displayWidth = video.widthPx * ratio
+    return when {
+        displayWidth > video.heightPx -> PictureShape.Landscape
+        displayWidth < video.heightPx -> PictureShape.Portrait
+        else -> PictureShape.Neither
+    }
 }
+
+private fun codedFrameIsLandscape(video: VideoTrackShape): Boolean =
+    codedShape(video) == PictureShape.Landscape
 
 /**
  * A second audio track is deliberately NOT evidence on its own. It is the only

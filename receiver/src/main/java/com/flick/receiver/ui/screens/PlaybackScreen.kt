@@ -71,6 +71,7 @@ import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
+import com.flick.receiver.player.OrientationHint
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
@@ -107,6 +108,7 @@ import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.TOP_SCRIM_FRACTION
 import com.flick.receiver.ui.theme.bottomScrimBrush
+import com.flick.receiver.ui.theme.glassPanel
 import com.flick.receiver.ui.theme.glassState
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.ui.theme.seekAccentIntensity
@@ -277,6 +279,10 @@ internal fun primaryTransportLive(phase: PlaybackPhase, onReplay: (() -> Unit)?)
  * part of the frame the viewer is actually watching. Everything that lands in
  * that band therefore owns its backdrop: [GlassPanelTone.State].
  *
+ * [orientationHint] is the one thing on this screen the viewer cannot read off the
+ * film: which way Flick turned the picture, and where the control for it is. The
+ * screen renders the decision and never makes it — see `OrientationHintPolicy`.
+ *
  * [onReplay] is what makes `PlaybackPhase.Ended` actionable. Without it the state
  * still READS as finished — the chip, the eyebrow and a deeper dim all say so —
  * but the primary key is not offered, because the resume behind it cannot restart
@@ -313,6 +319,7 @@ fun PlaybackScreen(
     subtitleSize: SubtitleSize = SubtitleSize.Medium,
     videoRotation: VideoRotation = VideoRotation.Auto,
     autoVideoRotationDegrees: Int = 0,
+    orientationHint: OrientationHint? = null,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onScrubFocusChanged: (Boolean) -> Unit = {},
@@ -514,6 +521,57 @@ fun PlaybackScreen(
                 .padding(top = 42.dp),
         ) { info ->
             if (info != null) QualityCard(info = info)
+        }
+
+        // The picture-orientation hint. Its placement is decided by two rules it
+        // has to live inside rather than by where it would be loudest.
+        //
+        // It is NOT a centred state chip: the middle of the frame carries only
+        // FINISHED, the one state a still cannot tell you (§5.3, T5), and this is
+        // a pointer to a control, not a state. And it stays out of the bottom
+        // third entirely — the transport panel, the resting pause key and media3's
+        // own SubtitleView all land there. What is left is the band under the top
+        // pill row, inside the top scrim, centred so that it clears END SESSION on
+        // the left and the clock on the right in every chrome state — and it holds
+        // that position whether the chrome is up or down, which is what says it is
+        // not chrome. The T8 quality flourish shares the band and its rows are
+        // `fillMaxWidth`, so it is full-bleed on a real panel; `OrientationHintPolicy`
+        // is what waits it out rather than any geometry here.
+        //
+        // The value is retained past its own dismissal so the exit has something
+        // to draw, exactly as [retainedPanel] does for the side panel.
+        var retainedHint by remember { mutableStateOf<OrientationHint?>(null) }
+        LaunchedEffect(orientationHint) { if (orientationHint != null) retainedHint = orientationHint }
+        AnimatedVisibility(
+            visible = orientationHint != null,
+            // The quality flourish's vocabulary, and for the same reason: both are
+            // transient cards that resolve over a running decoder. Fade and scale
+            // are `graphicsLayer` properties, so nothing here is ever re-laid-out
+            // while it moves.
+            enter = if (reducedMotion) {
+                fadeIn(tween(durationMillis = 0))
+            } else {
+                fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
+                    initialScale = 0.96f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            exit = if (reducedMotion) {
+                fadeOut(tween(durationMillis = 0))
+            } else {
+                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
+                    targetScale = 1.02f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            label = "orientationHint",
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(safeArea)
+                // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
+                .padding(top = 42.dp),
+        ) {
+            retainedHint?.let { OrientationHintCard(hint = it) }
         }
 
         AnimatedVisibility(
@@ -1622,6 +1680,63 @@ private fun PlaybackFinishedChip(modifier: Modifier = Modifier) {
             color = Color.White,
             maxLines = 1,
         )
+    }
+}
+
+/**
+ * The picture-orientation hint (§ Picture orientation).
+ *
+ * Deliberately the [PanelCard] lockup — the panel glyph, a 16 sp bold line and a
+ * mono eyebrow under it — because the card it is describing is that lockup. A
+ * viewer who reads this and then looks down at the transport is looking for the
+ * thing it just imitated, which is the whole job: the control was never missing,
+ * only unsigned.
+ *
+ * It is not a control and never becomes one. No focus target, no click, no
+ * `tvRevealSource`: every remote key while this is up is still routed exactly as
+ * it was, and the chrome's own 4 s countdown never sees it.
+ */
+@Composable
+private fun OrientationHintCard(hint: OrientationHint, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .glassPanel(FlickShape.Md)
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Icon(
+            imageVector = FlickIcons.ClosedCaption,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = stringResource(
+                    when (hint) {
+                        OrientationHint.TurnedUpright -> R.string.orientation_hint_turned_title
+                        OrientationHint.ShownAsFiled -> R.string.orientation_hint_as_filed_title
+                    },
+                ),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(
+                    when (hint) {
+                        OrientationHint.TurnedUpright -> R.string.orientation_hint_turned_where
+                        OrientationHint.ShownAsFiled -> R.string.orientation_hint_as_filed_where
+                    },
+                ),
+                style = FlickType.monoEyebrow(trackingEm = 0.14f),
+                color = FlickColor.OnSurfaceDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

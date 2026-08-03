@@ -81,6 +81,8 @@ import com.flick.receiver.net.ReceiverBindingGate
 import com.flick.receiver.net.controlPortTier
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
+import com.flick.receiver.player.ORIENTATION_HINT_MS
+import com.flick.receiver.player.OrientationHintPhase
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.PlayerController
@@ -89,6 +91,7 @@ import com.flick.receiver.player.SUBTITLE_WINDOW_ALPHA
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputHistory
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.player.orientationHintPhase
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
@@ -363,6 +366,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var reopenPairingOnExit by remember { mutableStateOf(false) }
     var metricsEnabled by rememberSaveable { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
+    /** Whether this cast has already had its one orientation hint. */
+    var orientationHintShown by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
     // The scrub bar's focus is what promotes physical left/right from a focus move
@@ -567,6 +572,34 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         subtitleTracks = emptyList()
         openPanel = PlaybackPanel.None
         scrubFocused = false
+        // The hint is once per CAST, and a re-target is a new film with a new
+        // reading. The controller clears the reading itself; this clears the
+        // record of having already given it.
+        orientationHintShown = false
+    }
+
+    // The picture-orientation hint. The reading is the controller's — it is the
+    // only thing that knows what the decoder was configured with — and the phase
+    // below is the whole of when it may be seen; the screen renders it and
+    // decides nothing.
+    val hintPhase = orientationHintPhase(
+        hint = controller.orientationHint,
+        // Not merely Active: the reading lands while the cast is still starting,
+        // and the clock may not run behind the connecting screen.
+        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        qualityShowing = showQuality,
+        panelOpen = openPanel != PlaybackPanel.None,
+        alreadyShown = orientationHintShown,
+    )
+    LaunchedEffect(hintPhase) {
+        when (hintPhase) {
+            OrientationHintPhase.Waiting -> Unit
+            OrientationHintPhase.Spent -> orientationHintShown = true
+            OrientationHintPhase.Showing -> {
+                delay(ORIENTATION_HINT_MS)
+                orientationHintShown = true
+            }
+        }
     }
 
     // The size choice multiplies the viewport-relative caption size the receiver
@@ -874,6 +907,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         // it resets the choice with every new film.
                         videoRotation = controller.videoRotation,
                         autoVideoRotationDegrees = controller.autoVideoRotationDegrees,
+                        orientationHint = controller.orientationHint
+                            .takeIf { hintPhase == OrientationHintPhase.Showing },
                         openPanel = openPanel,
                         onOpenPanel = { openPanel = it },
                         onScrubFocusChanged = { scrubFocused = it },

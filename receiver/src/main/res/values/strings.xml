@@ -174,6 +174,16 @@
     <!-- What Auto decided, e.g. "AUTO · 90°". Shown only while Auto is chosen. -->
     <string name="video_rotation_auto_applied">AUTO · %1$s</string>
 
+    <!--
+      The picture-orientation hint: two lines over the film, once per cast. The
+      second line has to name the panel — the control is real, but nobody whose
+      film is sideways goes looking for it under "Subtitles".
+    -->
+    <string name="orientation_hint_turned_title">Turned this film upright</string>
+    <string name="orientation_hint_turned_where">CHANGE IT UNDER SUBTITLES</string>
+    <string name="orientation_hint_as_filed_title">Showing this film as filed</string>
+    <string name="orientation_hint_as_filed_where">TURN IT UNDER SUBTITLES</string>
+
     <!-- Stream metrics: transport card + panel -->
     <string name="metrics_card_title">Stream metrics</string>
     <string name="metrics_panel_title">Stream metrics</string>
