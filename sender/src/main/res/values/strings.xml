@@ -134,6 +134,8 @@
     <string name="detail_directplay_body">Your TV decodes this file natively — no transcode, no downscale, nothing leaves your Wi-Fi.</string>
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
+    <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
+    <string name="detail_start_over">Start over</string>
     <string name="detail_play_here">play on this phone instead</string>
 
     <!-- S5 · Connecting. -->
@@ -279,6 +281,8 @@
     <!-- Resource-backed accessibility labels for the expressive sender surfaces. -->
     <string name="a11y_open_connect">Connect to a TV</string>
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
+    <string name="a11y_resume_video">Resume %1$s from %2$s on %3$s</string>
+    <string name="a11y_start_video_over">Start %1$s over on %2$s</string>
     <string name="a11y_back_to_library">Back to your videos</string>
     <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
     <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>

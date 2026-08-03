@@ -130,6 +130,7 @@ fun AdvisoryCard(
     modifier: Modifier = Modifier,
     secondaryLabel: String? = null,
     onSecondary: (() -> Unit)? = null,
+    secondaryEnabled: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
     val container = if (tone == AdvisoryTone.CAUTION) colors.caution else colors.inverseSurface
@@ -194,6 +195,7 @@ fun AdvisoryCard(
                             .clickable(
                                 interactionSource = secondaryPress,
                                 indication = flickRipple(ink),
+                                enabled = secondaryEnabled,
                                 onClick = onSecondary,
                             )
                             .semantics { role = Role.Button }

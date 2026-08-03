@@ -39,6 +39,21 @@ class BackupExclusionsTest {
         }
     }
 
+    @Test fun playbackProgressStaysOnThePhoneThatOwnsTheMedia() {
+        assertEquals(
+            DEVICE_LOCAL_DATASTORE,
+            fileExcludes(fullBackupSection(xml("backup_rules.xml"))).intersect(DEVICE_LOCAL_DATASTORE),
+        )
+        val root = xml("data_extraction_rules.xml")
+        for (section in listOf("cloud-backup", "device-transfer")) {
+            assertEquals(
+                "$section must exclude device-local playback progress",
+                DEVICE_LOCAL_DATASTORE,
+                fileExcludes(childSection(root, section)).intersect(DEVICE_LOCAL_DATASTORE),
+            )
+        }
+    }
+
     /**
      * The Kotlin half. A prefs name that no longer matches its exclusion path is a
      * leak that the XML alone cannot show, because the XML would still look right.
@@ -115,6 +130,15 @@ class BackupExclusionsTest {
             .toSet()
     }
 
+    private fun fileExcludes(section: Element): Set<String> {
+        val nodes = section.getElementsByTagName("exclude")
+        return (0 until nodes.length)
+            .map { nodes.item(it) as Element }
+            .filter { it.getAttribute("domain") == "file" }
+            .map { it.getAttribute("path") }
+            .toSet()
+    }
+
     /**
      * Every prefs name opened anywhere in `src/main`, resolving the constant when
      * the call site passes one rather than a literal. An unresolvable call site
@@ -172,6 +196,7 @@ class BackupExclusionsTest {
          * the first one's authority, which is exactly what neither is meant to do.
          */
         val SECRET_BEARING = setOf("flick_pairings", "flick_subtitles_online")
+        val DEVICE_LOCAL_DATASTORE = setOf("datastore/flick_playback_progress.preferences_pb")
 
         /**
          * Prefs files that carry no credential, with the reason each is allowed to

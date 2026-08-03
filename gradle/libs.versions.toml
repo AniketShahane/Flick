@@ -15,6 +15,7 @@ targetSdk = "36"
 coreKtx = "1.16.0"
 lifecycleRuntimeKtx = "2.9.0"
 activityCompose = "1.10.1"
+datastorePreferences = "1.2.1"
 # The latest BOM aligns the receiver's stable Compose stack. Material3 Expressive
 # is pinned separately because 1.5.0-alpha24 requires Compose 1.12.0-beta01,
 # which is newer than the BOM's stable mapping.
@@ -38,6 +39,7 @@ profileinstaller = "1.4.1"
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }

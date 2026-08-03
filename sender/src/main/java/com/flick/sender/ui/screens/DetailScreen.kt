@@ -75,6 +75,7 @@ import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
+import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.AdvisoryCard
@@ -117,6 +118,7 @@ fun DetailScreen(
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val castStart by controller.castStart.collectAsState()
+    val playbackProgress by controller.playbackProgress.collectAsState()
     val unplayable by controller.unplayableFiles.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val rise = rememberSheetRise()
@@ -126,6 +128,15 @@ fun DetailScreen(
     val displayName = item.displayName()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, displayName, tvName)
+    val startOverDescription = stringResource(R.string.a11y_start_video_over, displayName, tvName)
+    val progressReady = playbackProgress is PlaybackProgressState.Ready
+    val resumeMs = remember(item, playbackProgress) {
+        controller.resumePosition(item, playbackProgress)
+    }
+    val resumeTime = resumeMs?.let(Format::timecode)
+    val primaryDescription = resumeTime?.let {
+        stringResource(R.string.a11y_resume_video, displayName, it, tvName)
+    } ?: castDescription
     val dismissDescription = stringResource(R.string.a11y_back_to_library)
     // Null until the probe answers. Starting at NONE would print "SDR" — a verdict — for
     // every file in the window between opening this sheet and reading its container.
@@ -155,6 +166,7 @@ fun DetailScreen(
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }
+    val startOverSource = remember { MutableInteractionSource() }
 
     // Cinematic rather than the pale canvas: this route already declares a dark
     // backdrop to the system bars, and the frame arrives out of darkness.
@@ -304,7 +316,8 @@ fun DetailScreen(
                         onSwitchNetwork = {
                             runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
                         },
-                        onCastAnyway = { if (!castStart.isCommitting()) controller.flickToTv(item) },
+                        castEnabled = progressReady && !castStart.isCommitting(),
+                        onCastAnyway = { controller.flickToTv(item) },
                     )
                     Spacer(Modifier.height(17.dp))
                 } else {
@@ -314,12 +327,35 @@ fun DetailScreen(
             }
 
             FlickToTvButton(
-                text = connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
+                text = resumeTime?.let { stringResource(R.string.detail_resume_cta, it, tvName) }
+                    ?: connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
                     ?: stringResource(R.string.detail_cta_noconnect),
-                accessibilityLabel = castDescription,
+                accessibilityLabel = primaryDescription,
                 committing = castStart.isCommitting(),
+                enabled = progressReady,
                 onClick = { controller.flickToTv(item) },
             )
+
+            if (resumeMs != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = stringResource(R.string.detail_start_over),
+                    style = FlickText.labelLarge.copy(color = colors.primary),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(PillShape)
+                        .clickable(
+                            interactionSource = startOverSource,
+                            indication = flickRipple(colors.primary),
+                            enabled = !castStart.isCommitting(),
+                            role = Role.Button,
+                        ) { controller.startOver(item) }
+                        .semantics { contentDescription = startOverDescription }
+                        .heightIn(min = 48.dp)
+                        .padding(vertical = 15.dp),
+                )
+            }
 
             Spacer(Modifier.height(14.dp))
             Text(
@@ -466,6 +502,7 @@ private const val RefusalNoteAlpha = 0.82f
 private fun LinkAdvisory(
     advisory: PreCastLinkAdvisory,
     onSwitchNetwork: () -> Unit,
+    castEnabled: Boolean,
     onCastAnyway: () -> Unit,
 ) {
     val title = stringResource(R.string.link_advisory_title)
@@ -490,6 +527,7 @@ private fun LinkAdvisory(
             .semantics { contentDescription = spoken },
         secondaryLabel = stringResource(R.string.advisory_band_secondary),
         onSecondary = onCastAnyway,
+        secondaryEnabled = castEnabled,
     )
 }
 
@@ -504,6 +542,7 @@ private fun FlickToTvButton(
     text: String,
     accessibilityLabel: String,
     committing: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -526,10 +565,9 @@ private fun FlickToTvButton(
             .clickable(
                 interactionSource = source,
                 indication = flickRipple(colors.onPrimary),
+                enabled = enabled && !committing,
                 role = Role.Button,
-                // A second tap during the handshake would cancel and restart the cast
-                // the first tap already committed.
-                onClick = { if (!committing) onClick() },
+                onClick = onClick,
             )
             .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
             .padding(20.dp),

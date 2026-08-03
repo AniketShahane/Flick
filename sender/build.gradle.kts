@@ -179,6 +179,7 @@ dependencies {
     // Baseline (from the shared version catalog).
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.datastore.preferences)
     // Installs the packaged baseline profile into ART on first run.
     implementation(libs.androidx.profileinstaller)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
