@@ -41,6 +41,7 @@ import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.TvAvailability
+import com.flick.sender.model.VideoRotation
 import com.flick.sender.support.SupportCatalog
 import com.flick.sender.support.SupportPromptStore
 import com.flick.sender.util.FlickLog
@@ -162,6 +163,21 @@ internal object CastRetryPolicy {
         RetryStart(originalStartMs, originalStartOver)
     }
 }
+
+/**
+ * Whether a transport verb sent right now would reach a TV player. An Active cast on a
+ * connected socket is the only state in which one does: before that the receiver has
+ * adopted no media, and after a terminal there is no cast left to command.
+ *
+ * The cast id is compared, not merely present: an `Active` published for a cast this
+ * phone has already superseded would otherwise keep answering yes for its successor.
+ */
+internal fun castCommandable(
+    castStart: CastStartState,
+    castId: String?,
+    connection: ConnectionStatus,
+): Boolean = castId != null && (castStart as? CastStartState.Active)?.castId == castId &&
+    connection == ConnectionStatus.CONNECTED
 
 /**
  * Whether a failure may carry a Retry action. [retryable] is the receiver's verdict on
@@ -308,6 +324,17 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val simplifiedVideoNames = videoNamePreference.simplified
     val playback = session.state; val pulses = session.pulses
+
+    /**
+     * Whether the TV can be driven right now. The same guard the media notification
+     * arms its transport with, published so an in-app surface can decide whether to
+     * OFFER a control at all rather than leave one that silently does nothing.
+     *
+     * Written from [publishTransport], not derived from the two flows it reads: the
+     * current cast id is a plain field, and a `combine` would keep answering for a
+     * cast the coordinator has already torn down.
+     */
+    private val _commandable = MutableStateFlow(false); val commandable = _commandable.asStateFlow()
     internal val playbackProgress = playbackProgressStore.state
 
     /** What this phone has proven about the link carrying the live cast. Never terminal. */
@@ -402,16 +429,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         } }
     }
 
-    /**
-     * Whether a transport verb sent right now would reach a TV player. An Active cast on a
-     * connected socket is the only state in which one does: before that the receiver has
-     * adopted no media, and after a terminal there is no cast left to command.
-     */
-    private fun transportCommandable(): Boolean {
-        val castId = currentCastId ?: return false
-        return (_castStart.value as? CastStartState.Active)?.castId == castId &&
-            control.connection.value == ConnectionStatus.CONNECTED
-    }
+    private fun transportCommandable(): Boolean =
+        castCommandable(_castStart.value, currentCastId, control.connection.value)
 
     /**
      * Republish what the media notification may say and do. Cheap and idempotent — a
@@ -421,6 +440,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun publishTransport() {
         val castId = currentCastId
         val item = _castingItem.value
+        _commandable.value = transportCommandable()
         if (castId == null || item == null) {
             CastTransportState.publish(null)
             return
@@ -1230,6 +1250,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
+
+    /**
+     * Gated by the same predicate the sheet offers it under, because the optimistic
+     * selection is recorded here: a choice kept for a verb that could not leave would
+     * draw a selected cell over a picture that never turned.
+     */
+    fun setRotation(choice: VideoRotation) { if (transportCommandable()) session.setRotation(choice) }
     fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()

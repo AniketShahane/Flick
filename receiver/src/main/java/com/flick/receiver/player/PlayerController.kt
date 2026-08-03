@@ -103,6 +103,13 @@ interface SessionPlayer {
      * picture on a frame nobody asked about.
      */
     fun setVideoRotationDegrees(degrees: Int)
+
+    /**
+     * Give the reading back to the receiver: the automatic verdict is applied
+     * again for the media that is playing, rather than the degrees Auto happened
+     * to resolve to when the film loaded.
+     */
+    fun setAutoVideoRotation()
     fun readPlaybackState(): PlaybackFrame
 }
 
@@ -810,9 +817,19 @@ class PlayerController(context: Context) : SessionPlayer {
         return applyVideoRotation()
     }
 
-    /** WS `setRotation`: an explicit quarter turn, or nothing at all. */
+    /** WS `setRotation` with `degrees`: an explicit quarter turn, or nothing at all. */
     override fun setVideoRotationDegrees(degrees: Int) {
         setVideoRotation(VideoRotation.forExtraDegrees(degrees) ?: return)
+    }
+
+    /**
+     * WS `setRotation` with `auto`. [applyVideoRotation] reads
+     * [autoVideoRotationDegrees], which `onTracksChanged` keeps at the verdict for
+     * the film that is playing and a new cast resets — so this re-runs the reading
+     * rather than restoring a remembered turn.
+     */
+    override fun setAutoVideoRotation() {
+        setVideoRotation(VideoRotation.Auto)
     }
 
     // --- Panel capability ----------------------------------------------------

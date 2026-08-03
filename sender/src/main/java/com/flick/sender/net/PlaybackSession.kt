@@ -3,6 +3,7 @@ package com.flick.sender.net
 import android.os.SystemClock
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
+import com.flick.sender.model.VideoRotation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +93,9 @@ class PlaybackSession(
             confirmedMs = startMs,
             playing = true,
             phase = PlaybackPhase.BUFFERING,
+            // Stated rather than defaulted: this is the seed that makes the phone's
+            // selection agree with the receiver, which resets to Auto per cast.
+            rotation = VideoRotation.Auto,
         )
         control.send(
             cmd("loadMedia", castId)
@@ -204,6 +208,32 @@ class PlaybackSession(
         val v = level.coerceIn(0f, 1f)
         _state.update { it.copy(volume = v) }
         control.send(cmd("setVolume").put("level", v.toDouble()))
+    }
+
+    /**
+     * Turn the picture on the TV. Idempotent like every other absolute-valued verb,
+     * so reordering cannot leave the film on its side.
+     *
+     * The selection is held optimistically — the same way [togglePlayPause] holds a
+     * commanded play state — because no TV frame reports it back: [PlaybackUiState.rotation]
+     * says why the `state` frame must not grow a field for it. [loadMedia] reseeds it
+     * to Auto, which is the reset the receiver performs for every new cast.
+     *
+     * A frame with no `castId` is malformed, and a malformed frame costs the whole
+     * control socket, so a verb with no cast to name is not sent at all.
+     */
+    fun setRotation(choice: VideoRotation) {
+        val cast = castId ?: return
+        // Deliberately NOT deduped against the held selection. That selection is
+        // optimistic, so when the TV's own panel moved the picture the phone is showing
+        // a choice the film does not have — and pressing the cell that already looks
+        // selected is precisely how a viewer hands the reading back. Dropping it would
+        // make the one recovery gesture the dead one. Re-asserting is free: the receiver
+        // no-ops an unchanged choice, and again an unchanged effective rotation, so
+        // nothing re-prepares unless the picture really has to turn.
+        _state.update { it.copy(rotation = choice) }
+        val (field, value) = ControlProtocolV2.rotationField(choice)
+        control.send(cmd("setRotation", cast).put(field, value))
     }
 
     fun stop() {

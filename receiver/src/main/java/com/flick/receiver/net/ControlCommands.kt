@@ -51,11 +51,17 @@ interface ControlCommands {
 
     /**
      * An explicit picture rotation, in quarter turns applied ON TOP of whatever
-     * the container declares. There is no value for "auto": a phone that sends
-     * this is asserting an orientation, while Auto is the receiver's own reading
-     * of the file and stays a TV-side choice.
+     * the container declares. The phone is asserting an orientation here; it
+     * gives up the receiver's own reading of the file by doing so.
      */
     fun onSetRotation(castId: String, degrees: Int)
+
+    /**
+     * The other half of the same verb: give the reading back. Separate from
+     * [onSetRotation] because Auto is not a turn — it is the verdict the
+     * receiver recomputes for whatever is playing, and no degree stands for it.
+     */
+    fun onSetAutoRotation(castId: String)
     /** True only when this cancelled the current pre-ready cast. */
     fun onCancelLoad(castId: String): Boolean
     /** True only when this stopped the current preparing or active cast. */

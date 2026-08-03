@@ -549,6 +549,7 @@ class SessionController(
     }
     override fun onSetVolume(castId: String, level: Float) { if (current(castId)) controller.setVolume(level) }
     override fun onSetRotation(castId: String, degrees: Int) { if (current(castId)) controller.setVideoRotationDegrees(degrees) }
+    override fun onSetAutoRotation(castId: String) { if (current(castId)) controller.setAutoVideoRotation() }
     override fun onCancelLoad(castId: String): Boolean {
         if (!current(castId)) return false
         invalidateToNone()

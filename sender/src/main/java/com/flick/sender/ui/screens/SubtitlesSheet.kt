@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -50,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -67,6 +69,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -85,6 +88,8 @@ import com.flick.sender.media.SubtitleFolder
 import com.flick.sender.media.SubtitleFolderStore
 import com.flick.sender.media.SubtitleMatchKind
 import com.flick.sender.media.VideoNames
+import com.flick.sender.model.PlaybackUiState
+import com.flick.sender.model.VideoRotation
 import com.flick.sender.net.ApiKeySource
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.OnlineSubtitle
@@ -166,6 +171,13 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
     val attachedName = attached?.displayName
     val attachedUri = attached?.uri
     val attachedLanguage = attached?.language
+
+    // The session clock ticks ~10 Hz through this same state object and nothing in
+    // this sheet follows it, so the one field that matters is narrowed here rather
+    // than unwrapped: only a change of choice may rebuild the sheet.
+    val playbackState = controller.playback.collectAsState()
+    val rotation by remember(playbackState) { derivedStateOf { playbackState.value.rotation } }
+    val commandable by controller.commandable.collectAsState()
 
     var source by rememberSaveable { mutableStateOf(SubtitleSource.FILE) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -271,6 +283,25 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                     if (videoName == null) R.string.subs_note_idle else R.string.subs_note,
                 ),
                 style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
+            )
+        }
+
+        // The picture's own orientation, in the panel the TV keeps it in — one
+        // feature reached the same way on both screens. Only while there is a film:
+        // with nothing cast there is no picture to turn.
+        if (item != null) {
+            Spacer(Modifier.height(20.dp))
+            OrientationSection(
+                rotation = rotation,
+                commandable = commandable,
+                // Unguarded, unlike the source tabs: the cell that looks selected is
+                // only what this phone last asked for, and the TV's own panel can have
+                // moved the picture since. Pressing it is how the viewer re-asserts,
+                // so it must reach the wire.
+                onSelect = { choice ->
+                    controller.setRotation(choice)
+                    haptics.toggle(true)
+                },
             )
         }
 
@@ -422,6 +453,138 @@ private fun RowScope.SourceTab(labelRes: Int, active: Boolean, onClick: () -> Un
     ) {
         Text(label, style = FlickText.labelMedium.copy(color = ink.value), maxLines = 1)
     }
+}
+
+// --- the picture's own orientation --------------------------------------------------
+
+/**
+ * The turn Flick adds to the container's own, in the same cell vocabulary the
+ * subtitle sources above are picked with — one pill group, one selected fill, and
+ * the same 48 dp touch target.
+ *
+ * Five cells rather than four: [VideoRotation.AsFiled] is what a viewer presses
+ * when the TV's Auto read their file wrong, and without it the only way back to the
+ * container's own answer would be the choice that just overruled it.
+ *
+ * There is no readout of what Auto decided. That verdict is the receiver's reading
+ * of the file and no frame carries it back — see [PlaybackUiState.rotation] for why
+ * the `state` frame must not grow one — so the phone states the choice it made and
+ * claims nothing about the answer.
+ */
+@Composable
+private fun ColumnScope.OrientationSection(
+    rotation: VideoRotation,
+    commandable: Boolean,
+    onSelect: (VideoRotation) -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    Text(
+        stringResource(R.string.subs_orientation_label),
+        style = FlickText.monoEyebrow.copy(color = colors.onSurfaceFaint),
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        stringResource(R.string.subs_orientation_body),
+        style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+    )
+    Spacer(Modifier.height(12.dp))
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(PillShape)
+            .background(colors.fillCard)
+            .padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        VideoRotation.ALL.forEach { choice ->
+            OrientationCell(
+                labelRes = rotationLabelRes(choice),
+                selected = choice == rotation,
+                enabled = commandable,
+                onClick = { onSelect(choice) },
+            )
+        }
+    }
+    // Stated rather than left to a dead cell: the verb needs an Active cast on a
+    // live socket, and the same guard arms the media notification's transport.
+    if (!commandable) {
+        Spacer(Modifier.height(10.dp))
+        Text(
+            stringResource(R.string.subs_orientation_unavailable),
+            style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
+        )
+    }
+}
+
+/**
+ * One cell. Deliberately the same lockup as [SourceTab] above — the sheet already
+ * has a vocabulary for "pick one of these", and a second one would read as a
+ * different kind of control.
+ */
+@Composable
+private fun RowScope.OrientationCell(
+    @StringRes labelRes: Int,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    val reduceMotion = rememberReduceMotion()
+    val interaction = remember { MutableInteractionSource() }
+    val fill = animateColorAsState(
+        targetValue = if (selected) colors.inverseSurface else Color.Transparent,
+        animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastEffectsSpec<Color>()),
+        label = "orientation fill",
+    )
+    val ink = animateColorAsState(
+        targetValue = when {
+            selected -> colors.onInverseSurface
+            enabled -> colors.onSurfaceDim
+            else -> colors.onSurfaceDim.copy(alpha = 0.5f)
+        },
+        animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastEffectsSpec<Color>()),
+        label = "orientation ink",
+    )
+    val label = stringResource(labelRes)
+    val description = stringResource(R.string.a11y_subs_orientation, label)
+    val unavailable = stringResource(R.string.subs_orientation_unavailable)
+    Box(
+        Modifier
+            .weight(1f)
+            .then(if (enabled) Modifier.pressScale(interaction) else Modifier)
+            .heightIn(min = 48.dp)
+            .clip(PillShape)
+            .background(fill.value)
+            .then(
+                if (enabled) {
+                    Modifier.clickable(
+                        interactionSource = interaction,
+                        indication = flickRipple(colors.onInverseSurface),
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier.semantics { disabled(); stateDescription = unavailable }
+                },
+            )
+            .semantics {
+                this.role = Role.RadioButton
+                this.selected = selected
+                contentDescription = description
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = FlickText.labelMedium.copy(color = ink.value), maxLines = 1)
+    }
+}
+
+/** The cell label for each choice; the model enum carries no user-facing text. */
+@StringRes
+private fun rotationLabelRes(rotation: VideoRotation): Int = when (rotation) {
+    VideoRotation.Auto -> R.string.subs_orientation_auto
+    VideoRotation.AsFiled -> R.string.subs_orientation_as_filed
+    VideoRotation.Quarter -> R.string.subs_orientation_quarter
+    VideoRotation.Half -> R.string.subs_orientation_half
+    VideoRotation.ThreeQuarter -> R.string.subs_orientation_three_quarter
 }
 
 // --- source 1: one file, picked by hand -------------------------------------------

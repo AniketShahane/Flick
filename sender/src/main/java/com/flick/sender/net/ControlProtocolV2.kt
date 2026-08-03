@@ -1,5 +1,6 @@
 package com.flick.sender.net
 
+import com.flick.sender.model.VideoRotation
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -14,6 +15,10 @@ object ControlProtocolV2 {
 
     /** A sideloaded-subtitle label is display text; it gets the media title's budget. */
     const val SUBTITLE_LABEL_MAX = 200
+
+    /** The `setRotation` verb's two shapes, named by the field that tells them apart. */
+    const val ROTATION_DEGREES_FIELD = "degrees"
+    const val ROTATION_AUTO_FIELD = "auto"
 
     /** Matches the receiver's ceiling exactly; a longer value is not a tag it accepts. */
     private const val LANGUAGE_TAG_MAX = 20
@@ -70,6 +75,23 @@ object ControlProtocolV2 {
         fields.add("subLabel" to safeLabel)
         languageTag(language)?.let { fields.add("subLang" to it) }
         return fields
+    }
+
+    /**
+     * The ONE field a `setRotation` frame carries beyond the `t`/`v`/`castId`
+     * envelope, and therefore which of the verb's two shapes this phone is
+     * sending.
+     *
+     * The receiver validates each shape against its own exact field set, so the
+     * two are alternatives rather than a base plus an option: `degrees` asserts a
+     * quarter turn, `auto` hands the reading back. Auto is deliberately NOT a
+     * value inside `degrees` — a sentinel there would put a mode in the value
+     * domain of a numeric field, and a frame off the quarter-turn grid could no
+     * longer be called malformed on sight.
+     */
+    fun rotationField(rotation: VideoRotation): Pair<String, Any> = when (val extra = rotation.extraDegrees) {
+        null -> ROTATION_AUTO_FIELD to true
+        else -> ROTATION_DEGREES_FIELD to extra
     }
 
     /** A well-formed BCP-47 tag, or null so the caller omits `subLang` entirely. */

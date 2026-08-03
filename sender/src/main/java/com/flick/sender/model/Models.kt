@@ -117,6 +117,35 @@ enum class ConnectionStatus { DISCONNECTED, CONNECTING, PAIRING, CONFIRM_ON_TV, 
 enum class PlaybackPhase { IDLE, BUFFERING, PLAYING, PAUSED, ENDED, ERROR }
 
 /**
+ * How far the TV turns the picture, **on top of** the rotation the container
+ * already declares. The same five choices the TV's own panel offers, with the
+ * same meaning — one feature, one model.
+ *
+ * Additive rather than absolute because that is the only reading under which
+ * every presentation is reachable: a file tagged 90 and a file tagged 0 need
+ * different absolute answers to look the same, and the viewer knows only what
+ * they can see. [AsFiled] is therefore the cell that means "honour the file
+ * exactly", and it is what an over-eager [Auto] is corrected with.
+ *
+ * [Auto] carries no degrees on purpose. It is the receiver reading the file for
+ * itself, which is a verdict the phone has no way to compute and no wire value
+ * to name — so the verb that sends it says `auto`, not a number.
+ */
+enum class VideoRotation(val extraDegrees: Int?) {
+    Auto(null),
+    AsFiled(0),
+    Quarter(90),
+    Half(180),
+    ThreeQuarter(270),
+    ;
+
+    companion object {
+        /** The cells, in the order the TV lists them. */
+        val ALL: List<VideoRotation> = entries
+    }
+}
+
+/**
  * The single session clock, drawn twice (design Part 4). [targetMs] is the
  * optimistic head that leads with the thumb; [confirmedMs] is the last TV-reported
  * position that trails. When they're close, sync is invisible.
@@ -139,6 +168,19 @@ data class PlaybackUiState(
      * sync is in flight, which is why the shimmer stays down.
      */
     val skipping: Boolean = false,
+    /**
+     * The picture orientation this phone last asked the TV for.
+     *
+     * Optimistic, exactly as [playing] is under a local toggle, and for a harder
+     * reason: the `state` frame is validated against an EXACT field set on both
+     * sides, so a rotation field added to it would be rejected by every phone or
+     * TV that had not been updated in lockstep — the whole playback UI for one
+     * readout. The default is the reset the receiver performs for every new cast,
+     * so the two genuinely agree at the start of every film; using the TV's own
+     * panel mid-cast is the one thing that can make this disagree, until the next
+     * cast reseeds both.
+     */
+    val rotation: VideoRotation = VideoRotation.Auto,
 ) {
     val targetFraction: Float
         get() = if (durationMs > 0L) (targetMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f

@@ -246,6 +246,36 @@ class SessionReloadTest {
         assertEquals(MediaStage.Active(CAST, LEASE), session.stage)
     }
 
+    // --- Picture orientation, driven from the phone --------------------------
+
+    /**
+     * The two halves of `setRotation` reach two different player entry points.
+     * Auto is not a degree the session may pick on the phone's behalf: it is the
+     * receiver re-reading the file, so it has to arrive as its own command.
+     */
+    @Test fun bothRotationCommandsReachThePlayerAsThemselves() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+
+        session.onSetRotation(CAST, 270)
+        session.onSetAutoRotation(CAST)
+
+        assertEquals(listOf(270), player.rotations)
+        assertEquals(1, player.autoRotations)
+    }
+
+    /** Same cast guard as every other transport verb; a stale one turns nothing. */
+    @Test fun aRotationForAnotherCastNeverReachesThePlayer() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+
+        session.onSetRotation(CAST_B, 90)
+        session.onSetAutoRotation(CAST_B)
+
+        assertEquals(emptyList<Int>(), player.rotations)
+        assertEquals(0, player.autoRotations)
+    }
+
     // --- Fixtures ------------------------------------------------------------
 
     private fun TestScope.activeSession(
@@ -374,6 +404,11 @@ internal class RecordingPlayer : SessionPlayer {
     /** Records the quarter turns the session forwarded, in order. */
     val rotations = mutableListOf<Int>()
     override fun setVideoRotationDegrees(degrees: Int) { rotations += degrees }
+
+    /** How many times the session handed the reading back to the receiver. */
+    var autoRotations = 0
+        private set
+    override fun setAutoVideoRotation() { autoRotations++ }
     override fun readPlaybackState(): PlaybackFrame = PlaybackFrame.IDLE
 
     /** The one signal that ends a startup transaction on real hardware. */
