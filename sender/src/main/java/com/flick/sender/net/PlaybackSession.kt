@@ -182,6 +182,24 @@ class PlaybackSession(
         haptics.tryEmit(HapticCue.SNAP)
     }
 
+    /**
+     * One absolute seek from a surface that has no gesture to track — the media
+     * notification's scrubber, which reports where the thumb was let go and nothing
+     * before it. [scrubStart]/[scrubTo]/[scrubEnd] are a drag's three halves and would
+     * send that one landing twice; this is the [beginSeek] all of them end on, taken once.
+     *
+     * A drag or a tap run already in flight is superseded exactly as [scrubStart]
+     * supersedes a run: the user pointed somewhere newer, and both mechanisms sending a
+     * seek for what was one intent is the thing the burst timer exists to prevent.
+     */
+    fun seekTo(positionMs: Long) {
+        skipBurst.cancel()
+        val target = SeekPolicy.seekTarget(positionMs, _state.value.durationMs)
+        _state.update { it.copy(scrubbing = false, skipping = false) }
+        beginSeek(target)
+        haptics.tryEmit(HapticCue.SNAP)
+    }
+
     fun setVolume(level: Float) {
         val v = level.coerceIn(0f, 1f)
         _state.update { it.copy(volume = v) }

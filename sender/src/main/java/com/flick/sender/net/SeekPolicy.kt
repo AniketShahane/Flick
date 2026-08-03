@@ -64,6 +64,19 @@ internal object SeekPolicy {
         (targetMs + deltaMs).coerceAtLeast(0L)
     }
 
+    /**
+     * Where an absolute seek lands — a scrubber that reports a landing and nothing before
+     * it, which is what the phone's media notification gives the platform.
+     *
+     * Clamped on the same terms as [skipTarget]: with an unknown duration the receiver
+     * clamps the high end against the real one, so guessing here would only be wrong.
+     */
+    fun seekTarget(positionMs: Long, durationMs: Long): Long = if (durationMs > 0L) {
+        positionMs.coerceIn(0L, durationMs)
+    } else {
+        positionMs.coerceAtLeast(0L)
+    }
+
     /** What a `state` frame settles about an outstanding seek. */
     enum class Pending { WAITING, ARRIVED, ABANDONED }
 

@@ -7,7 +7,17 @@
     <string name="notif_channel_desc">Keeps the LAN media server alive while your TV plays.</string>
     <string name="notif_title">Flick direct-play</string>
     <string name="notif_text_serving">Direct-play server active</string>
+    <string name="notif_text_connecting">Connecting to %1$s</string>
+    <string name="notif_text_casting">Casting to %1$s</string>
+    <string name="notif_text_finished">Finished on %1$s</string>
+    <!-- Mid-sentence, so lower case: np_tv_generic is a standalone label elsewhere. -->
+    <string name="notif_device_generic">your TV</string>
     <string name="notif_action_stop">Stop</string>
+    <string name="notif_action_play">Play</string>
+    <string name="notif_action_pause">Pause</string>
+    <!-- Must match the skip the notification transport actually sends. -->
+    <string name="notif_action_back10">Back 10 seconds</string>
+    <string name="notif_action_forward10">Forward 10 seconds</string>
 
     <!-- Server errors surfaced by the foreground service. -->
     <string name="error_no_lan">No Wi-Fi or LAN connection found. Connect this phone to the same Wi-Fi network as your TV, then try again.</string>

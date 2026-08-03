@@ -51,6 +51,23 @@ class SeekPolicyTest {
         assertEquals(0L, SeekPolicy.skipTarget(5_000L, -10_000L, durationMs = 0L))
     }
 
+    // --- where a scrubber landing lands -------------------------------------
+
+    @Test fun aScrubberLandingIsTakenAsGiven() {
+        assertEquals(1_234_567L, SeekPolicy.seekTarget(1_234_567L, DURATION_MS))
+    }
+
+    @Test fun aScrubberLandingIsClampedToTheFilm() {
+        assertEquals(DURATION_MS, SeekPolicy.seekTarget(DURATION_MS + 60_000L, DURATION_MS))
+        assertEquals(0L, SeekPolicy.seekTarget(-5_000L, DURATION_MS))
+    }
+
+    /** Same rule as a tap run: an unknown duration is silence, and the receiver clamps it. */
+    @Test fun withNoKnownDurationAScrubberLandingKeepsItsPosition() {
+        assertEquals(1_234_567L, SeekPolicy.seekTarget(1_234_567L, durationMs = 0L))
+        assertEquals(0L, SeekPolicy.seekTarget(-1L, durationMs = 0L))
+    }
+
     // --- when the head stops waiting ----------------------------------------
 
     @Test fun theGhostReachingTheHeadIsAnArrival() {

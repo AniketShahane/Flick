@@ -35,6 +35,13 @@
 -dontwarn com.google.mlkit.**
 -dontwarn com.google.android.gms.**
 
+# Media3 session/common for the phone's media notification. The library ships consumer
+# rules for its own reflective lookups; these cover the classpath references to the
+# ExoPlayer and decoder-extension siblings that this module deliberately does not depend
+# on at all, and the Guava internals Media3 drags in with them.
+-dontwarn androidx.media3.**
+-dontwarn com.google.common.**
+
 # kotlinx-serialization. The control protocol is hand-rolled on org.json today, so
 # these rules are inert; they exist so that annotating a wire type @Serializable
 # cannot quietly produce a release build that fails to deserialize.
