@@ -869,6 +869,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         throughput = throughput,
                         subtitleTracks = subtitleTracks,
                         subtitleSize = subtitleSize,
+                        // Owned by the controller rather than mirrored here: it
+                        // is the thing that knows what the decoder was given, and
+                        // it resets the choice with every new film.
+                        videoRotation = controller.videoRotation,
+                        autoVideoRotationDegrees = controller.autoVideoRotationDegrees,
                         openPanel = openPanel,
                         onOpenPanel = { openPanel = it },
                         onScrubFocusChanged = { scrubFocused = it },
@@ -880,6 +885,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             subtitleTracks = subtitleTracks.map { it.copy(isSelected = id != null && it.id == id) }
                         },
                         onSelectSubtitleSize = { subtitleSizeOrdinal = it.ordinal },
+                        onSelectVideoRotation = { controller.setVideoRotation(it) },
                         // Same terminal path as Back on the playback surface.
                         onEndSession = { if (!server.stopLocalCast()) session.backToStandby() },
                     ) { playerSurface() }

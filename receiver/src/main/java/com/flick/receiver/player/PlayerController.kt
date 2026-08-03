@@ -86,6 +86,14 @@ interface SessionPlayer {
     fun seekTo(posMs: Long)
     fun seekBy(deltaMs: Long)
     fun setVolume(level: Float)
+
+    /**
+     * An explicit rotation on top of the container's own, in quarter turns. A
+     * value off that grid is ignored rather than snapped — the control channel
+     * validates the domain, and guessing at a malformed one would turn the
+     * picture on a frame nobody asked about.
+     */
+    fun setVideoRotationDegrees(degrees: Int)
     fun readPlaybackState(): PlaybackFrame
 }
 
@@ -192,6 +200,23 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
     private var lastVolume: Float = 1f
 
+    // --- Picture orientation (main thread, except the volatile holder) --------
+
+    /**
+     * The value the decoder is configured with. Held outside Compose because it
+     * is read on the playback thread, and shared across player rebuilds so a
+     * corrected film survives backgrounding.
+     */
+    private val rotationOverride = VideoRotationOverride()
+
+    /** The viewer's choice. Compose state so the panel renders what is applied. */
+    var videoRotation by mutableStateOf(VideoRotation.Auto)
+        private set
+
+    /** What [VideoRotation.Auto] resolved to for the current media, in degrees. */
+    var autoVideoRotationDegrees by mutableStateOf(0)
+        private set
+
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
     // new session, so a chip can never describe the previous film.
@@ -283,6 +308,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
         override fun onTracksChanged(tracks: Tracks) {
             reportUnplayableVideoTrack(tracks)
+            readAutoVideoRotation(tracks)
             var selected = false
             var selectedMimeType: String? = null
             for (group in tracks.groups) {
@@ -663,6 +689,112 @@ class PlayerController(context: Context) : SessionPlayer {
         playbackFailureListener?.invoke(error)
     }
 
+    // --- Picture orientation -------------------------------------------------
+
+    /**
+     * Judge the container's rotation against the rest of the file, once per
+     * distinct answer.
+     *
+     * `Tracks` is the earliest place the discriminating evidence exists at all —
+     * the audio and text tracks are not visible to a video renderer, and they are
+     * what tell a released title from a phone recording. It is delivered on the
+     * main thread, and in practice it arrives before the first frame: the
+     * playback thread publishes the selection in an earlier pass than the one
+     * that can produce a decoded frame, and both reach this thread through the
+     * same Looper queue. A verdict that lands late costs a re-buffer rather than
+     * a wrong answer.
+     */
+    private fun readAutoVideoRotation(tracks: Tracks) {
+        val exo = player ?: return
+        val auto = autoRotation(
+            mediaShapeFrom(
+                tracks = tracks,
+                durationMs = exo.duration.takeIf { it != C.TIME_UNSET && it > 0L },
+                // We attach exactly one, and it is not evidence about the file.
+                sideloadedTextTracks = if (currentSubtitle != null) 1 else 0,
+            ),
+        )
+        // A re-prepare publishes Tracks.EMPTY before the new selection arrives, and
+        // "there is no picture yet" is not a verdict about the film. Reading it as
+        // one would clear the correction, re-prepare to clear it, and loop.
+        // A new cast is reset explicitly instead.
+        if (auto.verdict == AutoRotationVerdict.NoVideoTrack) return
+        if (auto.extraDegrees == autoVideoRotationDegrees) return
+        autoVideoRotationDegrees = auto.extraDegrees
+        FlickLog.i(
+            "player",
+            "autoRotation extraDegrees=${auto.extraDegrees} verdict=${auto.verdict}",
+        )
+        if (videoRotation == VideoRotation.Auto) applyVideoRotation()
+    }
+
+    /**
+     * Take the viewer's choice, or Auto's verdict, to the decoder.
+     *
+     * A rotation reaches the decoder through `MediaFormat.KEY_ROTATION`, which is
+     * set once at codec configuration — so a change is only real after the codec
+     * has been configured again, and re-preparing the same player is what does
+     * that. Media3 agrees: `MediaCodecInfo.canReuseCodec` names a rotation change
+     * as a discard reason, which is the same statement from the other side.
+     */
+    private fun applyVideoRotation(): Boolean {
+        val extraDegrees = videoRotation.extraDegrees ?: autoVideoRotationDegrees
+        if (!rotationOverride.setExtraDegrees(extraDegrees)) return false
+        return rePrepareForRotation()
+    }
+
+    /**
+     * Re-prepare the LIVE player where the film already is. Everything the
+     * picture depends on survives — the ExoPlayer instance, its surface, the
+     * MediaSession, the sideloaded subtitle and the track selection — so the
+     * change costs a re-buffer and nothing else, exactly as [reloadInPlace] does.
+     *
+     * A subtitle attach still inside its 12 s watchdog window forfeits that
+     * window: the rebuilt item carries no attempt tag, so the deadline could only
+     * fire against a subtitle that is fine and drop it.
+     */
+    private fun rePrepareForRotation(): Boolean {
+        val exo = player ?: return false
+        val url = currentUrl ?: return false
+        cancelSubtitleReloadDeadline()
+        // A recovery queued against the old item would re-prepare on top of this.
+        cancelPendingRecovery()
+        val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+            ?: savedPositionMs.coerceAtLeast(0L)
+        val resumePlayWhenReady = exo.playWhenReady
+        savedPositionMs = resumeMs
+        pendingPlayWhenReady = resumePlayWhenReady
+        lastGoodPositionMs = resumeMs
+        stableReadySinceMs = 0L
+        exo.setMediaItem(
+            mediaItemFor(url, currentMediaId, currentSubtitle),
+            /* resetPosition = */ false,
+        )
+        if (resumeMs > 0L) exo.seekTo(resumeMs)
+        exo.prepare()
+        exo.playWhenReady = resumePlayWhenReady
+        return true
+    }
+
+    /** A new film is judged on its own container; it never inherits a choice. */
+    private fun resetVideoRotation() {
+        videoRotation = VideoRotation.Auto
+        autoVideoRotationDegrees = 0
+        rotationOverride.setExtraDegrees(0)
+    }
+
+    /** The panel's choice. True when it reached the decoder. Main-thread only. */
+    fun setVideoRotation(choice: VideoRotation): Boolean {
+        if (choice == videoRotation) return false
+        videoRotation = choice
+        return applyVideoRotation()
+    }
+
+    /** WS `setRotation`: an explicit quarter turn, or nothing at all. */
+    override fun setVideoRotationDegrees(degrees: Int) {
+        setVideoRotation(VideoRotation.forExtraDegrees(degrees) ?: return)
+    }
+
     // --- Panel capability ----------------------------------------------------
 
     /**
@@ -860,7 +992,9 @@ class PlayerController(context: Context) : SessionPlayer {
         // left to fall back TO, and what the flag actually buys is the retry to a second
         // *hardware* decoder on a TV that ships more than one — turning "the first
         // decoder would not configure" from a dead cast into a working one.
-        val renderersFactory = DefaultRenderersFactory(appContext)
+        // The only difference from DefaultRenderersFactory is the rotation the
+        // video renderer hands the decoder — see [RotationCorrectingRenderersFactory].
+        val renderersFactory = RotationCorrectingRenderersFactory(appContext, rotationOverride)
             .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
                 val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
                     mimeType,
@@ -1034,6 +1168,7 @@ class PlayerController(context: Context) : SessionPlayer {
         probeLatencyMs = 0L
         instrumentation.reset()
         resetAudioFormat()
+        resetVideoRotation()
         resetSubtitleState(subtitle = null, mediaId = null)
         val exo = player ?: createPlayer().also { player = it }
         // stop() releases the terminal session but intentionally keeps this
@@ -1063,6 +1198,7 @@ class PlayerController(context: Context) : SessionPlayer {
         recoveryGateCount = 0
         instrumentation.reset()
         resetAudioFormat()
+        resetVideoRotation()
         resetSubtitleState(subtitle, mediaId)
         // A startup adoption always gets a fresh listener/renderer instance.
         // Switch the platform session to B before releasing A, then publish B
@@ -1179,6 +1315,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // because that path never calls stop() (only onStop keeps currentUrl set).
         currentUrl = null
         savedPositionMs = 0L
+        resetVideoRotation()
         resetSubtitleState(subtitle = null, mediaId = null)
         player?.let { exo ->
             exo.playWhenReady = false

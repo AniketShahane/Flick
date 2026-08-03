@@ -366,6 +366,10 @@ private class RecordingPlayer : SessionPlayer {
     override fun seekTo(posMs: Long) = Unit
     override fun seekBy(deltaMs: Long) = Unit
     override fun setVolume(level: Float) = Unit
+
+    /** Records the quarter turns the session forwarded, in order. */
+    val rotations = mutableListOf<Int>()
+    override fun setVideoRotationDegrees(degrees: Int) { rotations += degrees }
     override fun readPlaybackState(): PlaybackFrame = PlaybackFrame.IDLE
 
     /** The one signal that ends a startup transaction on real hardware. */

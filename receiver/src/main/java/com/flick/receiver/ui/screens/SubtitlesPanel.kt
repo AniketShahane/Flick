@@ -40,6 +40,7 @@ import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.SubtitleTrackFocusIdentity
 import com.flick.receiver.player.SubtitleTrackInfo
+import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.FlickTvRow
@@ -133,6 +134,10 @@ fun SubtitlesPanel(
     onSelectTrack: (String?) -> Unit,
     onSelectSize: (SubtitleSize) -> Unit,
     onDismiss: () -> Unit,
+    rotation: VideoRotation = VideoRotation.Auto,
+    /** What [VideoRotation.Auto] resolved to for this film, in degrees. */
+    autoRotationDegrees: Int = 0,
+    onSelectRotation: (VideoRotation) -> Unit = {},
     /** Changes for every open, including a reopen while an exit is retained. */
     entryKey: Int = 0,
     modifier: Modifier = Modifier,
@@ -150,6 +155,7 @@ fun SubtitlesPanel(
         trackFocusByIdentity.getOrPut(identity) { FocusRequester() }
     }
     val sizeFocus = remember { FocusRequester() }
+    val rotationFocus = remember { FocusRequester() }
     val selectedChoiceFocus = if (offSelected) offFocus else trackFocuses[selectedIndex]
     val selectedChoiceKey: Any = if (offSelected) OffChoice else trackIdentities[selectedIndex]
     val lastChoiceFocus = trackFocuses.lastOrNull() ?: offFocus
@@ -266,11 +272,10 @@ fun SubtitlesPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusProperties {
-                        // Size is the final rank in this modal. Return to the
-                        // immediately preceding subtitle choice and never leave
-                        // the panel through its bottom edge.
+                        // Return to the immediately preceding subtitle choice;
+                        // down continues into the orientation row below.
                         up = lastChoiceFocus
-                        down = FocusRequester.Cancel
+                        down = rotationFocus
                     },
                 horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
             ) {
@@ -299,9 +304,122 @@ fun SubtitlesPanel(
                 }
             }
         }
+
+        OrientationSection(
+            rotation = rotation,
+            autoRotationDegrees = autoRotationDegrees,
+            onSelectRotation = onSelectRotation,
+            focusRequester = rotationFocus,
+            upFocusRequester = sizeFocus,
+        )
     }
     }
 }
+
+/**
+ * The picture's orientation, in the same vocabulary as the size row above it.
+ *
+ * Five cells rather than four: [VideoRotation.AsFiled] is what a viewer presses
+ * when Auto read their file wrong, and without it the only way back to the
+ * container's own answer would be the choice that just overruled it. They are
+ * one type step down from the size cells because five labels have to fit the
+ * width three do — which is the panel's own mono-meta size, not a new one.
+ *
+ * The eyebrow states what Auto decided, and only while Auto is chosen: every
+ * other row already says what it applied by being the selected cell.
+ */
+@Composable
+private fun OrientationSection(
+    rotation: VideoRotation,
+    autoRotationDegrees: Int,
+    onSelectRotation: (VideoRotation) -> Unit,
+    focusRequester: FocusRequester,
+    upFocusRequester: FocusRequester,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
+        ) {
+            Text(
+                text = stringResource(R.string.video_rotation_label),
+                style = FlickType.monoEyebrow(trackingEm = 0.18f),
+                color = FlickColor.OnPanelLabel,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (rotation == VideoRotation.Auto) {
+                Text(
+                    text = stringResource(
+                        R.string.video_rotation_auto_applied,
+                        stringResource(rotationLabelResForDegrees(autoRotationDegrees)),
+                    ),
+                    style = FlickType.monoEyebrow(trackingEm = 0.1f),
+                    color = FlickColor.OnSurfaceFaint,
+                    maxLines = 1,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusProperties {
+                    // The final rank in this modal: never leave through the
+                    // bottom edge, and return to the size row above.
+                    up = upFocusRequester
+                    down = FocusRequester.Cancel
+                },
+            horizontalArrangement = Arrangement.spacedBy(FlickSpace.Xs),
+        ) {
+            VideoRotation.ALL.forEach { option ->
+                val on = option == rotation
+                FlickTvButton(
+                    onClick = { onSelectRotation(option) },
+                    modifier = Modifier.weight(1f),
+                    focusRequester = if (on) focusRequester else null,
+                    selected = on,
+                    shape = FlickShape.Sm,
+                    containerColor = if (on) FlickColor.OnSurface else null,
+                    borderColor = if (on) Color.Transparent else null,
+                    contentPadding = PaddingValues(horizontal = 3.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = stringResource(rotationLabelRes(option)),
+                        style = FlickType.body(sizeSp = 14),
+                        color = if (on) FlickColor.OnLight else FlickColor.OnSurfaceDim,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The cell label for each choice; the player enum carries no user-facing text. */
+@StringRes
+private fun rotationLabelRes(rotation: VideoRotation): Int = when (rotation) {
+    VideoRotation.Auto -> R.string.video_rotation_auto
+    VideoRotation.AsFiled -> R.string.video_rotation_as_filed
+    VideoRotation.Quarter -> R.string.video_rotation_quarter
+    VideoRotation.Half -> R.string.video_rotation_half
+    VideoRotation.ThreeQuarter -> R.string.video_rotation_three_quarter
+}
+
+/**
+ * The same label, reached by degrees, for the Auto readout. A verdict off the
+ * quarter-turn grid cannot be produced by the policy and reads as the file's own.
+ */
+@StringRes
+private fun rotationLabelResForDegrees(degrees: Int): Int =
+    rotationLabelRes(VideoRotation.forExtraDegrees(degrees) ?: VideoRotation.AsFiled)
 
 /** The OFF row's key in [ChoiceFocus]. It has no media track to name it. */
 internal object OffChoice

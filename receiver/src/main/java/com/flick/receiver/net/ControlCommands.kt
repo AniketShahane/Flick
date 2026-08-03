@@ -48,6 +48,14 @@ interface ControlCommands {
     fun onSeek(castId: String, posMs: Long)
     fun onSkip(castId: String, deltaMs: Long)
     fun onSetVolume(castId: String, level: Float)
+
+    /**
+     * An explicit picture rotation, in quarter turns applied ON TOP of whatever
+     * the container declares. There is no value for "auto": a phone that sends
+     * this is asserting an orientation, while Auto is the receiver's own reading
+     * of the file and stays a TV-side choice.
+     */
+    fun onSetRotation(castId: String, degrees: Int)
     /** True only when this cancelled the current pre-ready cast. */
     fun onCancelLoad(castId: String): Boolean
     /** True only when this stopped the current preparing or active cast. */

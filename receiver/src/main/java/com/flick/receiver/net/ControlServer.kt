@@ -765,6 +765,12 @@ class ControlServer(
                 if (!o.exactly(VOLUME_FIELDS) || value !in 0.0..1.0) return false
                 if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetVolume(cast, value.toFloat()) }
             }
+            "setRotation" -> {
+                val cast = castId() ?: return false
+                val value = o.integer("degrees") ?: return false
+                if (!o.exactly(ROTATION_FIELDS) || value !in ROTATION_DEGREES) return false
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetRotation(cast, value.toInt()) }
+            }
             else -> return false
         }
         return true
@@ -922,6 +928,13 @@ class ControlServer(
         private val CAST_FIELDS = setOf("t", "v", "castId")
         private val SKIP_FIELDS = setOf("t", "v", "castId", "deltaMs")
         private val VOLUME_FIELDS = setOf("t", "v", "castId", "level")
+        private val ROTATION_FIELDS = setOf("t", "v", "castId", "degrees")
+
+        /**
+         * Quarter turns only. `MediaFormat.KEY_ROTATION` accepts nothing else, so
+         * a value off this grid is a malformed frame rather than a value to snap.
+         */
+        private val ROTATION_DEGREES = setOf(0L, 90L, 180L, 270L)
     }
 }
 

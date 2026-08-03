@@ -74,6 +74,7 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
 import com.flick.receiver.ui.components.FlickTvButton
@@ -310,11 +311,14 @@ fun PlaybackScreen(
     throughput: ThroughputSnapshot = ThroughputSnapshot.EMPTY,
     subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     subtitleSize: SubtitleSize = SubtitleSize.Medium,
+    videoRotation: VideoRotation = VideoRotation.Auto,
+    autoVideoRotationDegrees: Int = 0,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onScrubFocusChanged: (Boolean) -> Unit = {},
     onSelectSubtitleTrack: (String?) -> Unit = {},
     onSelectSubtitleSize: (SubtitleSize) -> Unit = {},
+    onSelectVideoRotation: (VideoRotation) -> Unit = {},
     onEndSession: (() -> Unit)? = null,
     onReplay: (() -> Unit)? = null,
     videoContent: @Composable () -> Unit,
@@ -598,11 +602,14 @@ fun PlaybackScreen(
                         throughput = throughput,
                         subtitleTracks = subtitleTracks,
                         subtitleSize = subtitleSize,
+                        videoRotation = videoRotation,
+                        autoVideoRotationDegrees = autoVideoRotationDegrees,
                         subtitlesRevealOrigin = subtitlesOrigin,
                         metricsRevealOrigin = metricsOrigin,
                         onOpenPanel = onOpenPanel,
                         onSelectSubtitleTrack = onSelectSubtitleTrack,
                         onSelectSubtitleSize = onSelectSubtitleSize,
+                        onSelectVideoRotation = onSelectVideoRotation,
                         // The reveal also reports itself settled-and-hidden before
                         // it has ever been asked to open, so only a close is
                         // allowed to take the panel out of the composition.
@@ -1042,11 +1049,14 @@ private fun PlaybackSidePanel(
     throughput: ThroughputSnapshot,
     subtitleTracks: List<SubtitleTrackInfo>,
     subtitleSize: SubtitleSize,
+    videoRotation: VideoRotation,
+    autoVideoRotationDegrees: Int,
     subtitlesRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onSelectSubtitleTrack: (String?) -> Unit,
     onSelectSubtitleSize: (SubtitleSize) -> Unit,
+    onSelectVideoRotation: (VideoRotation) -> Unit,
     /** Reported once the wipe has closed back onto the card that summoned it. */
     onRetreated: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1118,6 +1128,9 @@ private fun PlaybackSidePanel(
                         onSelectTrack = onSelectSubtitleTrack,
                         onSelectSize = onSelectSubtitleSize,
                         onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                        rotation = videoRotation,
+                        autoRotationDegrees = autoVideoRotationDegrees,
+                        onSelectRotation = onSelectVideoRotation,
                         entryKey = entryKey,
                     )
 

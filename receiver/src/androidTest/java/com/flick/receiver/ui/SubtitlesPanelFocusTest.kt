@@ -26,6 +26,7 @@ import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackFocusIdentity
 import com.flick.receiver.player.SubtitleTrackInfo
+import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.screens.PlaybackPanel
 import com.flick.receiver.ui.screens.PlaybackScreen
 import com.flick.receiver.ui.screens.SubtitleSize
@@ -67,11 +68,18 @@ class SubtitlesPanelFocusTest {
         medium.assertIsFocused().press(Key.DirectionRight)
         val large = composeRule.onNodeWithText("Large").assertIsFocused()
 
-        // The last rank cannot leak through the bottom of the modal.
+        // Size is no longer the last rank: down continues into orientation, and
+        // up out of it returns to the size row.
         large.press(Key.DirectionDown)
-        large.assertIsFocused()
+        val auto = composeRule.onNodeWithText("Auto").assertIsFocused()
+        auto.press(Key.DirectionUp)
+        medium.assertIsFocused().press(Key.DirectionDown)
 
-        large.press(Key.Back)
+        // The last rank cannot leak through the bottom of the modal.
+        auto.assertIsFocused().press(Key.DirectionDown)
+        auto.assertIsFocused()
+
+        auto.press(Key.Back)
         val subtitlesCard = composeRule.onNodeWithText("Subtitles").assertIsFocused()
         composeRule.onNodeWithText("END SESSION").assertExists()
 
@@ -277,6 +285,97 @@ class SubtitlesPanelFocusTest {
         }
     }
 
+    /**
+     * The orientation row extends the same explicit chain the two focus fixes
+     * repaired — Off → tracks → size → orientation — so it is asserted the same
+     * way: reachable by D-pad from the row above, returning to it, and unable to
+     * leave the modal through the bottom edge it now owns.
+     */
+    @Test
+    fun orientation_cells_are_displayed_and_reachable_below_the_size_row() {
+        var chosen: VideoRotation? = null
+        setSubtitlesPanel(tracks = { emptyList() }, onSelectRotation = { chosen = it })
+
+        composeRule.onNodeWithText("Auto").assertIsDisplayed()
+        composeRule.onNodeWithText("0°").assertIsDisplayed()
+        composeRule.onNodeWithText("90°").assertIsDisplayed()
+        composeRule.onNodeWithText("180°").assertIsDisplayed()
+        composeRule.onNodeWithText("270°").assertIsDisplayed()
+
+        composeRule.onNodeWithText("Off").assertIsFocused().press(Key.DirectionDown)
+        val medium = composeRule.onNodeWithText("Medium").assertIsFocused()
+        medium.press(Key.DirectionDown)
+        val auto = composeRule.onNodeWithText("Auto").assertIsFocused()
+
+        auto.press(Key.DirectionDown)
+        auto.assertIsFocused()
+
+        auto.press(Key.DirectionRight)
+        composeRule.onNodeWithText("0°").assertIsFocused().press(Key.DirectionRight)
+        val quarter = composeRule.onNodeWithText("90°").assertIsFocused()
+        quarter.performClick()
+        composeRule.runOnIdle { assertEquals(VideoRotation.Quarter, chosen) }
+
+        quarter.press(Key.DirectionUp)
+        medium.assertIsFocused()
+    }
+
+    /** The whole chain, on the real screen, with the modal focus gate around it. */
+    @Test
+    fun orientation_is_reachable_from_a_scrolling_track_list_on_the_real_screen() {
+        val tracks = (1..6).map { number ->
+            subtitle(id = "0:$number", label = "Track $number", selected = false, number = number)
+        }
+        setPlaybackWithOpenSubtitles(tracks)
+
+        var focused = composeRule.onNodeWithText("Off").assertIsFocused()
+        tracks.indices.forEach { index ->
+            focused.press(Key.DirectionDown)
+            focused = composeRule.onNodeWithText("Track ${index + 1}").assertIsFocused()
+        }
+        focused.press(Key.DirectionDown)
+        composeRule.onNodeWithText("Medium").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Auto").assertIsDisplayed().assertIsFocused()
+    }
+
+    /** Auto is a verdict about the file, so the panel has to say what it decided. */
+    @Test
+    fun the_panel_states_what_auto_decided_and_only_while_auto_is_chosen() {
+        setSubtitlesPanel(tracks = { emptyList() }, autoRotationDegrees = 90)
+        composeRule.onNodeWithText("AUTO · 90°").assertIsDisplayed()
+    }
+
+    @Test
+    fun an_explicit_choice_replaces_the_auto_readout_with_its_own_cell() {
+        setSubtitlesPanel(
+            tracks = { emptyList() },
+            rotation = VideoRotation.Half,
+            autoRotationDegrees = 90,
+        )
+        composeRule.onNodeWithText("AUTO · 90°").assertDoesNotExist()
+        composeRule.onNodeWithText("180°").assertIsDisplayed()
+    }
+
+    /**
+     * The same exclusion the size cells have: a live track refresh may not move a
+     * viewer who is not holding a track row.
+     */
+    @Test
+    fun focus_on_the_orientation_cells_survives_a_track_disappearing() {
+        val alpha = subtitle("0:0", "Alpha", selected = true, number = 1)
+        val bravo = subtitle("0:1", "Bravo", selected = false, number = 2)
+        var tracks by mutableStateOf(listOf(alpha, bravo))
+        setSubtitlesPanel(tracks = { tracks })
+
+        composeRule.onNodeWithText("Alpha").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Bravo").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Medium").assertIsFocused().press(Key.DirectionDown)
+        composeRule.onNodeWithText("Auto").assertIsFocused()
+
+        composeRule.runOnIdle { tracks = listOf(alpha) }
+        composeRule.onNodeWithText("Auto").assertIsFocused()
+    }
+
     private fun setPlaybackWithOpenSubtitles(tracks: List<SubtitleTrackInfo>) {
         composeRule.setContent {
             var openPanel by remember { mutableStateOf(PlaybackPanel.Subtitles) }
@@ -316,6 +415,9 @@ class SubtitlesPanelFocusTest {
     private fun setSubtitlesPanel(
         tracks: () -> List<SubtitleTrackInfo>,
         onSelectTrack: (String?) -> Unit = {},
+        rotation: VideoRotation = VideoRotation.Auto,
+        autoRotationDegrees: Int = 0,
+        onSelectRotation: (VideoRotation) -> Unit = {},
     ) {
         composeRule.setContent {
             FlickTvTheme {
@@ -325,6 +427,9 @@ class SubtitlesPanelFocusTest {
                     onSelectTrack = onSelectTrack,
                     onSelectSize = {},
                     onDismiss = {},
+                    rotation = rotation,
+                    autoRotationDegrees = autoRotationDegrees,
+                    onSelectRotation = onSelectRotation,
                     modifier = Modifier.height(360.dp),
                 )
             }

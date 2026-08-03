@@ -160,6 +160,20 @@
     <string name="subtitles_size_medium">Medium</string>
     <string name="subtitles_size_large">Large</string>
 
+    <!--
+      Picture orientation, in the same panel. The degrees are the turn Flick adds
+      to the container's own, so 0° means "exactly as the file says" and is what
+      corrects an Auto that read the file wrong.
+    -->
+    <string name="video_rotation_label">ORIENTATION</string>
+    <string name="video_rotation_auto">Auto</string>
+    <string name="video_rotation_as_filed">0°</string>
+    <string name="video_rotation_quarter">90°</string>
+    <string name="video_rotation_half">180°</string>
+    <string name="video_rotation_three_quarter">270°</string>
+    <!-- What Auto decided, e.g. "AUTO · 90°". Shown only while Auto is chosen. -->
+    <string name="video_rotation_auto_applied">AUTO · %1$s</string>
+
     <!-- Stream metrics: transport card + panel -->
     <string name="metrics_card_title">Stream metrics</string>
     <string name="metrics_panel_title">Stream metrics</string>

@@ -1,0 +1,263 @@
+package com.flick.receiver.player
+
+import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Tracks
+
+/**
+ * How far Flick turns the picture, **on top of** the rotation the container
+ * already declares.
+ *
+ * Additive rather than absolute because that is the only reading under which
+ * every cell is reachable: a file tagged 90 and a file tagged 0 need different
+ * absolute answers to reach the same presentation, and the viewer looking at a
+ * sideways film knows only what they can see. [AsFiled] is therefore the row
+ * that means "honour the file exactly", and it is what an over-eager [Auto] is
+ * corrected with.
+ */
+enum class VideoRotation(val extraDegrees: Int?) {
+    /** Flick decides — see [autoRotation]. */
+    Auto(null),
+    AsFiled(0),
+    Quarter(90),
+    Half(180),
+    ThreeQuarter(270),
+    ;
+
+    companion object {
+        /**
+         * The one immutable listing. `values()` clones its array on every call and
+         * the selector below sits in a composable that re-runs whenever the 2 Hz
+         * track re-read produces a different list.
+         */
+        val ALL: List<VideoRotation> = VideoRotation.values().asList()
+
+        /** The explicit choice carrying [degrees], or null for a value off the grid. */
+        fun forExtraDegrees(degrees: Int): VideoRotation? =
+            ALL.firstOrNull { it.extraDegrees != null && it.extraDegrees == degrees }
+    }
+}
+
+/** The video track's own shape, exactly as the container declares it. */
+data class VideoTrackShape(
+    /** CODED width — the frame as stored, before any rotation is applied. */
+    val widthPx: Int,
+    /** CODED height. */
+    val heightPx: Int,
+    val rotationDegrees: Int,
+    val pixelWidthHeightRatio: Float,
+)
+
+/**
+ * Everything about a cast [autoRotation] is allowed to reason from. Deliberately
+ * plain data: the question is decided the same way whether the answer comes from
+ * a live `Tracks` or from a test.
+ */
+data class MediaShape(
+    /** The video track that was actually selected; null when none was. */
+    val video: VideoTrackShape?,
+    val audioTrackCount: Int,
+    val maxAudioChannelCount: Int,
+    val audioSampleMimeTypes: List<String>,
+    /** Text tracks the CONTAINER carries — a sideloaded file is not evidence about it. */
+    val embeddedTextTrackCount: Int,
+    /** null while the timeline has not resolved one. */
+    val durationMs: Long?,
+)
+
+/** Why [autoRotation] answered as it did. Logged, so it must name a reason. */
+enum class AutoRotationVerdict {
+    /** Nothing selected to judge, or a frame with no declared size. */
+    NoVideoTrack,
+
+    /** The container declares 0 or 180 — a film cannot be stood on end by either. */
+    ContainerNotSideways,
+
+    /** The coded frame is portrait, so the container's turn is what makes it landscape. */
+    RotationMakesItLandscape,
+
+    /** Sideways landscape, but nothing distinguishes it from a phone recording. */
+    LooksLikeACameraClip,
+
+    /** Release evidence, but shorter than anything that ships as a title. */
+    ShorterThanAFeature,
+
+    /** A landscape film filed sideways — the one case Flick overrules the container. */
+    LandscapeFilmFiledSideways,
+}
+
+data class AutoRotation(val extraDegrees: Int, val verdict: AutoRotationVerdict)
+
+/** No auto correction, and the verdict that explains it. */
+private fun honourContainer(verdict: AutoRotationVerdict) = AutoRotation(0, verdict)
+
+/**
+ * Shorter than any feature, episode or short that ships as a title, and longer
+ * than the overwhelming majority of camera clips. A floor under the release
+ * evidence below rather than a signal in its own right — a long recording is not
+ * a film, and the evidence is what decides.
+ */
+const val MIN_FEATURE_MS = 600_000L
+
+/** Six channels is the first count a phone microphone array does not produce. */
+const val SURROUND_CHANNEL_COUNT = 6
+
+/**
+ * The broadcast and cinema audio codecs. Every one of them reaches a file by
+ * being authored into it; none is a capture format, so a container carrying one
+ * was mastered rather than recorded.
+ */
+private val SURROUND_AUDIO_MIME_TYPES = setOf(
+    MimeTypes.AUDIO_AC3,
+    MimeTypes.AUDIO_E_AC3,
+    MimeTypes.AUDIO_E_AC3_JOC,
+    MimeTypes.AUDIO_AC4,
+    MimeTypes.AUDIO_TRUEHD,
+    MimeTypes.AUDIO_DTS,
+    MimeTypes.AUDIO_DTS_HD,
+    MimeTypes.AUDIO_DTS_EXPRESS,
+    MimeTypes.AUDIO_DTS_X,
+)
+
+/**
+ * Whether Flick should overrule the container and stand a film back up.
+ *
+ * The whole difficulty is that a genuine portrait phone recording is stored
+ * **exactly** like a mis-tagged landscape film: a 1920×1080 coded frame with a
+ * 90° display matrix, because the sensor reads out landscape and the container
+ * records which way the phone was held. Nothing in the video track separates the
+ * two, so a rule written on the video track alone would turn every portrait clip
+ * in the user's gallery on its side — trading a rare annoyance for a common one.
+ *
+ * What separates them is everything AROUND the picture. A released title is
+ * assembled: it carries more than one audio track, or a surround/broadcast codec
+ * no phone records, or subtitle tracks the container itself declares. A camera
+ * clip carries one stereo AAC track and nothing else. So the correction fires
+ * only on positive evidence of assembly, and the default — for every file that
+ * offers none — is byte-identical to honouring the container.
+ *
+ * Deliberately NOT used as evidence: coded aspect ratio wider than 16:9, which
+ * would be conclusive if phones only recorded 16:9, and some record 21:9; and
+ * frame rate, because 24 fps is both the cinema rate and an option on the phones
+ * whose clips this must not touch.
+ *
+ * A film whose coded frame is portrait with no rotation at all is not detectable
+ * as an error and is left alone; the manual override exists for it.
+ */
+fun autoRotation(shape: MediaShape): AutoRotation {
+    val video = shape.video ?: return honourContainer(AutoRotationVerdict.NoVideoTrack)
+    if (video.widthPx <= 0 || video.heightPx <= 0) {
+        return honourContainer(AutoRotationVerdict.NoVideoTrack)
+    }
+    val rotation = quarterTurn(video.rotationDegrees)
+        ?: return honourContainer(AutoRotationVerdict.ContainerNotSideways)
+    if (rotation != 90 && rotation != 270) {
+        return honourContainer(AutoRotationVerdict.ContainerNotSideways)
+    }
+    if (!codedFrameIsLandscape(video)) {
+        return honourContainer(AutoRotationVerdict.RotationMakesItLandscape)
+    }
+    if (!looksLikeAReleasedTitle(shape)) {
+        return honourContainer(AutoRotationVerdict.LooksLikeACameraClip)
+    }
+    val durationMs = shape.durationMs
+    if (durationMs != null && durationMs > 0L && durationMs < MIN_FEATURE_MS) {
+        return honourContainer(AutoRotationVerdict.ShorterThanAFeature)
+    }
+    // Exactly enough to bring the presented picture back to 0.
+    return AutoRotation((360 - rotation) % 360, AutoRotationVerdict.LandscapeFilmFiledSideways)
+}
+
+/**
+ * The rotation the decoder is configured with — the container's own turn plus
+ * Flick's. A container value off the quarter-turn grid is returned untouched:
+ * `MediaFormat.KEY_ROTATION` accepts nothing else, and inventing one would be a
+ * worse answer than the file's.
+ */
+fun effectiveRotationDegrees(containerDegrees: Int, extraDegrees: Int): Int {
+    val container = quarterTurn(containerDegrees) ?: return containerDegrees
+    val extra = quarterTurn(extraDegrees) ?: return containerDegrees
+    return (container + extra) % 360
+}
+
+/** [degrees] normalized into {0, 90, 180, 270}, or null if it is not a quarter turn. */
+private fun quarterTurn(degrees: Int): Int? {
+    val wrapped = ((degrees % 360) + 360) % 360
+    return wrapped.takeIf { it % 90 == 0 }
+}
+
+/**
+ * Sample aspect applies to the width, so a 1440×1080 frame at 1.333 is a
+ * 16:9 picture and not a 4:3 one. Square is neither landscape nor portrait and
+ * is left to the container.
+ */
+private fun codedFrameIsLandscape(video: VideoTrackShape): Boolean {
+    val ratio = if (video.pixelWidthHeightRatio > 0f) video.pixelWidthHeightRatio else 1f
+    return video.widthPx * ratio > video.heightPx
+}
+
+private fun looksLikeAReleasedTitle(shape: MediaShape): Boolean =
+    shape.audioTrackCount >= 2 ||
+        shape.embeddedTextTrackCount >= 1 ||
+        shape.maxAudioChannelCount >= SURROUND_CHANNEL_COUNT ||
+        shape.audioSampleMimeTypes.any(::isSurroundAudioMimeType)
+
+private fun isSurroundAudioMimeType(mimeType: String): Boolean =
+    SURROUND_AUDIO_MIME_TYPES.any { it.equals(mimeType, ignoreCase = true) }
+
+/**
+ * Read a live [Tracks] into the shape [autoRotation] judges.
+ *
+ * The video track is the SELECTED one: a track the renderer refused is not the
+ * picture on screen, and a capability failure has its own diagnosis. Audio and
+ * text are counted whether or not this TV can decode them — a second audio track
+ * is evidence that the file was assembled, and remains so when the TV has no
+ * decoder for it.
+ *
+ * [sideloadedTextTracks] is subtracted because a `.srt` the viewer picked on
+ * their phone says nothing about how the film was authored, and counting it
+ * would let a subtitle turn a portrait clip on its side.
+ */
+fun mediaShapeFrom(
+    tracks: Tracks,
+    durationMs: Long?,
+    sideloadedTextTracks: Int,
+): MediaShape {
+    var video: VideoTrackShape? = null
+    var audioTrackCount = 0
+    var maxAudioChannelCount = 0
+    val audioSampleMimeTypes = mutableListOf<String>()
+    var textTrackCount = 0
+    for (group in tracks.groups) {
+        for (index in 0 until group.length) {
+            val format = group.getTrackFormat(index)
+            when (group.type) {
+                C.TRACK_TYPE_VIDEO -> if (video == null && group.isTrackSelected(index)) {
+                    video = VideoTrackShape(
+                        widthPx = format.width,
+                        heightPx = format.height,
+                        rotationDegrees = format.rotationDegrees,
+                        pixelWidthHeightRatio = format.pixelWidthHeightRatio,
+                    )
+                }
+                C.TRACK_TYPE_AUDIO -> {
+                    audioTrackCount++
+                    if (format.channelCount > maxAudioChannelCount) {
+                        maxAudioChannelCount = format.channelCount
+                    }
+                    format.sampleMimeType?.let(audioSampleMimeTypes::add)
+                }
+                C.TRACK_TYPE_TEXT -> textTrackCount++
+                else -> Unit
+            }
+        }
+    }
+    return MediaShape(
+        video = video,
+        audioTrackCount = audioTrackCount,
+        maxAudioChannelCount = maxAudioChannelCount,
+        audioSampleMimeTypes = audioSampleMimeTypes,
+        embeddedTextTrackCount = (textTrackCount - sideloadedTextTracks).coerceAtLeast(0),
+        durationMs = durationMs,
+    )
+}
