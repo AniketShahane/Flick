@@ -2,6 +2,7 @@ package com.flick.receiver.player
 
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import java.util.Locale
@@ -14,9 +15,24 @@ import java.util.Locale
  * caller renders its own numbered fallback from [trackNumber] rather than having
  * a user-facing string baked in here.
  */
+class SubtitleTrackFocusIdentity(
+    val mediaTrackGroup: TrackGroup,
+    val trackIndexWithinGroup: Int,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is SubtitleTrackFocusIdentity &&
+            mediaTrackGroup === other.mediaTrackGroup &&
+            trackIndexWithinGroup == other.trackIndexWithinGroup
+
+    override fun hashCode(): Int =
+        31 * System.identityHashCode(mediaTrackGroup) + trackIndexWithinGroup
+}
+
 data class SubtitleTrackInfo(
     /** Opaque handle to pass back to `PlayerController.selectSubtitleTrack`. */
     val id: String,
+    /** Stable Media3 identity for retaining UI focus while positional [id] changes. */
+    val focusIdentity: SubtitleTrackFocusIdentity,
     /** The track's own name, in its own language ("Français"); null when unnamed. */
     val label: String?,
     /** Original sample MIME, with Media3's cue-transcoding wrapper unwrapped; null when unknown. */
@@ -52,6 +68,7 @@ fun subtitleTracksFrom(tracks: Tracks): List<SubtitleTrackInfo> {
             val format = group.getTrackFormat(trackIndex)
             result += SubtitleTrackInfo(
                 id = subtitleTrackId(SubtitleTrackRef(groupIndex, trackIndex)),
+                focusIdentity = SubtitleTrackFocusIdentity(group.mediaTrackGroup, trackIndex),
                 label = subtitleTrackLabel(format.label, format.language),
                 mimeType = subtitleSampleMimeType(format.sampleMimeType, format.codecs),
                 isSelected = group.isTrackSelected(trackIndex),

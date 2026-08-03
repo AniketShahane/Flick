@@ -8,6 +8,8 @@ import androidx.media3.common.Tracks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -122,6 +124,21 @@ class SubtitleTrackInfoTest {
         assertNull(parseSubtitleTrackId("3:2:1"))
     }
 
+    @Test fun focusIdentityUsesTheExactTrackGroupInstance() {
+        val format = textFormat(language = "en")
+        val firstGroup = TrackGroup(format)
+        val equalGroup = TrackGroup(format)
+        assertNotSame(firstGroup, equalGroup)
+        assertEquals(firstGroup, equalGroup)
+
+        val identity = SubtitleTrackFocusIdentity(firstGroup, 0)
+        val same = SubtitleTrackFocusIdentity(firstGroup, 0)
+        assertEquals(identity, same)
+        assertEquals(identity.hashCode(), same.hashCode())
+        assertNotEquals(identity, SubtitleTrackFocusIdentity(equalGroup, 0))
+        assertNotEquals(identity, SubtitleTrackFocusIdentity(firstGroup, 1))
+    }
+
     // --- Tracks mapping -------------------------------------------------------
 
     @Test fun onlySupportedTextTracksAreOffered() {
@@ -200,6 +217,8 @@ class SubtitleTrackInfoTest {
         val result = subtitleTracksFrom(Tracks(listOf(group)))
 
         assertEquals(listOf("0:0", "0:1"), result.map { it.id })
+        assertTrue(result.all { it.focusIdentity.mediaTrackGroup === group.mediaTrackGroup })
+        assertEquals(listOf(0, 1), result.map { it.focusIdentity.trackIndexWithinGroup })
         assertEquals(listOf("SRT", "VTT"), result.map { it.formatLabel })
         assertEquals(listOf(false, true), result.map { it.isSelected })
     }
