@@ -45,6 +45,18 @@ object FlickIcons {
         moveTo(14.4f, 3.7f); lineTo(12.16f, 5.39f); lineTo(12.16f, 2.01f); close()
     }
 
+    /**
+     * Skip to the start: the wall the head returns to, and a head pointing back at it.
+     * Solid rather than the replay ring [Back10] is built from, and deliberately so — that
+     * arc is this set's mark for a SEEK inside a running cast, and starting over is a cast
+     * beginning again from zero. Wound like every other closed path here, so the bar and
+     * the triangle union under NonZero.
+     */
+    val Restart: ImageVector = fillIcon("Restart") {
+        roundRect(4.2f, 5.2f, 6.7f, 18.8f, 1.15f)
+        moveTo(19.6f, 5.2f); lineTo(19.6f, 18.8f); lineTo(8.6f, 12f); close()
+    }
+
     val Volume: ImageVector = strokeIcon("Volume") {
         // Speaker body.
         moveTo(4.5f, 9.5f); lineTo(4.5f, 14.5f); lineTo(8f, 14.5f)
@@ -78,6 +90,23 @@ object FlickIcons {
         quadTo(2.7f, 4.9f, 5.4f, 4.9f); close()
         moveTo(9f, 20.7f); lineTo(15f, 20.7f)
         moveTo(3.6f, 3.6f); lineTo(20.4f, 20.4f)
+    }
+
+    /**
+     * This phone, not a handset. The label it stands beside offers to play the film HERE,
+     * and a telephone receiver would name a call while [Tv] beside it names the other
+     * screen. Built on [Battery]'s construction — the same quadratic corners, the same
+     * 1.9 stroke — with no terminal at the top and a bar at the foot: that bar is the
+     * gesture indicator, and it is what makes a portrait rounded rectangle read as a
+     * phone at 20 dp rather than as a cell.
+     */
+    val Phone: ImageVector = strokeIcon("Phone", width = 1.9f) {
+        moveTo(9.2f, 2.6f); lineTo(14.8f, 2.6f)
+        quadTo(17.4f, 2.6f, 17.4f, 5.2f); lineTo(17.4f, 18.8f)
+        quadTo(17.4f, 21.4f, 14.8f, 21.4f); lineTo(9.2f, 21.4f)
+        quadTo(6.6f, 21.4f, 6.6f, 18.8f); lineTo(6.6f, 5.2f)
+        quadTo(6.6f, 2.6f, 9.2f, 2.6f); close()
+        moveTo(10.4f, 18.4f); lineTo(13.6f, 18.4f)
     }
 
     val Wifi: ImageVector = strokeIcon("Wifi") {

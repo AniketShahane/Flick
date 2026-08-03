@@ -21,8 +21,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -129,6 +133,7 @@ fun DetailScreen(
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, displayName, tvName)
     val startOverDescription = stringResource(R.string.a11y_start_video_over, displayName, tvName)
+    val playHereDescription = stringResource(R.string.a11y_play_video_here, displayName)
     val progressReady = playbackProgress is PlaybackProgressState.Ready
     val resumeMs = remember(item, playbackProgress) {
         controller.resumePosition(item, playbackProgress)
@@ -336,42 +341,36 @@ fun DetailScreen(
                 onClick = { controller.flickToTv(item) },
             )
 
-            if (resumeMs != null) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = stringResource(R.string.detail_start_over),
-                    style = FlickText.labelLarge.copy(color = colors.primary),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(PillShape)
-                        .clickable(
-                            interactionSource = startOverSource,
-                            indication = flickRipple(colors.primary),
-                            enabled = !castStart.isCommitting(),
-                            role = Role.Button,
-                        ) { controller.startOver(item) }
-                        .semantics { contentDescription = startOverDescription }
-                        .heightIn(min = 48.dp)
-                        .padding(vertical = 15.dp),
-                )
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Text(
-                text = stringResource(R.string.detail_play_here),
-                // WCAG's large-text exemption starts above this size, so the only escape
-                // from casting takes the dim ink rather than the faint one.
-                style = FlickText.labelLarge.copy(color = colors.onSurfaceDim),
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(PillShape)
-                    .clickable(
-                        interactionSource = playHereSource,
-                        indication = flickRipple(colors.primary),
-                        role = Role.Button,
-                    ) {
+            Spacer(Modifier.height(10.dp))
+            // Both of these are ways NOT to do what the CTA above offers, so they share
+            // one row directly under it rather than stacking as two more full-width
+            // decisions. Intrinsic height, the same instrument the quality sheet's gauge
+            // pair uses: whichever label wraps sets the height and the other grows into
+            // it, so the two pills can never sit at different heights on a narrow window
+            // or a large font scale.
+            Row(
+                Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // Withheld rather than disabled: with no checkpoint there is no position
+                // to start over FROM, and a dead control is a promise the sheet cannot
+                // keep. The phone action then takes the whole row on its own weight.
+                if (resumeMs != null) {
+                    SecondaryAction(
+                        icon = FlickIcons.Restart,
+                        label = stringResource(R.string.detail_start_over),
+                        accessibilityLabel = startOverDescription,
+                        interactionSource = startOverSource,
+                        enabled = !castStart.isCommitting(),
+                        onClick = { controller.startOver(item) },
+                    )
+                }
+                SecondaryAction(
+                    icon = FlickIcons.Phone,
+                    label = stringResource(R.string.detail_play_here),
+                    accessibilityLabel = playHereDescription,
+                    interactionSource = playHereSource,
+                    onClick = {
                         runCatching {
                             context.startActivity(
                                 Intent(Intent.ACTION_VIEW)
@@ -379,11 +378,66 @@ fun DetailScreen(
                                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
                             )
                         }
-                    }
-                    .heightIn(min = 48.dp)
-                    .padding(vertical = 15.dp),
-            )
+                    },
+                )
+            }
         }
+    }
+}
+
+/**
+ * One of the two ways out from under the CTA. Tonal rather than the action blue — a
+ * second saturated fill in the same column would read as the sheet asking twice — and it
+ * carries a [FlickIcons] glyph rather than a colour-emoji, which is the only kind of mark
+ * that survives beside a hand-authored 24 dp stroke set.
+ *
+ * Icon and label sit in one centred lockup, and the label is allowed two lines: half a
+ * 360 dp sheet is not wide enough for "Play on this phone" on one, and truncating the
+ * only escape from casting is worse than wrapping it.
+ */
+@Composable
+private fun RowScope.SecondaryAction(
+    icon: ImageVector,
+    label: String,
+    accessibilityLabel: String,
+    interactionSource: MutableInteractionSource,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    val colors = LocalFlickColors.current
+    Row(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .pressScale(interactionSource)
+            .heightIn(min = 48.dp)
+            .clip(PillShape)
+            .background(colors.fillControl)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = flickRipple(colors.onSurface),
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colors.onSurface,
+            modifier = Modifier.size(19.dp),
+        )
+        Text(
+            text = label,
+            style = FlickText.labelMedium.copy(color = colors.onSurface),
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

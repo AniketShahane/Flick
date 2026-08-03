@@ -13,7 +13,7 @@ class ControlV2FixturesTest {
             clientNonce = "ERITFBUWFxgZGhscHR4fIA",
             serverNonce = "ISIjJCUmJygpKissLS4vMA",
             tvId = "ABEiM0RVZneImaq7zN3u_w",
-            capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+            capabilities = CAPABILITIES,
         )
 
         assertEquals(
@@ -21,25 +21,36 @@ class ControlV2FixturesTest {
             fields.keys.toList(),
         )
         assertTrue(fields["cap"] is List<*>)
-        assertEquals(
-            listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
-            fields["cap"],
-        )
+        assertEquals(CAPABILITIES, fields["cap"])
     }
 
-    @Test fun clientProofMatchesFrozenFixture() {
+    @Test fun proofsMatchTheFrozenFixture() {
+        assertEquals(272, transcriptFor("client").size)
+        assertEquals("ebPf_v2pHAw6ex1ij0_NA3f7YiwKU8gcd_hHBOQAu7I", proofFor("client"))
+        assertEquals("0R0MDBC27xcqAY9bT0BuPg9Y3gOFYHlWOlPljyCPoCs", proofFor("server"))
+    }
+
+    private fun transcriptFor(role: String): ByteArray {
         val fields = listOf(
-            "Flick-Control-Resume-V2", "client", "2", "ABEiM0RVZneImaq7zN3u_w",
+            "Flick-Control-Resume-V2", role, "2", "ABEiM0RVZneImaq7zN3u_w",
             "AQIDBAUGBwgJCgsMDQ4PEA", "ERITFBUWFxgZGhscHR4fIA", "ISIjJCUmJygpKissLS4vMA",
             "192.168.42.17", "192.168.42.88", "42421", "Demo TV",
-            "cast-ack,first-frame-ready,structured-errors,resume-hmac",
+            CAPABILITIES.joinToString(","),
         )
-        val transcript = fields.fold(ByteArray(0)) { bytes, field ->
+        return fields.fold(ByteArray(0)) { bytes, field ->
             bytes + java.nio.ByteBuffer.allocate(4).putInt(field.toByteArray().size).array() + field.toByteArray()
         }
-        assertEquals(260, transcript.size)
+    }
+
+    private fun proofFor(role: String): String {
         val key = java.util.Base64.getUrlDecoder().decode("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }
-        assertEquals("bqJZ6nUWl-KhUfA49f3Y9TWZ39boGj2P01YsmwTs53E", java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(transcript)))
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(transcriptFor(role)))
+    }
+
+    private companion object {
+        // Field 12 of the HMAC transcript, so this order is signed rather than
+        // merely compared: one entry out of place and every proof changes.
+        val CAPABILITIES = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay")
     }
 }

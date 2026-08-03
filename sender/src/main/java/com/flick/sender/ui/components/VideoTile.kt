@@ -22,11 +22,13 @@ import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
@@ -76,6 +79,7 @@ import coil.request.videoFrameMillis
 import coil.size.Dimension
 import coil.size.Precision
 import com.flick.sender.R
+import com.flick.sender.media.ResumeProgress
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.ui.Format
@@ -439,6 +443,12 @@ private const val CornerHold = 0.25f
  * and it is the only state here allowed to read as a fault. A file MediaStore simply
  * never scanned is a different thing entirely: the badge withholds the claim it cannot
  * make, and nothing about the tile says the file is broken.
+ *
+ * [resume] is the watched line under the still, and it is a resolved value rather than a
+ * checkpoint map on purpose: the caller resolves it per tile through
+ * [com.flick.sender.media.resumeProgress], which is the same rule the detail sheet's
+ * resume CTA goes through. Null draws nothing, which is what every call site that has not
+ * been given one gets.
  */
 @Composable
 fun VideoTile(
@@ -448,6 +458,7 @@ fun VideoTile(
     onClick: () -> Unit,
     unplayable: Boolean = false,
     compact: Boolean = false,
+    resume: ResumeProgress? = null,
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
@@ -458,6 +469,15 @@ fun VideoTile(
     val interaction = remember { MutableInteractionSource() }
     val request = rememberLibraryThumbnailRequest(item)
     val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
+    val watchedDescription = resume?.let {
+        stringResource(R.string.a11y_tile_watched, Format.timecode(it.positionMs))
+    }
+    // One node, one state line. A refused file may also carry a resume, and TalkBack
+    // reads a single stateDescription — so the two facts are joined here rather than
+    // raising a second focusable thing on a tile that is one button.
+    val tileState = listOfNotNull(refusedDescription.takeIf { unplayable }, watchedDescription)
+        .joinToString(" · ")
+        .takeIf { it.isNotEmpty() }
     // The still is held back rather than dimmed: a scrim on top would fight the one the
     // badges already read against, and a frame at full chroma beside a refusal chip reads
     // as an unrelated decoration stuck to it.
@@ -474,9 +494,9 @@ fun VideoTile(
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .semantics {
                 role = Role.Button
-                // The chip is decorative to TalkBack — the tile speaks its own state, so
-                // the refusal is never announced as a second, tappable thing.
-                if (unplayable) stateDescription = refusedDescription
+                // The chip and the line are both decorative to TalkBack — the tile speaks
+                // its own state, so neither is announced as a second, tappable thing.
+                tileState?.let { stateDescription = it }
             },
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
@@ -535,6 +555,7 @@ fun VideoTile(
                         .padding(bottom = 10.dp, end = 11.dp),
                 )
             }
+            resume?.let { ResumeLine(fraction = it.fraction, played = colors.spark) }
         }
         Column {
             Text(
@@ -555,6 +576,34 @@ fun VideoTile(
             )
         }
     }
+}
+
+/**
+ * How much of this file has been watched, pinned to the bottom edge of the still and
+ * inside its rounded clip, so the corners take the ends of the rule as they take the
+ * frame's. It is a fact about the file, not a control: no target, no ripple, and slim
+ * enough that the timecode above it is still the thing in that corner.
+ *
+ * The played span is [com.flick.sender.ui.theme.FlickColors.spark] for the reason the
+ * ripple on this same surface is — a decoded frame is not a palette surface, and only a
+ * light, high-chroma mark survives both a blown-out still and a near-black one. The
+ * unplayed remainder takes a white wash rather than a dark one for the other half of that
+ * argument: the bottom of the frame is already under the poster scrim's full 62% black,
+ * so black would vanish into the very stills the track has to be legible on.
+ */
+@Composable
+private fun BoxScope.ResumeLine(fraction: Float, played: Color) {
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(ResumeLineHeight)
+            .background(ResumeLineTrack)
+            .drawBehind {
+                val width = size.width * fraction.coerceIn(0f, 1f)
+                if (width > 0f) drawRect(color = played, size = Size(width, size.height))
+            },
+    )
 }
 
 /**
@@ -648,3 +697,8 @@ private const val WithheldFill = 0.62f
 // Held back, not greyed out. Far enough down that the tile reads as answered-for at a
 // glance, far enough up that the frame is still the film.
 private const val RefusedSaturation = 0.45f
+
+// A rule, not a bar. Thin enough to read as a property of the still rather than as a
+// control laid over it, thick enough to survive a 1x-density phone rounding it away.
+private val ResumeLineHeight = 3.dp
+private val ResumeLineTrack = Color.White.copy(alpha = 0.3f)

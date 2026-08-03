@@ -110,6 +110,9 @@ interface SessionPlayer {
      * to resolve to when the film loaded.
      */
     fun setAutoVideoRotation()
+
+    /** Positive means audio heard later than the picture; see [AudioDelayPolicy]. */
+    fun setAudioDelay(delayMs: Int)
     fun readPlaybackState(): PlaybackFrame
 }
 
@@ -236,6 +239,14 @@ class PlayerController(context: Context) : SessionPlayer {
     /** What the viewer is owed about this film's orientation — see [orientationHintFor]. */
     var orientationHint by mutableStateOf<OrientationHint?>(null)
         private set
+
+    /**
+     * The commanded audio delay, in the form the video renderers read. Built once
+     * and handed to every renderers factory, so — unlike [lastVolume], which has
+     * to be re-applied to each new ExoPlayer — a delay set before a
+     * background/foreground cycle is already in force on the rebuilt renderers.
+     */
+    private val audioDelayShift = AudioDelayShift()
 
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
@@ -1041,9 +1052,13 @@ class PlayerController(context: Context) : SessionPlayer {
         // left to fall back TO, and what the flag actually buys is the retry to a second
         // *hardware* decoder on a TV that ships more than one — turning "the first
         // decoder would not configure" from a dead cast into a working one.
-        // The only difference from DefaultRenderersFactory is the rotation the
-        // video renderer hands the decoder — see [RotationCorrectingRenderersFactory].
-        val renderersFactory = RotationCorrectingRenderersFactory(appContext, rotationOverride)
+        //
+        // ExoPlayer takes one renderers factory, and two features customize the
+        // video renderer: the rotation handed to the decoder and the A/V nudge's
+        // shift of the render clock. [FlickRenderersFactory] carries both, at the
+        // two different levels they hook. With no rotation asserted and a zero
+        // delay it builds what DefaultRenderersFactory builds.
+        val renderersFactory = FlickRenderersFactory(appContext, rotationOverride, audioDelayShift)
             .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
                 val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
                     mimeType,
@@ -1426,6 +1441,20 @@ class PlayerController(context: Context) : SessionPlayer {
     override fun setVolume(level: Float) {
         lastVolume = level.coerceIn(0f, 1f)
         player?.volume = lastVolume
+    }
+
+    /**
+     * WS `setAudioDelay`: positive is audio heard later than the picture.
+     *
+     * Nothing is pushed into the player. The renderers read [audioDelayShift]
+     * every tick, so the next rendered frame already carries the new offset —
+     * there is no re-prepare, no seek and no re-buffer, and passthrough audio is
+     * never touched.
+     */
+    override fun setAudioDelay(delayMs: Int) {
+        val applied = AudioDelayPolicy.clamp(delayMs)
+        audioDelayShift.videoShiftUs = AudioDelayPolicy.videoShiftUs(applied)
+        FlickLog.i("player", "audioDelay ms=$applied")
     }
 
     // --- Subtitle track surface ----------------------------------------------

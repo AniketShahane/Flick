@@ -31,6 +31,7 @@ import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.media.PlaybackProgressStore
 import com.flick.sender.media.PlaybackProgressWrite
 import com.flick.sender.media.PlaybackResumePolicy
+import com.flick.sender.media.resumePositionMs
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
 import com.flick.sender.media.VideoNames
@@ -335,6 +336,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * cast the coordinator has already torn down.
      */
     private val _commandable = MutableStateFlow(false); val commandable = _commandable.asStateFlow()
+
+    /** The A/V nudge in force for this cast. Nothing on the wire reports it back. */
+    val audioDelayMs = session.audioDelayMs
     internal val playbackProgress = playbackProgressStore.state
 
     /** What this phone has proven about the link carrying the live cast. Never terminal. */
@@ -1002,11 +1006,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
-    internal fun resumePosition(item: MediaItem, state: PlaybackProgressState): Long? {
-        val ready = state as? PlaybackProgressState.Ready ?: return null
-        val checkpoint = ready.checkpoints[PlaybackMediaFingerprint.of(item)] ?: return null
-        return PlaybackResumePolicy.eligiblePosition(checkpoint.positionMs, item.durationMs)
-    }
+    /**
+     * Delegated rather than spelt out here: the library tile's progress line resolves
+     * through the same rule, and the two must be one decision. See [resumePositionMs].
+     */
+    internal fun resumePosition(item: MediaItem, state: PlaybackProgressState): Long? =
+        resumePositionMs(state, PlaybackMediaFingerprint.of(item), item.durationMs)
 
     fun flickToTv(item: MediaItem) {
         progressResolutionJob?.cancel()
@@ -1257,6 +1262,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * draw a selected cell over a picture that never turned.
      */
     fun setRotation(choice: VideoRotation) { if (transportCommandable()) session.setRotation(choice) }
+    fun setAudioDelay(delayMs: Int) = session.setAudioDelay(delayMs); fun nudgeAudioDelay(later: Boolean) = session.nudgeAudioDelay(later); fun resetAudioDelay() = session.resetAudioDelay()
     fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()

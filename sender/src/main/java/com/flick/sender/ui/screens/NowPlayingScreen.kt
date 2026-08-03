@@ -60,7 +60,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -72,7 +71,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -89,6 +87,7 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
+import com.flick.sender.net.AudioDelayPolicy
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkStall
 import com.flick.sender.net.LinkVerdict
@@ -165,10 +164,18 @@ private fun RemoteScreen(
     val fontScale = configuration.fontScale
     val reduceMotion = rememberReduceMotion()
     val remoteScrollState = rememberScrollState()
-    // Owned here rather than by the shell: the subtitles sheet belongs to the video on
+    // Owned here rather than by the shell: both of these sheets belong to the video on
     // this screen, and the shell's overlay channel is the pairing/quality one.
     var showSubtitles by rememberSaveable { mutableStateOf(false) }
+    var showAudioDelay by rememberSaveable { mutableStateOf(false) }
     val subtitleAttached = controller.selectedSubtitle.collectAsState().value != null
+    // Narrowed to the one bit this screen shows. The offset itself moves once per stepper
+    // press and once per detent under a drag, and unwrapping it here would rebuild the
+    // whole remote — poster, transport and all — behind a sheet that is covering it.
+    val audioDelay = controller.audioDelayMs.collectAsState()
+    val audioNudged by remember(audioDelay) {
+        derivedStateOf { audioDelay.value != AudioDelayPolicy.IN_SYNC_MS }
+    }
 
     // Seeded from the memo rather than from NONE: this film was almost always probed by its
     // own library tile before it was ever cast, so the badge is right on the first frame
@@ -308,6 +315,8 @@ private fun RemoteScreen(
                                 pulse = { pulse.value },
                                 subtitleAttached = subtitleAttached,
                                 onSubtitles = { showSubtitles = true },
+                                audioNudged = audioNudged,
+                                onAudioDelay = { showAudioDelay = true },
                                 sharedScope = sharedScope,
                                 animatedScope = animatedScope,
                             )
@@ -319,6 +328,9 @@ private fun RemoteScreen(
 
         if (showSubtitles) {
             SubtitlesSheet(controller = controller, onDismiss = { showSubtitles = false })
+        }
+        if (showAudioDelay) {
+            AudioDelaySheet(controller = controller, onDismiss = { showAudioDelay = false })
         }
     }
 }
@@ -460,6 +472,8 @@ private fun ColumnScope.RemoteContent(
     pulse: () -> Float,
     subtitleAttached: Boolean,
     onSubtitles: () -> Unit,
+    audioNudged: Boolean,
+    onAudioDelay: () -> Unit,
     sharedScope: SharedTransitionScope?,
     animatedScope: AnimatedVisibilityScope?,
 ) {
@@ -602,6 +616,8 @@ private fun ColumnScope.RemoteContent(
     SegmentedRow(
         subtitleAttached = subtitleAttached,
         onSubtitles = onSubtitles,
+        audioNudged = audioNudged,
+        onAudioDelay = onAudioDelay,
         onMetrics = { controller.toggleQualitySheet(true) },
     )
 
@@ -773,23 +789,26 @@ private fun ColumnScope.Poster(
 
 /**
  * Subtitles select an EXTERNAL file the phone serves alongside the video, so that
- * segment carries state and a command. Audio-track selection still has neither in the
- * control protocol, so it stays disabled rather than wired to a no-op.
+ * segment carries state and a command. The middle seat is NOT audio-track selection —
+ * that still has neither state nor a command in the control protocol — it is the A/V
+ * nudge: a value this phone owns outright and sends as one absolute verb, with no state
+ * to read back because the TV never reports it.
  *
  * Metrics takes the amber: spark is the accent this product spends on the media and on
  * what it is measuring — the playhead, the DIRECT PLAY badge, the volume blade — and
- * this is the one segment that opens a reading rather than changing the cast. Two filled
- * pills and one empty still read as a set because only the hue differs; the pill, the
- * height and the icon-plus-label lockup are the same three.
+ * this is the one segment that opens a reading rather than changing the cast. Three
+ * filled pills read as a set because only the hue differs; the pill, the height and the
+ * icon-plus-label lockup are the same three.
  */
 @Composable
 private fun ColumnScope.SegmentedRow(
     subtitleAttached: Boolean,
     onSubtitles: () -> Unit,
+    audioNudged: Boolean,
+    onAudioDelay: () -> Unit,
     onMetrics: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
-    val unavailable = stringResource(R.string.np_segment_unavailable)
     // The sheet this segment opens is born at it, so the press publishes the segment's
     // own bounds to the shell's channel.
     val revealOrigin = LocalQualityRevealOrigin.current
@@ -812,7 +831,8 @@ private fun ColumnScope.SegmentedRow(
             icon = FlickIcons.AudioTrack,
             label = stringResource(R.string.np_segment_audio),
             description = stringResource(R.string.a11y_np_audio),
-            unavailableLabel = unavailable,
+            stateLabel = stringResource(R.string.a11y_audio_delay_adjusted).takeIf { audioNudged },
+            onClick = onAudioDelay,
         )
         Segment(
             // Still the dial: the sheet behind this segment is a pair of gauges, and a
@@ -833,29 +853,19 @@ private fun RowScope.Segment(
     icon: ImageVector,
     label: String,
     description: String,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
     accent: Boolean = false,
-    unavailableLabel: String? = null,
     stateLabel: String? = null,
-    onClick: (() -> Unit)? = null,
 ) {
     val colors = LocalFlickColors.current
-    val active = onClick != null
-    val fill = when {
-        !active -> Color.Transparent
-        accent -> colors.spark
-        else -> colors.inverseSurface
-    }
-    val ink = when {
-        !active -> colors.onSurfaceDim.copy(alpha = 0.5f)
-        // 8.6:1 on the amber fill; the pale ink the other live segment carries would
-        // fall to 1.6:1 on it.
-        accent -> colors.onSpark
-        else -> colors.onInverseSurface
-    }
+    val fill = if (accent) colors.spark else colors.inverseSurface
+    // 8.6:1 on the amber fill; the pale ink the other two segments carry would fall to
+    // 1.6:1 on it.
+    val ink = if (accent) colors.onSpark else colors.onInverseSurface
     val interaction = remember { MutableInteractionSource() }
-    // A live segment is a filled pill on the cinematic backdrop, so its ripple takes the
-    // ink that reads on its own fill, not the one that reads on the screen.
+    // A segment is a filled pill on the cinematic backdrop, so its ripple takes the ink
+    // that reads on its own fill, not the one that reads on the screen.
     val indication = flickRipple(ink)
     Row(
         Modifier
@@ -863,28 +873,19 @@ private fun RowScope.Segment(
             // Ahead of the press response: a scale the finger drives must not move the
             // bounds the sheet is told to be born at.
             .then(modifier)
-            .then(if (active) Modifier.pressScale(interaction) else Modifier)
+            .pressScale(interaction)
             .heightIn(min = ControlMinHeight)
             .clip(PillShape)
             .background(fill)
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        interactionSource = interaction,
-                        indication = indication,
-                        role = Role.Button,
-                        onClick = onClick,
-                    )
-                } else {
-                    Modifier.semantics {
-                        disabled()
-                        unavailableLabel?.let { stateDescription = it }
-                    }
-                },
+            .clickable(
+                interactionSource = interaction,
+                indication = indication,
+                role = Role.Button,
+                onClick = onClick,
             )
             .semantics(mergeDescendants = true) {
                 contentDescription = description
-                if (onClick != null) stateLabel?.let { stateDescription = it }
+                stateLabel?.let { stateDescription = it }
             },
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,

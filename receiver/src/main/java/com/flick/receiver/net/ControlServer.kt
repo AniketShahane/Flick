@@ -3,6 +3,7 @@ package com.flick.receiver.net
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import com.flick.receiver.player.AudioDelayPolicy
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.util.FlickLog
 import io.ktor.http.HttpHeaders
@@ -775,6 +776,14 @@ class ControlServer(
                     }
                 }
             }
+            "setAudioDelay" -> {
+                val cast = castId() ?: return false
+                // `integer` refuses a fractional or exponent token outright, so a
+                // non-integral delayMs is malformed here rather than rounded.
+                val value = o.integer("delayMs") ?: return false
+                if (!o.exactly(AUDIO_DELAY_FIELDS) || !AudioDelayPolicy.accepts(value)) return false
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetAudioDelay(cast, value.toInt()) }
+            }
             else -> return false
         }
         return true
@@ -922,7 +931,7 @@ class ControlServer(
         private val ID = Regex("^[A-Za-z0-9_-]{22}$")
         private val PROOF = Regex("^[A-Za-z0-9_-]{43}$")
         private val CODE = Regex("^[0-9]{4}$")
-        private val CAP = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac")
+        private val CAP = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay")
         private val PHASES = setOf("buffering", "playing", "paused", "ended")
         private val NEGOTIATE_FIELDS = setOf("t", "v", "minV", "maxV", "clientNonce")
         private val PAIR_FIELDS = setOf("t", "v", "clientNonce", "serverNonce", "code", "device")
@@ -938,6 +947,13 @@ class ControlServer(
 internal const val SUB_URL_FIELD = "subUrl"
 internal const val SUB_LABEL_FIELD = "subLabel"
 internal const val SUB_LANG_FIELD = "subLang"
+
+/**
+ * The `setAudioDelay` field set — exact, like every other command frame. It is
+ * declared here rather than beside the other command field sets so the shape the
+ * wire accepts can be asserted without a socket.
+ */
+internal val AUDIO_DELAY_FIELDS = setOf("t", "v", "castId", "delayMs")
 
 private val LOAD_BASE_FIELDS = setOf("t", "v", "castId", "url", "title", "durationMs", "startMs")
 private val LOAD_ALL_FIELDS = LOAD_BASE_FIELDS + setOf(SUB_URL_FIELD, SUB_LABEL_FIELD, SUB_LANG_FIELD)

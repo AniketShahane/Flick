@@ -331,6 +331,7 @@ internal class RecordingPlayer : SessionPlayer {
     var lastReloadPositionMs = -1L
     var lastReloadMediaId: String? = null
     var lastReloadSubtitle: ExternalSubtitle? = null
+    val audioDelays = mutableListOf<Int>()
 
     private var firstFrame: (() -> Unit)? = null
     private var startupError: ((PlaybackException) -> Unit)? = null
@@ -409,6 +410,8 @@ internal class RecordingPlayer : SessionPlayer {
     var autoRotations = 0
         private set
     override fun setAutoVideoRotation() { autoRotations++ }
+
+    override fun setAudioDelay(delayMs: Int) { audioDelays += delayMs }
     override fun readPlaybackState(): PlaybackFrame = PlaybackFrame.IDLE
 
     /** The one signal that ends a startup transaction on real hardware. */

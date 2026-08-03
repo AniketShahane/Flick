@@ -1,14 +1,8 @@
 package com.flick.receiver.player
 
-import android.content.Context
-import android.os.Handler
 import androidx.media3.exoplayer.DecoderReuseEvaluation
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.FormatHolder
-import androidx.media3.exoplayer.Renderer
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
-import androidx.media3.exoplayer.video.VideoRendererEventListener
 
 /**
  * The rotation the video decoder is being configured with, written on the main
@@ -53,8 +47,14 @@ class VideoRotationOverride {
  * Media3 itself rewrites `formatHolder.format` in `BaseRenderer.readSource`, so
  * mutating the holder before delegating is the supported shape rather than a
  * trick; the `SampleQueue` behind it keeps its own reference and is not touched.
+ *
+ * Constructed by [FlickRenderersFactory], which then wraps it in
+ * [AudioDelayVideoRenderer]. Being a SUBCLASS rather than a stock
+ * `MediaCodecVideoRenderer` is load-bearing for one thing beyond rotation: it
+ * takes media3's pre-warming path off the table permanently — see
+ * `FlickRenderersFactory.createSecondaryRenderer`.
  */
-private class RotationCorrectingVideoRenderer(
+internal class RotationCorrectingVideoRenderer(
     builder: MediaCodecVideoRenderer.Builder,
     private val rotation: VideoRotationOverride,
 ) : MediaCodecVideoRenderer(builder) {
@@ -68,53 +68,5 @@ private class RotationCorrectingVideoRenderer(
             }
         }
         return super.onInputFormatChanged(formatHolder)
-    }
-}
-
-/**
- * [DefaultRenderersFactory] with the video renderer replaced by the one above.
- *
- * The builder chain mirrors `DefaultRenderersFactory.buildVideoRenderers` in
- * media3 1.10.1 exactly, including its 50-frame drop-notify threshold. The
- * experimental flags it forwards from its own fields are omitted because this
- * module never sets them and their defaults are identical on both sides
- * (`parseAv1SampleDependencies` true, `lateThresholdToDropDecoderInputUs`
- * 15000 µs) — the builder's own defaults reproduce them.
- *
- * The extension-renderer branch of the original is dropped rather than
- * reproduced: the receiver pins `EXTENSION_RENDERER_MODE_OFF` because
- * hardware-only decode is the product thesis, so that branch is unreachable
- * here. `buildSecondaryVideoRenderer` is likewise left alone — the base
- * implementation gates on prewarming AND on an exact `MediaCodecVideoRenderer`
- * class match, so it can never build a second decoder for this subclass.
- */
-class RotationCorrectingRenderersFactory(
-    context: Context,
-    private val rotation: VideoRotationOverride,
-) : DefaultRenderersFactory(context) {
-
-    override fun buildVideoRenderers(
-        context: Context,
-        extensionRendererMode: Int,
-        mediaCodecSelector: MediaCodecSelector,
-        enableDecoderFallback: Boolean,
-        eventHandler: Handler,
-        eventListener: VideoRendererEventListener,
-        allowedVideoJoiningTimeMs: Long,
-        out: ArrayList<Renderer>,
-    ) {
-        out.add(
-            RotationCorrectingVideoRenderer(
-                MediaCodecVideoRenderer.Builder(context)
-                    .setCodecAdapterFactory(getCodecAdapterFactory())
-                    .setMediaCodecSelector(mediaCodecSelector)
-                    .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
-                    .setEnableDecoderFallback(enableDecoderFallback)
-                    .setEventHandler(eventHandler)
-                    .setEventListener(eventListener)
-                    .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
-                rotation,
-            ),
-        )
     }
 }

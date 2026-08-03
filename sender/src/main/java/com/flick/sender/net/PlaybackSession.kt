@@ -5,11 +5,14 @@ import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.model.VideoRotation
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
@@ -21,7 +24,8 @@ import org.json.JSONObject
  * idle, the head follows the TV so a cross-surface pause/seek mirrors on the phone.
  *
  * Commands go out through [ControlClient]; absolute-valued verbs (`seek posMs`,
- * `setVolume level`) are idempotent so reordering can't corrupt the position.
+ * `setVolume level`, `setAudioDelay delayMs`) are idempotent so reordering can't corrupt
+ * the position, the level or the nudge.
  *
  * The scope carries the one thing here that waits: the quiet period a run of ±10s taps
  * commits on. It is the caller's application scope — main-confined, which is what makes
@@ -30,13 +34,26 @@ import org.json.JSONObject
  */
 class PlaybackSession(
     private val control: ControlClient,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val fallbackTitle: String = GENERIC_TITLE,
 ) {
     private var castId: String? = null
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
+
+    /**
+     * The A/V nudge in force for the cast being driven, in the sign [AudioDelayPolicy]
+     * fixes. It is deliberately NOT part of [PlaybackUiState]: no `state` frame carries
+     * it and the TV never reports it back, so this phone is the source of truth for what
+     * is displayed — and putting it in the clock's own value would republish it at 10 Hz
+     * to say nothing new.
+     */
+    private val _audioDelayMs = MutableStateFlow(AudioDelayPolicy.IN_SYNC_MS)
+    val audioDelayMs: StateFlow<Int> = _audioDelayMs.asStateFlow()
+
+    /** The run of absolute values a move too large for one frame is being walked as. */
+    private var audioDelayWalk: Job? = null
 
     /** Haptic cues for the hand (grip/detent/snap/confirm). */
     val haptics = MutableSharedFlow<HapticCue>(extraBufferCapacity = 16)
@@ -79,6 +96,18 @@ class PlaybackSession(
 
     fun loadMedia(castId: String, url: String, title: String, durationMs: Long, startMs: Long) {
         val safeTitle = ControlProtocolV2.normalizedLabel(title, 200) ?: fallbackTitle
+        // Per cast, and only per cast. A subtitle swap re-loads the SAME castId, and the
+        // nudge the user dialled in belongs to the film they are still watching — so a
+        // walk still in flight across that swap is left to land. Across a cast boundary
+        // it is cancelled instead: every frame it has left carries whatever castId is
+        // current, and a previous film's target is not a thing to aim this one at. The
+        // receiver drops its own copy on the same boundary, which is what keeps the two
+        // in step with no echo on the wire.
+        if (this.castId != castId) {
+            audioDelayWalk?.cancel()
+            audioDelayWalk = null
+            _audioDelayMs.value = AudioDelayPolicy.IN_SYNC_MS
+        }
         this.castId = castId
         lastSeq = -1L
         seekPending = false
@@ -236,6 +265,65 @@ class PlaybackSession(
         control.send(cmd("setRotation", cast).put(field, value))
     }
 
+    /**
+     * Nudge the audio against the picture. Absolute-valued like every other verb here, so
+     * a run of nudges is a stream of complete values: nothing accumulates on the wire, and
+     * whichever one lands last is the one in force however they were reordered.
+     *
+     * A large move is WALKED rather than sent whole. Steady state costs the TV nothing in
+     * either direction, but a change is paid for once by the picture in proportion to its
+     * size, and past half a second the receiver's player abandons decoded buffers forward
+     * to the next keyframe — a visible skip. So no single frame moves the picture by more
+     * than [AudioDelayPolicy.MAX_JUMP_MS], and anything further arrives as a short run of
+     * absolute values instead. A stepper press and an ordinary drag are already inside
+     * that bound and go out in one frame, unwalked.
+     *
+     * Latest-wins, like the seek throttle: a new target cancels the walk in flight and is
+     * approached from wherever that walk had reached, never from where it was aimed.
+     */
+    fun setAudioDelay(delayMs: Int) {
+        val target = AudioDelayPolicy.clamp(delayMs)
+        audioDelayWalk?.cancel()
+        // No cast, no picture to protect and no frame to send — the walk exists only for
+        // the TV's sake, so with no TV in it the value simply arrives.
+        if (castId == null) {
+            _audioDelayMs.value = target
+            return
+        }
+        // The first hop is inline rather than launched: the scope is main-confined but a
+        // launch is still dispatched, and a control under the finger must not wait a
+        // frame to answer.
+        val first = AudioDelayPolicy.approach(_audioDelayMs.value, target)
+        emitAudioDelay(first)
+        if (first == target) return
+        audioDelayWalk = scope.launch {
+            var value = first
+            while (value != target) {
+                delay(AUDIO_DELAY_WALK_MS)
+                value = AudioDelayPolicy.approach(value, target)
+                emitAudioDelay(value)
+            }
+        }
+    }
+
+    private fun emitAudioDelay(value: Int) {
+        _audioDelayMs.value = value
+        // The frame has no castId-less form and there is nothing for a TV to nudge when
+        // no cast owns it. The value is still held, because the phone is what displays it.
+        val id = castId ?: return
+        control.send(cmd("setAudioDelay", id).put("delayMs", value))
+    }
+
+    /** One stepper press: [later] moves the audio behind the picture, otherwise ahead of it. */
+    fun nudgeAudioDelay(later: Boolean) {
+        val current = _audioDelayMs.value
+        setAudioDelay(
+            if (later) AudioDelayPolicy.stepUp(current) else AudioDelayPolicy.stepDown(current),
+        )
+    }
+
+    fun resetAudioDelay() = setAudioDelay(AudioDelayPolicy.IN_SYNC_MS)
+
     fun stop() {
         control.send(cmd("stop"))
         clear()
@@ -246,8 +334,11 @@ class PlaybackSession(
         seekPending = false
         playPending = false
         skipBurst.cancel()
+        audioDelayWalk?.cancel()
+        audioDelayWalk = null
         lastSeq = -1L
         _state.value = PlaybackUiState()
+        _audioDelayMs.value = AudioDelayPolicy.IN_SYNC_MS
     }
 
     // --- TV → phone --------------------------------------------------------
@@ -394,6 +485,11 @@ class PlaybackSession(
         const val SEEK_THROTTLE_MS = 50L      // ≤ ~20 seeks/s (control-channel §4)
         const val SYNC_GRACE_MS = 250L        // hiccup threshold
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
+        // One hop of a walked audio-delay move. At this cadence the widest move there is
+        // — a bound-to-bound slam, ten hops — lands in under 400 ms, and the burst peaks
+        // at 25 frames a second: the same order as [SEEK_THROTTLE_MS]'s ≤20, which is
+        // what this channel is already sized for under a drag.
+        const val AUDIO_DELAY_WALK_MS = 40L
         const val GENERIC_TITLE = "Video"
     }
 }

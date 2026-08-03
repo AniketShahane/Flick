@@ -23,7 +23,8 @@ object ControlProtocolV2 {
     /** Matches the receiver's ceiling exactly; a longer value is not a tag it accepts. */
     private const val LANGUAGE_TAG_MAX = 20
 
-    val capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac")
+    val capabilities =
+        listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay")
     private val idPattern = Regex("[A-Za-z0-9_-]{22}")
     private val proofPattern = Regex("[A-Za-z0-9_-]{43}")
     // Language, optional script, optional region — the receiver's `subLang` grammar

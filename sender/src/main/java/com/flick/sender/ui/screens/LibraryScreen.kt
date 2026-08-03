@@ -77,6 +77,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -125,6 +126,9 @@ import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibraryAction
 import com.flick.sender.media.MediaLibraryActionPolicy
 import com.flick.sender.media.MediaProbe
+import com.flick.sender.media.PlaybackMediaFingerprint
+import com.flick.sender.media.PlaybackProgressState
+import com.flick.sender.media.resumeProgress
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackPhase
@@ -240,6 +244,11 @@ internal fun LibraryScreen(
     // Empty until a receiver actually refuses a file, and back to empty on the next
     // launch: this is a witness list, not a verdict the library carries around.
     val unplayable by controller.unplayableFiles.collectAsState()
+    // Kept as State and deliberately never unwrapped at this scope. A live cast writes a
+    // checkpoint every ~5 s, and reading the map here would put the whole visible grid
+    // through a recomposition for a figure that moved on exactly one of its tiles. Each
+    // tile derives its own value instead — see [LibraryTile].
+    val playbackProgress = controller.playbackProgress.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     // State, not a value: the 2 s telemetry poll must stop at the pill that shows it
     // rather than rebuilding the whole grid.
@@ -496,6 +505,7 @@ internal fun LibraryScreen(
                         imageLoader = imageLoader,
                         compact = compactTiles,
                         unplayable = unplayable.containsKey(item.uriKey),
+                        progress = playbackProgress,
                         onClick = { controller.openDetail(item) },
                         sharedScope = sharedScope,
                         animatedScope = animatedScope,
@@ -1424,12 +1434,24 @@ private fun LibraryTile(
     imageLoader: ImageLoader,
     compact: Boolean,
     unplayable: Boolean,
+    progress: State<PlaybackProgressState>,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
 ) {
     val context = LocalContext.current
+    // This tile's own share of the checkpoint map, and the reason the map itself is
+    // threaded down as State: the store republishes during a cast, and a derived read
+    // under structural equality invalidates only the tiles whose OWN value moved. The
+    // fingerprint is the item's identity in that map and is worth exactly one hash per
+    // tile rather than one per checkpoint.
+    val fingerprint = remember(item) { PlaybackMediaFingerprint.of(item) }
+    val resume by remember(fingerprint, item.durationMs, progress) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            resumeProgress(progress.value, fingerprint, item.durationMs)
+        }
+    }
     // The badge is the only thing on this screen that still needs a dynamic range, and
     // it needs it per tile. MediaProbe memoizes by uri, so a tile recomposed on scroll
     // costs a map lookup rather than a second container parse. Null rather than
@@ -1450,6 +1472,7 @@ private fun LibraryTile(
         imageLoader = imageLoader,
         compact = compact,
         unplayable = unplayable,
+        resume = resume,
         onClick = onClick,
         modifier = modifier,
         sharedScope = sharedScope,
