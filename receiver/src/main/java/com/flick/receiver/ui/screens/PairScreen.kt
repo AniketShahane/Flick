@@ -44,6 +44,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -329,7 +330,11 @@ fun PairScreen(
                     textSizeSp = 18,
                     eyebrow = stringResource(
                         R.string.receiver_eyebrow,
-                        tvName.uppercase(Locale.getDefault()),
+                        // The composition's locale, not the process default: casing
+                        // is language-specific (Turkish dotted I is the standard
+                        // example) and `Locale.getDefault()` is not observable, so a
+                        // language change would leave this reading in the old one.
+                        tvName.uppercase(LocalLocale.current.platformLocale),
                     ),
                 )
                 Text(
@@ -627,7 +632,7 @@ private fun ManualField(
     val valueStyle = FlickType.monoTabular(sizeSp = valueSizeSp, weight = FontWeight.SemiBold)
     Column(verticalArrangement = Arrangement.spacedBy(FlickSpace.Xs)) {
         Text(
-            text = label.uppercase(Locale.getDefault()),
+            text = label.uppercase(LocalLocale.current.platformLocale),
             style = FlickType.monoEyebrow(trackingEm = 0.14f),
             color = labelColor,
         )
@@ -966,7 +971,7 @@ private fun rotationLine(expiresAtElapsedMs: Long?): String {
             String.format(Locale.US, "%d:%02d", remainingSec / 60L, remainingSec % 60L),
         )
     }
-    return text.uppercase(Locale.getDefault())
+    return text.uppercase(LocalLocale.current.platformLocale)
 }
 
 private fun remainingSeconds(expiresAtElapsedMs: Long): Long =
@@ -995,5 +1000,5 @@ private fun confirmDeadlineLine(expiresAtElapsedMs: Long?): String {
     } else {
         stringResource(R.string.pair_confirm_deadline, remainingSec)
     }
-    return text.uppercase(Locale.getDefault())
+    return text.uppercase(LocalLocale.current.platformLocale)
 }

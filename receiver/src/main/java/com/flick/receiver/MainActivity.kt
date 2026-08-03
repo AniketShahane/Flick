@@ -1,5 +1,6 @@
 package com.flick.receiver
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.WindowManager
@@ -19,6 +20,14 @@ import com.flick.receiver.util.FlickLog
 class MainActivity : ComponentActivity() {
     private val remoteKeys = TvRemoteKeyDispatcher()
 
+    // `RestrictedApi` is a false positive on this override, and unavoidable for any
+    // app: `dispatchKeyEvent` is `android.app.Activity`'s own public method, but the
+    // nearest declaration lint resolves is on `androidx.core.app.ComponentActivity`,
+    // whose CLASS — not this member — carries @RestrictTo(LIBRARY_GROUP_PREFIX). We
+    // subclass the public `androidx.activity.ComponentActivity`, never that one, and
+    // overriding a framework callback and chaining to `super` is the only way to
+    // reach the remote before Compose focus dispatch.
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // TV remote input arrives here before Compose focus dispatch. Custom
         // hidden-chrome D-pad commands stop here; unhandled focus navigation and
