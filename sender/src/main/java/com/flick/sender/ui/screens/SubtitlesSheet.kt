@@ -926,6 +926,10 @@ private fun ColumnScope.OnlinePane(
                     result.aiTranslated && !result.machineTranslated
                 },
                 stringResource(R.string.subs_online_trusted).takeIf { result.trusted },
+                // A text search answers with whatever its fuzzy match produced, so the work
+                // a row belongs to is stated rather than left to be inferred from a release
+                // name that looks plausible for any film.
+                result.featureParentTitle ?: result.featureTitle ?: result.featureName,
                 feature,
                 result.featureYear?.let { stringResource(R.string.subs_online_result_year, it) },
                 stringResource(R.string.subs_online_sdh).takeIf { result.hearingImpaired },

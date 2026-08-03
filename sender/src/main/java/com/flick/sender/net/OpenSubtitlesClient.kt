@@ -118,6 +118,16 @@ data class OnlineSubtitle(
     val rating: Double = 0.0,
     val votes: Int = 0,
     val featureType: String? = null,
+    /**
+     * Which work this subtitle is filed under. The API answers a text query with whatever
+     * its fuzzy match produced, so these are what lets Flick tell a film from the series
+     * that shares its name instead of ranking both on popularity alone.
+     * [featureName] is the catalogue's decorated form and [featureParentTitle] the series
+     * an episode belongs to; both are absent for plenty of entries.
+     */
+    val featureTitle: String? = null,
+    val featureName: String? = null,
+    val featureParentTitle: String? = null,
     val featureYear: Int? = null,
     val season: Int? = null,
     val episode: Int? = null,
@@ -323,10 +333,21 @@ class OpenSubtitlesClient private constructor(
         // once is better than running the text query with a credential just refused.
         if (hashOutcome != null && hashOutcome.isCredentialFault()) return@withContext hashOutcome
         val hashResults = (hashOutcome as? SubtitleSearchOutcome.Found)?.results.orEmpty()
+        fun found(textResults: List<OnlineSubtitle>) = SubtitleSearchOutcome.Found(
+            OpenSubtitlesWire.merged(
+                hashResults = hashResults,
+                textResults = textResults,
+                limit = MAX_RESULTS,
+                // The normalized term, not the raw field: results are judged against the
+                // same words the request carried, never against stray spacing or marks.
+                title = term.value,
+                year = year,
+                season = season,
+                episode = episode,
+            ),
+        )
         if (!OpenSubtitlesSearchPolicy.shouldRunTextFallback(hashResults, term)) {
-            return@withContext SubtitleSearchOutcome.Found(
-                OpenSubtitlesWire.ordered(hashResults, year, season, episode),
-            )
+            return@withContext found(emptyList())
         }
 
         val text = subtitles(
@@ -334,24 +355,11 @@ class OpenSubtitlesClient private constructor(
             query = textParameters,
         )
         when {
-            text is SubtitleSearchOutcome.Found ->
-                SubtitleSearchOutcome.Found(
-                    OpenSubtitlesWire.merged(
-                        hashResults = hashResults,
-                        textResults = text.results,
-                        limit = MAX_RESULTS,
-                        year = year,
-                        season = season,
-                        episode = episode,
-                    ),
-                )
+            text is SubtitleSearchOutcome.Found -> found(text.results)
             // A failed text query is still an honest failure — unless the hash already
             // answered, in which case the user gets the better results rather than an
             // error about the weaker half of the same search.
-            hashResults.isNotEmpty() ->
-                SubtitleSearchOutcome.Found(
-                    OpenSubtitlesWire.ordered(hashResults, year, season, episode),
-                )
+            hashResults.isNotEmpty() -> found(emptyList())
             else -> text
         }
     }
@@ -517,7 +525,7 @@ class OpenSubtitlesClient private constructor(
         val data = JSONObject(body).optJSONArray("data") ?: return emptyList()
         val out = ArrayList<OnlineSubtitle>()
         var index = 0
-        while (index < data.length() && out.size < MAX_RESULTS) {
+        while (index < data.length() && out.size < MAX_PARSED_RESULTS) {
             val attributes = data.optJSONObject(index)?.optJSONObject("attributes")
             index++
             val files = attributes?.optJSONArray("files") ?: continue
@@ -527,6 +535,7 @@ class OpenSubtitlesClient private constructor(
             val fileName = ControlProtocolV2.normalizedLabel(first.optString("file_name"), 120)
                 ?: ControlProtocolV2.normalizedLabel(attributes.optString("release"), 120)
                 ?: continue
+            val feature = attributes.optJSONObject("feature_details")
             out += OnlineSubtitle(
                 fileId = fileId,
                 fileName = fileName,
@@ -541,22 +550,29 @@ class OpenSubtitlesClient private constructor(
                 foreignPartsOnly = attributes.optBoolean("foreign_parts_only", false),
                 rating = attributes.optDouble("ratings", 0.0).takeIf { it.isFinite() } ?: 0.0,
                 votes = attributes.optInt("votes", 0).coerceAtLeast(0),
-                featureType = attributes.optJSONObject("feature_details")
-                    ?.optString("feature_type")
-                    ?.let { ControlProtocolV2.normalizedLabel(it, 16) },
-                featureYear = attributes.optJSONObject("feature_details")
-                    ?.optInt("year", -1)
+                featureType = feature?.label("feature_type", 16),
+                featureTitle = feature?.label("title", MAX_TITLE_CHARS),
+                featureName = feature?.label("movie_name", MAX_TITLE_CHARS),
+                featureParentTitle = feature?.label("parent_title", MAX_TITLE_CHARS),
+                featureYear = feature?.optInt("year", -1)
                     ?.takeIf(OpenSubtitlesSearchPolicy::validYear),
-                season = attributes.optJSONObject("feature_details")
-                    ?.optInt("season_number", -1)
+                season = feature?.optInt("season_number", -1)
                     ?.takeIf(OpenSubtitlesSearchPolicy::validSeason),
-                episode = attributes.optJSONObject("feature_details")
-                    ?.optInt("episode_number", -1)
+                episode = feature?.optInt("episode_number", -1)
                     ?.takeIf(OpenSubtitlesSearchPolicy::validEpisode),
             )
         }
         return out
     }
+
+    /**
+     * A server-chosen label, bounded and stripped of anything that could not be shown.
+     * `optString` answers a JSON null with the four-character string `null`, which is a
+     * value that would otherwise reach the sheet as a title and match nothing.
+     */
+    private fun JSONObject.label(name: String, maximum: Int): String? =
+        optString(name).takeIf { it != "null" }
+            ?.let { ControlProtocolV2.normalizedLabel(it, maximum) }
 
     /**
      * The server picks this name, so it is treated as hostile: only a safe alphabet
@@ -624,6 +640,16 @@ class OpenSubtitlesClient private constructor(
         const val REQUEST_TIMEOUT_MS = 20_000L
         const val MAX_JSON_BYTES = 2L * 1024L * 1024L
         const val MAX_RESULTS = 30
+
+        /**
+         * A page is read past the row cap on purpose, because the cap used to be applied
+         * in the API's own order: a fuzzy answer that led with the wrong work cut the right
+         * one off before anything had judged either. Rank first, then keep [MAX_RESULTS].
+         */
+        const val MAX_PARSED_RESULTS = 100
+
+        /** A catalogue title is a title, not prose; a longer one is a mis-filed entry. */
+        const val MAX_TITLE_CHARS = 160
         const val MAX_CACHED_FILES = 8
         const val READ_CHUNK_BYTES = 16 * 1024
         const val CACHE_DIR = "subtitles"

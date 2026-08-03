@@ -210,20 +210,29 @@ object OpenSubtitlesWire {
     }
 
     /**
-     * Exact-file sync remains the first discriminator. Within the same match class,
-     * explicit feature agreement, complete/human/trusted provenance, then ratings and
-     * popularity make the API's quality signals deterministic instead of depending on
-     * response order.
+     * Exact-file sync remains the first discriminator. Within the same match class, which
+     * work a result is about outranks everything about how good a subtitle it is, then
+     * complete/human/trusted provenance, then ratings and popularity make the API's quality
+     * signals deterministic instead of depending on response order.
+     *
+     * A result the hash named is never re-judged on [title]: the hash identifies these
+     * exact bytes, and second-guessing it with a filename-derived title is how a correct
+     * answer gets buried by a renamed file.
      */
     fun ordered(
         results: List<OnlineSubtitle>,
+        title: String? = null,
         year: Int? = null,
         season: Int? = null,
         episode: Int? = null,
     ): List<OnlineSubtitle> = results.sortedWith(
         compareByDescending<OnlineSubtitle> { it.hashMatch }
             .thenByDescending { result ->
-                if (result.hashMatch) 1 else metadataAgreement(result, year, season, episode)
+                if (result.hashMatch) {
+                    ExactFileRelevance
+                } else {
+                    OpenSubtitlesMatchPolicy.relevance(result, title, year, season, episode)
+                }
             }
             .thenBy { it.foreignPartsOnly }
             .thenBy { it.aiTranslated || it.machineTranslated }
@@ -238,19 +247,24 @@ object OpenSubtitlesWire {
      * Hash results ahead of text results, one row per file id, capped at [limit]. The two
      * searches overlap by design; a file that both found keeps the hash-search copy,
      * because that is the copy that knows it matches.
+     *
+     * Only the text half is filtered for recognizability. A hash result already named this
+     * file and owes no explanation to a title that may be a rename.
      */
     fun merged(
         hashResults: List<OnlineSubtitle>,
         textResults: List<OnlineSubtitle>,
         limit: Int,
+        title: String? = null,
         year: Int? = null,
         season: Int? = null,
         episode: Int? = null,
     ): List<OnlineSubtitle> {
-        val out = ArrayList<OnlineSubtitle>(minOf(limit, hashResults.size + textResults.size))
+        val recognizable = OpenSubtitlesMatchPolicy.recognizable(textResults, title, season, episode)
+        val out = ArrayList<OnlineSubtitle>(minOf(limit, hashResults.size + recognizable.size))
         val seen = HashSet<Long>()
-        for (result in ordered(hashResults, year, season, episode) +
-            ordered(textResults, year, season, episode)
+        for (result in ordered(hashResults, title, year, season, episode) +
+            ordered(recognizable, title, year, season, episode)
         ) {
             if (out.size >= limit) break
             if (seen.add(result.fileId)) out += result
@@ -258,29 +272,12 @@ object OpenSubtitlesWire {
         return out
     }
 
-    /**
-     * The API is the authority on matching, but its result metadata lets Flick avoid
-     * promoting a different year or episode above one that agrees with the user's query.
-     * Missing metadata is neutral; only an explicit contradiction is weaker.
-     */
-    private fun metadataAgreement(
-        result: OnlineSubtitle,
-        year: Int?,
-        season: Int?,
-        episode: Int?,
-    ): Int {
-        val isEpisode = season?.let(OpenSubtitlesSearchPolicy::validSeason) == true &&
-            episode?.let(OpenSubtitlesSearchPolicy::validEpisode) == true
-        val expected = listOfNotNull(
-            year?.takeIf { !isEpisode && OpenSubtitlesSearchPolicy.validYear(it) }
-                ?.let { it to result.featureYear },
-            season?.takeIf(OpenSubtitlesSearchPolicy::validSeason)?.let { it to result.season },
-            episode?.takeIf(OpenSubtitlesSearchPolicy::validEpisode)?.let { it to result.episode },
-        )
-        if (expected.isEmpty()) return 1
-        if (expected.any { (wanted, actual) -> actual != null && actual != wanted }) return 0
-        return if (expected.all { (wanted, actual) -> actual == wanted }) 2 else 1
-    }
+    /** Every hash result shares this, so they tie here and settle on quality as before. */
+    private val ExactFileRelevance = SubtitleRelevance(
+        title = SubtitleTitleAgreement.AGREES,
+        kind = SubtitleKindAgreement.AGREES,
+        metadata = 2,
+    )
 
     /**
      * The remaining-downloads figure out of a `/download` answer, or null when it stated

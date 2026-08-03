@@ -26,6 +26,10 @@ class OpenSubtitlesWireTest {
         rating: Double = 0.0,
         votes: Int = 0,
         downloads: Int = id.toInt(),
+        title: String? = null,
+        name: String? = null,
+        parentTitle: String? = null,
+        type: String? = null,
         year: Int? = null,
         season: Int? = null,
         episode: Int? = null,
@@ -42,6 +46,10 @@ class OpenSubtitlesWireTest {
         foreignPartsOnly = foreignPartsOnly,
         rating = rating,
         votes = votes,
+        featureType = type,
+        featureTitle = title,
+        featureName = name,
+        featureParentTitle = parentTitle,
         featureYear = year,
         season = season,
         episode = episode,
@@ -318,6 +326,121 @@ class OpenSubtitlesWireTest {
     @Test fun aTextOnlySearchUsesTheSameDeterministicQualityOrder() {
         val text = listOf(subtitle(1), subtitle(2), subtitle(3))
         assertEquals(listOf(3L, 2L, 1L), OpenSubtitlesWire.merged(emptyList(), text, 30).map { it.fileId })
+    }
+
+    // --- which work a text result is actually about ---------------------------
+
+    @Test fun aPopularSeriesNoLongerOutranksTheFilmWhoseNameItShares() {
+        // `The Chaser` is a 2008 film and a 2012 series. The series has orders of magnitude
+        // more downloads, and popularity was the last thing this order had to go on, so its
+        // episodes were the top rows for anybody casting the film.
+        val merged = OpenSubtitlesWire.merged(
+            hashResults = emptyList(),
+            textResults = listOf(
+                subtitle(
+                    1,
+                    title = "Episode 5",
+                    name = "The Chaser - S01E05",
+                    parentTitle = "The Chaser",
+                    type = "episode",
+                    downloads = 90_000,
+                ),
+                subtitle(
+                    2,
+                    title = "Episode 6",
+                    name = "The Chaser - S01E06",
+                    parentTitle = "The Chaser",
+                    type = "episode",
+                    downloads = 80_000,
+                ),
+                subtitle(3, title = "The Chaser", type = "movie", year = 2008, downloads = 400),
+            ),
+            limit = 30,
+            title = "The Chaser",
+        )
+
+        // The episodes are demoted rather than hidden: the catalogue does name them after
+        // the words that were searched for, and one of them may be what the user meant.
+        assertEquals(listOf(3L, 1L, 2L), merged.map { it.fileId })
+    }
+
+    @Test fun aResultAboutAnotherWorkEntirelyIsDropped() {
+        val merged = OpenSubtitlesWire.merged(
+            hashResults = emptyList(),
+            textResults = listOf(
+                subtitle(1, title = "The Walking Dead", type = "movie", downloads = 500_000),
+                subtitle(2, title = "The Wailing", type = "movie", year = 2016, downloads = 20),
+            ),
+            limit = 30,
+            title = "The Wailing",
+        )
+
+        assertEquals(listOf(2L), merged.map { it.fileId })
+    }
+
+    @Test fun anAnswerNothingRecognizesIsShownRatherThanEmptied() {
+        // Every subtitle for a film catalogued under its original title disagrees with a
+        // filename that used the English one. That is Flick failing to recognize an answer,
+        // not the answer being wrong, so the whole search survives it.
+        val merged = OpenSubtitlesWire.merged(
+            hashResults = emptyList(),
+            textResults = listOf(
+                subtitle(1, title = "Chugyeokja", type = "movie", downloads = 10),
+                subtitle(2, title = "Chugyeokja", type = "movie", downloads = 99),
+            ),
+            limit = 30,
+            title = "The Chaser",
+        )
+
+        assertEquals(listOf(2L, 1L), merged.map { it.fileId })
+    }
+
+    @Test fun anExactFileMatchIsNeverJudgedOnATitleThatMayBeARename() {
+        // The hash named these bytes. A filename that disagrees is a rename, and dropping
+        // or demoting the one result that is certainly in sync would be the worst outcome
+        // this ordering could produce.
+        val merged = OpenSubtitlesWire.merged(
+            hashResults = listOf(subtitle(1, hashMatch = true, title = "Chugyeokja", type = "movie")),
+            textResults = listOf(subtitle(2, title = "The Chaser", type = "movie", downloads = 900)),
+            limit = 30,
+            title = "The Chaser",
+        )
+
+        assertEquals(listOf(1L, 2L), merged.map { it.fileId })
+    }
+
+    @Test fun aFilmsFilenameRanksFilmsAboveEpisodesEvenWhenBothTitlesAgree() {
+        val ordered = OpenSubtitlesWire.ordered(
+            results = listOf(
+                subtitle(1, title = "The Wailing", type = "episode", downloads = 100_000),
+                subtitle(2, title = "The Wailing", type = "movie", downloads = 5),
+            ),
+            title = "The Wailing",
+        )
+
+        assertEquals(listOf(2L, 1L), ordered.map { it.fileId })
+    }
+
+    @Test fun anEpisodeFilenameWantsTheSeriesItNamesRatherThanAFilm() {
+        val ordered = OpenSubtitlesWire.ordered(
+            results = listOf(
+                subtitle(1, title = "Example Show", type = "movie", downloads = 100_000),
+                subtitle(
+                    2,
+                    title = "The One With The Thing",
+                    parentTitle = "Example Show",
+                    type = "episode",
+                    season = 1,
+                    episode = 3,
+                    downloads = 5,
+                ),
+            ),
+            title = "Example Show",
+            season = 1,
+            episode = 3,
+        )
+
+        assertEquals(listOf(2L, 1L), ordered.map { it.fileId })
     }
 
     // --- what is left of the day's allowance ---------------------------------
