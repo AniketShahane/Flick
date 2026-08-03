@@ -8,13 +8,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.Format
 import androidx.media3.common.TrackGroup
@@ -108,6 +112,56 @@ class SubtitlesPanelFocusTest {
         val medium = composeRule.onNodeWithText("Medium").assertIsFocused()
         medium.press(Key.DirectionUp)
         composeRule.onNodeWithText("Track 10").assertIsFocused()
+    }
+
+    /**
+     * The panel standalone is not the panel on the screen. `PlaybackSidePanel`
+     * wraps it in the modal focus gate, and a gate that leaked onto the track
+     * list's own scroll focus group vetoed every move out of the list — with the
+     * size cells fully on screen the whole time. Both halves are asserted for
+     * that reason: displayed and reachable fail differently here.
+     *
+     * Six tracks is the count at which the list scrolls at 1080p / density 2, so
+     * this also covers a size row sitting below a list that does not fit.
+     */
+    @Test
+    fun size_cells_are_displayed_and_reachable_below_a_scrolling_list_on_the_real_screen() {
+        val tracks = (1..6).map { number ->
+            subtitle(id = "0:$number", label = "Track $number", selected = false, number = number)
+        }
+        setPlaybackWithOpenSubtitles(tracks)
+
+        composeRule.onNodeWithText("Small").assertIsDisplayed()
+        composeRule.onNodeWithText("Medium").assertIsDisplayed()
+        composeRule.onNodeWithText("Large").assertIsDisplayed()
+
+        var focused = composeRule.onNodeWithText("Off").assertIsFocused()
+        tracks.indices.forEach { index ->
+            focused.press(Key.DirectionDown)
+            focused = composeRule.onNodeWithText("Track ${index + 1}").assertIsFocused()
+        }
+        focused.press(Key.DirectionDown)
+        val medium = composeRule.onNodeWithText("Medium").assertIsFocused()
+        medium.press(Key.DirectionUp)
+        composeRule.onNodeWithText("Track 6").assertIsFocused()
+    }
+
+    /**
+     * The other half of the same gate: scoping it to the panel's own boundary may
+     * not cost the modal guarantee. The close button is the panel's topmost
+     * control, so UP from it is the move that would otherwise escape.
+     */
+    @Test
+    fun the_open_panel_still_refuses_to_let_focus_leave_through_its_top_edge() {
+        setPlaybackWithOpenSubtitles(
+            tracks = listOf(subtitle(id = "0:0", label = "English", selected = true, number = 1)),
+        )
+
+        val close = composeRule.onNodeWithContentDescription("Close subtitles")
+        close.performSemanticsAction(SemanticsActions.RequestFocus)
+        close.assertIsFocused()
+        close.press(Key.DirectionUp)
+        close.assertIsFocused()
     }
 
     @Test

@@ -133,7 +133,19 @@ fun RenameLabelDialog(
                         .fillMaxWidth()
                         .focusRequester(focusRequester)
                         .testTag("rename-name-field"),
-                    label = { Text(stringResource(R.string.rename_name_label)) },
+                    // The colour is on the Text, not in `colors` below: this is
+                    // tv-material3's `Text`, and M3 tints a label by providing
+                    // ITS OWN `LocalContentColor`, which tv-material3 does not
+                    // read. `focusedLabelColor` would be silently ignored and the
+                    // label would fall back to tv's default content colour —
+                    // black, since only a tv `Surface` ever provides that local
+                    // and this theme installs none.
+                    label = {
+                        Text(
+                            text = stringResource(R.string.rename_name_label),
+                            color = FlickColor.Spark,
+                        )
+                    },
                     singleLine = true,
                     textStyle = FlickType.body(sizeSp = 18),
                     keyboardOptions = KeyboardOptions(
@@ -150,10 +162,14 @@ fun RenameLabelDialog(
                         cursorColor = FlickColor.Spark,
                         focusedBorderColor = FlickColor.Spark,
                         unfocusedBorderColor = FlickColor.Outline,
-                        focusedLabelColor = FlickColor.Spark,
-                        unfocusedLabelColor = FlickColor.OnSurfaceDim,
-                        focusedContainerColor = FlickColor.SurfaceRaised,
-                        unfocusedContainerColor = FlickColor.SurfaceRaised,
+                        // The floating label straddles the top border, so a
+                        // container of its own put the word's upper half on the
+                        // card and its lower half on the field — two navies
+                        // behind one label. An outlined field is drawn by its
+                        // border; letting the card show through is what gives the
+                        // label a single backdrop.
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
                     ),
                 )
                 if (saveFailed) {

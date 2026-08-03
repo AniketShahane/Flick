@@ -48,6 +48,8 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -107,6 +109,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -179,6 +182,16 @@ import kotlin.math.roundToInt
 internal class LibraryUiState(val grid: LazyGridState) {
     var searchOpen by mutableStateOf(false)
     var searchQuery by mutableStateOf("")
+
+    /**
+     * The field owes the user focus and a keyboard, and has not given them yet.
+     *
+     * Held here rather than inside the control because the control is a row of the lazy
+     * grid: scrolling the results disposes it, which is the right moment for the keyboard
+     * to go away — and a latch that had been disposed with it would raise the keyboard
+     * again, unasked, every time that row scrolled back into view.
+     */
+    var searchFocusPending by mutableStateOf(false)
 
     /**
      * The entrance belongs to the library ARRIVING — the first paint after MediaStore
@@ -290,9 +303,26 @@ internal fun LibraryScreen(
 
     // Folder scope comes first. Search only narrows that already-scoped set, never the
     // whole library, and a blank query returns the same list object without allocation.
-    val searchResults = remember(scoped, uiState.searchQuery) {
-        LibrarySearchPolicy.apply(scoped, uiState.searchQuery) { it.name }
+    //
+    // The two remembers are one decision: folding a name costs Unicode normalization and a
+    // parse of the filename behind the title on the tile, and doing that to the whole
+    // library on every keystroke is a phone dropping frames under the user's own typing.
+    // Only the index depends on the library, and only the cheap half depends on the query.
+    val searchIndex = remember(scoped) { LibrarySearchPolicy.index(scoped) { it.name } }
+    val searchResults = remember(searchIndex, uiState.searchQuery) {
+        searchIndex.matching(uiState.searchQuery)
     }
+
+    val closeSearch = {
+        uiState.searchOpen = false
+        uiState.searchQuery = ""
+        uiState.searchFocusPending = false
+    }
+    // Back belongs to the screen, not to the control that raised the field: that control is
+    // a row inside the lazy grid, so scrolling down through the results disposes it — and a
+    // handler living there would hand Back to the shell, which leaves the library, while
+    // search is still open and still filtering what is on screen.
+    BackHandler(enabled = uiState.searchOpen, onBack = closeSearch)
 
     // The pull's own claim on the indicator, which is not the same claim as `loading`:
     // the library also reloads on a permission grant and on every return to this screen,
@@ -401,13 +431,15 @@ internal fun LibraryScreen(
                         scope = folderScope,
                         searchOpen = uiState.searchOpen,
                         query = uiState.searchQuery,
+                        focusPending = uiState.searchFocusPending,
                         onChooseFolder = { choosingFolder = true },
-                        onOpenSearch = { uiState.searchOpen = true },
-                        onQueryChange = { uiState.searchQuery = it },
-                        onCloseSearch = {
-                            uiState.searchOpen = false
-                            uiState.searchQuery = ""
+                        onOpenSearch = {
+                            uiState.searchOpen = true
+                            uiState.searchFocusPending = true
                         },
+                        onQueryChange = { uiState.searchQuery = it },
+                        onFocusHandled = { uiState.searchFocusPending = false },
+                        onCloseSearch = closeSearch,
                     )
                 }
                 if (on24GHz) {
@@ -965,9 +997,11 @@ private fun LibraryControls(
     scope: LibraryScope,
     searchOpen: Boolean,
     query: String,
+    focusPending: Boolean,
     onChooseFolder: () -> Unit,
     onOpenSearch: () -> Unit,
     onQueryChange: (String) -> Unit,
+    onFocusHandled: () -> Unit,
     onCloseSearch: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -1011,16 +1045,31 @@ private fun LibraryControls(
     // A closing field is still painted for its exit, but it cannot retain focus or become
     // a TalkBack stop after the user has asked to leave search.
     val fieldInteractive = searchOpen
-    LaunchedEffect(searchOpen, fieldInteractive) {
-        if (searchOpen && fieldInteractive) {
+    // Focus is taken once per OPEN, not once per composition of this row: the row is a lazy
+    // grid item, so it is disposed and rebuilt by ordinary scrolling, and requesting focus
+    // on every rebuild is a keyboard that reappears over the results whenever the user
+    // scrolls back to the top of them.
+    LaunchedEffect(searchOpen, fieldInteractive, focusPending) {
+        if (searchOpen && fieldInteractive && focusPending) {
             focusRequester.requestFocus()
             keyboard?.show()
-        } else if (!searchOpen) {
+            onFocusHandled()
+        }
+    }
+    // And released only by a field that was actually there to hold it, so a rebuild with
+    // search closed cannot clear focus that belongs to something else on the screen.
+    //
+    // `fieldPresent` is a condition sampled at that transition and deliberately NOT a key:
+    // the value the body reads is the one this composition computed, which is still true on
+    // the frame search closes — `fieldComposed` does not drop until the exit animation
+    // reaches rest, one composition later. Keying on it would instead run this a second
+    // time when the field finally leaves, hiding a keyboard that went down with it.
+    LaunchedEffect(searchOpen) {
+        if (!searchOpen && fieldPresent) {
             focusManager.clearFocus()
             keyboard?.hide()
         }
     }
-    BackHandler(enabled = searchOpen) { onCloseSearch() }
 
     val openDescription = stringResource(R.string.library_search_open)
     val closeDescription = stringResource(
@@ -1122,6 +1171,21 @@ private fun LibraryControls(
                 value = query,
                 onValueChange = onQueryChange,
                 singleLine = true,
+                // The grid is already filtering under every character, so the action key has
+                // nothing left to submit and is there to put the keyboard down over the
+                // results it produced. Autocorrect is off because these are not words: a
+                // half-typed title is exactly what this field is for, and an IME that
+                // "fixes" it on the space bar retypes the user's query for them.
+                keyboardOptions = KeyboardOptions(
+                    autoCorrectEnabled = false,
+                    imeAction = ImeAction.Search,
+                ),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        focusManager.clearFocus()
+                        keyboard?.hide()
+                    },
+                ),
                 textStyle = FlickText.bodyMedium.copy(color = colors.onSurface),
                 cursorBrush = SolidColor(colors.primary),
                 modifier = Modifier
@@ -1173,7 +1237,17 @@ private fun LibraryControls(
                                     indication = flickRipple(colors.onSurface),
                                     role = Role.Button,
                                     onClick = {
-                                        if (query.isNotEmpty()) onQueryChange("") else onCloseSearch()
+                                        if (query.isEmpty()) {
+                                            onCloseSearch()
+                                        } else {
+                                            onQueryChange("")
+                                            // Clearing is the start of the next query, never
+                                            // the end of searching: the tap lands on a
+                                            // focusable target of its own, so the field has
+                                            // to be handed what it just lost.
+                                            focusRequester.requestFocus()
+                                            keyboard?.show()
+                                        }
                                     },
                                 )
                                 .semantics { contentDescription = closeDescription },

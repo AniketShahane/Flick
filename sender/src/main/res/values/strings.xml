@@ -86,11 +86,13 @@
     <string name="library_ready_pill">Ready · %1$s</string>
     <string name="library_loading">READING YOUR LIBRARY…</string>
     <string name="library_search_open">Search videos</string>
-    <string name="library_search_placeholder">Search filenames</string>
+    <!-- The field searches the title on the tile as well as the name on disk, so it must
+         not promise only one of them. -->
+    <string name="library_search_placeholder">Search your videos</string>
     <string name="library_search_clear">Clear search</string>
     <string name="library_search_close">Close search</string>
     <string name="library_empty_search_title">No matching videos</string>
-    <string name="library_empty_search_body">Try another filename or clear your search.</string>
+    <string name="library_empty_search_body">Try another title, or clear your search.</string>
     <string name="library_tile_badge">%1$s %2$s</string>
 
     <!-- Folder scope. Flick lists one folder at a time so a gallery full of clips and

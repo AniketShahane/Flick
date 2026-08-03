@@ -1,6 +1,6 @@
 package com.flick.sender.net
 
-import java.text.Normalizer
+import com.flick.sender.media.FoldedText
 import java.util.Locale
 
 /** How well the work a result belongs to agrees with the title that was searched for. */
@@ -55,17 +55,8 @@ data class SubtitleRelevance(
  */
 object OpenSubtitlesMatchPolicy {
 
-    /**
-     * The Combining Diacritical Marks block, and only it. Folding these lets `Amelie` match
-     * `Amélie`; folding every non-spacing mark would instead destroy Indic vowel signs and
-     * Semitic points, which are letters of their titles rather than decoration on them.
-     */
-    private val LatinDiacritics = 0x0300..0x036F
-
     /** Dropped only when the rest already matched, so an over-broad list cannot mislead. */
     private val Articles = setOf("the", "a", "an")
-
-    private val Whitespace = Regex("\\s+")
 
     /**
      * The best agreement any of the names this result carries can reach.
@@ -218,63 +209,12 @@ object OpenSubtitlesMatchPolicy {
     private fun withoutArticle(tokens: List<String>): List<String> =
         if (tokens.size > 1 && tokens.first() in Articles) tokens.drop(1) else tokens
 
-    private fun tokensOf(text: String?): List<String>? = folded(text ?: return null)
-        .split(' ')
-        .filter { it.isNotEmpty() }
-        .takeIf { it.isNotEmpty() }
-
-    /**
-     * Case, accents and punctuation removed, so only the words are left to compare.
-     *
-     * Lower-cased first and with [Locale.ROOT], never the device's: a phone set to Turkish
-     * would map the `I` of `INCEPTION` to a dotless `ı` and agree with nothing. The
-     * decomposition is compatibility rather than canonical, so a full-width `ＴＥＮＥＴ` and
-     * a `ﬁ` ligature reach the same letters an ASCII release name spells them with.
-     *
-     * A mark that is not a Latin diacritic is kept, never turned into a separator: an Indic
-     * vowel sign or virama is a letter of its word, and spacing one out would leave two
-     * fragments that agree with nothing. Joiners are dropped on both sides for the same
-     * reason in reverse — one spelling carrying one and another not is still one word.
-     */
-    private fun folded(text: String): String {
-        val decomposed = Normalizer.normalize(text.lowercase(Locale.ROOT), Normalizer.Form.NFKD)
-        val stripped = StringBuilder(decomposed.length)
-        decomposed.codePoints().forEach { codePoint ->
-            val substitute = StrokedLetters[codePoint]
-            when {
-                codePoint in LatinDiacritics -> Unit
-                Character.getType(codePoint) == Character.FORMAT.toInt() -> Unit
-                substitute != null -> stripped.append(substitute)
-                Character.isLetterOrDigit(codePoint) -> stripped.appendCodePoint(codePoint)
-                Character.getType(codePoint) in WordMarks -> stripped.appendCodePoint(codePoint)
-                else -> stripped.append(' ')
-            }
-        }
-        return Normalizer.normalize(stripped.toString(), Normalizer.Form.NFC)
-            .trim()
-            .replace(Whitespace, " ")
-    }
-
-    /**
-     * The Latin letters that carry their mark *inside* the glyph, which no decomposition
-     * will separate. Without these `Brodre` disagrees with `Brødre` and `Kis Uykusu` with
-     * `Kış Uykusu`, and a release name spells those the ASCII way far more often than not.
-     */
-    private val StrokedLetters = mapOf(
-        'ø'.code to "o", 'ł'.code to "l", 'đ'.code to "d", 'ð'.code to "d",
-        'ħ'.code to "h", 'ŧ'.code to "t", 'ı'.code to "i", 'ß'.code to "ss",
-        'æ'.code to "ae", 'œ'.code to "oe", 'þ'.code to "th",
-    )
+    private fun tokensOf(text: String?): List<String>? =
+        FoldedText.words(text ?: return null).takeIf { it.isNotEmpty() }
 
     private val RomanNumerals = mapOf(
         "i" to "1", "ii" to "2", "iii" to "3", "iv" to "4", "v" to "5", "vi" to "6",
         "vii" to "7", "viii" to "8", "ix" to "9", "x" to "10", "xi" to "11",
         "xii" to "12", "xiii" to "13",
-    )
-
-    private val WordMarks = setOf(
-        Character.NON_SPACING_MARK.toInt(),
-        Character.COMBINING_SPACING_MARK.toInt(),
-        Character.ENCLOSING_MARK.toInt(),
     )
 }

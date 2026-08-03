@@ -21,6 +21,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1065,10 +1066,21 @@ private fun PlaybackSidePanel(
 
     Box(
         modifier = modifier
-            .focusProperties {
-                canFocus = open
-                onExit = { if (open) cancelFocusChange() }
-            }
+            // The modal veto needs a focus target of the panel's OWN to hang on,
+            // and `focusProperties` owns none: its block is inherited by every
+            // focus target inside that has no other target between it and this
+            // Box. That included the non-focusable focus target `verticalScroll`
+            // delegates around the subtitles track list — so leaving the list,
+            // which is exactly what a D-pad DOWN off the last track does to reach
+            // the size selector, read as leaving the panel and was cancelled. The
+            // group below is that target, and it is the panel boundary, so only a
+            // move that really leaves the panel trips the veto.
+            .focusProperties { onExit = { if (open) cancelFocusChange() } }
+            .focusGroup()
+            // Inside the group, so it reaches the panel's contents and stops
+            // there: a retreating panel leaves the focus graph without the veto
+            // above following its children down.
+            .focusProperties { canFocus = open }
             .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
     ) {
         // The panel's glass is born at the card that summoned it and pulled back
