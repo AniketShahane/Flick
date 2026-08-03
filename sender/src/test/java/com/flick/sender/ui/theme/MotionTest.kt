@@ -1,7 +1,9 @@
 package com.flick.sender.ui.theme
 
 import androidx.compose.animation.core.SnapSpec
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -19,6 +21,31 @@ class MotionTest {
     @Test
     fun orSnapReplacesTheSpecWhenAnimatorsAreOff() {
         assertTrue(Motion.orSnap(reduceMotion = true, spec = spring<Float>()) is SnapSpec)
+    }
+
+    @Test
+    fun cardMorphRetimesTheActualSchemeSpringAndPreservesItsCharacter() {
+        val threshold = 0.004f
+        val base = spring(
+            dampingRatio = 0.8f,
+            stiffness = 380f,
+            visibilityThreshold = threshold,
+        )
+
+        val retimed = Motion.cardMorphSpec(base) as SpringSpec<Float>
+
+        assertEquals(base.dampingRatio, retimed.dampingRatio, 0f)
+        assertEquals(380f / (0.75f * 0.75f), retimed.stiffness, 0.001f)
+        assertEquals(threshold, retimed.visibilityThreshold ?: error("threshold lost"), 0f)
+        assertEquals(450, Motion.CardMorphHoldMs)
+        assertEquals(675L, Motion.CardMorphLatchMs)
+        assertEquals(135L, Motion.CardMorphBarHandoffMs)
+    }
+
+    @Test
+    fun cardMorphLeavesAFutureNonSpringSchemeAlone() {
+        val spec = tween<Float>(durationMillis = 240)
+        assertSame(spec, Motion.cardMorphSpec(spec))
     }
 
     @Test

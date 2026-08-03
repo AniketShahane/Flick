@@ -9,6 +9,7 @@ import androidx.compose.animation.core.DurationBasedAnimationSpec
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Indication
@@ -59,6 +60,23 @@ import kotlinx.coroutines.launch
  * still be gated on [rememberReduceMotion].
  */
 object Motion {
+
+    /**
+     * The dock-to-remote transform is deliberately quicker than the scheme's default
+     * spatial motion while retaining that spring's character. Spring duration scales
+     * approximately with the inverse square root of stiffness, so a 0.75 duration asks
+     * for `1 / 0.75²` of the scheme spring's actual stiffness.
+     */
+    private const val CardMorphDurationFraction = 0.75f
+
+    /** Route surface hold while the remote card grows over it. */
+    const val CardMorphHoldMs = 450
+
+    /** Latch lifetime for the specs captured at the start of a card flight. */
+    const val CardMorphLatchMs = 675L
+
+    /** Point at which the growing card takes ownership of the system bars. */
+    const val CardMorphBarHandoffMs = 135L
 
     // --- Easing curves (cubic-bezier) ---
     /**
@@ -133,6 +151,23 @@ object Motion {
 
     fun <T> detent(): DurationBasedAnimationSpec<T> =
         tween(durationMillis = DetentMs, easing = RippleOut)
+
+    /**
+     * Retime the Material scheme spring used by the dock/remote shared bounds and its
+     * dissolve. The damping ratio and visibility threshold come from the active scheme;
+     * only stiffness changes. A future non-spring scheme passes through unchanged rather
+     * than making this product token a source of a runtime cast failure.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun <T> cardMorphSpec(base: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> {
+        val baseSpring = base as? SpringSpec<T> ?: return base
+        return SpringSpec(
+            dampingRatio = baseSpring.dampingRatio,
+            stiffness = baseSpring.stiffness /
+                (CardMorphDurationFraction * CardMorphDurationFraction),
+            visibilityThreshold = baseSpring.visibilityThreshold,
+        )
+    }
 
     /** Snap instead of animating when the platform's animators are off. */
     fun <T> orSnap(reduceMotion: Boolean, spec: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> =

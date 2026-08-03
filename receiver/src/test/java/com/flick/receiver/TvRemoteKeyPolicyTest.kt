@@ -249,6 +249,24 @@ class TvRemoteKeyPolicyTest {
         }
     }
 
+    @Test fun anOpenPanelClearsAStalePlaybackCaptureWithoutEatingNavigation() {
+        // A missed playback key-up used to leave the Activity policy holding a
+        // capture. Even though the panel disabled playback gestures, the capture
+        // branch ran first and swallowed Down before Compose could move focus
+        // from the last subtitle track into the size selector.
+        listOf(TvRemoteEventType.Down, TvRemoteEventType.Up).forEach { eventType ->
+            val decision = decide(
+                button = TvRemoteButton.Down,
+                eventType = eventType,
+                playbackActive = false,
+                capturedButton = TvRemoteButton.Down,
+            )
+            assertFalse(eventType.name, decision.consume)
+            assertTrue(eventType.name, decision.releaseCapture)
+            assertNull(eventType.name, decision.command)
+        }
+    }
+
     @Test fun visibleChromeLeavesCenterAndVerticalDpadToComposeFocus() {
         listOf(
             TvRemoteButton.Select,

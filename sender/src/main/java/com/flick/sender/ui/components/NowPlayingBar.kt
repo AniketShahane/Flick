@@ -76,6 +76,7 @@ import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.Ink
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
@@ -207,8 +208,8 @@ internal fun Modifier.remoteCardBounds(
 ): Modifier {
     if (sharedScope == null || animatedScope == null) return this
     val reduceMotion = rememberReduceMotion()
-    val travel = MaterialTheme.motionScheme.defaultSpatialSpec<Rect>()
-    val dissolve = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    val travel = Motion.cardMorphSpec(MaterialTheme.motionScheme.defaultSpatialSpec<Rect>())
+    val dissolve = Motion.cardMorphSpec(MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
     val bounds = remember(reduceMotion, travel) {
         BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else travel }
     }

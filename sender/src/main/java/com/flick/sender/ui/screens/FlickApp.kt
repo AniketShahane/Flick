@@ -66,6 +66,7 @@ import com.flick.sender.ui.components.RevealTarget
 import com.flick.sender.ui.components.originRevealMask
 import com.flick.sender.ui.components.remoteCardBounds
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
@@ -191,7 +192,11 @@ fun FlickApp(
     var flown by remember { mutableStateOf<Any?>(null) }
     LaunchedEffect(flight) {
         // One latch, two arms, and no pair can take both — see [SenderShellPolicy.heroReturn].
-        if (flightMorph) delay(MorphFlightMs) else if (heroReturn && !reduceMotion) delay(HeroLandMs)
+        if (flightMorph) {
+            delay(Motion.CardMorphLatchMs)
+        } else if (heroReturn && !reduceMotion) {
+            delay(HeroLandMs)
+        }
         flown = flight
     }
     // Released once the geometry is out of the air, because after that a cast that ends
@@ -254,7 +259,7 @@ fun FlickApp(
     LaunchedEffect(backdropDark, morphing, reduceMotion) {
         // Nothing travels when the platform's animators are off, so the card is already
         // there and the bars have to change hands with it.
-        if (morphing && backdropDark && !reduceMotion) delay(MorphBarsMs)
+        if (morphing && backdropDark && !reduceMotion) delay(Motion.CardMorphBarHandoffMs)
         barsDark = backdropDark
     }
     SystemBarAppearance(darkBackdrop = barsDark)
@@ -322,7 +327,7 @@ fun FlickApp(
                                 RouteMotion.CONTAINER ->
                                     if (to == ShellDestination.NOW_PLAYING) {
                                         EnterTransition.None togetherWith
-                                            fadeOut(snap(delayMillis = MorphHoldMs))
+                                            fadeOut(snap(delayMillis = Motion.CardMorphHoldMs))
                                     } else {
                                         // Coming back, the remote's own card keeps it composed
                                         // for the whole flight.
@@ -494,7 +499,8 @@ fun FlickApp(
                             // once the card owns the window. A route's sheet rising is not
                             // that — nothing covers the bar there, and holding its place
                             // would leave the pill on top of the sheet for the whole hold.
-                            morphing && !sheetRaised -> fadeOut(snap(delayMillis = MorphHoldMs))
+                            morphing && !sheetRaised ->
+                                fadeOut(snap(delayMillis = Motion.CardMorphHoldMs))
                             else -> fadeOut(motionScheme.fastEffectsSpec()) +
                                 slideOutVertically(motionScheme.defaultSpatialSpec()) { it }
                         },
@@ -524,11 +530,22 @@ fun FlickApp(
                     transitionSpec = {
                         // No enter fade: the radial mask below IS the entrance, and a
                         // simultaneous fade would only wash out the edge it travels on.
-                        val transform = if (reduceMotion) {
-                            EnterTransition.None togetherWith ExitTransition.None
+                        val exit = if (
+                            !reduceMotion &&
+                            shouldFadeOverlayExit(
+                                initialPresent = initialState != null,
+                                targetPresent = targetState != null,
+                            )
+                        ) {
+                            fadeOut(motionScheme.fastEffectsSpec())
                         } else {
-                            EnterTransition.None togetherWith fadeOut(motionScheme.fastEffectsSpec())
+                            // A sheet finishes its own travel before it clears the
+                            // controller flag. Retaining that already-gone full-screen
+                            // surface for another fade leaves its invisible scrim on top
+                            // of Settings/Devices, where it consumes the next rapid tap.
+                            ExitTransition.None
                         }
+                        val transform = EnterTransition.None togetherWith exit
                         // Both states are full-screen, so the default size transform has
                         // nothing to interpolate except the empty state's zero size — and
                         // it grew the sheet out of the top-left corner doing it.
@@ -590,29 +607,6 @@ private const val LaunchNear = 1.06f
 private const val LaunchFar = 0.92f
 
 /**
- * How long the surface under the growing card is held before it is dropped. It has to
- * outlast the card's own spring — the card is only guaranteed to own every pixel once
- * that spring has settled — and it is a hold, not a fade: nothing about the held surface
- * moves or dims while it is on screen.
- */
-private const val MorphHoldMs = 600
-
-/**
- * How long the specs a dock↔remote flight was started with are held. Longer than both the
- * hold above and the card's own spring: releasing the latch while either is still running
- * would swap a transition's specs mid-flight, which is the exact fault it exists to
- * prevent.
- */
-private const val MorphFlightMs = 900L
-
-/**
- * When the growing card reaches the status and navigation bars. The card's top edge is
- * what travels — the bottom one barely moves — so both bars change hands within a few
- * frames of each other, near the end of the spring rather than at its midpoint.
- */
-private const val MorphBarsMs = 180L
-
-/**
  * How long the bottom stack waits below the window edge while a frame flies back into the
  * grid. It is the FLIGHT's length and not the landing's: the copy in the overlay is handed
  * back to the grid cell only when its bounds animation terminates, so a stack released
@@ -622,6 +616,14 @@ private const val MorphBarsMs = 180L
  * putting a bar back under a poster. Longer only reads as a stall.
  */
 private const val HeroLandMs = 560L
+
+/**
+ * Only two live overlays cross-dissolve. A transition to the empty state follows a
+ * sheet's already-completed exit and must dispose the old full-screen input layer in the
+ * same frame; a transition from empty has no visible outgoing surface to fade.
+ */
+internal fun shouldFadeOverlayExit(initialPresent: Boolean, targetPresent: Boolean): Boolean =
+    initialPresent && targetPresent
 
 /**
  * Which arm a route pair takes. CONTAINER is the dock growing into the remote and back,

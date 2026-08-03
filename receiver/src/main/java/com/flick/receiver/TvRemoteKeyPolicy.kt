@@ -43,14 +43,12 @@ internal data class TvRemoteDecision(
  * events. Dedicated media keys are deliberately absent and continue to
  * MediaSession.
  *
- * [capturedButton] is the gesture in flight. It outranks every other input,
- * including [scrubFocused] and [chromeVisible]: once a key-down has been claimed
- * as a seek, the whole hold belongs to it through its own key-up, so a chrome
- * auto-hide or a focus move landing mid-hold cannot split one physical press into
- * two different meanings. No other D-pad key may take the capture while it is
- * held — only the holder's key-up releases it — which also means a capture that
- * outlives its key-up (a window-focus loss swallows the release) is cleared by
- * pressing that same button again, not left to be stolen by a different one.
+ * During playback, [capturedButton] is the gesture in flight. It outranks
+ * [scrubFocused] and [chromeVisible]: once a key-down has been claimed as a seek,
+ * the whole hold belongs to it through its own key-up, so a chrome auto-hide or a
+ * focus move cannot split one physical press into two meanings. A non-playback
+ * surface instead clears any stale capture and receives the event; side-panel
+ * focus navigation must never be held hostage by an earlier playback gesture.
  */
 internal fun tvRemoteDecision(
     button: TvRemoteButton,
@@ -61,19 +59,25 @@ internal fun tvRemoteDecision(
     scrubFocused: Boolean,
     capturedButton: TvRemoteButton?,
 ): TvRemoteDecision {
+    if (!playbackActive) {
+        // Side panels and every non-playback surface own the whole D-pad. A
+        // key-up lost during an earlier playback gesture must not leave a stale
+        // capture swallowing the panel's first navigation press.
+        return TvRemoteDecision(
+            consume = false,
+            releaseCapture = capturedButton != null,
+        )
+    }
+
     if (capturedButton == button) {
         return when (eventType) {
             TvRemoteEventType.Up -> TvRemoteDecision(consume = true, releaseCapture = true)
-            TvRemoteEventType.Down -> if (!playbackActive) {
-                TvRemoteDecision(consume = true)
-            } else {
-                when (button) {
-                    TvRemoteButton.Left, TvRemoteButton.Right -> TvRemoteDecision(
-                        consume = true,
-                        command = tvRemoteSeekCommand(button, repeatCount),
-                    )
-                    else -> TvRemoteDecision(consume = true)
-                }
+            TvRemoteEventType.Down -> when (button) {
+                TvRemoteButton.Left, TvRemoteButton.Right -> TvRemoteDecision(
+                    consume = true,
+                    command = tvRemoteSeekCommand(button, repeatCount),
+                )
+                else -> TvRemoteDecision(consume = true)
             }
             TvRemoteEventType.Other -> TvRemoteDecision(consume = true)
         }
@@ -90,8 +94,6 @@ internal fun tvRemoteDecision(
         // `Other` is excluded because dedicated media keys are never ours to hold.
         return TvRemoteDecision(consume = true)
     }
-
-    if (!playbackActive) return TvRemoteDecision(consume = false)
 
     val seekGesture = tvRemoteHorizontalSeeks(chromeVisible, scrubFocused)
 
