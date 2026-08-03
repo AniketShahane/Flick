@@ -282,10 +282,9 @@ fun SettingsScreen(
     /** Returns whether the credential is actually gone; see `PairingManager.forget`. */
     onForgetPhone: (String) -> Boolean = { false },
     /**
-     * Cycles one phone's label to the next preset; see `PairingManager.rename`.
-     * It touches the label alone — the key id, the key and the pairing date are
-     * carried across untouched, so the phone stays paired on the credential it
-     * already had and a live session is unaffected.
+     * Opens the shared text editor for this phone. Saving goes through
+     * `PairingManager.rename`, which carries its credentials and pairing date
+     * across untouched and does not disturb a live session.
      */
     onRenamePhone: (String) -> Unit = {},
     diagnosticsVisible: Boolean = false,

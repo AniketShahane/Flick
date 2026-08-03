@@ -535,14 +535,20 @@ fly between unrelated regions, least of all across a surface that is itself
 sliding — and the drill takes the same from-the-right direction and sixth-of-axis
 travel the shell uses to enter Settings, so it reads as that gesture one level down.
 
-`Rename` cycles `phone_name_presets`, exactly as `Rename TV` cycles
-`tv_name_presets`: there is no keyboard on this TV, so renaming steps through
-neutral names rather than typing, and there is no text field. It goes straight to
-`PairingManager.rename` and **changes the label only** — the key id, the key and
-the pairing date are carried across verbatim, so the phone stays paired on the
-credential it already had and a live session is untouched. It deliberately does
-NOT route through `ControlServer` the way `Forget` must: there is no session to
-revoke, and that path takes the manager monitor before `serverLock`.
+`Rename TV`, Settings' `Device name`, and every paired-phone `Rename` open the
+same modal, single-line text editor with the current name selected. It requests
+the Android TV text keyboard, word capitalization, a centred IME, and a Done
+action; voice input belongs to Gboard and requires no receiver microphone
+permission. Saving canonicalizes the input to the wire label contract and caps it
+at 80 Unicode code points without splitting surrogate pairs; a blank canonical
+name cannot save, while Cancel and Back leave state untouched. A TV save persists
+the name and refreshes NSD. Pair-screen rename closes the live pairing surface
+before opening the editor and reopens it on exit, so no code or confirmation is
+hidden under the modal. A phone save goes straight to `PairingManager.rename`
+and **changes the label only** — the key id, key, pairing date, and live session
+remain untouched. It deliberately does NOT route through `ControlServer` the way
+`Forget` must: there is no session to revoke, and that path takes the manager
+monitor before `serverLock`.
 
 `Forget` keeps its two-press confirm, armed per key id and disarmed the moment
 the D-pad leaves it. `Forget all phones` stays on the main column and stays

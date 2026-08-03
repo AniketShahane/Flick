@@ -234,6 +234,12 @@
     <string name="settings_paired_back">Back</string>
     <string name="settings_phone_rename">Rename</string>
     <string name="settings_phone_rename_a11y">Rename %1$s</string>
+    <string name="rename_tv_title">Rename this TV</string>
+    <string name="rename_phone_title">Rename paired phone</string>
+    <string name="rename_name_label">Name</string>
+    <string name="rename_cancel">Cancel</string>
+    <string name="rename_save">Save</string>
+    <string name="rename_save_failed">Couldn’t save the name. Try again.</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>
@@ -265,27 +271,6 @@
     <string name="metrics_subtitle_cue_text">text cue</string>
     <string name="metrics_subtitle_cue_bitmap">bitmap cue</string>
     <string name="metrics_subtitle_cue_mixed">mixed cues</string>
-
-    <!-- Friendly-name presets cycled by the on-screen "Rename TV" (no keyboard on TV). -->
-    <string-array name="tv_name_presets">
-        <item>Living Room TV</item>
-        <item>Bedroom TV</item>
-        <item>Den TV</item>
-        <item>Office TV</item>
-        <item>Flick TV</item>
-    </string-array>
-
-    <!-- Renaming a paired phone cycles these, for the same reason the TV's own name
-         does: there is no keyboard on a TV remote worth typing a name on. They are
-         places rather than devices, because what the viewer needs to tell apart is
-         whose phone it is, not what model it is. -->
-    <string-array name="phone_name_presets">
-        <item>My phone</item>
-        <item>Second phone</item>
-        <item>Living room phone</item>
-        <item>Guest phone</item>
-        <item>Work phone</item>
-    </string-array>
 
     <!-- ===== TV playback — state plate & contrast ===== -->
     <!-- T-end · the film has run out. Distinct from paused: nothing is waiting to resume. -->

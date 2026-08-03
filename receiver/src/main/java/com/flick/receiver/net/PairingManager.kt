@@ -211,9 +211,15 @@ class PairingManager(
     )
     val snapshot: StateFlow<PairingSnapshot> = _snapshot
 
-    var tvName: String
+    val tvName: String
         get() = prefs.getString(KEY_NAME, DEFAULT_TV_NAME)?.trim().orEmpty().ifBlank { DEFAULT_TV_NAME }
-        set(value) { prefs.edit().putString(KEY_NAME, normalizeLabel(value, 80).ifBlank { DEFAULT_TV_NAME }).commit() }
+
+    /** Persists a canonical TV label and reports the synchronous write result. */
+    @Synchronized fun renameTv(label: String): Boolean {
+        val next = normalizeLabel(label, 80).ifBlank { return false }
+        if (next == tvName) return true
+        return prefs.edit().putString(KEY_NAME, next).commit()
+    }
 
     val tvId: String = prefs.getString(KEY_TV_ID, null) ?: randomId().also {
         prefs.edit().putString(KEY_TV_ID, it).commit()
