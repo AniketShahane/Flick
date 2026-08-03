@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
+import com.flick.receiver.player.SubtitleTrackFocusIdentity
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvIconButton
@@ -137,16 +139,23 @@ fun SubtitlesPanel(
 ) {
     val selectedIndex = tracks.indexOfFirst { it.isSelected }
     val offSelected = selectedIndex < 0
-    val selectedChoiceFocus = remember { FocusRequester() }
-    val lastChoiceFocus = remember { FocusRequester() }
-    val sizeFocus = remember { FocusRequester() }
-    val entryFocus = if (tracks.isEmpty() || selectedIndex == tracks.lastIndex) {
-        lastChoiceFocus
-    } else {
-        selectedChoiceFocus
+    val offFocus = remember { FocusRequester() }
+    // Directional search has to cross the scrolling list's boundary to reach size.
+    // Media3 IDs are positional; the immutable TrackGroup owns focus identity.
+    val trackIdentities = tracks.map { it.focusIdentity }
+    val trackFocusByIdentity = remember {
+        mutableMapOf<SubtitleTrackFocusIdentity, FocusRequester>()
     }
+    val trackFocuses = trackIdentities.map { identity ->
+        trackFocusByIdentity.getOrPut(identity) { FocusRequester() }
+    }
+    val sizeFocus = remember { FocusRequester() }
+    val selectedChoiceFocus = if (offSelected) offFocus else trackFocuses[selectedIndex]
+    val lastChoiceFocus = trackFocuses.lastOrNull() ?: offFocus
     val entered = remember { mutableStateOf(false) }
-    LaunchedEffect(entryKey) { landTvFocus(entryFocus, entryFocus) { entered.value } }
+    LaunchedEffect(entryKey, selectedChoiceFocus, trackIdentities) {
+        landTvFocus(selectedChoiceFocus, selectedChoiceFocus) { entered.value }
+    }
 
     // The panel is one beacon group: the close button, the track rows and the
     // three size cells share ONE ring that glides between them. The host sits
@@ -207,28 +216,23 @@ fun SubtitlesPanel(
                 label = stringResource(R.string.subtitles_off),
                 meta = null,
                 selected = offSelected,
-                focusRequester = when {
-                    tracks.isEmpty() -> lastChoiceFocus
-                    offSelected -> selectedChoiceFocus
-                    else -> null
-                },
-                downFocusRequester = if (tracks.isEmpty()) sizeFocus else null,
+                focusRequester = offFocus,
+                downFocusRequester = trackFocuses.firstOrNull() ?: sizeFocus,
                 onClick = { onSelectTrack(null) },
             )
             tracks.forEachIndexed { index, track ->
-                TrackRow(
-                    label = track.label
-                        ?: stringResource(R.string.subtitles_track_fallback, track.trackNumber),
-                    meta = trackMeta(track),
-                    selected = track.isSelected,
-                    focusRequester = when {
-                        index == tracks.lastIndex -> lastChoiceFocus
-                        index == selectedIndex -> selectedChoiceFocus
-                        else -> null
-                    },
-                    downFocusRequester = if (index == tracks.lastIndex) sizeFocus else null,
-                    onClick = { onSelectTrack(track.id) },
-                )
+                key(trackIdentities[index]) {
+                    TrackRow(
+                        label = track.label
+                            ?: stringResource(R.string.subtitles_track_fallback, track.trackNumber),
+                        meta = trackMeta(track),
+                        selected = track.isSelected,
+                        focusRequester = trackFocuses[index],
+                        upFocusRequester = trackFocuses.getOrNull(index - 1) ?: offFocus,
+                        downFocusRequester = trackFocuses.getOrNull(index + 1) ?: sizeFocus,
+                        onClick = { onSelectTrack(track.id) },
+                    )
+                }
             }
             Spacer(Modifier.height(FocusRingBleedVertical))
         }
@@ -297,18 +301,16 @@ private fun TrackRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
-    downFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester,
 ) {
     FlickTvRow(
         onClick = onClick,
         modifier = modifier
-            .then(
-                if (downFocusRequester != null) {
-                    Modifier.focusProperties { down = downFocusRequester }
-                } else {
-                    Modifier
-                },
-            )
+            .focusProperties {
+                if (upFocusRequester != null) up = upFocusRequester
+                down = downFocusRequester
+            }
             .fillMaxWidth()
             .padding(horizontal = FocusRingBleed),
         focusRequester = focusRequester,
