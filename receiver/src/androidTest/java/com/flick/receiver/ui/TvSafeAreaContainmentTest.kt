@@ -3,6 +3,7 @@ package com.flick.receiver.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalDensity
@@ -21,6 +22,7 @@ import com.flick.receiver.ui.screens.ErrorScreen
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.PairScreen
 import com.flick.receiver.ui.screens.PlaybackScreen
+import com.flick.receiver.ui.screens.QualityInfo
 import com.flick.receiver.session.ErrorKind
 import com.flick.receiver.ui.theme.FlickTvTheme
 import org.junit.Rule
@@ -262,12 +264,101 @@ class TvSafeAreaContainmentTest {
                     onPlayPause = {},
                     onForward10 = {},
                     onSetVolume = {},
-                    playFocusRequester = FocusRequester(),
+                    playFocusRequester = remember { FocusRequester() },
                     diagnostics = DiagnosticsSnapshot.EMPTY,
                     onEndSession = {},
                 ) { Box(Modifier.fillMaxSize()) }
             }
         }
         assertInsideSafeArea("PlaybackScreen · chrome visible")
+    }
+
+    /**
+     * The start-of-cast quality flourish is sized by its content, not by the frame.
+     *
+     * The card had no width of its own while every row inside it is `fillMaxWidth`
+     * with `SpaceBetween` arrangement, so the rows distributed a label and a value
+     * against the whole band: the card spanned the frame and ran under END SESSION
+     * at the far end. Only bounds can see that — it shipped that way for weeks
+     * while every text-presence and focus assertion in this module passed.
+     *
+     * The decoder here is the verified TV's own name, which is the widest real
+     * value the card is ever asked to draw.
+     */
+    @Test
+    fun quality_card_hugs_its_content_and_clears_end_session() {
+        composeRule.setContent {
+            FlickTvTheme {
+                PlaybackScreen(
+                    playing = true,
+                    phase = PlaybackPhase.Playing,
+                    positionMs = 4_312_000L,
+                    durationMs = 8_076_000L,
+                    bufferedMs = 4_932_000L,
+                    targetMs = 4_312_000L,
+                    seeking = false,
+                    volume = 0.6f,
+                    title = "A Long Enough Film Title To Exercise Ellipsis",
+                    deviceLabel = "Pixel 9 Pro",
+                    hdr = HdrType.DOLBY_VISION,
+                    chromeVisible = true,
+                    quality = QualityInfo(
+                        qualityLabel = "4K · DOLBY VISION",
+                        decoder = DECODER,
+                        throughput = "38.4 Mb/s · 5 GHz",
+                        bars = 3,
+                    ),
+                    onBack10 = {},
+                    onPlayPause = {},
+                    onForward10 = {},
+                    onSetVolume = {},
+                    playFocusRequester = remember { FocusRequester() },
+                    diagnostics = DiagnosticsSnapshot.EMPTY,
+                    onEndSession = {},
+                ) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+        composeRule.waitForIdle()
+
+        val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+        // Every row in the card is a full-width `SpaceBetween`, so any row label's
+        // left edge IS the card's content left edge and the decoder value's right
+        // edge is its content right edge. The card is those plus 12 dp of panel
+        // padding on each side — no test tag needed to read its width.
+        val cardLeft = listOf("decoder", "throughput", "wi-fi health").minOf {
+            composeRule.onNodeWithText(it).fetchSemanticsNode().boundsInRoot.left
+        }
+        val cardRight = composeRule.onNodeWithText(DECODER)
+            .fetchSemanticsNode().boundsInRoot.right
+        val span = cardRight - cardLeft
+
+        // Full-bleed measured ~90 % of the frame. The cap is 384 dp against a
+        // 960 dp Android TV band, so a correct card lands near 37 % — this is a
+        // regression fence, not the design's own number.
+        val maxSpan = rootBounds.width * 0.45f
+        if (span > maxSpan) {
+            throw AssertionError(
+                "quality card spans ${span.toInt()}px of a ${rootBounds.width.toInt()}px " +
+                    "frame; must stay within ${maxSpan.toInt()}px",
+            )
+        }
+
+        // END SESSION shares the band with it. `FlickTvButton` merges its
+        // descendants, so this is the pill's own bounds, padding included.
+        val endSession = composeRule.onNodeWithText("END SESSION")
+            .fetchSemanticsNode().boundsInRoot
+        if (cardLeft <= endSession.right) {
+            throw AssertionError(
+                "quality card starts at ${cardLeft.toInt()}px, under END SESSION " +
+                    "which ends at ${endSession.right.toInt()}px",
+            )
+        }
+
+        assertInsideSafeArea("PlaybackScreen · quality flourish")
+    }
+
+    private companion object {
+        /** The verified TV's Dolby Vision decoder — the card's widest real value. */
+        const val DECODER = "c2.mtk.dvhe.sth.decoder"
     }
 }

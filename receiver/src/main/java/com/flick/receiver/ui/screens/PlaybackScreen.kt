@@ -25,6 +25,7 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -534,9 +537,10 @@ fun PlaybackScreen(
         // pill row, inside the top scrim, centred so that it clears END SESSION on
         // the left and the clock on the right in every chrome state — and it holds
         // that position whether the chrome is up or down, which is what says it is
-        // not chrome. The T8 quality flourish shares the band and its rows are
-        // `fillMaxWidth`, so it is full-bleed on a real panel; `OrientationHintPolicy`
-        // is what waits it out rather than any geometry here.
+        // not chrome. The T8 quality flourish shares the band; it now hugs its own
+        // content at the END rather than spanning the frame, but `OrientationHintPolicy`
+        // still waits it out — two transient cards at once are two things talking,
+        // and that is a sequencing rule, not a clearance one.
         //
         // The value is retained past its own dismissal so the exit has something
         // to draw, exactly as [retainedPanel] does for the side panel.
@@ -1788,10 +1792,35 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The cap on [QualityCard]. Two fifths of the 960 dp Android TV band, which every
+ * 1080p and 4K panel reports at its own density.
+ *
+ * The card is normally narrower than this — on the verified TV the widest row is
+ * `decoder` at `c2.mtk.dvhe.sth.decoder`, 23 mono glyphs of 16 sp beside a 14 sp
+ * label, which lands around 333 dp. Nothing bounds a vendor's decoder name
+ * though, and this card sits at the TopEnd of the same band END SESSION occupies
+ * on the left, so an unusually long one has to stop rather than walk back across
+ * the frame. Past the cap the value ellipsises, which it is already set up to do.
+ */
+private val QualityCardMaxWidth = 384.dp
+
 @Composable
 private fun QualityCard(info: QualityInfo, modifier: Modifier = Modifier) {
     GlassPanel(
-        modifier = modifier,
+        // Every row below is `fillMaxWidth` + `SpaceBetween`, which is how a label
+        // and its value reach the two edges — so the rows need a bounded width to
+        // distribute against, and dropping the fill is not available. The card had
+        // no width of its own, so what they bounded against was the whole frame the
+        // AnimatedContent hands down: the card spanned the band and underlapped END
+        // SESSION. `IntrinsicSize.Max` asks the widest row what it actually needs
+        // and fixes the card there, which is the one width that keeps both halves
+        // true. The second measure pass it costs is paid once per cast — the card's
+        // content is fixed for the 4.5 s it is up, and its arrival and dismissal are
+        // `graphicsLayer` transforms that never re-measure.
+        modifier = modifier
+            .widthIn(max = QualityCardMaxWidth)
+            .width(IntrinsicSize.Max),
         shape = FlickShape.Xl,
         tone = GlassPanelTone.Panel,
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
@@ -2014,7 +2043,10 @@ private fun selectedSubtitleLabel(tracks: List<SubtitleTrackInfo>): String? {
         null
     }
     val label = selected?.label ?: numbered
-    return label?.uppercase(Locale.getDefault())
+    // The composition's locale, not the process default: casing is
+    // language-specific and `Locale.getDefault()` is not observable state, so a
+    // language change would leave this line cased for the old one.
+    return label?.uppercase(LocalLocale.current.platformLocale)
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────

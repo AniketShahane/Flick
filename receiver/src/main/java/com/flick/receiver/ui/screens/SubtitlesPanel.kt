@@ -148,12 +148,8 @@ fun SubtitlesPanel(
     // Directional search has to cross the scrolling list's boundary to reach size.
     // Media3 IDs are positional; the immutable TrackGroup owns focus identity.
     val trackIdentities = tracks.map { it.focusIdentity }
-    val trackFocusByIdentity = remember {
-        mutableMapOf<SubtitleTrackFocusIdentity, FocusRequester>()
-    }
-    val trackFocuses = trackIdentities.map { identity ->
-        trackFocusByIdentity.getOrPut(identity) { FocusRequester() }
-    }
+    val trackFocusByIdentity = remember { TrackFocusRequesters() }
+    val trackFocuses = trackIdentities.map(trackFocusByIdentity::get)
     val sizeFocus = remember { FocusRequester() }
     val rotationFocus = remember { FocusRequester() }
     val selectedChoiceFocus = if (offSelected) offFocus else trackFocuses[selectedIndex]
@@ -420,6 +416,29 @@ private fun rotationLabelRes(rotation: VideoRotation): Int = when (rotation) {
 @StringRes
 private fun rotationLabelResForDegrees(degrees: Int): Int =
     rotationLabelRes(VideoRotation.forExtraDegrees(degrees) ?: VideoRotation.AsFiled)
+
+/**
+ * One stable [FocusRequester] per subtitle track, keyed by the identity its
+ * immutable TrackGroup carries rather than by Media3's positional ID.
+ *
+ * These cannot be `remember`ed by the rows that use them. The panel wires up/down
+ * between siblings and picks its entry target before any row composes, so every
+ * requester has to exist one level above the rows — and Media3 re-reads the text
+ * tracks twice a second, so the list this is asked for changes under it while the
+ * focus system holds the requesters. Minting them here, off composition, and
+ * holding the instance in a [remember] is what makes a row that survives a refresh
+ * get back the same requester focus is already pointing at.
+ *
+ * Nothing is evicted: a film's set of track groups is fixed and small, and a
+ * requester dropped while its row is momentarily absent would come back as a
+ * different instance — exactly the identity change this exists to prevent.
+ */
+internal class TrackFocusRequesters {
+    private val byIdentity = mutableMapOf<SubtitleTrackFocusIdentity, FocusRequester>()
+
+    operator fun get(identity: SubtitleTrackFocusIdentity): FocusRequester =
+        byIdentity.getOrPut(identity) { FocusRequester() }
+}
 
 /** The OFF row's key in [ChoiceFocus]. It has no media track to name it. */
 internal object OffChoice
