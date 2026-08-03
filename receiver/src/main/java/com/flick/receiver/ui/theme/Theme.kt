@@ -1,5 +1,9 @@
 package com.flick.receiver.ui.theme
 
+import android.graphics.Bitmap
+import android.graphics.RuntimeShader
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,13 +13,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -268,10 +276,10 @@ private class AmbientWash(val brush: Brush, val topLeft: Offset, val size: Size)
  * the centre pixel, which is fine for an ambient field and wrong for a bed that
  * ink stands on — see [SEEK_WASH_PLATEAU].
  *
- * [footprintRadius] widens the drawn rectangle without touching the gradient, for the
- * one caller whose wash MOVES: a drifting bed is drawn through a canvas transform so
- * its shader is never rebuilt, and the rectangle it is clipped to has to cover every
- * position the drift reaches rather than only the resting one.
+ * [footprint] can widen that rectangle without touching the gradient, for the one
+ * caller whose wash MOVES. Static washes discard off-panel pixels; a moving wash must
+ * keep its overdraw because clamping before its transform moves the rectangle's opaque
+ * edge into view even though the radial itself continues.
  */
 private fun ambientWash(
     color: Color,
@@ -279,12 +287,14 @@ private fun ambientWash(
     radius: Float,
     panel: Size,
     plateau: Float = 0f,
-    footprintRadius: Float = radius,
+    footprint: Rect? = null,
 ): AmbientWash {
-    val left = (center.x - footprintRadius).coerceIn(0f, panel.width)
-    val top = (center.y - footprintRadius).coerceIn(0f, panel.height)
-    val right = (center.x + footprintRadius).coerceIn(0f, panel.width)
-    val bottom = (center.y + footprintRadius).coerceIn(0f, panel.height)
+    val bounds = footprint ?: Rect(
+        left = (center.x - radius).coerceIn(0f, panel.width),
+        top = (center.y - radius).coerceIn(0f, panel.height),
+        right = (center.x + radius).coerceIn(0f, panel.width),
+        bottom = (center.y + radius).coerceIn(0f, panel.height),
+    )
     val brush = if (plateau > 0f) {
         Brush.radialGradient(
             0f to color,
@@ -302,8 +312,8 @@ private fun ambientWash(
     }
     return AmbientWash(
         brush = brush,
-        topLeft = Offset(left, top),
-        size = Size(right - left, bottom - top),
+        topLeft = bounds.topLeft,
+        size = bounds.size,
     )
 }
 
@@ -353,6 +363,84 @@ private const val IDLE_WASH_RADIUS = 0.65f
 private const val IDLE_DRIFT_CENTRE = 0.06f
 private const val IDLE_DRIFT_RADIUS = 0.08f
 
+private const val IDLE_NOISE_SIZE = 64
+private const val IDLE_NOISE_ALPHA = 1f / 255f
+
+/** One native-pixel, stationary dither tile shared by every legacy idle draw. */
+private val idleNoiseBrush: Brush by lazy(LazyThreadSafetyMode.PUBLICATION) {
+    var state = 0x51f15e
+    val pixels = IntArray(IDLE_NOISE_SIZE * IDLE_NOISE_SIZE) {
+        state = state * 1_664_525 + 1_013_904_223
+        val value = state ushr 24
+        0xff000000.toInt() or (value shl 16) or (value shl 8) or value
+    }
+    val tile = Bitmap.createBitmap(
+        pixels,
+        IDLE_NOISE_SIZE,
+        IDLE_NOISE_SIZE,
+        Bitmap.Config.ARGB_8888,
+    ).asImageBitmap()
+    ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated))
+}
+
+private const val IDLE_AMBIENT_SHADER = """
+    uniform float2 resolution;
+    uniform float phase;
+    layout(color) uniform float4 canvasColor;
+    layout(color) uniform float4 washColor;
+
+    half4 main(in float2 fragCoord) {
+        float reach = max(resolution.x, resolution.y);
+        float2 center = float2(
+            resolution.x * (0.50 + 0.06 * phase),
+            resolution.y * (-0.10 + 0.06 * phase)
+        );
+        float radius = reach * (0.65 + 0.08 * phase);
+        float falloff = clamp(1.0 - distance(fragCoord, center) / radius, 0.0, 1.0);
+        float blend = falloff * washColor.a;
+        float3 rgb = mix(canvasColor.rgb, washColor.rgb, blend);
+
+        // Interleaved-gradient noise: stationary, sub-LSB, and faded out with the wash.
+        float noise = fract(52.9829189 * fract(dot(
+            fragCoord,
+            float2(0.06711056, 0.00583715)
+        ))) - 0.5;
+        float dither = noise * smoothstep(0.0, 0.04, falloff) / 255.0;
+        return half4(half3(rgb + dither), 1.0);
+    }
+"""
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun RuntimeShader.setComposeColorUniform(name: String, color: Color) {
+    setColorUniform(
+        name,
+        android.graphics.Color.valueOf(color.red, color.green, color.blue, color.alpha),
+    )
+}
+
+/** Pure geometry shared by the draw cache and its edge-coverage test. */
+internal fun idleAmbientBounds(panel: Size, phase: Float, footprint: Boolean): Rect {
+    val p = phase.coerceIn(-1f, 1f)
+    val reach = max(panel.width, panel.height)
+    val centre = Offset(
+        x = panel.width * (IDLE_WASH_CENTRE_X + IDLE_DRIFT_CENTRE * p),
+        y = panel.height * (IDLE_WASH_CENTRE_Y + IDLE_DRIFT_CENTRE * p),
+    )
+    val scale = 1f + (IDLE_DRIFT_RADIUS / IDLE_WASH_RADIUS) * p
+    val restingRadius = reach * if (footprint) {
+        IDLE_WASH_RADIUS + IDLE_DRIFT_RADIUS + IDLE_DRIFT_CENTRE
+    } else {
+        IDLE_WASH_RADIUS
+    }
+    val transformedRadius = restingRadius * scale
+    return Rect(
+        left = centre.x - transformedRadius,
+        top = centre.y - transformedRadius,
+        right = centre.x + transformedRadius,
+        bottom = centre.y + transformedRadius,
+    )
+}
+
 /**
  * The idle bed: `Canvas` plus one soft brand-blue radial hanging off the top
  * edge. Quieter than [pairAmbientBackground] — idle is a resting state. This is the
@@ -374,21 +462,43 @@ fun Modifier.idleAmbientBackground(): Modifier = this
 /**
  * The drifting idle bed, for a [phase] in −1..1.
  *
- * The drift is a canvas transform over ONE cached gradient, not a gradient rebuilt per
- * frame. A `ShaderBrush` caches its platform shader against the size it was built for,
- * so constructing `Brush.radialGradient(...)` inside the draw lambda — which is what a
- * moving centre and radius invite — makes the driver regenerate the gradient on every
- * frame of a permanent loop, full-screen, for the hours a standby screen is up. A
- * translate plus a scale about the gradient's own centre reaches exactly the same
- * geometry: the pivot fixes the centre so the scale is purely the radius, and the
- * shader is uploaded once per size.
+ * API 33+ draws one cached, native-resolution runtime shader with stationary sub-LSB
+ * dithering, which removes 8-bit bands without introducing a scaled bitmap or temporal
+ * shimmer. Older TVs transform one cached Compose radial instead of rebuilding its
+ * shader every frame of a permanent full-screen loop.
  *
- * The footprint covers the drift's full envelope so the clip cannot crop a crest at
- * the extremes of the loop. At 16:9 that envelope is the whole viewport — this wash
- * hangs off the top edge and its resting footprint already fills the screen — so the
- * clip is not what saves anything here; the shader is.
+ * The fallback footprint covers the drift's full envelope and deliberately remains
+ * larger than the viewport. Its edge therefore stays beyond the radial's transparent
+ * edge after the same transform at every phase; no rectangle boundary can enter the
+ * frame. The runtime shader draws the viewport directly, so it has no moving bounds.
  */
-fun Modifier.idleAmbientDrift(phase: () -> Float): Modifier = this
+fun Modifier.idleAmbientDrift(phase: () -> Float): Modifier =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        idleAmbientShaderBackground(phase)
+    } else {
+        idleAmbientCanvasDrift(phase)
+    }
+
+/** Native-resolution radial with sub-LSB dithering for the receiver's modern TV path. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun Modifier.idleAmbientShaderBackground(phase: () -> Float): Modifier = this
+    .drawWithCache {
+        val shader = RuntimeShader(IDLE_AMBIENT_SHADER)
+        shader.setFloatUniform("resolution", size.width, size.height)
+        shader.setComposeColorUniform("canvasColor", FlickColor.Canvas)
+        shader.setComposeColorUniform(
+            "washColor",
+            FlickColor.Primary.copy(alpha = IDLE_WASH_ALPHA),
+        )
+        val brush = ShaderBrush(shader)
+        onDrawBehind {
+            shader.setFloatUniform("phase", phase().coerceIn(-1f, 1f))
+            drawRect(brush)
+        }
+    }
+
+/** Cached Compose-radial fallback with stationary native-pixel dither for API 26–32. */
+private fun Modifier.idleAmbientCanvasDrift(phase: () -> Float): Modifier = this
     .background(FlickColor.Canvas)
     .drawWithCache {
         val reach = max(size.width, size.height)
@@ -399,9 +509,7 @@ fun Modifier.idleAmbientDrift(phase: () -> Float): Modifier = this
             center = centre,
             radius = radius,
             panel = size,
-            // Both drift terms at their extreme, against the longer edge for each: one
-            // scalar has to cover all four sides, so it covers the worst of them.
-            footprintRadius = radius + reach * (IDLE_DRIFT_RADIUS + IDLE_DRIFT_CENTRE),
+            footprint = idleAmbientBounds(size, phase = 0f, footprint = true),
         )
         val driftX = size.width * IDLE_DRIFT_CENTRE
         val driftY = size.height * IDLE_DRIFT_CENTRE
@@ -410,11 +518,14 @@ fun Modifier.idleAmbientDrift(phase: () -> Float): Modifier = this
         val radiusGain = IDLE_DRIFT_RADIUS / IDLE_WASH_RADIUS
         onDrawBehind {
             val p = phase()
-            translate(left = driftX * p, top = driftY * p) {
-                scale(scale = 1f + radiusGain * p, pivot = centre) {
-                    drawWash(wash)
-                }
+            val scale = 1f + radiusGain * p
+            withTransform({
+                translate(left = driftX * p, top = driftY * p)
+                scale(scaleX = scale, scaleY = scale, pivot = centre)
+            }) {
+                drawWash(wash)
             }
+            drawRect(brush = idleNoiseBrush, alpha = IDLE_NOISE_ALPHA)
         }
     }
 
