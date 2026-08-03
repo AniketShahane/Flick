@@ -12,10 +12,12 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Base64
-import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.MediaSession
 import com.flick.sender.net.ControlProtocolV2
 import com.flick.sender.util.FlickLog
 import java.security.SecureRandom
@@ -36,11 +38,38 @@ import kotlinx.coroutines.launch
  * session. Running the server here (with an ongoing notification and the
  * mediaPlayback foreground type) keeps serving alive while the TV plays and
  * while the phone's screen is off.
+ *
+ * It also owns the media notification: a Media3 [MediaSession] over [CastRemotePlayer],
+ * which is what puts a scrubber and transport controls in the Android media-controls area
+ * and on the lock screen. It is deliberately NOT a `MediaSessionService` — the generation,
+ * ownership and teardown rules below are the most delicate code in this module and a
+ * second lifecycle owner over the same instance would have to reproduce all of them.
+ *
+ * Opted in at class level rather than per member: `MediaSession`, `CommandButton` and
+ * `MediaStyleNotificationHelper` are `@UnstableApi` across most of their surface, and the
+ * receiver's precedent for that is a module-wide lint disable, which is broader still.
  */
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class CastServerService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // The media notification's own scope. Main-immediate rather than IO because
+    // CastRemotePlayer, the Media3 session it backs and the PlaybackSession its verbs
+    // reach are all main-confined, and Media3 raises on a Player touched anywhere else.
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var httpServer: MediaHttpServer
+
+    // The phone as a remote: a Player facade over the TV's state, and the platform media
+    // session every media-control surface and media button actually talks to. Created for
+    // the life of the service; the notification is styled with the session's token.
+    private lateinit var remotePlayer: CastRemotePlayer
+    private var mediaSession: MediaSession? = null
+    private var notificationJob: Job? = null
+
+    // What the last posted notification renders. A `state` frame arrives several times a
+    // second; re-posting on each one would repaint the shade for a scrubber the platform
+    // is already advancing from the session on its own.
+    private var postedShape: CastNotificationPolicy.Shape? = null
 
     // Held only while serving. Guarded so acquire/release stay balanced across the
     // start (IO) and stop (main) threads even if they interleave.
@@ -71,6 +100,11 @@ class CastServerService : Service() {
         super.onCreate()
         httpServer = MediaHttpServer(this)
         createNotificationChannel()
+        remotePlayer = CastRemotePlayer(Looper.getMainLooper())
+        mediaSession = createMediaSession()
+        notificationJob = mainScope.launch {
+            CastTransportState.state.collect(::onTransportChanged)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -80,6 +114,32 @@ class CastServerService : Service() {
             ACTION_STOP -> {
                 val castId = intent.getStringExtra(EXTRA_CAST_ID)
                 if (castId != null) stopCurrentCast(castId, startId)
+                return START_NOT_STICKY
+            }
+
+            // The notification's own transport buttons. They exist for the releases whose
+            // shade still renders a MediaStyle notification itself; from Android 13 the
+            // media controls drive the session instead, and both reach the same verbs.
+            // Delivered as ordinary start commands, exactly like ACTION_STOP — and legal
+            // from the shade for the same reason it is: this service is already foreground.
+            ACTION_PLAY_PAUSE -> {
+                if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
+                    CastTransportState.togglePlaying()
+                }
+                return START_NOT_STICKY
+            }
+
+            ACTION_SKIP_BACK -> {
+                if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
+                    CastTransportState.skip(-CastNotificationPolicy.SKIP_INCREMENT_MS)
+                }
+                return START_NOT_STICKY
+            }
+
+            ACTION_SKIP_FORWARD -> {
+                if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
+                    CastTransportState.skip(CastNotificationPolicy.SKIP_INCREMENT_MS)
+                }
                 return START_NOT_STICKY
             }
 
@@ -177,6 +237,13 @@ class CastServerService : Service() {
             startGate.clear()
             closeAllResources()
         }
+        // Released before the scope that drives it: a live platform session outliving the
+        // cast is what leaves a dead transport card on the lock screen.
+        notificationJob?.cancel()
+        notificationJob = null
+        mediaSession?.release()
+        mediaSession = null
+        mainScope.cancel()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -360,36 +427,96 @@ class CastServerService : Service() {
         )
     }
 
+    /**
+     * The cast changed. Media3 re-reads the facade so every media-control surface follows
+     * the TV, and the notification itself is re-posted only when what it draws changed.
+     *
+     * Under [teardownGuard] for the reason the guard exists: it serializes the foreground
+     * notification with the generation transition, so a frame arriving beside a teardown
+     * can never re-post a notification `STOP_FOREGROUND_REMOVE` has just taken away.
+     */
+    private fun onTransportChanged(snapshot: CastTransportSnapshot?) {
+        remotePlayer.refresh()
+        synchronized(teardownGuard) {
+            val castId = startGate.current()?.castId ?: return
+            if (CastNotificationPolicy.shape(snapshotFor(castId, snapshot)) == postedShape) return
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIF_ID, buildNotification(castId))
+        }
+    }
+
+    /** A snapshot belongs to the notification only while it names the generation that owns it. */
+    private fun snapshotFor(castId: String, snapshot: CastTransportSnapshot?) =
+        snapshot?.takeIf { it.castId == castId }
+
     private fun buildNotification(castId: String): Notification {
+        val snapshot = snapshotFor(castId, CastTransportState.state.value)
+        postedShape = CastNotificationPolicy.shape(snapshot)
+        return buildCastNotification(
+            context = this,
+            channelId = CHANNEL_ID,
+            session = mediaSession,
+            snapshot = snapshot,
+            intents = notificationIntents(castId),
+        )
+    }
+
+    /**
+     * One immutable PendingIntent per verb per cast id. The cast id is in the data URI as
+     * well as the extra, because `Intent.filterEquals` — which is what the platform keys a
+     * PendingIntent on — never looks at extras: without it the four verbs of one cast, and
+     * the same verb of two casts, would collapse into a single intent.
+     */
+    private fun notificationIntents(castId: String): CastNotificationIntents {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val openPending = PendingIntent.getActivity(
-            this, REQ_OPEN, openIntent, pendingFlags(),
+        return CastNotificationIntents(
+            open = PendingIntent.getActivity(this, REQ_OPEN, openIntent, pendingFlags()),
+            stop = servicePending(castId, ACTION_STOP, "flick-stop"),
+            playPause = servicePending(castId, ACTION_PLAY_PAUSE, "flick-playpause"),
+            skipBack = servicePending(castId, ACTION_SKIP_BACK, "flick-back"),
+            skipForward = servicePending(castId, ACTION_SKIP_FORWARD, "flick-forward"),
         )
-
-        val stopIntent = Intent(this, CastServerService::class.java).setAction(ACTION_STOP)
-            .putExtra(EXTRA_CAST_ID, castId).setData(Uri.parse("flick-stop://$castId"))
-        val stopPending = PendingIntent.getService(
-            this, castId.hashCode(), stopIntent, pendingFlags(),
-        )
-
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(getString(R.string.notif_title))
-            .setContentText(getString(R.string.notif_text_serving))
-            .setContentIntent(openPending)
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.notif_action_stop),
-                stopPending,
-            )
-            .build()
     }
 
+    private fun servicePending(castId: String, action: String, scheme: String): PendingIntent {
+        val intent = Intent(this, CastServerService::class.java).setAction(action)
+            .putExtra(EXTRA_CAST_ID, castId).setData(Uri.parse("$scheme://$castId"))
+        return PendingIntent.getService(this, castId.hashCode(), intent, pendingFlags())
+    }
+
+    /** A transport tap is spent only by the generation that is still serving this cast. */
+    private fun ownsCurrentCast(castId: String?): Boolean =
+        castId != null && synchronized(teardownGuard) { startGate.current()?.castId == castId }
+
+    /**
+     * A Media3 session this device would not give us costs the transport, never the cast:
+     * the plain ongoing notification and the serving socket behind it are unaffected.
+     */
+    private fun createMediaSession(): MediaSession? = try {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        MediaSession.Builder(this, remotePlayer)
+            .setId(MEDIA_SESSION_ID)
+            .setSessionActivity(
+                PendingIntent.getActivity(this, REQ_OPEN, openIntent, pendingFlags()),
+            )
+            .setMediaButtonPreferences(castMediaButtonPreferences(this))
+            .build()
+    } catch (e: Exception) {
+        FlickLog.w("cast", "media session unavailable err=${e.javaClass.simpleName}")
+        null
+    }
+
+    /**
+     * IMPORTANCE_LOW is deliberate and unchanged. The media-controls surface keys on a
+     * MediaStyle notification carrying a platform session token, never on importance, so
+     * raising it would buy the transport nothing and cost an ongoing, silent-by-nature row
+     * a sound and heads-up eligibility. The platform also keeps the user's own setting for
+     * a channel that already exists, so a change here would only ever reach fresh installs.
+     */
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -406,6 +533,7 @@ class CastServerService : Service() {
         private const val CHANNEL_ID = "cast_server"
         private const val NOTIF_ID = 42
         private const val REQ_OPEN = 1
+        private const val MEDIA_SESSION_ID = "flick-cast"
 
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
@@ -419,6 +547,9 @@ class CastServerService : Service() {
         const val ACTION_START = "com.flick.sender.action.START"
         const val ACTION_STOP = "com.flick.sender.action.STOP"
         const val ACTION_SET_SUBTITLE = "com.flick.sender.action.SET_SUBTITLE"
+        private const val ACTION_PLAY_PAUSE = "com.flick.sender.action.PLAY_PAUSE"
+        private const val ACTION_SKIP_BACK = "com.flick.sender.action.SKIP_BACK"
+        private const val ACTION_SKIP_FORWARD = "com.flick.sender.action.SKIP_FORWARD"
         private const val EXTRA_NAME = "com.flick.sender.extra.NAME"
         private const val EXTRA_SIZE = "com.flick.sender.extra.SIZE"
         private const val EXTRA_CAST_ID = "com.flick.sender.extra.CAST_ID"

@@ -199,6 +199,14 @@ dependencies {
     implementation("androidx.browser:browser:1.10.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // The phone's media notification. media3-session owns the platform MediaSession the
+    // Android media controls and the media buttons talk to; media3-common supplies
+    // SimpleBasePlayer, which exists for a controller whose playback is on another device.
+    // No ExoPlayer: this app never decodes anything. Pinned to the same 1.10.1 the
+    // receiver uses, so one Media3 line is validated for the pair.
+    implementation("androidx.media3:media3-common:1.10.1")
+    implementation("androidx.media3:media3-session:1.10.1")
+
     // Embedded LAN HTTP media server (Ktor 3.x, CIO engine — no Netty).
     implementation("io.ktor:ktor-server-core:3.1.3")
     implementation("io.ktor:ktor-server-cio:3.1.3")

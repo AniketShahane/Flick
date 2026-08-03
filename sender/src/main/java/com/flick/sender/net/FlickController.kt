@@ -5,6 +5,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import com.flick.sender.CastServerService
+import com.flick.sender.CastTransportCommands
+import com.flick.sender.CastTransportSnapshot
+import com.flick.sender.CastTransportState
 import com.flick.sender.MediaMeta
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
@@ -318,11 +321,58 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _failureLinkVerdict = MutableStateFlow<LinkVerdict>(LinkVerdict.Unknown)
     val failureLinkVerdict: StateFlow<LinkVerdict> = _failureLinkVerdict.asStateFlow()
 
+    /**
+     * The phone's media notification, spending the same verbs the remote does.
+     *
+     * Every one of these republishes synchronously, because [CastRemotePlayer] reads the
+     * published snapshot back the instant a hook returns: a value that only arrived a
+     * dispatch later would hand the platform the pre-command state and flicker the
+     * play/pause button back to what it was.
+     *
+     * The guard is the same one that decides what the notification offers, restated here
+     * because a hardware media key can arrive at any moment and does not consult a button.
+     */
+    private val transportCommands = object : CastTransportCommands {
+        override fun togglePlaying() {
+            if (transportCommandable()) session.togglePlayPause()
+            publishTransport()
+        }
+
+        override fun setPlaying(play: Boolean) {
+            if (transportCommandable() && session.state.value.playing != play) {
+                session.togglePlayPause()
+            }
+            publishTransport()
+        }
+
+        override fun skip(deltaMs: Long) {
+            if (transportCommandable()) session.skip(deltaMs)
+            publishTransport()
+        }
+
+        override fun seekTo(positionMs: Long) {
+            if (transportCommandable()) session.seekTo(positionMs)
+            publishTransport()
+        }
+
+        override fun stop() {
+            // Deliberately ungated: Stop is the source service's own teardown and has to
+            // work whatever the TV is doing, which is why the notification offers it in
+            // every state the others are withheld in.
+            stopCast()
+            publishTransport()
+        }
+    }
+
     init {
+        CastTransportState.attach(transportCommands)
         scope.launch { control.frames.collect(::onFrame) }
         scope.launch { session.haptics.collect { haptics.play(it) } }
         scope.launch { TransferTelemetry.samples.collect(linkMonitor::onSample) }
         scope.launch { session.state.collect(linkMonitor::onPlayback) }
+        // The TV's own frames are what move the notification's scrubber and flip its
+        // play/pause face; the service re-posts only when what it renders actually changed.
+        scope.launch { session.state.collect { publishTransport() } }
         // Only the transitions: Marginal republishes every second with a fresh measurement,
         // and 200 lines of ring buffer is the whole phone-side diagnostics channel.
         scope.launch {
@@ -348,7 +398,54 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         scope.launch { control.connection.collect { status ->
             if (status == ConnectionStatus.CONNECTED) session.onConnected()
             if ((status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.FAILED) && currentCastId != null) terminal(currentCastId!!, "control_disconnected")
+            publishTransport()
         } }
+    }
+
+    /**
+     * Whether a transport verb sent right now would reach a TV player. An Active cast on a
+     * connected socket is the only state in which one does: before that the receiver has
+     * adopted no media, and after a terminal there is no cast left to command.
+     */
+    private fun transportCommandable(): Boolean {
+        val castId = currentCastId ?: return false
+        return (_castStart.value as? CastStartState.Active)?.castId == castId &&
+            control.connection.value == ConnectionStatus.CONNECTED
+    }
+
+    /**
+     * Republish what the media notification may say and do. Cheap and idempotent — a
+     * `MutableStateFlow` drops an equal value — so every edge that could change it calls
+     * this rather than each of them deciding whether it needed to.
+     */
+    private fun publishTransport() {
+        val castId = currentCastId
+        val item = _castingItem.value
+        if (castId == null || item == null) {
+            CastTransportState.publish(null)
+            return
+        }
+        val playback = session.state.value
+        CastTransportState.publish(
+            CastTransportSnapshot(
+                castId = castId,
+                // The name the library shows, under the live preference — never the
+                // release filename the wire and the sidecar matcher still use.
+                title = displayedVideoName(item.name).ifBlank {
+                    appContext.getString(R.string.media_title_generic)
+                },
+                deviceName = _connectedTv.value?.name,
+                // MediaStore's duration is all there is until the TV confirms the
+                // container's, and a scrubber needs one before the first frame lands.
+                durationMs = if (playback.durationMs > 0L) playback.durationMs else item.durationMs.coerceAtLeast(0L),
+                positionMs = playback.targetMs,
+                bufferedMs = playback.bufferedMs,
+                playing = playback.playing,
+                phase = playback.phase,
+                headHeld = playback.skipping || playback.scrubbing,
+                commandable = transportCommandable(),
+            ),
+        )
     }
 
     fun onStart() { nsd.start() }
@@ -1026,6 +1123,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
             currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
             if (clearStart) publishCastStart(CastStartState.Idle)
+            // The terminal path keeps the Failed state, so it never reaches publishCastStart
+            // — and the notification has to go with the cast either way.
+            publishTransport()
         }
     }
     /** Normal terminals deliberately capture their Active ownership before [cleanup] clears it. */
@@ -1058,6 +1158,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // monitor measuring the cast that replaced it.
         linkMonitor.onCastStart(state)
         _castStart.value = state
+        // Reaching Active is what arms the notification's transport, and leaving it is
+        // what disarms it, so the stage transition is one of the edges that republishes.
+        publishTransport()
     }
     private fun terminal(castId: String, code: String, retryable: Boolean = false, httpStatus: Int? = null) {
         if (currentCastId != castId) return
