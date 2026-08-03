@@ -1,10 +1,15 @@
 package com.flick.sender.media
 
 import com.flick.sender.model.PlaybackPhase
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,6 +141,52 @@ class PlaybackProgressTest {
             PlaybackProgressMutation.Save(20_000L),
             recorder.onConfirmed("cast-new", 20_000L, 120_000L, PlaybackPhase.PLAYING)?.mutation,
         )
+    }
+
+    // --- The drain's acknowledge-exactly-once contract ------------------------
+
+    @Test fun aThrowingPersistStillAcknowledgesAndTheDrainKeepsGoing() = runTest {
+        val writes = Channel<PlaybackStoreWrite>(Channel.UNLIMITED)
+        val answers = mutableListOf<Pair<String, Boolean>>()
+        listOf("a", "b", "c").forEach { name ->
+            writes.trySend(
+                PlaybackStoreWrite(name, PlaybackProgressMutation.Clear) { answers += name to it },
+            )
+        }
+        writes.close()
+
+        drainPlaybackWrites(writes) { write ->
+            if (write.fingerprint == "b") error("non-IO failure inside dataStore.edit")
+            true
+        }
+
+        assertEquals(listOf("a" to true, "b" to false, "c" to true), answers)
+    }
+
+    @Test fun cancellationStillAnswersTheWriteItWasCarrying() = runTest {
+        val writes = Channel<PlaybackStoreWrite>(Channel.UNLIMITED)
+        val answers = mutableListOf<Boolean>()
+        writes.trySend(PlaybackStoreWrite(FINGERPRINT, PlaybackProgressMutation.Clear) { answers += it })
+
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                drainPlaybackWrites(writes) { throw CancellationException("scope died") }
+            }
+        }
+
+        assertEquals(listOf(false), answers)
+    }
+
+    /**
+     * The store must not be left silently frozen after a transient read error, so the
+     * backoff has to stay finite — a permanently unreadable store settles at one read
+     * a minute rather than either spinning or giving up forever.
+     */
+    @Test fun readBackoffDoublesThenSettlesAtTheCap() {
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 32_000L), (0L..5L).map(::readRetryDelayMs))
+        assertEquals(60_000L, readRetryDelayMs(6L))
+        assertEquals(60_000L, readRetryDelayMs(7L))
+        assertEquals(60_000L, readRetryDelayMs(Long.MAX_VALUE))
     }
 
     private fun fingerprint(

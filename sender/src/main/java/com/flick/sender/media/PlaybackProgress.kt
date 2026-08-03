@@ -13,14 +13,16 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -31,6 +33,44 @@ private val Context.playbackProgressDataStore by preferencesDataStore(
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
     scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 )
+
+private const val READ_RETRY_BASE_MS = 1_000L
+private const val READ_RETRY_MAX_MS = 60_000L
+
+/** Doubling backoff so a permanently unreadable store settles at one read a minute. */
+internal fun readRetryDelayMs(attempt: Long): Long =
+    (READ_RETRY_BASE_MS shl attempt.coerceIn(0L, 6L).toInt()).coerceAtMost(READ_RETRY_MAX_MS)
+
+internal data class PlaybackStoreWrite(
+    val fingerprint: String,
+    val mutation: PlaybackProgressMutation,
+    val complete: (Boolean) -> Unit,
+)
+
+/**
+ * Drains [writes], acknowledging every one exactly once. The recorder holds a
+ * single-flight slot per cast until a write is acknowledged, so a [persist] that
+ * throws must still report failure — dropping the acknowledgement would silently
+ * stop every later checkpoint for that cast, and killing this loop would stop them
+ * for the whole process. Only cancellation and Errors end the drain, and cancellation
+ * still answers the write it was carrying.
+ */
+internal suspend fun drainPlaybackWrites(
+    writes: ReceiveChannel<PlaybackStoreWrite>,
+    persist: suspend (PlaybackStoreWrite) -> Boolean,
+) {
+    for (write in writes) {
+        val stored = try {
+            persist(write)
+        } catch (cancellation: CancellationException) {
+            write.complete(false)
+            throw cancellation
+        } catch (_: Exception) {
+            false
+        }
+        write.complete(stored)
+    }
+}
 
 data class PlaybackCheckpoint(val positionMs: Long, val updatedAtEpochMs: Long)
 
@@ -132,13 +172,8 @@ internal class PlaybackProgressStore(
     private val wallClockMs: () -> Long = System::currentTimeMillis,
 ) {
     private val dataStore = context.applicationContext.playbackProgressDataStore
-    private data class StoreWrite(
-        val fingerprint: String,
-        val mutation: PlaybackProgressMutation,
-        val complete: (Boolean) -> Unit,
-    )
 
-    private val writes = Channel<StoreWrite>(Channel.UNLIMITED)
+    private val writes = Channel<PlaybackStoreWrite>(Channel.UNLIMITED)
 
     val state: StateFlow<PlaybackProgressState> = dataStore.data
         .map<Preferences, PlaybackProgressState> { preferences ->
@@ -151,16 +186,22 @@ internal class PlaybackProgressStore(
                 }.toMap(),
             )
         }
-        .catch { failure ->
-            if (failure is IOException) emit(PlaybackProgressState.Ready(emptyMap())) else throw failure
+        // `catch` would END this flow: one transient read error would pin the StateFlow
+        // at its fail-open value for the life of the process, because stateIn never
+        // re-collects a completed source, and Detail would stop offering a resume until
+        // the app restarted. Retry instead — but publish the fail-open value on the first
+        // failure, since Detail keeps its actions disabled until this reads Ready.
+        .retryWhen { failure, attempt ->
+            if (failure !is IOException) return@retryWhen false
+            if (attempt == 0L) emit(PlaybackProgressState.Ready(emptyMap()))
+            delay(readRetryDelayMs(attempt))
+            true
         }
         .stateIn(scope, SharingStarted.Eagerly, PlaybackProgressState.Loading)
 
     init {
         scope.launch {
-            for (write in writes) {
-                write.complete(persist(write.fingerprint, write.mutation))
-            }
+            drainPlaybackWrites(writes) { persist(it.fingerprint, it.mutation) }
         }
     }
 
@@ -169,7 +210,10 @@ internal class PlaybackProgressStore(
         mutation: PlaybackProgressMutation,
         complete: (Boolean) -> Unit,
     ) {
-        writes.trySend(StoreWrite(fingerprint, mutation, complete))
+        // A closed channel means the consumer is gone and nothing will ever answer.
+        if (writes.trySend(PlaybackStoreWrite(fingerprint, mutation, complete)).isFailure) {
+            complete(false)
+        }
     }
 
     private suspend fun persist(fingerprint: String, mutation: PlaybackProgressMutation): Boolean {
