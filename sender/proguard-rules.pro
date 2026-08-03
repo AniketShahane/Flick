@@ -39,7 +39,15 @@
 # rules for its own reflective lookups; these cover the classpath references to the
 # ExoPlayer and decoder-extension siblings that this module deliberately does not depend
 # on at all, and the Guava internals Media3 drags in with them.
--dontwarn androidx.media3.**
+#
+# Named sibling by sibling rather than as androidx.media3.**: the wide form also covers
+# media3-common and media3-session, which ARE on this classpath, so a genuinely missing
+# class inside the session's own graph would be silenced instead of reported.
+-dontwarn androidx.media3.exoplayer.**
+-dontwarn androidx.media3.extractor.**
+-dontwarn androidx.media3.decoder.**
+-dontwarn androidx.media3.container.**
+-dontwarn androidx.media3.datasource.**
 -dontwarn com.google.common.**
 
 # kotlinx-serialization. The control protocol is hand-rolled on org.json today, so

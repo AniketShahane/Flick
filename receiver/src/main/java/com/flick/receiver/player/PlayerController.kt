@@ -786,6 +786,11 @@ class PlayerController(context: Context) : SessionPlayer {
     /** The panel's choice. True when it reached the decoder. Main-thread only. */
     fun setVideoRotation(choice: VideoRotation): Boolean {
         if (choice == videoRotation) return false
+        // Checked before the choice is recorded, not after: these are the only two
+        // ways the re-prepare below can decline, and a cast that ended under an open
+        // panel would otherwise leave the cell drawn as selected over a picture that
+        // never turned.
+        if (player == null || currentUrl == null) return false
         videoRotation = choice
         return applyVideoRotation()
     }

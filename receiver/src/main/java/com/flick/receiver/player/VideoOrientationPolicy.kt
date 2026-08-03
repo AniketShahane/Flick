@@ -130,11 +130,11 @@ private val SURROUND_AUDIO_MIME_TYPES = setOf(
  * in the user's gallery on its side — trading a rare annoyance for a common one.
  *
  * What separates them is everything AROUND the picture. A released title is
- * assembled: it carries more than one audio track, or a surround/broadcast codec
- * no phone records, or subtitle tracks the container itself declares. A camera
- * clip carries one stereo AAC track and nothing else. So the correction fires
- * only on positive evidence of assembly, and the default — for every file that
- * offers none — is byte-identical to honouring the container.
+ * assembled: it carries a surround/broadcast codec no phone records, or subtitle
+ * tracks the container itself declares. A camera clip carries one stereo AAC
+ * track and nothing else. So the correction fires only on positive evidence of
+ * assembly, and the default — for every file that offers none — is byte-identical
+ * to honouring the container.
  *
  * Deliberately NOT used as evidence: coded aspect ratio wider than 16:9, which
  * would be conclusive if phones only recorded 16:9, and some record 21:9; and
@@ -196,9 +196,18 @@ private fun codedFrameIsLandscape(video: VideoTrackShape): Boolean {
     return video.widthPx * ratio > video.heightPx
 }
 
+/**
+ * A second audio track is deliberately NOT evidence on its own. It is the only
+ * assembly signal a camera clip can acquire after the fact: an editor that lays a
+ * music or commentary track over a portrait recording and remuxes it — which
+ * copies the rotation matrix and the landscape coded frame through untouched —
+ * would otherwise be stood on its side by the correction. Nothing re-authors a
+ * home video into AC-3 or gives it container-declared subtitle tracks, so the
+ * evidence is narrowed to the signals that only authoring produces. A multi-track
+ * film carrying neither is left to the manual row, which is the cheaper error.
+ */
 private fun looksLikeAReleasedTitle(shape: MediaShape): Boolean =
-    shape.audioTrackCount >= 2 ||
-        shape.embeddedTextTrackCount >= 1 ||
+    shape.embeddedTextTrackCount >= 1 ||
         shape.maxAudioChannelCount >= SURROUND_CHANNEL_COUNT ||
         shape.audioSampleMimeTypes.any(::isSurroundAudioMimeType)
 

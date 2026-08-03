@@ -58,8 +58,22 @@ class VideoOrientationPolicyTest {
 
     // --- Each release signal, on its own --------------------------------------
 
-    @Test fun aSecondAudioTrackIsEvidenceOfARelease() {
+    /**
+     * The one assembly signal a camera clip can acquire after it was shot. An editor
+     * that lays a music or commentary track over a portrait recording and remuxes it
+     * copies the rotation matrix and the landscape coded frame straight through, so
+     * treating the extra track as proof of authoring would stand that clip on its side.
+     */
+    @Test fun aSecondAudioTrackAloneIsNotEvidenceOfARelease() {
         val result = autoRotation(featureLengthClip(rotationDegrees = 90).copy(audioTrackCount = 2))
+        assertEquals(AutoRotationVerdict.LooksLikeACameraClip, result.verdict)
+    }
+
+    @Test fun aSecondAudioTrackBesideRealAuthoringStillCorrects() {
+        val result = autoRotation(
+            featureLengthClip(rotationDegrees = 90)
+                .copy(audioTrackCount = 2, embeddedTextTrackCount = 1),
+        )
         assertEquals(AutoRotationVerdict.LandscapeFilmFiledSideways, result.verdict)
     }
 

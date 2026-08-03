@@ -125,6 +125,8 @@ class CastServerService : Service() {
             ACTION_PLAY_PAUSE -> {
                 if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
                     CastTransportState.togglePlaying()
+                } else {
+                    retireIfNothingIsCasting(startId)
                 }
                 return START_NOT_STICKY
             }
@@ -132,6 +134,8 @@ class CastServerService : Service() {
             ACTION_SKIP_BACK -> {
                 if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
                     CastTransportState.skip(-CastNotificationPolicy.SKIP_INCREMENT_MS)
+                } else {
+                    retireIfNothingIsCasting(startId)
                 }
                 return START_NOT_STICKY
             }
@@ -139,6 +143,8 @@ class CastServerService : Service() {
             ACTION_SKIP_FORWARD -> {
                 if (ownsCurrentCast(intent.getStringExtra(EXTRA_CAST_ID))) {
                     CastTransportState.skip(CastNotificationPolicy.SKIP_INCREMENT_MS)
+                } else {
+                    retireIfNothingIsCasting(startId)
                 }
                 return START_NOT_STICKY
             }
@@ -489,6 +495,22 @@ class CastServerService : Service() {
     /** A transport tap is spent only by the generation that is still serving this cast. */
     private fun ownsCurrentCast(castId: String?): Boolean =
         castId != null && synchronized(teardownGuard) { startGate.current()?.castId == castId }
+
+    /**
+     * A transport tap can outlive the cast it was posted for: the shade keeps drawing
+     * until the removal lands, so the platform re-creates a service it has already
+     * stopped just to deliver the queued intent. Nothing owns that instance and no
+     * other path retires it — `START_NOT_STICKY` only governs re-delivery — so it
+     * would linger with an idle media session until the system reclaimed it.
+     *
+     * Only a genuinely idle service retires. A tap belonging to a superseded cast that
+     * a newer one replaced must leave the newer cast alone.
+     */
+    private fun retireIfNothingIsCasting(startId: Int) {
+        synchronized(teardownGuard) {
+            if (startGate.current() == null) stopSelfResult(startId)
+        }
+    }
 
     /**
      * A Media3 session this device would not give us costs the transport, never the cast:
