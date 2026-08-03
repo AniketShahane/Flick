@@ -288,7 +288,7 @@ class SessionReloadTest {
  * NOT mint in `reloadInPlace` — reusing it is what keeps the output surface, the
  * MediaSession and the track selection alive across a subtitle change.
  */
-private class RecordingPlayer : SessionPlayer {
+internal class RecordingPlayer : SessionPlayer {
     var instance = 0
     var live = true
     var startups = 0
@@ -304,6 +304,7 @@ private class RecordingPlayer : SessionPlayer {
 
     private var firstFrame: (() -> Unit)? = null
     private var startupError: ((PlaybackException) -> Unit)? = null
+    private var rotationRePrepare: (() -> Unit)? = null
     private var playbackFailure: ((PlaybackException) -> Unit)? = null
     private var subtitleDropped: ((String, ExternalSubtitle) -> Unit)? = null
 
@@ -326,6 +327,7 @@ private class RecordingPlayer : SessionPlayer {
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
         onError: (PlaybackException) -> Unit,
+        onRotationRePrepare: () -> Unit,
     ) {
         instance++
         startups++
@@ -334,6 +336,7 @@ private class RecordingPlayer : SessionPlayer {
         lastStartupMediaId = mediaId
         firstFrame = onFirstFrame
         startupError = onError
+        rotationRePrepare = onRotationRePrepare
     }
 
     override fun reloadInPlace(
@@ -354,6 +357,7 @@ private class RecordingPlayer : SessionPlayer {
     override fun clearStartupListener() {
         firstFrame = null
         startupError = null
+        rotationRePrepare = null
     }
 
     override fun stop() {
@@ -377,7 +381,17 @@ private class RecordingPlayer : SessionPlayer {
         val callback = firstFrame ?: return
         firstFrame = null
         startupError = null
+        rotationRePrepare = null
         callback()
+    }
+
+    /**
+     * A picture-orientation correction re-preparing the live player. The real
+     * controller reports this from `rePrepareForRotation` and reads the same
+     * startup callbacks, so a cast past its first frame reports nothing.
+     */
+    fun reportRotationRePrepare() {
+        rotationRePrepare?.invoke()
     }
 
     fun failPlayback(error: PlaybackException) {

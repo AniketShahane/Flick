@@ -206,6 +206,8 @@ class SessionController(
     private var startupDeadlineJob: Job? = null
     private var startupRetries = 0
     private var startupDeadlineElapsedMs = 0L
+    /** Whether this cast has already spent its one rotation grant — see [StartupDeadlinePolicy]. */
+    private var startupDeadlineExtended = false
     private var startupUrl: String? = null
     /**
      * The external subtitle the live session is actually prepared with. A reload
@@ -338,13 +340,8 @@ class SessionController(
         preparedSubtitle = subtitle
         startupPositionMs = startMs
         startupRetries = 0
-        startupDeadlineElapsedMs = SystemClock.elapsedRealtime() + STARTUP_DEADLINE_MS
-        startupDeadlineJob = scope.launch {
-            delay(STARTUP_DEADLINE_MS)
-            if (gate.isCurrent(castId, generation) && stage !is MediaStage.Active) {
-                fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, retryable = true, beforeReady = true)
-            }
-        }
+        startupDeadlineExtended = false
+        armStartupDeadline(castId, generation, STARTUP_DEADLINE_MS)
         FlickLog.i("cast", "stage=checking castIdFp=${FlickLog.fp(castId)} src=${FlickLog.endpoint(url)} startMs=$startMs durationMs=$durationMs")
         val started = SystemClock.elapsedRealtime()
         probeJob = scope.launch {
@@ -381,6 +378,50 @@ class SessionController(
         return accepted
     }
 
+    /**
+     * The startup budget, both halves at once, because they are one deadline.
+     * [startupDeadlineElapsedMs] is the value [startPlayer] and
+     * [StartupRetryPolicy] measure against; the job is what actually fails the
+     * cast. Moving either alone leaves the transaction disagreeing with its own
+     * timer, and the timer is the one that wins.
+     */
+    private fun armStartupDeadline(castId: String, generation: Long, budgetMs: Long) {
+        startupDeadlineElapsedMs = SystemClock.elapsedRealtime() + budgetMs
+        startupDeadlineJob?.cancel()
+        startupDeadlineJob = scope.launch {
+            delay(budgetMs)
+            if (gate.isCurrent(castId, generation) && stage !is MediaStage.Active) {
+                fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, retryable = true, beforeReady = true)
+            }
+        }
+    }
+
+    /**
+     * Give back the time a picture-orientation re-prepare took, once per cast.
+     *
+     * The budget exists to judge the link, and a rotation correction is the
+     * receiver's own decision to configure the decoder again — see
+     * [StartupDeadlinePolicy] for why that may not be charged to it, and for the
+     * bound. Reached only from the startup callback the player holds while a
+     * first frame is still outstanding, so a corrected cast that never needed
+     * this never touches it.
+     */
+    private fun extendStartupDeadlineForRotation(castId: String, generation: Long) {
+        if (!gate.isCurrent(castId, generation)) return
+        val budgetMs = StartupDeadlinePolicy.budgetAfterRotationRePrepare(
+            deadlineElapsedMs = startupDeadlineElapsedMs,
+            alreadyExtended = startupDeadlineExtended,
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+        ) ?: return
+        startupDeadlineExtended = true
+        armStartupDeadline(castId, generation, budgetMs)
+        FlickLog.i(
+            "cast",
+            "startupDeadline reason=rotation grantedMs=${StartupDeadlinePolicy.ROTATION_EXTENSION_MS} " +
+                "budgetMs=$budgetMs castIdFp=${FlickLog.fp(castId)}",
+        )
+    }
+
     override fun replayResult(castId: String): ControlCastResult? = retainedResult?.takeIf { resultCastId(it) == castId }
 
     private fun startPlayer(castId: String, generation: Long, probeLatencyMs: Long, startedElapsedMs: Long) {
@@ -414,6 +455,7 @@ class SessionController(
                 ready?.invoke(castId, outcome.probeLatencyMs, outcome.startupMs)
             },
             onError = { error -> onStartupError(castId, generation, probeLatencyMs, startedElapsedMs, error) },
+            onRotationRePrepare = { extendStartupDeadlineForRotation(castId, generation) },
         )
     }
 
@@ -554,6 +596,7 @@ class SessionController(
     private fun clearStartupState() {
         startupRetries = 0
         startupDeadlineElapsedMs = 0L
+        startupDeadlineExtended = false
         startupUrl = null
         preparedSubtitle = null
         startupPositionMs = 0L

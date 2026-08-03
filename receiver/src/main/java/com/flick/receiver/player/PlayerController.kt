@@ -57,7 +57,15 @@ interface SessionPlayer {
     fun setExternalSubtitleDroppedListener(listener: ((String, ExternalSubtitle) -> Unit)?)
     fun recordProbeLatency(latencyMs: Long)
 
-    /** Cold start: adopts a NEW player instance and reports the exact first frame. */
+    /**
+     * Cold start: adopts a NEW player instance and reports the exact first frame.
+     *
+     * [onRotationRePrepare] fires when a picture-orientation correction has
+     * re-prepared the player before that frame arrived. It is reported rather
+     * than absorbed because the receiver chose that work itself, and the cast
+     * transaction is the only place that knows what the startup budget is being
+     * spent on.
+     */
     fun playStartup(
         url: String,
         startMs: Long,
@@ -65,6 +73,7 @@ interface SessionPlayer {
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
         onError: (PlaybackException) -> Unit,
+        onRotationRePrepare: () -> Unit,
     )
 
     /**
@@ -228,6 +237,7 @@ class PlayerController(context: Context) : SessionPlayer {
         val mediaId: String,
         val onFirstFrame: () -> Unit,
         val onError: (PlaybackException) -> Unit,
+        val onRotationRePrepare: () -> Unit,
     )
 
     /** Non-null only from player adoption until the exact first video frame. */
@@ -752,6 +762,10 @@ class PlayerController(context: Context) : SessionPlayer {
      * A subtitle attach still inside its 12 s watchdog window forfeits that
      * window: the rebuilt item carries no attempt tag, so the deadline could only
      * fire against a subtitle that is fine and drop it.
+     *
+     * A cast that has not reached its first frame is told, because that window is
+     * budgeted: [StartupCallbacks] is non-null for exactly as long as startup is
+     * outstanding, so reading it here IS the condition, not a check of one.
      */
     private fun rePrepareForRotation(): Boolean {
         val exo = player ?: return false
@@ -773,6 +787,7 @@ class PlayerController(context: Context) : SessionPlayer {
         if (resumeMs > 0L) exo.seekTo(resumeMs)
         exo.prepare()
         exo.playWhenReady = resumePlayWhenReady
+        startupCallbacks?.onRotationRePrepare?.invoke()
         return true
     }
 
@@ -1192,9 +1207,10 @@ class PlayerController(context: Context) : SessionPlayer {
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
         onError: (PlaybackException) -> Unit,
+        onRotationRePrepare: () -> Unit,
     ) {
         firstFrameGate.arm(mediaId)
-        startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError)
+        startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError, onRotationRePrepare)
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
