@@ -68,6 +68,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -682,16 +683,20 @@ private fun ColumnScope.StopCastControl(onStop: () -> Unit) {
  */
 @Composable
 private fun VolumeRow(playbackState: State<PlaybackUiState>, onVolume: (Float) -> Unit) {
-    val context = LocalContext.current
+    // LocalResources, not LocalContext: reading the context observes no Configuration,
+    // so a locale or font-scale change this activity handles in place would never
+    // invalidate this scope, and the percentages would go on being read out in the
+    // language the phone has left.
+    val resources = LocalResources.current
     val level: () -> Float = remember(playbackState) { { playbackState.value.volume } }
     // Formatters, not strings: building either here would put this scope back behind the
     // level it exists to keep out of composition. One is spent inside a leaf that reads
     // the level for itself, the other inside a semantics block.
-    val readout: (Int) -> String = remember(context) {
-        { percent -> context.getString(R.string.np_volume_percent, percent) }
+    val readout: (Int) -> String = remember(resources) {
+        { percent -> resources.getString(R.string.np_volume_percent, percent) }
     }
-    val spokenValue: (Int) -> String = remember(context) {
-        { percent -> context.getString(R.string.a11y_volume_value, percent) }
+    val spokenValue: (Int) -> String = remember(resources) {
+        { percent -> resources.getString(R.string.a11y_volume_value, percent) }
     }
     VolumeSlider(
         value = level,
