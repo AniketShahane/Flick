@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.os.ext.SdkExtensions
+import androidx.annotation.RequiresExtension
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.util.FlickLog
@@ -35,11 +37,12 @@ import java.util.ArrayDeque
  * and [NsdManager] never re-resolves it, so a receiver that changes `state` in place —
  * or whose goodbye never reaches this phone — leaves a resolution describing a state
  * the TV has left, and the row goes on telling the user to wake a TV they have already
- * woken. Two things converge it: on API 34+ each held record is subscribed to with
- * [NsdManager.ServiceInfoCallback], which reports the record's own changes; everywhere
- * else, and for anything that subscription refuses, [SWEEP_PERIOD_MS] re-resolves the
- * names nothing is watching. Both write through [onResolved], so a stale answer can
- * only ever be replaced by a newer one and the row cannot flap between the two.
+ * woken. Two things converge it: where the platform ships it, each held record is
+ * subscribed to with [NsdManager.ServiceInfoCallback], which reports its own changes;
+ * everywhere else, and for anything that subscription refuses, [SWEEP_PERIOD_MS]
+ * re-resolves the names nothing is watching. Both write through [onResolved], so a
+ * stale answer can only ever be replaced by a newer one and the row cannot flap
+ * between the two.
  */
 class NsdDiscovery(context: Context) {
 
@@ -212,7 +215,12 @@ class NsdDiscovery(context: Context) {
      * that answers with more receivers than this has nothing more to tell us.
      */
     private fun ensureMonitor(name: String) {
+        // SDK_INT alone does not prove the subscription exists: it lives in the
+        // Connectivity mainline module, so a device can report 34 and still lack the
+        // class — instantiating ServiceMonitor there is a NoClassDefFoundError, not a
+        // rejected registration. Below the extension, the sweep is the whole fallback.
         if (Build.VERSION.SDK_INT < MONITOR_API) return
+        if (SdkExtensions.getExtensionVersion(Build.VERSION_CODES.TIRAMISU) < MONITOR_EXT) return
         if (monitors.containsKey(name) || monitors.size >= MAX_MONITORS) return
         val info = lastInfoByName[name] ?: return
         val monitor = ServiceMonitor(name)
@@ -226,6 +234,7 @@ class NsdDiscovery(context: Context) {
 
     private fun dropMonitor(name: String) {
         if (Build.VERSION.SDK_INT < MONITOR_API) return
+        if (SdkExtensions.getExtensionVersion(Build.VERSION_CODES.TIRAMISU) < MONITOR_EXT) return
         val monitor = monitors.remove(name) ?: return
         runCatching { nsd.unregisterServiceInfoCallback(monitor) }
     }
@@ -319,6 +328,7 @@ class NsdDiscovery(context: Context) {
      * [onServiceLost]: the platform keeps reporting the service if it returns, which is
      * exactly the re-registration a receiver performs to flip its advertised state.
      */
+    @RequiresExtension(extension = Build.VERSION_CODES.TIRAMISU, version = MONITOR_EXT)
     private inner class ServiceMonitor(private val name: String) : NsdManager.ServiceInfoCallback {
         override fun onServiceUpdated(serviceInfo: NsdServiceInfo) = onResolved(serviceInfo)
 
@@ -343,6 +353,8 @@ class NsdDiscovery(context: Context) {
         const val REFRESH_TIMEOUT_MS = 900L
         /** Android 14 — the first release with a per-service record subscription. */
         const val MONITOR_API = 34
+        /** The T extension SDK that actually ships that subscription's callback class. */
+        const val MONITOR_EXT = 7
         const val MAX_MONITORS = 4
         // The ceiling on how long a woken TV can go on being listed as asleep where no
         // subscription is available.
