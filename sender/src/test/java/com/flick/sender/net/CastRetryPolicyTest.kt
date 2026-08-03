@@ -43,12 +43,54 @@ class CastRetryPolicyTest {
         )
     }
 
+    /**
+     * MediaStore under-reports this file by a minute, so every TV-confirmed position in
+     * the last minute of it exceeds the durationMs the retry puts on the wire. The
+     * receiver closes the control socket on startMs > durationMs, so an unclamped retry
+     * would turn a retryable failure into a dead cast.
+     */
+    @Test fun activeRetryIsClampedToTheDurationThatGoesOnTheWire() {
+        val wire = DURATION_MS - MINUTE_MS
+        assertEquals(
+            RetryStart(wire, startOver = false),
+            CastRetryPolicy.start(
+                originalStartMs = 0L,
+                originalStartOver = false,
+                active = true,
+                confirmedMs = DURATION_MS - 40_000L,
+                durationMs = DURATION_MS,
+                wireDurationMs = wire,
+            ),
+        )
+    }
+
+    @Test fun anUnknownWireDurationLeavesTheResumeUntouched() {
+        assertEquals(
+            RetryStart(50 * MINUTE_MS, startOver = false),
+            CastRetryPolicy.start(
+                originalStartMs = 0L,
+                originalStartOver = false,
+                active = true,
+                confirmedMs = 50 * MINUTE_MS,
+                durationMs = DURATION_MS,
+                wireDurationMs = 0L,
+            ),
+        )
+    }
+
     private fun retryStart(
         originalStartMs: Long,
         startOver: Boolean,
         active: Boolean,
         confirmedMs: Long,
-    ) = CastRetryPolicy.start(originalStartMs, startOver, active, confirmedMs, DURATION_MS)
+    ) = CastRetryPolicy.start(
+        originalStartMs,
+        startOver,
+        active,
+        confirmedMs,
+        DURATION_MS,
+        wireDurationMs = DURATION_MS,
+    )
 
     private companion object {
         const val MINUTE_MS = 60_000L

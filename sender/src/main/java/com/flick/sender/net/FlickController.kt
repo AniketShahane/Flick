@@ -134,15 +134,25 @@ internal data class CastRequest(val item: MediaItem, val startMs: Long, val star
 internal data class RetryStart(val startMs: Long, val startOver: Boolean)
 
 internal object CastRetryPolicy {
+    /**
+     * [durationMs] is the TV-confirmed container duration, which decides eligibility;
+     * [wireDurationMs] is MediaStore's, which is what the retry's `loadMedia` actually
+     * carries. The two disagree on a mis-scanned or VFR file, and the receiver answers
+     * startMs > durationMs by closing the control socket — a non-retryable disconnect
+     * that would cost the user the whole cast. The start is clamped to what the
+     * receiver will see, never to the value that merely decided it.
+     */
     fun start(
         originalStartMs: Long,
         originalStartOver: Boolean,
         active: Boolean,
         confirmedMs: Long,
         durationMs: Long,
+        wireDurationMs: Long,
     ): RetryStart = if (active) {
+        val resumed = PlaybackResumePolicy.eligiblePosition(confirmedMs, durationMs) ?: 0L
         RetryStart(
-            PlaybackResumePolicy.eligiblePosition(confirmedMs, durationMs) ?: 0L,
+            if (wireDurationMs > 0L) resumed.coerceAtMost(wireDurationMs) else resumed,
             startOver = false,
         )
     } else {
@@ -1063,6 +1073,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 active = (_castStart.value as? CastStartState.Active)?.castId == castId,
                 confirmedMs = playback.confirmedMs,
                 durationMs = playback.durationMs,
+                wireDurationMs = original.item.durationMs,
             )
             original.copy(startMs = retryStart.startMs, startOver = retryStart.startOver)
         }
