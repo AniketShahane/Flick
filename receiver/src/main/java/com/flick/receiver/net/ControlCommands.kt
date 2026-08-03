@@ -48,6 +48,13 @@ interface ControlCommands {
     fun onSeek(castId: String, posMs: Long)
     fun onSkip(castId: String, deltaMs: Long)
     fun onSetVolume(castId: String, level: Float)
+    /**
+     * A/V sync nudge for the running cast. Positive means audio heard LATER than
+     * the picture; the range and step are `AudioDelayPolicy`'s, and the server has
+     * already refused anything outside them. Never reported back — the phone is
+     * the display source of truth.
+     */
+    fun onSetAudioDelay(castId: String, delayMs: Int)
     /** True only when this cancelled the current pre-ready cast. */
     fun onCancelLoad(castId: String): Boolean
     /** True only when this stopped the current preparing or active cast. */

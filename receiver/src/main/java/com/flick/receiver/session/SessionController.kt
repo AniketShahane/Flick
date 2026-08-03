@@ -246,6 +246,14 @@ class SessionController(
         subtitle: ExternalSubtitle?,
     ): ControlCastResult {
         replayResult(castId)?.let { return it }
+        // An A/V nudge belongs to the film it was dialled in for, and this is the
+        // only path a genuinely new castId reaches: control ownership routes a
+        // repeat for the live cast to [onReloadMedia], and a replayable retained
+        // result has already returned above. Resetting any lower down would reach
+        // the cases that must NOT lose the delay — the subtitle swap that falls
+        // back to [beginLoad] before the first frame, a startup retry, and the
+        // player rebuild a background/foreground cycle causes.
+        controller.setAudioDelay(0)
         return beginLoad(controlLeaseGeneration, castId, url, title, durationMs, startMs, subtitle)
     }
 
@@ -506,6 +514,7 @@ class SessionController(
         beginSeek(before.posMs, clampedSeekTarget(before.posMs + deltaMs, before.durationMs))
     }
     override fun onSetVolume(castId: String, level: Float) { if (current(castId)) controller.setVolume(level) }
+    override fun onSetAudioDelay(castId: String, delayMs: Int) { if (current(castId)) controller.setAudioDelay(delayMs) }
     override fun onCancelLoad(castId: String): Boolean {
         if (!current(castId)) return false
         invalidateToNone()

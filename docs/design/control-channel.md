@@ -79,6 +79,7 @@ String/number limits are exact:
 | duration/position values | integer `0..604800000` ms (seven days) |
 | `seq` | integer `0..Long.MAX_VALUE`, strictly increasing per authenticated session |
 | `volume` / `level` | finite JSON number `0.0..1.0` |
+| `delayMs` | JSON integer `-500..500` inclusive **and** a multiple of `25` |
 | startup/probe timings | integer `0..60000` ms |
 | HTTP status | integer `100..599`, only when HTTP was observed |
 
@@ -89,7 +90,7 @@ Display labels are canonical wire values: the sender normalizes them to one line
 The required capability list is exactly, and in this canonical order:
 
 ```text
-cast-ack,first-frame-ready,structured-errors,resume-hmac
+cast-ack,first-frame-ready,structured-errors,resume-hmac,audio-delay
 ```
 
 ## 4. Pre-auth negotiation and pairing
@@ -103,7 +104,7 @@ Initial pairing is only allowed on the user-entered TV endpoint. The sender make
 The receiver's exact successful response is:
 
 ```json
-{"t":"negotiated","v":2,"clientNonce":"<echo>","serverNonce":"<22-char-base64url>","tvId":"<22-char-base64url>","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"negotiated","v":2,"clientNonce":"<echo>","serverNonce":"<22-char-base64url>","tvId":"<22-char-base64url>","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 ```
 
 Only after validating exact version, echoed nonce, fresh server nonce, valid `tvId`, and required canonical capabilities does the sender send its typed code, on the same connection:
@@ -117,7 +118,7 @@ Only after validating exact version, echoed nonce, fresh server nonce, valid `tv
 Under one receiver synchronization boundary, success verifies the visible current code/generation and lockout, compares it in constant time, consumes it, creates a random 256-bit key plus independent random 128-bit `keyId`, durably persists the key/ID/label, publishes pairing success, and returns:
 
 ```json
-{"t":"paired","v":2,"key":"<43-char-base64url>","keyId":"<22-char-base64url>","tv":"Demo TV","tvId":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"paired","v":2,"key":"<43-char-base64url>","keyId":"<22-char-base64url>","tv":"Demo TV","tvId":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 ```
 
 `peerIp` is the normalized IPv4 observed for the authenticated socket. `serverHost`/`serverPort` are the receiver's actual bound endpoint. Before storing a pair the sender requires that endpoint to equal the connected endpoint and `peerIp` to be currently owned by an up, non-loopback phone interface. These fields are protocol-only: do not log or display them.
@@ -134,12 +135,14 @@ Receiver pairing visibility is not authorization. `PairingManager`, rather than 
 
 ### Adding a capability requires a coordinated release — read this first
 
-`capabilities` is frozen at exactly `["cast-ack","first-frame-ready","structured-errors","resume-hmac"]` (`ControlProtocolV2.capabilities`). Adding, removing or reordering one entry breaks resume and visible-code pairing while the phone and TV are on different lists. Existing keys are not destroyed: once both apps agree again, their HMAC transcripts match, and a record already marked `needsRepair` can visibly re-pair. Two independent mechanisms make the version-skew window fail closed:
+`capabilities` is frozen at exactly `["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]` (`ControlProtocolV2.capabilities`, `ControlServer.CAP`). Adding, removing or reordering one entry breaks resume and visible-code pairing while the phone and TV are on different lists. Existing keys are not destroyed: once both apps agree again, their HMAC transcripts match, and a record already marked `needsRepair` can visibly re-pair. Two independent mechanisms make the version-skew window fail closed:
 
 1. **`cap` is field 12 of the resume HMAC transcript.** `ControlProtocolV2.transcript` ends with `capabilities.joinToString(",")`, so the list is signed, not merely compared. A phone with one extra string computes a different `clientProof` for identical nonces, the receiver's constant-time verify fails, and the connection is generically `denied`. A failed proof is exactly the case that marks the record `needsRepair`.
-2. **The repair path is closed during version skew.** `needsRepair` routes to visible-code pairing, but `negotiated` carries `cap` too, and `ControlFrameSchema.caps()` validates it through `ControlProtocolV2.canonicalCaps`, which is exact list equality (`value == capabilities`). An un-updated TV answers with the old four-element list and the updated phone refuses to pair with it.
+2. **The repair path is closed during version skew.** `needsRepair` routes to visible-code pairing, but `negotiated` carries `cap` too, and `ControlFrameSchema.caps()` validates it through `ControlProtocolV2.canonicalCaps`, which is exact list equality (`value == capabilities`). An un-updated TV answers with the shorter list and the updated phone refuses to pair with it.
 
 During version skew, resume and re-pairing both fail, whichever app updates first. Updating the counterpart restores agreement; supporting rolling compatibility instead would require a protocol version bump and an explicit migration path because v2 accepts no capability *superset*.
+
+**Taken deliberately: `audio-delay`.** The A/V nudge (§7, `setAudioDelay`) is the one case the rule below admits: the receiver must genuinely *do* something new, and no arrangement of the frames the TV already sends can make it happen. So the list grew by one entry and both apps ship it together — a phone or TV updated alone cannot resume or re-pair until its counterpart is, and every fixture proof in [control-v2-fixtures.md](control-v2-fixtures.md) was recomputed because the list is inside the transcript.
 
 **Considered and rejected: `INSUFFICIENT_BANDWIDTH`.** Link capacity (see `docs/implementation.md` → *Link capacity*) needed a way to tell a user that the Wi-Fi, not the file or the TV, is why a cast failed. A new capability plus a new `failureCodes` entry was the obvious shape and was rejected outright on the reasoning above: it would have traded a recoverable stutter for a version-skew pairing failure, and would have forced a coordinated two-app release for a diagnosis the phone can reach alone. It is unnecessary as well as dangerous — the phone is the HTTP server, so it already measures the real path on its own socket, and the TV already reports `bufferedMs`/`phase` on the existing `state` feed. The link-capacity feature therefore ships as a **sender-only protocol/runtime change** that re-faces the existing `startup_timeout` code locally. No wire frame, no `cap` entry, no `failureCodes` entry, and no receiver protocol/runtime code changes; receiver launcher-resource changes in the same visual refresh are unrelated.
 
@@ -158,7 +161,7 @@ Pairing records are keyed by a persistent random non-secret `tvId`; they hold `k
 2. Receiver looks up exactly `(tvId,keyId)`, creates a fresh server nonce, and responds:
 
    ```json
-   {"t":"resumeChallenge","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<echo>","serverNonce":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+   {"t":"resumeChallenge","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<echo>","serverNonce":"<22-char-base64url>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
    ```
 
 3. Sender verifies every echoed/expected value, connected endpoint, current owned `peerIp`, and canonical capabilities before computing `clientProof`:
@@ -170,7 +173,7 @@ Pairing records are keyed by a persistent random non-secret `tvId`; they hold `k
 4. Receiver constant-time verifies and consumes the one-connection challenge, then returns:
 
    ```json
-   {"t":"resumed","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"],"proof":"<43-char-base64url>"}
+   {"t":"resumed","v":2,"tv":"Demo TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","peerIp":"<phone-rfc1918-ipv4>","serverHost":"<tv-rfc1918-ipv4>","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"],"proof":"<43-char-base64url>"}
    ```
 
 5. Sender constant-time verifies the server proof before authenticating, refreshing host/port, or deduplicating an NSD candidate. A failed proof/nonce/replay/malformed field/extra frame expires or consumes the challenge, returns generic `denied`, and closes. Challenge deadline is six seconds and it accepts exactly one proof.
@@ -189,7 +192,7 @@ peerIp
 serverHost
 serverPort
 tv
-cast-ack,first-frame-ready,structured-errors,resume-hmac
+cast-ack,first-frame-ready,structured-errors,resume-hmac,audio-delay
 ```
 
 The server proof changes only `client` to `server`. Numbers are canonical unsigned ASCII decimal; `tv` is the exact validated challenge value. Base64url is unpadded. The fixed independently computed vector is in the fixtures.
@@ -231,12 +234,17 @@ The canonical serialized fixtures enumerate every frame. This section defines se
 {"t":"seek","v":2,"castId":"<id>","posMs":45000}
 {"t":"skip","v":2,"castId":"<id>","deltaMs":10000}
 {"t":"setVolume","v":2,"castId":"<id>","level":0.75}
+{"t":"setAudioDelay","v":2,"castId":"<id>","delayMs":250}
 {"t":"cancelLoad","v":2,"castId":"<id>"}
 {"t":"stop","v":2,"castId":"<id>"}
 {"t":"ping","v":2,"id":"<22-char-base64url>"}
 ```
 
 `durationMs` may be zero only when unknown; otherwise `startMs` and seek position cannot exceed it. With unknown duration, positions remain within the seven-day cap. `skip.deltaMs` is exactly `-10000` or `10000`. All commands except `loadMedia` and `ping` require current `castId`.
+
+`setAudioDelay` is the live A/V sync nudge, and its field set is exactly `t,v,castId,delayMs` — nothing else. **A positive `delayMs` means the audio is heard LATER than the picture; a negative one means it is heard EARLIER; `0` is in sync.** `delayMs` outside `-500..500`, off the 25 ms step, or not a JSON integer is a malformed frame and is refused exactly as an out-of-range `setVolume` level is — never clamped or rounded into a value the phone did not ask for. A frame naming a cast that is not current returns `commandRejected(stale_cast)`, like every other cast command.
+
+The delay is **per cast and is never reported back**. There is no field for it on `state`, no event frame announces it, and the TV resets it to zero only when it adopts a genuinely new `castId` — not on a repeated `loadMedia` for the running cast, not on a seek, and not when the receiver rebuilds its player after a background/foreground cycle. The phone is therefore the sole display source of truth for the current value, which is what keeps the `state` feed and its 10 Hz cost unchanged. The receiver applies it by shifting the video renderers' clock rather than the audio, so it survives encoded audio passthrough and leaves the reported position, the scrub bar and the resume checkpoints exactly as they were; see `docs/implementation.md`.
 
 ### TV → phone, authenticated
 

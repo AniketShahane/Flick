@@ -14,14 +14,14 @@ class ControlWireSerializationTest {
                 clientNonce = "ERITFBUWFxgZGhscHR4fIA",
                 serverNonce = "ISIjJCUmJygpKissLS4vMA",
                 tvId = "ABEiM0RVZneImaq7zN3u_w",
-                capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+                capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay"),
             ),
         )
 
         val frame = JSONObject(payload)
         assertTrue(frame.get("cap") is JSONArray)
         assertEquals(
-            listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+            listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay"),
             frame.getJSONArray("cap").let { array ->
                 List(array.length()) { index -> array.getString(index) }
             },

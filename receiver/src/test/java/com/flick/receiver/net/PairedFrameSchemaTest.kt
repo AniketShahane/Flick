@@ -14,7 +14,7 @@ class PairedFrameSchemaTest {
             peerIp = "192.168.42.17",
             serverHost = "192.168.42.88",
             serverPort = 42421,
-            capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac"),
+            capabilities = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay"),
         )
 
         assertEquals(

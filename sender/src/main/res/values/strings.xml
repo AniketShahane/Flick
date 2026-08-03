@@ -137,8 +137,12 @@
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
+    <!-- The pair under the CTA. Both are button labels now rather than trailing text
+         links, so the phone one lost its "instead": a button in a row of two is not a
+         continuation of the sentence above it. Sentence case, like every other action
+         in the app. -->
     <string name="detail_start_over">Start over</string>
-    <string name="detail_play_here">play on this phone instead</string>
+    <string name="detail_play_here">Play on this phone</string>
 
     <!-- S5 · Connecting. -->
     <string name="connecting_title">Waking %1$s…</string>
@@ -205,11 +209,11 @@
     <!-- Must match the skip the transport actually sends. -->
     <string name="np_seek_seconds">10</string>
     <string name="np_volume_percent">%1$d%%</string>
-    <!-- Subtitle and audio-track selection have no command in the control protocol and
-         no state to read, so both segments stay disabled. -->
+    <!-- The segmented row. "Audio" is the A/V delay and NOT track selection, which still
+         has neither a command nor any state in the control protocol; the label stays the
+         one word because the sheet behind it says what it does. -->
     <string name="np_segment_subs">Subs</string>
     <string name="np_segment_audio">Audio</string>
-    <string name="np_segment_unavailable">Unavailable for this cast</string>
     <string name="buffering_title">Topping up the buffer</string>
     <string name="buffering_body">Your Wi-Fi took a breath — the reserve is absorbing it. Quality stays full; nothing is being downgraded.</string>
     <string name="buffering_chip">%1$s · brief dip</string>
@@ -285,6 +289,9 @@
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
     <string name="a11y_resume_video">Resume %1$s from %2$s on %3$s</string>
     <string name="a11y_start_video_over">Start %1$s over on %2$s</string>
+    <!-- The phone action names no TV: it is the one control on this sheet that does not
+         involve one. -->
+    <string name="a11y_play_video_here">Play %1$s on this phone</string>
     <string name="a11y_back_to_library">Back to your videos</string>
     <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
     <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>
@@ -314,7 +321,7 @@
     <string name="a11y_library_band_advisory">You are on 2.4 GHz Wi-Fi. Open signal and setup.</string>
     <string name="a11y_np_remaining">Time remaining: %1$s</string>
     <string name="a11y_np_subs">Subtitle tracks</string>
-    <string name="a11y_np_audio">Audio tracks</string>
+    <string name="a11y_np_audio">Audio delay</string>
 
     <!-- ===== Now-playing dock ===== -->
     <!-- Shell chrome that outlives any one route: the live-cast dock above the nav. -->
@@ -672,6 +679,9 @@
     <string name="library_badge_unknown">UNKNOWN</string>
     <string name="library_badge_unplayable">DIDN\'T PLAY</string>
     <string name="a11y_tile_unplayable">Your TV couldn\'t play this file</string>
+    <!-- Spoken only when the tile is drawing its resume line, which is only when the
+         detail sheet would actually offer that resume. -->
+    <string name="a11y_tile_watched">Watched to %1$s</string>
     <!-- ===== S4 · Detail ===== -->
     <!-- Every body below continues "Your TV couldn't play this file." — the subject is the
          TV throughout, so a phone-side fault has no sentence here and must never reach
@@ -757,4 +767,37 @@
     <string name="link_stalling_body_unmeasured">%1$s stalled three times in two minutes. Flick will not reduce the quality, because it never transcodes — moving the phone nearer the router, or onto 5 GHz, is what usually changes it.</string>
     <string name="link_stalling_dismiss">Keep watching</string>
     <string name="a11y_link_advisory">Link capacity advisory: %1$s</string>
+
+    <!-- ===== Remote — audio delay ===== -->
+    <!-- The remote's middle segment. Positive is the sound heard LATER than the picture,
+         which is VLC's and mpv's convention — but a sign alone reads either way round to
+         most people, so nothing here states one without the direction in words beside it.
+         The body is the sheet's whole claim about cost: the TV applies the offset while
+         decoding, so no byte is re-encoded and no buffer is refilled. -->
+    <string name="audio_delay_title">Audio delay</string>
+    <string name="audio_delay_body">Shifts the sound against the picture on your TV. Nothing is re-encoded and nothing re-buffers.</string>
+    <string name="audio_delay_in_sync">In sync</string>
+    <!-- The signed figure is built in code (U+2212 for the minus, to match the app\'s
+         other readouts); only the label around it is copy. -->
+    <string name="audio_delay_value">Audio %1$s ms</string>
+    <string name="audio_delay_caption_synced">Sound and picture together</string>
+    <string name="audio_delay_caption_later">Sound plays after the picture</string>
+    <string name="audio_delay_caption_earlier">Sound plays before the picture</string>
+    <!-- The steppers are set in type rather than drawn as glyphs. U+2212, not a hyphen. -->
+    <string name="audio_delay_step_earlier">−</string>
+    <string name="audio_delay_step_later">+</string>
+    <string name="audio_delay_reset">Reset</string>
+    <string name="audio_delay_done">Done</string>
+
+    <!-- Audio delay · accessibility. The step size is an argument rather than a literal
+         so it cannot drift away from AudioDelayPolicy.STEP_MS. -->
+    <string name="a11y_audio_delay">Audio delay</string>
+    <string name="a11y_audio_delay_adjusted">Adjusted</string>
+    <string name="a11y_audio_delay_synced">Sound and picture in sync</string>
+    <string name="a11y_audio_delay_later">Sound %1$d milliseconds after the picture</string>
+    <string name="a11y_audio_delay_earlier">Sound %1$d milliseconds before the picture</string>
+    <string name="a11y_audio_delay_step_later">Nudge the sound %1$d milliseconds later</string>
+    <string name="a11y_audio_delay_step_earlier">Nudge the sound %1$d milliseconds earlier</string>
+    <string name="a11y_audio_delay_adjust">Adjust audio delay</string>
+    <string name="a11y_audio_delay_reset">Put the sound back in sync</string>
 </resources>

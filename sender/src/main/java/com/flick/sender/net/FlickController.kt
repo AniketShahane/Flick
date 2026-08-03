@@ -28,6 +28,7 @@ import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.media.PlaybackProgressStore
 import com.flick.sender.media.PlaybackProgressWrite
 import com.flick.sender.media.PlaybackResumePolicy
+import com.flick.sender.media.resumePositionMs
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
 import com.flick.sender.media.VideoNames
@@ -305,6 +306,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val simplifiedVideoNames = videoNamePreference.simplified
     val playback = session.state; val pulses = session.pulses
+    /** The A/V nudge in force for this cast. Nothing on the wire reports it back. */
+    val audioDelayMs = session.audioDelayMs
     internal val playbackProgress = playbackProgressStore.state
 
     /** What this phone has proven about the link carrying the live cast. Never terminal. */
@@ -885,11 +888,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
-    internal fun resumePosition(item: MediaItem, state: PlaybackProgressState): Long? {
-        val ready = state as? PlaybackProgressState.Ready ?: return null
-        val checkpoint = ready.checkpoints[PlaybackMediaFingerprint.of(item)] ?: return null
-        return PlaybackResumePolicy.eligiblePosition(checkpoint.positionMs, item.durationMs)
-    }
+    /**
+     * Delegated rather than spelt out here: the library tile's progress line resolves
+     * through the same rule, and the two must be one decision. See [resumePositionMs].
+     */
+    internal fun resumePosition(item: MediaItem, state: PlaybackProgressState): Long? =
+        resumePositionMs(state, PlaybackMediaFingerprint.of(item), item.durationMs)
 
     fun flickToTv(item: MediaItem) {
         progressResolutionJob?.cancel()
@@ -1127,6 +1131,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
+    fun setAudioDelay(delayMs: Int) = session.setAudioDelay(delayMs); fun nudgeAudioDelay(later: Boolean) = session.nudgeAudioDelay(later); fun resetAudioDelay() = session.resetAudioDelay()
     fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()

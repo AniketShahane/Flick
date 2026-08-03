@@ -288,7 +288,7 @@ class SessionReloadTest {
  * NOT mint in `reloadInPlace` — reusing it is what keeps the output surface, the
  * MediaSession and the track selection alive across a subtitle change.
  */
-private class RecordingPlayer : SessionPlayer {
+internal class RecordingPlayer : SessionPlayer {
     var instance = 0
     var live = true
     var startups = 0
@@ -301,6 +301,7 @@ private class RecordingPlayer : SessionPlayer {
     var lastReloadPositionMs = -1L
     var lastReloadMediaId: String? = null
     var lastReloadSubtitle: ExternalSubtitle? = null
+    val audioDelays = mutableListOf<Int>()
 
     private var firstFrame: (() -> Unit)? = null
     private var startupError: ((PlaybackException) -> Unit)? = null
@@ -366,6 +367,7 @@ private class RecordingPlayer : SessionPlayer {
     override fun seekTo(posMs: Long) = Unit
     override fun seekBy(deltaMs: Long) = Unit
     override fun setVolume(level: Float) = Unit
+    override fun setAudioDelay(delayMs: Int) { audioDelays += delayMs }
     override fun readPlaybackState(): PlaybackFrame = PlaybackFrame.IDLE
 
     /** The one signal that ends a startup transaction on real hardware. */

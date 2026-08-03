@@ -137,7 +137,7 @@ Every WebSocket begins unauthenticated. Before a new pairing, the sender connect
 The v2 receiver replies:
 
 ```json
-{"t":"negotiated","v":2,"clientNonce":"<echo>","serverNonce":"<22-char-base64url>","tvId":"<22-char-base64url>","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"negotiated","v":2,"clientNonce":"<echo>","serverNonce":"<22-char-base64url>","tvId":"<22-char-base64url>","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 ```
 
 Only after validating that response may the sender transmit the user-entered code:
@@ -149,7 +149,7 @@ Only after validating that response may the sender transmit the user-entered cod
 The receiver atomically consumes the visible code, creates a 256-bit random pairing key and independent 128-bit random `keyId`, persists both, and returns:
 
 ```json
-{"t":"paired","v":2,"key":"<43-char-base64url>","keyId":"<22-char-base64url>","tv":"Living Room TV","tvId":"<22-char-base64url>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"paired","v":2,"key":"<43-char-base64url>","keyId":"<22-char-base64url>","tv":"Living Room TV","tvId":"<22-char-base64url>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 ```
 
 `peerIp` is the normalized IPv4 address observed by the receiver for the authenticated control socket. `serverHost` and `serverPort` are the receiver's actual bound endpoint. The sender requires `serverHost:serverPort` to equal the endpoint it connected to and requires `peerIp` to be currently owned by the phone. These fields are protocol data only and must not be logged or displayed.
@@ -175,7 +175,7 @@ Resume sequence:
 2. Receiver finds the exact `(tvId, keyId)` record, generates a fresh 128-bit `serverNonce`, and replies:
 
    ```json
-   {"t":"resumeChallenge","v":2,"tv":"Living Room TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<echo>","serverNonce":"<22-char-base64url>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+   {"t":"resumeChallenge","v":2,"tv":"Living Room TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<echo>","serverNonce":"<22-char-base64url>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
    ```
 
 3. Before proving, the sender requires exact nonce echoes, the expected `tvId`/`keyId`, the connected `serverHost:serverPort`, a `peerIp` currently owned by the phone, and all required capabilities in canonical order. It computes `clientProof` and sends:
@@ -187,7 +187,7 @@ Resume sequence:
 4. Receiver constant-time verifies `clientProof`, consumes the one-connection challenge, and returns a server proof:
 
    ```json
-   {"t":"resumed","v":2,"tv":"Living Room TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"],"proof":"<43-char-base64url>"}
+   {"t":"resumed","v":2,"tv":"Living Room TV","tvId":"<tvId>","keyId":"<keyId>","clientNonce":"<clientNonce>","serverNonce":"<serverNonce>","peerIp":"192.168.1.42","serverHost":"192.168.1.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"],"proof":"<43-char-base64url>"}
    ```
 
 5. Only after constant-time verification of the server proof may the sender mark the socket authenticated, persist refreshed host/port, or deduplicate the NSD candidate into the trusted TV record.
@@ -206,7 +206,7 @@ peerIp
 serverHost
 serverPort
 tv
-cast-ack,first-frame-ready,structured-errors,resume-hmac
+cast-ack,first-frame-ready,structured-errors,resume-hmac,audio-delay
 ```
 
 The server transcript is identical except the role field is `server`. Numbers use canonical unsigned ASCII decimal. `tv` uses the exact validated UTF-8 value transmitted in `resumeChallenge`; capabilities use exactly the canonical comma-joined order shown above. Base64 is URL-safe without padding. Proofs/nonces are never logged. A challenge accepts exactly one proof and expires with the 6-second authentication deadline; another frame, replay, field mismatch, malformed proof, or failed proof yields the same generic `denied` and closes the socket.
@@ -495,7 +495,8 @@ Authorization fields are rejected rather than truncated. Display labels are norm
 - `cap`: at most 16 unique ASCII values, each at most 32 characters;
 - all millisecond positions/durations: integer `0..604800000` (seven days);
 - `seq`: integer `0..Long.MAX_VALUE` and strictly increasing per authenticated session;
-- `volume`: finite JSON number `0.0..1.0`.
+- `volume`: finite JSON number `0.0..1.0`;
+- `delayMs`: JSON integer `-500..500` inclusive and a multiple of `25`.
 
 No frame permits fields beyond the listed schema. Section 4 defines the complete pre-auth frames. The authenticated phone-to-TV schemas are:
 
@@ -506,12 +507,15 @@ No frame permits fields beyond the listed schema. Section 4 defines the complete
 {"t":"seek","v":2,"castId":"<id>","posMs":45000}
 {"t":"skip","v":2,"castId":"<id>","deltaMs":10000}
 {"t":"setVolume","v":2,"castId":"<id>","level":0.75}
+{"t":"setAudioDelay","v":2,"castId":"<id>","delayMs":250}
 {"t":"cancelLoad","v":2,"castId":"<id>"}
 {"t":"stop","v":2,"castId":"<id>"}
 {"t":"ping","v":2,"id":"<22-char-base64url>"}
 ```
 
 `durationMs` may be zero only when metadata is unknown; positive `startMs` then remains allowed within the seven-day cap. Otherwise `startMs`/`seek.posMs` must not exceed the known duration. `skip.deltaMs` is exactly `-10000` or `10000`. Commands other than `loadMedia` and `ping` require the receiver's current `castId`.
+
+`setAudioDelay` carries the live A/V sync nudge and nothing else: a positive `delayMs` means audio heard **later** than the picture, a negative one means earlier, and `0` is in sync. A value past the bound, off the 25 ms step, or not a JSON integer is malformed and is refused, never clamped. The value is per cast, is reset only when the receiver adopts a new `castId`, and is never echoed back on `state` or in any event frame — the phone holds the displayed value. The `audio-delay` capability entry exists for this command; see `docs/design/control-channel.md` §4 for why it forces a coordinated two-app release.
 
 The complete authenticated TV-to-phone schemas are:
 

@@ -12,11 +12,22 @@ class ControlProtocolV2Test {
     private val client = "ERITFBUWFxgZGhscHR4fIA"
     private val server = "ISIjJCUmJygpKissLS4vMA"
 
+    // The capability list is a transcript field, so adding one to it re-keys both proofs
+    // and lengthens the transcript by the name plus its separator. That is the point of
+    // the fixture: a receiver that has not made the identical change fails the resume
+    // rather than negotiating a capability neither side agreed on.
     @Test fun fixedResumeVectorMatchesFrozenFixture() {
         val transcript = ControlProtocolV2.transcript("client", tvId, keyId, client, server, "192.168.42.17", "192.168.42.88", 42421, "Demo TV")
-        assertEquals(260, transcript.size)
-        assertEquals("bqJZ6nUWl-KhUfA49f3Y9TWZ39boGj2P01YsmwTs53E", ControlProtocolV2.proof(key, "client", tvId, keyId, client, server, "192.168.42.17", "192.168.42.88", 42421, "Demo TV"))
-        assertEquals("Z2JExw8mDA1QzUJGIira1xeQE3YvZiUbgl3jW9XK-Sk", ControlProtocolV2.proof(key, "server", tvId, keyId, client, server, "192.168.42.17", "192.168.42.88", 42421, "Demo TV"))
+        assertEquals(272, transcript.size)
+        assertEquals("ebPf_v2pHAw6ex1ij0_NA3f7YiwKU8gcd_hHBOQAu7I", ControlProtocolV2.proof(key, "client", tvId, keyId, client, server, "192.168.42.17", "192.168.42.88", 42421, "Demo TV"))
+        assertEquals("0R0MDBC27xcqAY9bT0BuPg9Y3gOFYHlWOlPljyCPoCs", ControlProtocolV2.proof(key, "server", tvId, keyId, client, server, "192.168.42.17", "192.168.42.88", 42421, "Demo TV"))
+    }
+
+    @Test fun capabilityListIsTheOneTheReceiverMirrors() {
+        assertEquals(
+            listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay"),
+            ControlProtocolV2.capabilities,
+        )
     }
 
     @Test fun anyTranscriptChangeFailsProofComparison() {

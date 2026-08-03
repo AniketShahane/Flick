@@ -28,9 +28,9 @@ The address strings are synthetic documentation data; implementations require a 
 
 ```json
 {"t":"negotiate","v":2,"minV":2,"maxV":2,"clientNonce":"ERITFBUWFxgZGhscHR4fIA"}
-{"t":"negotiated","v":2,"clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","tvId":"ABEiM0RVZneImaq7zN3u_w","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"negotiated","v":2,"clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","tvId":"ABEiM0RVZneImaq7zN3u_w","cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 {"t":"pair","v":2,"clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","code":"0007","device":"Demo Phone"}
-{"t":"paired","v":2,"key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
+{"t":"paired","v":2,"key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
 {"t":"denied","v":2}
 ```
 
@@ -40,9 +40,9 @@ The address strings are synthetic documentation data; implementations require a 
 
 ```json
 {"t":"resumeInit","v":2,"tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA"}
-{"t":"resumeChallenge","v":2,"tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"]}
-{"t":"resumeProof","v":2,"tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","proof":"bqJZ6nUWl-KhUfA49f3Y9TWZ39boGj2P01YsmwTs53E"}
-{"t":"resumed","v":2,"tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac"],"proof":"Z2JExw8mDA1QzUJGIira1xeQE3YvZiUbgl3jW9XK-Sk"}
+{"t":"resumeChallenge","v":2,"tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"]}
+{"t":"resumeProof","v":2,"tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","proof":"ebPf_v2pHAw6ex1ij0_NA3f7YiwKU8gcd_hHBOQAu7I"}
+{"t":"resumed","v":2,"tv":"Demo TV","tvId":"ABEiM0RVZneImaq7zN3u_w","keyId":"AQIDBAUGBwgJCgsMDQ4PEA","clientNonce":"ERITFBUWFxgZGhscHR4fIA","serverNonce":"ISIjJCUmJygpKissLS4vMA","peerIp":"192.168.42.17","serverHost":"192.168.42.88","serverPort":42421,"cap":["cast-ack","first-frame-ready","structured-errors","resume-hmac","audio-delay"],"proof":"0R0MDBC27xcqAY9bT0BuPg9Y3gOFYHlWOlPljyCPoCs"}
 ```
 
 For the client proof, concatenate four-byte unsigned big-endian length plus UTF-8 bytes for the following fields, with no delimiter or terminal byte:
@@ -59,16 +59,18 @@ ISIjJCUmJygpKissLS4vMA
 192.168.42.88
 42421
 Demo TV
-cast-ack,first-frame-ready,structured-errors,resume-hmac
+cast-ack,first-frame-ready,structured-errors,resume-hmac,audio-delay
 ```
 
-The resulting transcript has 260 bytes and is exactly:
+The resulting transcript has 272 bytes and is exactly:
 
 ```text
-00000017466c69636b2d436f6e74726f6c2d526573756d652d563200000006636c69656e74000000013200000016414245694d3052565a6e65496d6171377a4e33755f770000001641514944424155474277674a4367734d4451345045410000001645524954464255574678675a47687363485234664941000000164953496a4a43556d4a7967704b6973734c5334764d410000000d3139322e3136382e34322e31370000000d3139322e3136382e34322e38380000000534323432310000000744656d6f20545600000038636173742d61636b2c66697273742d6672616d652d72656164792c737472756374757265642d6572726f72732c726573756d652d686d6163
+00000017466c69636b2d436f6e74726f6c2d526573756d652d563200000006636c69656e74000000013200000016414245694d3052565a6e65496d6171377a4e33755f770000001641514944424155474277674a4367734d4451345045410000001645524954464255574678675a47687363485234664941000000164953496a4a43556d4a7967704b6973734c5334764d410000000d3139322e3136382e34322e31370000000d3139322e3136382e34322e38380000000534323432310000000744656d6f20545600000044636173742d61636b2c66697273742d6672616d652d72656164792c737472756374757265642d6572726f72732c726573756d652d686d61632c617564696f2d64656c6179
 ```
 
-`HmacSHA256` with the fixture pairing key yields client proof `bqJZ6nUWl-KhUfA49f3Y9TWZ39boGj2P01YsmwTs53E`. Replacing only the second field with `server` yields `Z2JExw8mDA1QzUJGIira1xeQE3YvZiUbgl3jW9XK-Sk`. This vector was independently computed by a standalone Ruby/OpenSSL scratch process, not production code. Change one field, its order, its byte length, encoding, role, or the key and verification must fail.
+`HmacSHA256` with the fixture pairing key yields client proof `ebPf_v2pHAw6ex1ij0_NA3f7YiwKU8gcd_hHBOQAu7I`. Replacing only the second field with `server` yields `0R0MDBC27xcqAY9bT0BuPg9Y3gOFYHlWOlPljyCPoCs`. This vector was independently computed by standalone Ruby/OpenSSL and Python/hashlib scratch processes that agree, not by production code; the same scripts reproduce the previous four-capability vector byte for byte, which is what shows the only thing that moved is the twelfth field. Change one field, its order, its byte length, encoding, role, or the key and verification must fail.
+
+The twelfth field grew by `,audio-delay` (56 → 68 bytes, `0x38` → `0x44` in the length prefix), which is why every proof above differs from the `0.2.1` fixtures. That is the intended fail-closed behaviour, not a break: see [control-channel.md](control-channel.md) §4, *Adding a capability requires a coordinated release*.
 
 ## Authenticated command frames
 
@@ -80,6 +82,9 @@ The resulting transcript has 260 bytes and is exactly:
 {"t":"skip","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","deltaMs":-10000}
 {"t":"skip","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","deltaMs":10000}
 {"t":"setVolume","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","level":0.75}
+{"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":250}
+{"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":-500}
+{"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":0}
 {"t":"cancelLoad","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg"}
 {"t":"stop","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg"}
 {"t":"ping","v":2,"id":"cGluZ19maXh0dXJlX2lkIQ"}
@@ -105,6 +110,8 @@ The resulting transcript has 260 bytes and is exactly:
 ## Negative fixtures and limits
 
 The following categories must reject/close rather than silently coerce: top-level array/string/null; duplicate JSON key; unknown field; absent required field; `v:1`; `"v":"2"`; invalid base64url length; number outside specified bound; `NaN`/`Infinity`; URL with a query/fragment/user-info/redirect/noncanonical token path/wrong peer/wrong port; code that is not four ASCII digits; cap reordered/duplicated/unknown; stale cast command; binary or fragmented message; 16 KiB + 1 decoded bytes.
+
+`setAudioDelay` adds four of its own, each of which must be refused rather than corrected: `"delayMs":501` and `"delayMs":-501` (past the bound), `"delayMs":10` (inside the bound, off the 25 ms step), and `"delayMs":25.0` / `"delayMs":2.5e1` / `"delayMs":"25"` (not a JSON integer). The field set is exactly `t,v,castId,delayMs`.
 
 For test construction, exactly 16 KiB decoded UTF-8 input is eligible for schema parsing; 16 KiB plus one decoded byte closes 1009 before partial parsing. Pre-auth accepts at most three malformed frames under its existing unauthenticated budget, then closes 1008 generic. Authenticated malformed input may emit one safe `commandRejected` with `code:"malformed"`, then closes 1008. A valid but stale command emits `commandRejected` and keeps the authenticated session open.
 

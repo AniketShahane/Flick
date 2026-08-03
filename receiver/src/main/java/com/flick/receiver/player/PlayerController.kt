@@ -86,6 +86,8 @@ interface SessionPlayer {
     fun seekTo(posMs: Long)
     fun seekBy(deltaMs: Long)
     fun setVolume(level: Float)
+    /** Positive means audio heard later than the picture; see [AudioDelayPolicy]. */
+    fun setAudioDelay(delayMs: Int)
     fun readPlaybackState(): PlaybackFrame
 }
 
@@ -191,6 +193,14 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
     private var lastVolume: Float = 1f
+
+    /**
+     * The commanded audio delay, in the form the video renderers read. Built once
+     * and handed to every renderers factory, so — unlike [lastVolume], which has
+     * to be re-applied to each new ExoPlayer — a delay set before a
+     * background/foreground cycle is already in force on the rebuilt renderers.
+     */
+    private val audioDelayShift = AudioDelayShift()
 
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
@@ -860,7 +870,11 @@ class PlayerController(context: Context) : SessionPlayer {
         // left to fall back TO, and what the flag actually buys is the retry to a second
         // *hardware* decoder on a TV that ships more than one — turning "the first
         // decoder would not configure" from a dead cast into a working one.
-        val renderersFactory = DefaultRenderersFactory(appContext)
+        //
+        // The factory is the audio-delay one because the A/V nudge is applied by
+        // shifting the video renderers' clock; with a zero shift it builds exactly
+        // what DefaultRenderersFactory builds.
+        val renderersFactory = AudioDelayRenderersFactory(appContext, audioDelayShift)
             .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
                 val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
                     mimeType,
@@ -1239,6 +1253,20 @@ class PlayerController(context: Context) : SessionPlayer {
     override fun setVolume(level: Float) {
         lastVolume = level.coerceIn(0f, 1f)
         player?.volume = lastVolume
+    }
+
+    /**
+     * WS `setAudioDelay`: positive is audio heard later than the picture.
+     *
+     * Nothing is pushed into the player. The renderers read [audioDelayShift]
+     * every tick, so the next rendered frame already carries the new offset —
+     * there is no re-prepare, no seek and no re-buffer, and passthrough audio is
+     * never touched.
+     */
+    override fun setAudioDelay(delayMs: Int) {
+        val applied = AudioDelayPolicy.clamp(delayMs)
+        audioDelayShift.videoShiftUs = AudioDelayPolicy.videoShiftUs(applied)
+        FlickLog.i("player", "audioDelay ms=$applied")
     }
 
     // --- Subtitle track surface ----------------------------------------------
