@@ -114,6 +114,7 @@ import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickTvTheme
+import com.flick.receiver.ui.components.RenameLabelDialog
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
@@ -137,6 +138,13 @@ private const val RECONCILE_SAFETY_NET_MS = 10_000L
 
 /** Surfaces that do not contain the decoded video and may safely crossfade. */
 internal enum class StandbySurface { Pair, PairSuccess, Idle, Settings }
+
+private sealed interface RenameTarget {
+    val currentName: String
+
+    data class Tv(override val currentName: String) : RenameTarget
+    data class Phone(val keyId: String, override val currentName: String) : RenameTarget
+}
 
 /**
  * Which standby surface the router puts on screen — one decision, read both by the
@@ -313,17 +321,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var lastTeardown by remember { mutableStateOf<String?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var tvName by remember { mutableStateOf(pairing.tvName) }
-    // Remembered rather than read through stringArrayResource: this composable
-    // recomposes with the 10 Hz position feed, and the presets never change under
-    // a composition that is still alive.
-    val tvNamePresets = remember(context) {
-        context.resources.getStringArray(R.array.tv_name_presets)
-    }
-    // The same idiom for the phones in Settings: there is no keyboard on this TV,
-    // so a rename cycles presets rather than typing.
-    val phoneNamePresets = remember(context) {
-        context.resources.getStringArray(R.array.phone_name_presets)
-    }
+    var renameTarget by remember { mutableStateOf<RenameTarget?>(null) }
+    // Pair-screen rename temporarily closes the authorization surface so neither
+    // its live code nor a confirmation can be hidden under the keyboard dialog.
+    var reopenPairingAfterRename by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
     // adds a timer of its own.
@@ -397,7 +398,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     // same reason `leaveSettings` reads it there.
                     val live = pairing.snapshot.value
                     pairing.onForeground(
-                        pairingRendered = pairingSurfaceRendered(
+                        pairingRendered = renameTarget == null && pairingSurfaceRendered(
                             stage = session.stage,
                             showSettings = showSettings,
                             surface = live.surface,
@@ -1006,24 +1007,18 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // routing a manager write back through the
                                     // server is the lock order that deadlocks.
                                     //
-                                    // The current label is read from the store
-                                    // rather than from `pairingSnapshot`, which is
-                                    // a frame behind this press, so two quick
-                                    // presses step two presets rather than
-                                    // computing the same next name twice.
                                     onRenamePhone = { keyId ->
                                         pairing.pairedDevices()
                                             .firstOrNull { it.keyId == keyId }
-                                            ?.let { pairing.rename(keyId, nextName(it.label, phoneNamePresets)) }
+                                            ?.let {
+                                                reopenPairingAfterRename = false
+                                                renameTarget = RenameTarget.Phone(keyId, it.label)
+                                            }
                                     },
                                     metricsEnabled = metricsEnabled,
                                     onRename = {
-                                        val next = nextName(tvName, tvNamePresets)
-                                        pairing.tvName = next
-                                        tvName = next
-                                        if (boundPort > 0) {
-                                            nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
-                                        }
+                                        reopenPairingAfterRename = false
+                                        renameTarget = RenameTarget.Tv(tvName)
                                     },
                                     onToggleMetrics = { metricsEnabled = !metricsEnabled },
                                     onForgetAll = {
@@ -1078,12 +1073,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     onAllowPair = { pairing.allowPendingPair() },
                                     onDenyPair = { pairing.denyPendingPair() },
                                     onRename = {
-                                        val next = nextName(tvName, tvNamePresets)
-                                        pairing.tvName = next
-                                        tvName = next
-                                        if (boundPort > 0) {
-                                            nsd.register(next, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
-                                        }
+                                        reopenPairingAfterRename = true
+                                        pairing.closeSurface()
+                                        renameTarget = RenameTarget.Tv(tvName)
                                     },
                                     // With nothing paired the router never reaches
                                     // Idle, so this is the only route into Settings
@@ -1127,6 +1119,54 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         }
                     }
                 }
+            }
+
+            renameTarget?.let { target ->
+                RenameLabelDialog(
+                    title = stringResource(
+                        when (target) {
+                            is RenameTarget.Tv -> R.string.rename_tv_title
+                            is RenameTarget.Phone -> R.string.rename_phone_title
+                        },
+                    ),
+                    currentName = target.currentName,
+                    onCommit = { next ->
+                        when (target) {
+                            is RenameTarget.Tv -> {
+                                val saved = pairing.renameTv(next)
+                                if (saved) {
+                                    tvName = pairing.tvName
+                                    if (boundPort > 0) {
+                                        nsd.register(
+                                            tvName,
+                                            boundPort,
+                                            Build.MODEL ?: "Android TV",
+                                            NsdAdvertiser.STATE_READY,
+                                            pairing.tvId,
+                                        )
+                                    }
+                                }
+                                saved
+                            }
+
+                            is RenameTarget.Phone -> pairing.pairedDevices()
+                                .firstOrNull { it.keyId == target.keyId }
+                                ?.let { current ->
+                                    current.label == next || pairing.rename(target.keyId, next)
+                                }
+                                ?: false
+                        }
+                    },
+                    onDismiss = {
+                        renameTarget = null
+                        if (reopenPairingAfterRename) {
+                            reopenPairingAfterRename = false
+                            if (pairing.snapshot.value.surface is PairingSurface.Standby) {
+                                pairing.requestOpen()
+                            }
+                        }
+                    },
+                )
             }
         }
     }
@@ -1419,12 +1459,6 @@ private fun PlayerView.configureSubtitles(
         },
     )
     if (subtitles.isAttachedToWindow) startListening()
-}
-
-/** Cycles the friendly-name presets behind the on-screen "Rename TV" (no keyboard on TV). */
-internal fun nextName(current: String, presets: Array<String>): String {
-    if (presets.isEmpty()) return current
-    return presets[(presets.indexOf(current) + 1).mod(presets.size)]
 }
 
 private fun AndroidKeyEvent.toTvRemoteButton(): TvRemoteButton = when (keyCode) {
