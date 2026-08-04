@@ -167,8 +167,14 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             .setArtist(snapshot.deviceName)
             // Compressed bytes rather than a URI: this frame was chosen and decoded out of
             // the film itself, so there is no address a bitmap loader could fetch it from.
+            //
             // It is what the Android 13+ media controls draw on the shade and the lock
-            // screen — the album art of a cast — and its absence costs only the picture.
+            // screen — the album art of a cast — and it takes precedence there over the
+            // notification's own large icon, which SystemUI reaches for only when a session
+            // carries no art. It is therefore also the picture the platform extracts that
+            // surface's ENTIRE colour scheme from, which is why it arrives already matted on
+            // Flick's amber; `mattedArtwork` holds that argument. Its absence costs only the
+            // picture — and the amber with it.
             .setArtworkData(artwork?.data, artwork?.let { MediaMetadata.PICTURE_TYPE_FRONT_COVER })
             .setIsBrowsable(false)
             .setIsPlayable(true)

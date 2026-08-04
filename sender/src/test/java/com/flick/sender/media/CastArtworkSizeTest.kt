@@ -19,30 +19,53 @@ class CastArtworkSizeTest {
             1080 to 1080,
         )
         for ((width, height) in shapes) {
-            val (outWidth, outHeight) = previewFrameSize(width, height, ARTWORK_BOX_PX, ARTWORK_BOX_PX)
-            assertEquals("$width x $height", ARTWORK_BOX_PX, maxOf(outWidth, outHeight))
+            val (outWidth, outHeight) =
+                previewFrameSize(width, height, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX)
+            assertEquals("$width x $height", ARTWORK_STILL_BOX_PX, maxOf(outWidth, outHeight))
         }
     }
 
     @Test fun aPortraitFilmAndItsLandscapeTwinGetTheSamePicture() {
-        assertEquals(ARTWORK_BOX_PX to 252, previewFrameSize(1920, 1080, ARTWORK_BOX_PX, ARTWORK_BOX_PX))
-        assertEquals(252 to ARTWORK_BOX_PX, previewFrameSize(1080, 1920, ARTWORK_BOX_PX, ARTWORK_BOX_PX))
+        assertEquals(
+            ARTWORK_STILL_BOX_PX to 189,
+            previewFrameSize(1920, 1080, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX),
+        )
+        assertEquals(
+            189 to ARTWORK_STILL_BOX_PX,
+            previewFrameSize(1080, 1920, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX),
+        )
     }
 
     @Test fun aFilmSmallerThanTheBoxIsStillNeverUpscaled() {
         // The box is a ceiling, not a target: inventing pixels would cost memory on the one
         // bitmap this app holds live for the length of a cast.
-        assertEquals(320 to 240, previewFrameSize(320, 240, ARTWORK_BOX_PX, ARTWORK_BOX_PX))
+        assertEquals(
+            320 to 240,
+            previewFrameSize(320, 240, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX),
+        )
     }
 
-    @Test fun theSquarestFilmStillFitsInABinderTransaction() {
-        // This picture is parceled to SystemUI as the notification's large icon, and a
-        // transaction that overruns takes the notification with it. A square film is the
-        // largest thing a square box can produce.
-        val (width, height) = previewFrameSize(1080, 1080, ARTWORK_BOX_PX, ARTWORK_BOX_PX)
-        val bytes = width * height * BytesPerPixel
-        assertEquals(802_816, bytes)
-        assertTrue("$bytes", bytes < BinderCeilingBytes - NotificationHeadroomBytes)
+    @Test fun everyFilmFitsInABinderTransaction() {
+        // This picture is parceled to SystemUI as the notification's large icon and again into
+        // the session's metadata, and a transaction that overruns takes the notification with
+        // it. The mat is what makes that a constant rather than a worst case, so the cost is
+        // read back off the placement every shape produces — a film smaller than the opening
+        // and an absurd anamorphic aspect included — rather than restated from the constant
+        // the composer happens to allocate with.
+        val shapes = listOf(
+            3840 to 2160,
+            1080 to 1920,
+            1440 to 1080,
+            1080 to 1080,
+            320 to 240,
+            4096 to 1,
+        )
+        for ((width, height) in shapes) {
+            val placement = matPlacement(width, height)
+            val bytes = placement.boxPx * placement.boxPx * BytesPerPixel
+            assertEquals("$width x $height", 802_816, bytes)
+            assertTrue("$width x $height: $bytes", bytes < BinderCeilingBytes - NotificationHeadroomBytes)
+        }
     }
 
     private companion object {

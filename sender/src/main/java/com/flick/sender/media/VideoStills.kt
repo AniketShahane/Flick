@@ -274,7 +274,7 @@ internal object VideoStills {
 }
 
 /**
- * The still the media notification and the platform media session draw, in both shapes
+ * The picture the media notification and the platform media session draw, in both shapes
  * that surface needs: a `Bitmap` for the notification's large icon, and the same picture
  * compressed for the session's `MediaMetadata`, which is what the Android 13+ media
  * controls read on the shade and the lock screen.
@@ -282,29 +282,33 @@ internal object VideoStills {
 internal class CastArtwork(val bitmap: Bitmap, val data: ByteArray)
 
 /**
- * Resolve the artwork for a cast of [uri]. Null whenever no frame could be produced, and
- * the caller then posts exactly the notification it always did.
+ * Resolve the artwork for a cast of [uri]: the film's own still, matted on Flick's amber by
+ * [mattedArtwork]. Null whenever no frame could be produced, and the caller then posts exactly
+ * the notification it always did.
  *
- * The box is square, and its shape is the whole point of it: a still is scaled to fit
- * INSIDE the box rather than to fill it, so only a square box makes the LONG edge the
- * bound whichever way the film was shot. The landscape box this used to ask for handed a
- * 1080x1920 file 162x288 — its short edge — and portrait and sideways video is exactly
- * what this app plays.
+ * The still is asked for at [ARTWORK_STILL_BOX_PX] and the result is [ARTWORK_BOX_PX] square,
+ * because the mat is the difference between them. The box being SQUARE is what makes a still's
+ * long edge the bound whichever way the film was shot — a still is scaled to fit inside it
+ * rather than to fill it, and the landscape box this once asked for handed a 1080x1920 file
+ * 162x288, its short edge, when portrait and sideways video is exactly what this app plays.
  *
  * Deliberately small. This picture is parceled to SystemUI twice over — once as the
- * notification's large icon and again, decoded from these bytes, into the platform
- * session's metadata — and a Binder transaction that overruns takes the notification with
- * it. The largest thing a square box can produce is a square film: 448x448 is 784 KiB at
- * four bytes a pixel, which leaves a quarter of the one-megabyte ceiling for the rest of
- * the notification while still clearing the ~390 px the media controls draw. The JPEG grows
- * with the long edge too, but a photographic frame at this quality is tens of kilobytes and
- * it is the raw bitmap this budget is really about.
+ * notification's large icon and again, decoded from these bytes, into the platform session's
+ * metadata — and a Binder transaction that overruns takes the notification with it. The mat
+ * makes that cost a constant rather than a worst case: every cast parcels 448x448, which is
+ * 784 KiB at four bytes a pixel and leaves a quarter of the one-megabyte ceiling for the rest
+ * of the notification. The JPEG is tens of kilobytes for a photographic frame, and a flat
+ * ground costs it almost nothing — it is the raw bitmap this budget is really about.
  */
 internal suspend fun castArtwork(context: Context, uri: Uri): CastArtwork? = withContext(Dispatchers.IO) {
     // Zero duration: a start intent carries a URI, a name and a size, and the length is
     // read off the container only if the search actually needs it.
-    val bitmap = VideoStills.still(context, uri, 0L, ARTWORK_BOX_PX, ARTWORK_BOX_PX)
+    val still = VideoStills.still(context, uri, 0L, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX)
         ?: return@withContext null
+    // The still is this function's own — `still` decodes a fresh bitmap per call and memoizes
+    // only the position it chose — so once it has been drawn onto the mat it is nothing's
+    // picture but garbage.
+    val bitmap = mattedArtwork(still)?.also { still.recycle() } ?: still
     val stream = ByteArrayOutputStream()
     val compressed = runCatching {
         bitmap.compress(Bitmap.CompressFormat.JPEG, ARTWORK_QUALITY, stream)
@@ -312,6 +316,7 @@ internal suspend fun castArtwork(context: Context, uri: Uri): CastArtwork? = wit
     if (compressed) CastArtwork(bitmap, stream.toByteArray()) else null
 }
 
+/** The composed picture: the mat's own size, and so the size of every cast's artwork. */
 internal const val ARTWORK_BOX_PX = 448
 
 private const val ARTWORK_QUALITY = 85

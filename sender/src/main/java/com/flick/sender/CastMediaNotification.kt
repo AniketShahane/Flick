@@ -101,17 +101,25 @@ internal fun buildCastNotification(
                     context.getString(R.string.notif_text_finished, device)
             },
         )
-        // The album art of a cast. On Android 13+ the media controls draw the artwork the
-        // SESSION carries instead of this one; both are set from the same still, and this
-        // is what the releases that still render a MediaStyle notification themselves show.
+        // The album art of a cast — the film's own still, laid on a ground of Flick's amber by
+        // `mattedArtwork`. On Android 13+ the media controls draw the artwork the SESSION
+        // carries rather than this one, and both are set from that same matted picture; this is
+        // what the releases that render a MediaStyle notification themselves show.
+        //
+        // It is also, on every release this app runs on, the ONLY thing that decides what colour
+        // that surface is painted: SystemUI extracts a scheme from the artwork bitmap and reads
+        // `setColor` nowhere in that path. See `mattedArtwork` for the extractor and the mat.
         .setLargeIcon(artwork)
         // Flick's amber, read from the palette token rather than restated as a hex — and the
         // brand VALUE rather than the `spark` role, which inverts to blue in the app's dark
-        // set: the shade is not this app's canvas and takes one colour under both. Not
-        // `setColorized`, which a foreground service is one of the few things allowed to be —
-        // amber is this product's mark and never its ground. It tints what draws this as an
-        // ordinary row, and MediaStyle before 13; the Android 13+ media controls take their
-        // colours from the artwork above and ignore it, which is not a fault to chase.
+        // set: the shade is not this app's canvas and takes one colour under both.
+        //
+        // What is left for it to tint on a modern release is the small icon of a notification
+        // drawn as an ordinary row — which is what this becomes when [session] is null, and what
+        // it always is to a surface that does not promote media. Not `setColorized`, which a
+        // foreground service is one of the few things allowed to be: it would paint that
+        // session-less row amber end to end, and amber is this product's mark and never its
+        // ground. It buys nothing on the media panel either, which does not consult it.
         .setColor(Spark.toArgb())
         .setContentIntent(intents.open)
         .setOngoing(true)
