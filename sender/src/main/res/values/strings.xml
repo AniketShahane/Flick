@@ -386,6 +386,10 @@
     <string name="subs_orientation_half">180°</string>
     <string name="subs_orientation_three_quarter">270°</string>
     <string name="subs_orientation_unavailable">Available once the TV is playing this film.</string>
+    <!-- The remote's poster carries the same choices as one key that steps through
+         them, so the gesture has to be named: the label above states the choice and
+         reads as a readout on its own. -->
+    <string name="a11y_np_orientation_step">Turn the picture</string>
 
     <!-- Subtitles sheet · the three sources. -->
     <string name="subs_tab_file">File</string>
@@ -825,4 +829,14 @@
     <string name="a11y_audio_delay_step_earlier">Nudge the sound %1$d milliseconds earlier</string>
     <string name="a11y_audio_delay_adjust">Adjust audio delay</string>
     <string name="a11y_audio_delay_reset">Put the sound back in sync</string>
+
+    <!-- ===== Devices — the other half of Flick ===== -->
+    <!-- S1 · the foot of the Devices screen. Flick is two apps and a phone on its own
+         reaches nothing, which is the one fact a first run has no other way to learn:
+         a TV without the receiver never advertises, so it is absent from the list above
+         rather than shown as unavailable. The route is named generically because it is
+         the only one this phone can vouch for — no package name to type, and no deep
+         link into a TV's store that could be verified from here. -->
+    <string name="connect_tv_app_title">Your TV needs Flick too</string>
+    <string name="connect_tv_app_body">Install it from your TV\'s Play Store and open it — it appears in the list above.</string>
 </resources>

@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -88,12 +89,15 @@ import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
+import com.flick.sender.model.VideoRotation
 import com.flick.sender.net.AudioDelayPolicy
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkStall
 import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.nextRotation
+import com.flick.sender.ui.rotationLabelRes
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
@@ -119,6 +123,7 @@ import com.flick.sender.ui.theme.PosterShadow
 import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
@@ -486,9 +491,14 @@ private fun ColumnScope.RemoteContent(
     val scrubbing by remember { derivedStateOf { playbackState.value.scrubbing } }
     val playing by remember { derivedStateOf { playbackState.value.playing } }
     val syncing by remember { derivedStateOf { playbackState.value.syncing } }
+    val rotation by remember { derivedStateOf { playbackState.value.rotation } }
     val title by remember(item, displayName) {
         derivedStateOf { displayName ?: playbackState.value.title ?: "" }
     }
+    // Collected in this scope rather than the screen's: the orientation key on the
+    // poster is the only thing on the remote that reads it, and a socket that drops
+    // mid-cast has no business re-planning the hero above it.
+    val commandable by controller.commandable.collectAsState()
 
     val unknown = stringResource(R.string.media_unknown)
     val hdrLabel = when (hdr) {
@@ -517,6 +527,13 @@ private fun ColumnScope.RemoteContent(
         item = item,
         hdr = hdr,
         height = posterHeight,
+        rotation = rotation,
+        commandable = commandable,
+        // Unguarded, exactly as the sheet's cells are: the choice held here is only
+        // what this phone last asked for, and the TV's own panel can have moved the
+        // picture since. Re-asserting is how the viewer takes it back, so it must
+        // reach the wire.
+        onRotate = { controller.setRotation(nextRotation(rotation)) },
         sharedScope = sharedScope,
         animatedScope = animatedScope,
     )
@@ -710,16 +727,19 @@ private fun VolumeRow(playbackState: State<PlaybackUiState>, onVolume: (Float) -
 }
 
 /**
- * The real local frame, scrimmed, with only the badges the file actually earns. This
- * is where the still lands when the TV confirms its first frame, so the request is
- * keyed off the file's own duration — the TV-reported clock would ask for a different
- * frame and cost the landing its cache entry.
+ * The real local frame, scrimmed, with only the badges the file actually earns and the
+ * one control the still itself can carry. This is where the still lands when the TV
+ * confirms its first frame, so the request is keyed off the file's own duration — the
+ * TV-reported clock would ask for a different frame and cost the landing its cache entry.
  */
 @Composable
 private fun ColumnScope.Poster(
     item: MediaItem?,
     hdr: HdrType,
     height: Dp,
+    rotation: VideoRotation,
+    commandable: Boolean,
+    onRotate: () -> Unit,
     sharedScope: SharedTransitionScope?,
     animatedScope: AnimatedVisibilityScope?,
 ) {
@@ -764,29 +784,168 @@ private fun ColumnScope.Poster(
             )
         }
         Box(Modifier.fillMaxSize().background(FlickGradients.nowPosterScrim))
+        // The badges and the key are ONE row across the foot of the still rather than
+        // two children of the Box laid over each other. The plate is a MINIMUM around
+        // 11 sp mono, so it grows with the type scale, and any width the badges held
+        // back for it by hand would be a fixed dp standing in for a measurement — right
+        // at scale 1 and under the plate a few notches above it, on a poster where the
+        // badges were the ones that had been narrowed. Here the key is the unweighted
+        // child and is measured first, at the width it actually wants; the badges are
+        // weighted into whatever is left of the row and are constrained to it. Neither
+        // can reach the other at any scale, in any language.
         Row(
             Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, bottom = 15.dp, end = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                .fillMaxWidth()
+                // The touch target overhangs the plate on every side, so the end and
+                // bottom insets are the badges' own 16/15 less that overhang — which
+                // puts the plate's edges on the badges' and reads as one line. The
+                // badges take that overhang back below, being the shorter of the two.
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp - OrientationKeyOverhang,
+                    bottom = 15.dp - OrientationKeyOverhang,
+                ),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom,
         ) {
-            if (hdrBadge != null) {
+            Row(
+                Modifier
+                    .weight(1f)
+                    .padding(bottom = OrientationKeyOverhang),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                if (hdrBadge != null) {
+                    Text(
+                        hdrBadge,
+                        style = FlickText.monoBadge.copy(color = colors.onSpark),
+                        // A pill is one line by construction: wrapped, it is a shape
+                        // this design does not have, whatever the type scale or the
+                        // length the string was translated to.
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .clip(PillShape)
+                            .background(FlickGradients.premiumSheen)
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                    )
+                }
                 Text(
-                    hdrBadge,
+                    stringResource(R.string.np_direct_play_badge),
                     style = FlickText.monoBadge.copy(color = colors.onSpark),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .clip(PillShape)
-                        .background(FlickGradients.premiumSheen)
+                        .background(colors.spark)
                         .padding(horizontal = 10.dp, vertical = 7.dp),
                 )
             }
+            // Only with a film on screen, for the reason the sheet gates its own section
+            // the same way: with nothing cast there is no picture to turn. A sibling of
+            // the frame rather than a child of it — inside the shared element it would
+            // fly between screens with the still.
+            if (item != null) {
+                OrientationKey(rotation = rotation, commandable = commandable, onClick = onRotate)
+            } else {
+                // The seat stays open at the key's own floor, so the width the badges
+                // are measured against does not change when a cast lands.
+                Spacer(Modifier.width(ControlMinHeight))
+            }
+        }
+    }
+}
+
+/**
+ * The picture's own orientation, in the still's free corner: one key that steps to the
+ * next choice and sends it, where the subtitles sheet offers all five at once. The sheet
+ * lays them out in [VideoRotation.ALL]'s order, the TV's own; this key spends each press
+ * on a quarter turn and closes back on [VideoRotation.Auto], which is a different order
+ * for the reason [nextRotation] gives.
+ *
+ * What it states is the CHOICE, never a resolved angle: Auto is the receiver reading
+ * the file for itself and no frame carries that verdict back — see
+ * [PlaybackUiState.rotation] — so `Auto` here means Auto and claims nothing about what
+ * the TV made of it.
+ *
+ * The plate is opaque in both states because the ground is a photograph, which is the
+ * same problem the badges opposite solve the same way; a translucent fill would put
+ * the label's contrast in the hands of whichever frame happened to land. So only the
+ * ink states availability, and it states it in the palette's own dim inverse ink
+ * rather than at an alpha — 15.8:1 live, 6.0:1 dead, both against the plate.
+ *
+ * Dimmed and inert rather than withdrawn: the verb needs an Active cast on a live
+ * socket, the poster has no room for the sentence the sheet says that in, and a key
+ * that vanishes from a corner the viewer just learned is worse than one that is
+ * plainly not available. Screen readers still get the sheet's sentence.
+ */
+@Composable
+private fun OrientationKey(
+    rotation: VideoRotation,
+    commandable: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalFlickColors.current
+    val haptics = rememberFlickTouchHaptics()
+    val interaction = remember { MutableInteractionSource() }
+    val label = stringResource(rotationLabelRes(rotation))
+    val description = stringResource(R.string.a11y_subs_orientation, label)
+    val stepLabel = stringResource(R.string.a11y_np_orientation_step)
+    val unavailable = stringResource(R.string.subs_orientation_unavailable)
+    Box(
+        modifier
+            .pressScale(interaction)
+            .widthIn(min = ControlMinHeight)
+            .heightIn(min = ControlMinHeight)
+            .semantics(mergeDescendants = true) {
+                contentDescription = description
+                if (!commandable) stateDescription = unavailable
+            }
+            .clickable(
+                interactionSource = interaction,
+                // Unbounded, like the minimize key at the top of this screen: a
+                // bounded ripple clips to the touch target, which is wider than the
+                // plate, so every press would wash bare frame. Unbounded centres on
+                // the box instead, and half the plate is the circle that stays inside
+                // it — including inside the corners, which are cut smaller than that.
+                indication = flickRipple(
+                    colors.onInverseSurface,
+                    bounded = false,
+                    radius = OrientationKeyPlate / 2,
+                ),
+                enabled = commandable,
+                onClickLabel = stepLabel,
+                role = Role.Button,
+                onClick = {
+                    onClick()
+                    haptics.toggle(true)
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                // Minimums rather than a fixed square: it is square at every choice
+                // because the label is mono and four advances wide at worst, and at a
+                // large type scale it grows sideways instead of clipping a degree off.
+                .widthIn(min = OrientationKeyPlate)
+                .heightIn(min = OrientationKeyPlate)
+                .clip(RoundedCornerShape(FlickCorners.backBtn))
+                .background(colors.inverseSurface)
+                .padding(horizontal = 7.dp),
+            contentAlignment = Alignment.Center,
+        ) {
             Text(
-                stringResource(R.string.np_direct_play_badge),
-                style = FlickText.monoBadge.copy(color = colors.onSpark),
-                modifier = Modifier
-                    .clip(PillShape)
-                    .background(colors.spark)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                label,
+                style = FlickText.monoBadge.copy(
+                    color = if (commandable) {
+                        colors.onInverseSurface
+                    } else {
+                        colors.onInverseSurfaceDim
+                    },
+                ),
+                maxLines = 1,
             )
         }
     }
@@ -1075,6 +1234,16 @@ private val RemoteGutter = 18.dp
 
 /** Android's minimum touch target, and the height every control in the cluster carries. */
 private val ControlMinHeight = 48.dp
+
+/**
+ * The orientation key's visible plate. Small enough to be a corner mark on the still
+ * and still wide enough for the longest label the mono face draws there — the touch
+ * target around it is [ControlMinHeight], as everywhere else.
+ */
+private val OrientationKeyPlate = 44.dp
+
+/** How far that touch target overhangs the plate on each side. */
+private val OrientationKeyOverhang = (ControlMinHeight - OrientationKeyPlate) / 2
 
 /** The segmented row's inset, around its three pills and between them. */
 private val SegmentInset = 6.dp

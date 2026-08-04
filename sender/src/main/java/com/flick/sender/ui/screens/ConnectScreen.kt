@@ -54,6 +54,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -285,6 +286,9 @@ fun ConnectScreen(controller: FlickController) {
             onScan = { scan.open() },
             onEnterAddress = { manual.open() },
         )
+
+        // The record outlives the process, so a returning user is never told this twice.
+        if (showTvAppNote(connectedTv, controller.pairedBeforeThisLaunch)) TvAppNote()
     }
 
     val target = pairTarget
@@ -399,6 +403,29 @@ internal fun pairAttemptInFlight(connection: ConnectionStatus): Boolean =
 /** A paired record only describes a live TV while the control link is actually up. */
 internal fun linkLive(connection: ConnectionStatus, connected: PairedTv?): Boolean =
     connection == ConnectionStatus.CONNECTED && connected != null
+
+/**
+ * Whether the foot of the screen still says that the TV needs Flick installed on it too.
+ *
+ * A stored pairing decides it, and [pairedEarlier] is why there are two arguments rather
+ * than one: [connected] is seeded from the **v2** record alone, so a phone that paired
+ * under the old host-keyed scheme and has not re-paired since would read as never-paired.
+ * `FlickController.pairedBeforeThisLaunch` consults both. Either one is durable proof that
+ * this phone has reached a running receiver at least once, and it outlives the process,
+ * which is what the claim needs: the user learns this fact once, and a rule that forgot it
+ * would put the note back on a returning user's screen every evening they were not already
+ * casting.
+ *
+ * Nothing weaker than a record would do. A live link proves the same thing but only while
+ * a cast is up, and a populated list proves less still: only a TV already running the
+ * receiver ever advertises, so a row is evidence about that TV and about no other set in
+ * the house.
+ *
+ * The one person this exists for keeps it: a pairing that fails because the TV app is
+ * missing never writes a record of either kind.
+ */
+internal fun showTvAppNote(connected: PairedTv?, pairedEarlier: Boolean): Boolean =
+    connected == null && !pairedEarlier
 
 /**
  * Whether [tv] is the TV the phone is connected to right now.
@@ -590,6 +617,47 @@ private fun PrivacyPill() {
             text = stringResource(R.string.connect_wifi_note),
             style = FlickText.labelMedium.copy(color = colors.onSpark),
         )
+    }
+}
+
+/**
+ * The other half of the product, at the foot of the screen that would otherwise be the
+ * whole of it. Built from the error card's recipe on calm tokens — the quiet card fill
+ * and the ordinary inks — because this is guidance rather than an outcome: the caution
+ * and trouble families are spoken for by things that went wrong.
+ */
+@Composable
+private fun TvAppNote() {
+    val colors = LocalFlickColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlickCorners.warning))
+            .background(colors.fillCard)
+            // One sentence across two lines. Read separately they arrive as a bare
+            // requirement and an instruction with no subject.
+            .semantics(mergeDescendants = true) {}
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Tv,
+            contentDescription = null,
+            tint = colors.onSurfaceDim,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(
+                text = stringResource(R.string.connect_tv_app_title),
+                style = FlickText.bodySmallEmphasized.copy(color = colors.onSurface),
+            )
+            Text(
+                text = stringResource(R.string.connect_tv_app_body),
+                style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
     }
 }
 

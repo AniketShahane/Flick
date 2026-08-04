@@ -103,6 +103,7 @@ import com.flick.sender.net.SubtitleLoginOutcome
 import com.flick.sender.net.SubtitleQuota
 import com.flick.sender.net.SubtitleSearchOutcome
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.rotationLabelRes
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -575,16 +576,6 @@ private fun RowScope.OrientationCell(
     ) {
         Text(label, style = FlickText.labelMedium.copy(color = ink.value), maxLines = 1)
     }
-}
-
-/** The cell label for each choice; the model enum carries no user-facing text. */
-@StringRes
-private fun rotationLabelRes(rotation: VideoRotation): Int = when (rotation) {
-    VideoRotation.Auto -> R.string.subs_orientation_auto
-    VideoRotation.AsFiled -> R.string.subs_orientation_as_filed
-    VideoRotation.Quarter -> R.string.subs_orientation_quarter
-    VideoRotation.Half -> R.string.subs_orientation_half
-    VideoRotation.ThreeQuarter -> R.string.subs_orientation_three_quarter
 }
 
 // --- source 1: one file, picked by hand -------------------------------------------

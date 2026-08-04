@@ -310,6 +310,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _mediaAccess = MutableStateFlow(MediaAccess.NONE); val mediaAccess = _mediaAccess.asStateFlow()
     val connection = control.connection
     private val _connectedTv = MutableStateFlow(store.last()?.let { PairedTv(it.name, it.host, it.port, it.tvId) }); val connectedTv = _connectedTv.asStateFlow()
+
+    /**
+     * Whether this phone had already paired with some TV before this launch — read once,
+     * because it is a fact about the past and nothing in this process can change it.
+     *
+     * The v1 half is the whole point. [connectedTv] is seeded from the v2 record alone,
+     * so a phone that paired under the old host-keyed scheme and has not re-paired since
+     * reads as never-paired — which would be a lie told to the one user who most
+     * demonstrably knows better. A v1 record is retired only by a visible v2 pair at the
+     * same host (see [PairingStore.save]), so consulting both is what makes this durable
+     * across that migration rather than only after it.
+     */
+    val pairedBeforeThisLaunch: Boolean =
+        _connectedTv.value != null || store.legacyLast() != null
     private val _pairTarget = MutableStateFlow<DiscoveredTv?>(null); val pairTarget = _pairTarget.asStateFlow()
     private val _pairError = MutableStateFlow<PairErrorKind?>(null); val pairError = _pairError.asStateFlow()
     private val _manualPairAttempt = MutableStateFlow(ManualPairAttemptEvent())
