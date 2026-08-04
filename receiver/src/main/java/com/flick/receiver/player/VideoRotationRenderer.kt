@@ -20,11 +20,14 @@ class DecoderTurn internal constructor(
     val commandedDegrees: Int,
     /**
      * The extra turn the decoder actually ends up applying, which is 0 — whatever
-     * was commanded — for a container off the quarter-turn grid: `KEY_ROTATION`
-     * accepts nothing else, so such a file is presented as filed and no command
-     * can move it.
+     * was commanded — in two cases. A container off the quarter-turn grid:
+     * `KEY_ROTATION` accepts nothing else, so such a file is presented as filed
+     * and no command can move it. And a command the frame pipeline is carrying:
+     * the decoder is then deliberately configured at 0 so the turn happens once.
      */
     val appliedDegrees: Int,
+    /** Whether media3's effects graph is carrying this turn instead of the codec. */
+    val viaFrames: Boolean,
     /** Which command this read consumed. */
     internal val serial: Long,
 )
@@ -51,6 +54,16 @@ class DecoderTurn internal constructor(
  * achieved nothing; a re-assert is then a no-op instead of a re-buffer that
  * provably cannot change the picture, forever.
  *
+ * ## Why the mechanism is part of the command
+ *
+ * A turn is carried either by the codec or by media3's effects graph — see
+ * [pictureTurnFor] — and which one is chosen changes what the CODEC is
+ * configured with: the same degrees carried by the graph means the codec is
+ * given 0. So the mechanism has to be able to make [needsDecoderReconfigure] say
+ * yes by itself, on degrees that did not move. What it must NOT do is drag the
+ * re-buffer along with it: a graph that already exists takes a new turn as a
+ * message, and `PlayerController` never asks this class about that case at all.
+ *
  * ## Threading
  *
  * [command] is written on the main thread and read on the playback thread;
@@ -71,10 +84,10 @@ class DecoderTurn internal constructor(
 class VideoRotationOverride {
 
     /** A commanded turn and the serial that tells a repeat from a change. */
-    private class Command(val degrees: Int, val serial: Long)
+    private class Command(val degrees: Int, val viaFrames: Boolean, val serial: Long)
 
     @Volatile
-    private var command = Command(degrees = 0, serial = 0L)
+    private var command = Command(degrees = 0, viaFrames = false, serial = 0L)
 
     /** null until the decoder has read a format for this film. */
     @Volatile
@@ -90,8 +103,14 @@ class VideoRotationOverride {
     /** The turn currently commanded, on top of whatever the container declares. */
     val commandedDegrees: Int get() = command.degrees
 
+    /** Whether the current command is the frame pipeline's to carry, not the codec's. */
+    val commandedViaFrames: Boolean get() = command.viaFrames
+
     /** The extra turn the decoder last actually applied, or null before any. */
     val decoderExtraDegrees: Int? get() = consumed?.appliedDegrees
+
+    /** How the decoder's last read said the turn was being carried, for the log. */
+    val decoderReadViaFrames: Boolean? get() = consumed?.viaFrames
 
     /**
      * Whether a re-prepare has to be spent to get [degrees] to the decoder.
@@ -107,9 +126,9 @@ class VideoRotationOverride {
      * - a re-prepare for this exact command is in flight, so the repeat that
      *   arrived during its re-buffer is the same request already being served.
      */
-    fun needsDecoderReconfigure(degrees: Int): Boolean {
+    fun needsDecoderReconfigure(degrees: Int, viaFrames: Boolean = false): Boolean {
         val cmd = command
-        if (degrees != cmd.degrees) return true
+        if (degrees != cmd.degrees || viaFrames != cmd.viaFrames) return true
         val last = consumed ?: return false
         if (last.serial >= cmd.serial) return false
         // Commanded, not consumed: either a re-prepare is carrying it — leave it
@@ -123,8 +142,17 @@ class VideoRotationOverride {
      * not a "did this change anything" verdict: what has to change is the
      * DECODER's configuration, and only [needsDecoderReconfigure] can answer that.
      */
-    fun commandExtraDegrees(degrees: Int) {
-        command = Command(degrees, command.serial + 1)
+    fun commandExtraDegrees(degrees: Int) = commandTurn(degrees, viaFrames = false)
+
+    /**
+     * As [commandExtraDegrees], naming which mechanism is to carry it. The
+     * mechanism is part of the command rather than a separate flag because a
+     * change of mechanism changes what the DECODER is configured with — the same
+     * degrees carried by frames means the codec is given 0 — so it has to be able
+     * to make [needsDecoderReconfigure] say yes on its own.
+     */
+    fun commandTurn(degrees: Int, viaFrames: Boolean) {
+        command = Command(degrees, viaFrames, command.serial + 1)
     }
 
     /**
@@ -148,7 +176,12 @@ class VideoRotationOverride {
      */
     fun takeForDecoder(containerRotationDegrees: Int): DecoderTurn {
         val cmd = command
-        val corrected = effectiveRotationDegrees(containerRotationDegrees, cmd.degrees)
+        // Under the frame pipeline the codec is configured at 0 — not at the
+        // container's own value — so the turn happens exactly once and media3's
+        // reported `VideoSize` stays equal to the coded size the graph is
+        // registered with. See [pictureTurnFor].
+        val corrected =
+            if (cmd.viaFrames) 0 else effectiveRotationDegrees(containerRotationDegrees, cmd.degrees)
         // [effectiveRotationDegrees] returns the container untouched when either
         // turn is off the quarter-turn grid, because `MediaFormat.KEY_ROTATION`
         // accepts nothing else. The decoder is then honouring the file rather than
@@ -157,7 +190,12 @@ class VideoRotationOverride {
         val turn = DecoderTurn(
             correctedDegrees = corrected,
             commandedDegrees = cmd.degrees,
-            appliedDegrees = if (corrected == containerRotationDegrees) 0 else cmd.degrees,
+            appliedDegrees = when {
+                cmd.viaFrames -> 0
+                corrected == containerRotationDegrees -> 0
+                else -> cmd.degrees
+            },
+            viaFrames = cmd.viaFrames,
             serial = cmd.serial,
         )
         consumed = turn
@@ -181,14 +219,21 @@ class VideoRotationOverride {
  *
  * This is deliberately the SAME zero-cost path a correctly tagged file already
  * travels. `MediaCodecVideoRenderer.getMediaFormat` copies `rotationDegrees`
- * into `MediaFormat.KEY_ROTATION`, and from API 21 the decoder applies it while
- * rendering to the surface — media3 1.10.1's `onOutputFormatChanged` then swaps
- * width/height and inverts the sample aspect for a 90/270 turn, which is why
- * `VideoSize.unappliedRotationDegrees` is always 0 and why `PlayerView` needs no
- * help to letterbox the result. Rewriting the format the renderer is fed
- * therefore costs exactly what the file's own rotation costs: nothing. No
- * effects pipeline, no GL pass, no `TextureView` — the overlay, tunneling and
- * HDR paths are untouched.
+ * into `MediaFormat.KEY_ROTATION`, and the platform turns that into a buffer
+ * transform on the codec's output surface — media3 1.10.1's
+ * `onOutputFormatChanged` then swaps width/height and inverts the sample aspect
+ * for a 90/270 turn, which is why `VideoSize.unappliedRotationDegrees` is
+ * deprecated to a permanent 0 and why `PlayerView` needs no help to letterbox
+ * the result. Rewriting the format the renderer is fed therefore costs exactly
+ * what the file's own rotation costs: nothing. No effects pipeline, no GL pass,
+ * no `TextureView` — the overlay, tunneling and HDR paths are untouched.
+ *
+ * What it cannot do is make the transform actually happen. The verified Google
+ * TV Streamer's display pipeline drops it, so a film whose picture must genuinely
+ * be turned is carried by media3's effects graph instead and this class is then
+ * handed a 0 to write — see [VideoRotationOverride.takeForDecoder] and
+ * [pictureTurnFor]. Both mechanisms come through this one method, which is why
+ * the log line below names which one is in force.
  *
  * Media3 itself rewrites `formatHolder.format` in `BaseRenderer.readSource`, so
  * mutating the holder before delegating is the supported shape rather than a
@@ -239,7 +284,7 @@ internal class RotationCorrectingVideoRenderer(
                     "player",
                     "rotationToDecoder container=$container decoder=${turn.correctedDegrees} " +
                         "extraDegrees=${turn.commandedDegrees} applied=${turn.appliedDegrees} " +
-                        "command=${turn.serial}",
+                        "via=${if (turn.viaFrames) "frames" else "decoder"} command=${turn.serial}",
                 )
             }
         }

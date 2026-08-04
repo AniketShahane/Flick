@@ -206,4 +206,73 @@ class VideoRotationOverrideTest {
         override.markRePrepareIssued()
         assertFalse(override.needsDecoderReconfigure(90))
     }
+
+    // --- When the effects graph is carrying the turn --------------------------
+
+    /**
+     * The codec is configured at ZERO under the graph, and not at the container's
+     * own value. Two mechanisms both applying the turn would land 180 out on any
+     * device whose codec transform does work, and a non-zero here would also make
+     * media3 transpose the reported `VideoSize` away from the size of the frames
+     * that actually arrive.
+     */
+    @Test fun aTurnCarriedByFramesLeavesTheDecoderAtZero() {
+        val override = VideoRotationOverride()
+        override.commandTurn(90, viaFrames = true)
+        override.markRePrepareIssued()
+        assertEquals(0, override.takeForDecoder(0).correctedDegrees)
+        // Including the container's own turn, which the graph has taken over too.
+        assertEquals(0, override.takeForDecoder(90).correctedDegrees)
+        assertEquals(0, override.takeForDecoder(45).correctedDegrees)
+    }
+
+    /** The decoder applied nothing, and the reading says which mechanism did. */
+    @Test fun theReadingNamesTheMechanismThatCarriedIt() {
+        val override = VideoRotationOverride()
+        override.commandTurn(90, viaFrames = true)
+        val viaFrames = override.takeForDecoder(0)
+        assertEquals(90, viaFrames.commandedDegrees)
+        assertEquals(0, viaFrames.appliedDegrees)
+        assertTrue(viaFrames.viaFrames)
+        assertEquals(true, override.decoderReadViaFrames)
+        assertTrue(override.commandedViaFrames)
+
+        override.commandExtraDegrees(90)
+        val viaDecoder = override.takeForDecoder(0)
+        assertEquals(90, viaDecoder.appliedDegrees)
+        assertFalse(viaDecoder.viaFrames)
+        assertEquals(false, override.decoderReadViaFrames)
+        assertFalse(override.commandedViaFrames)
+    }
+
+    /**
+     * A change of MECHANISM on unchanged degrees still owes the codec a
+     * reconfigure, because what the codec is given changes with it — 90 carried
+     * by the decoder is a codec configured at 90, and 90 carried by frames is a
+     * codec configured at 0.
+     */
+    @Test fun swappingMechanismOnTheSameDegreesIsOwedAReconfigure() {
+        val override = VideoRotationOverride()
+        override.commandExtraDegrees(90)
+        override.markRePrepareIssued()
+        override.takeForDecoder(0)
+        assertFalse(override.needsDecoderReconfigure(90, viaFrames = false))
+        assertTrue(override.needsDecoderReconfigure(90, viaFrames = true))
+        override.commandTurn(90, viaFrames = true)
+        override.markRePrepareIssued()
+        override.takeForDecoder(0)
+        assertFalse(override.needsDecoderReconfigure(90, viaFrames = true))
+        assertTrue(override.needsDecoderReconfigure(90, viaFrames = false))
+    }
+
+    /** A new film goes back to the free path with nothing carried over. */
+    @Test fun aNewFilmForgetsThatFramesWereCarryingTheTurn() {
+        val override = VideoRotationOverride()
+        override.commandTurn(90, viaFrames = true)
+        override.takeForDecoder(0)
+        override.reset()
+        assertFalse(override.commandedViaFrames)
+        assertNull(override.decoderReadViaFrames)
+        assertEquals(90, override.takeForDecoder(90).correctedDegrees)
+    }
 }

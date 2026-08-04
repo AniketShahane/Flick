@@ -266,7 +266,14 @@ class VideoOrientationPolicyTest {
 
         val shape = mediaShapeFrom(tracks, durationMs = 7_200_000L, sideloadedTextTracks = 0)
 
-        assertEquals(VideoTrackShape(1920, 1080, 270, 1f), shape.video)
+        // The MIME and transfer ride along on the same read: which turn a film
+        // needs is a question about its geometry, and what that turn COSTS is a
+        // question about its colour — see [pictureTurnFor].
+        assertEquals(
+            VideoTrackShape(1920, 1080, 270, 1f, MimeTypes.VIDEO_H264, Format.NO_VALUE),
+            shape.video,
+        )
+        assertEquals(PictureColour.Sdr, pictureColourOf(shape.video?.sampleMimeType, Format.NO_VALUE))
         assertEquals(2, shape.audioTrackCount)
         assertEquals(6, shape.maxAudioChannelCount)
         assertEquals(listOf(MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AAC), shape.audioSampleMimeTypes)

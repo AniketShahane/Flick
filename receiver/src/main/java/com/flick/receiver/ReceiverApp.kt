@@ -907,6 +907,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         // it resets the choice with every new film.
                         videoRotation = controller.videoRotation,
                         autoVideoRotationDegrees = controller.autoVideoRotationDegrees,
+                        turnNote = controller.turnNote,
                         orientationHint = controller.orientationHint
                             .takeIf { hintPhase == OrientationHintPhase.Showing },
                         openPanel = openPanel,

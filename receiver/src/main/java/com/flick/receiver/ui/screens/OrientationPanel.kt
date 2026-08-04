@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
+import com.flick.receiver.player.TurnNote
 import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.FlickTvRow
@@ -82,6 +83,8 @@ fun OrientationPanel(
     autoRotationDegrees: Int,
     onSelectRotation: (VideoRotation) -> Unit,
     onDismiss: () -> Unit,
+    /** What the turn in force cost the picture, or could not do; null when it cost nothing. */
+    turnNote: TurnNote? = null,
     /** Changes for every open, including a reopen while an exit is retained. */
     entryKey: Int = 0,
     modifier: Modifier = Modifier,
@@ -142,7 +145,19 @@ fun OrientationPanel(
                 )
             }
 
-            if (rotation == VideoRotation.Auto) {
+            // One eyebrow slot, and the note outranks the Auto readout in it.
+            // What Auto settled on is already legible from the selected row; what
+            // a turn could not do to the picture is legible from nowhere else,
+            // and it is the answer to the question the viewer just asked.
+            val noteRes = turnNoteLabelRes(turnNote)
+            if (noteRes != null) {
+                Text(
+                    text = stringResource(noteRes),
+                    style = FlickType.monoEyebrow(trackingEm = 0.1f),
+                    color = FlickColor.OnSurfaceFaint,
+                    maxLines = 2,
+                )
+            } else if (rotation == VideoRotation.Auto) {
                 Text(
                     text = stringResource(
                         R.string.video_rotation_auto_applied,
@@ -230,6 +245,20 @@ internal fun shownVideoRotation(choice: VideoRotation, autoDegrees: Int): VideoR
     } else {
         VideoRotation.forExtraDegrees(autoDegrees) ?: VideoRotation.AsFiled
     }
+
+/**
+ * The line for a turn that could not be given intact, or null when there is
+ * nothing to say.
+ *
+ * Both lines describe the PICTURE rather than the mechanism: a viewer who has
+ * just pressed 90° wants to know what they are looking at, not that a GL output
+ * surface has no Dolby Vision dataspace.
+ */
+internal fun turnNoteLabelRes(note: TurnNote?): Int? = when (note) {
+    null -> null
+    TurnNote.NotOnThisTv -> R.string.video_rotation_note_locked
+    TurnNote.ShownInSdr -> R.string.video_rotation_note_tone_mapped
+}
 
 /** The label for each choice; the player enum carries no user-facing text. */
 @StringRes

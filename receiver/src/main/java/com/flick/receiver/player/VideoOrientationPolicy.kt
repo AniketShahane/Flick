@@ -1,6 +1,7 @@
 package com.flick.receiver.player
 
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Tracks
 
@@ -46,6 +47,14 @@ data class VideoTrackShape(
     val heightPx: Int,
     val rotationDegrees: Int,
     val pixelWidthHeightRatio: Float,
+    /**
+     * Carried for [pictureColourOf], not for [autoRotation] — which turn a film
+     * needs is a question about its geometry, and what that turn COSTS is a
+     * question about its colour. Defaulted so the geometry tests can go on
+     * describing a frame in the four numbers that decide their answer.
+     */
+    val sampleMimeType: String? = null,
+    val colorTransfer: Int = Format.NO_VALUE,
 )
 
 /**
@@ -211,7 +220,7 @@ fun presentedShape(video: VideoTrackShape?, extraDegrees: Int): PictureShape {
 }
 
 /** [degrees] normalized into {0, 90, 180, 270}, or null if it is not a quarter turn. */
-private fun quarterTurn(degrees: Int): Int? {
+internal fun quarterTurn(degrees: Int): Int? {
     val wrapped = ((degrees % 360) + 360) % 360
     return wrapped.takeIf { it % 90 == 0 }
 }
@@ -285,6 +294,8 @@ fun mediaShapeFrom(
                         heightPx = format.height,
                         rotationDegrees = format.rotationDegrees,
                         pixelWidthHeightRatio = format.pixelWidthHeightRatio,
+                        sampleMimeType = format.sampleMimeType,
+                        colorTransfer = format.colorInfo?.colorTransfer ?: Format.NO_VALUE,
                     )
                 }
                 C.TRACK_TYPE_AUDIO -> {

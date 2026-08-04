@@ -180,6 +180,14 @@
     <string name="video_rotation_three_quarter">270°</string>
     <!-- What Auto decided, e.g. "AUTO · 90°". Shown only while Auto is chosen. -->
     <string name="video_rotation_auto_applied">AUTO · %1$s</string>
+    <!--
+      What a turn cost, or could not do — the panel's eyebrow slot, replacing the
+      Auto readout for as long as there is something to say. Only ever shown
+      against a turn the viewer can see the result of, so both lines describe the
+      picture rather than the mechanism behind it.
+    -->
+    <string name="video_rotation_note_locked">THIS TV CAN\'T TURN THIS FILM</string>
+    <string name="video_rotation_note_tone_mapped">TURNED · SHOWN IN SDR</string>
 
     <!--
       The picture-orientation hint: two lines over the film, once per cast. The

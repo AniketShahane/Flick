@@ -22,8 +22,14 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener
  * [buildVideoRenderers] CONSTRUCTS the video renderer with the corrected
  * rotation, and [createRenderers] — which is what calls it, so `super` runs the
  * override below — then WRAPS what came back in the audio-delay shift. Rotation
- * lands in the decoder's configuration; the shift lands in the frame-release
- * decision; neither can see the other.
+ * lands in the format the decoder is configured from; the shift lands in the
+ * frame-release decision; neither can see the other.
+ *
+ * The OTHER turning mechanism — media3's effects graph, engaged only while a turn
+ * is genuinely in force — needs nothing from this factory. It is switched on with
+ * `ExoPlayer.setVideoEffects` before the instance's first prepare, and reaches
+ * the renderer built here as an ordinary `MSG_SET_VIDEO_EFFECTS`, forwarded by
+ * `ForwardingRenderer.handleMessage` through the audio-delay wrapper.
  *
  * With no rotation asserted and a zero shift this builds and behaves as
  * `DefaultRenderersFactory` does, minus the extension-renderer branch noted

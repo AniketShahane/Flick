@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.common.C
+import androidx.media3.common.Effect
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -25,6 +26,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.StuckPlayerException
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -241,6 +243,42 @@ class PlayerController(context: Context) : SessionPlayer {
         private set
 
     /**
+     * What the turn now in force cost, or could not do at all. Null is the
+     * ordinary case and means the picture is exactly what was asked for.
+     */
+    var turnNote by mutableStateOf<TurnNote?>(null)
+        private set
+
+    /**
+     * The clockwise turn media3's effects graph is applying on the LIVE ExoPlayer
+     * instance, or null when that instance has no graph at all.
+     *
+     * This is a property of the INSTANCE rather than of the film, and that is the
+     * whole reason it is tracked separately from the command. The graph can only
+     * be created while a renderer is being enabled for the first time
+     * (`MediaCodecVideoRenderer.onEnabled` guards it with `hasSetVideoSink`, which
+     * only `onReset` clears), and `videoEffects` can never be set back to null —
+     * so engaging or disengaging it is a new player, while CHANGING the turn
+     * inside a live one is a message that costs nothing.
+     */
+    private var activeFrameDegrees: Int? = null
+
+    /** The selected video track's container turn, for [pictureTurnFor]. */
+    private var filmContainerRotationDegrees: Int = 0
+
+    /** The selected video track's colour class, for [pictureTurnFor]. */
+    private var filmColour: PictureColour = PictureColour.Sdr
+
+    /** The selected video track's transfer, for the HDR-survives-a-GL-pass question. */
+    private var filmColorTransfer: Int = Format.NO_VALUE
+
+    /**
+     * Set when the effects graph failed on THIS film, so it is never engaged for
+     * it again. Cleared with the film, because the next one gets its own attempt.
+     */
+    private var framesUnavailableForFilm: Boolean = false
+
+    /**
      * The commanded audio delay, in the form the video renderers read. Built once
      * and handed to every renderers factory, so — unlike [lastVolume], which has
      * to be re-applied to each new ExoPlayer — a delay set before a
@@ -336,22 +374,32 @@ class PlayerController(context: Context) : SessionPlayer {
                 instrumentation.videoWidth = videoSize.width
                 instrumentation.videoHeight = videoSize.height
             }
-            // The last hop the receiver can observe, and deliberately not proof.
-            // `rotationToDecoder` shows media3 was HANDED the corrected rotation;
-            // media3 1.10.1 then swaps these dimensions and inverts the sample
-            // aspect from `Format.rotationDegrees` on its own assumption that the
-            // codec honoured `KEY_ROTATION` — which a Codec2 decoder can ignore.
-            // So this is the timestamp that makes the panel the instrument: a
-            // frame that changed shape against a re-prepare while the picture
-            // inside stayed sideways is the codec ignoring the key; a frame that
-            // did not change at all is media3 never processing the new format.
-            // Media3 notifies only on a change and a re-prepare re-arms that, so
-            // this is a handful of lines per film plus one per turn.
+            // What the RENDERER thinks the picture's shape is, which is not the
+            // same claim under the two mechanisms and is the reason this line
+            // exists.
+            //
+            // Under the decoder: media3 swaps these dimensions and inverts the
+            // sample aspect from `Format.rotationDegrees` on its own assumption
+            // that the codec honoured `KEY_ROTATION` — which the verified TV's
+            // display pipeline does not. A box that changed shape over a picture
+            // that stayed sideways is exactly that failure, and is what put the
+            // frames mechanism here.
+            //
+            // Under the frames: the codec is configured at 0, so these stay the
+            // CODED dimensions — landscape for a film turned on end — and that is
+            // correct rather than a symptom. The graph is registered with the same
+            // coded size, and `FinalShaderProgramWrapper` fits the turned frame
+            // into the surface itself.
             FlickLog.i(
                 "player",
                 "videoSize w=${videoSize.width} h=${videoSize.height} " +
                     "par=${videoSize.pixelWidthHeightRatio} decoderExtraDegrees=" +
-                    (rotationOverride.decoderExtraDegrees?.toString() ?: "none"),
+                    (rotationOverride.decoderExtraDegrees?.toString() ?: "none") +
+                    " via=" + when (rotationOverride.decoderReadViaFrames) {
+                    null -> "none"
+                    true -> "frames"
+                    false -> "decoder"
+                },
             )
         }
 
@@ -396,6 +444,11 @@ class PlayerController(context: Context) : SessionPlayer {
             // other branch so a failed sideloaded subtitle cannot reach the
             // startup callback, the recovery budget, or the diagnosis UI.
             if (dropFailedExternalSubtitle()) return
+            // A rotation key must never cost the user the film either. Checked
+            // before startup for the same reason: the graph can fail during the
+            // startup window, and the film without it is the one that was about
+            // to play.
+            if (recoverFromFrameTurnFailure(error)) return
             // Startup is a separate, short transaction. It must not inherit the
             // long steady-state recovery policy or hide format/decoder failures.
             startupCallbacks?.let { callbacks ->
@@ -761,6 +814,14 @@ class PlayerController(context: Context) : SessionPlayer {
             // We attach exactly one, and it is not evidence about the file.
             sideloadedTextTracks = if (currentSubtitle != null) 1 else 0,
         )
+        // The two facts every turn is decided from, kept off the playback thread
+        // and off the format callbacks: which way the container says the frames
+        // lie, and what a GL pass would cost their colour.
+        shape.video?.let { video ->
+            filmContainerRotationDegrees = video.rotationDegrees
+            filmColorTransfer = video.colorTransfer
+            filmColour = pictureColourOf(video.sampleMimeType, video.colorTransfer)
+        }
         val auto = autoRotation(shape)
         // A re-prepare publishes Tracks.EMPTY before the new selection arrives, and
         // "there is no picture yet" is not a verdict about the film. Reading it as
@@ -784,35 +845,109 @@ class PlayerController(context: Context) : SessionPlayer {
         if (videoRotation == VideoRotation.Auto) applyVideoRotation()
     }
 
+    /** The turn a rebuilt player has to be constructed with, or null for no graph. */
+    private fun frameTurnInForce(): PictureTurn? =
+        currentPictureTurn(videoRotation.extraDegrees ?: autoVideoRotationDegrees)
+            .takeIf { it.mechanism == TurnMechanism.Frames }
+
+    /** The mechanism, the numbers and the cost for a turn of [extraDegrees] on this film. */
+    private fun currentPictureTurn(extraDegrees: Int): PictureTurn = pictureTurnFor(
+        containerDegrees = filmContainerRotationDegrees,
+        extraDegrees = extraDegrees,
+        colour = filmColour,
+        hdrSurvivesFrames = GlColourOutput.hdrSurvivesFrames(filmColorTransfer),
+        framesUnavailable = framesUnavailableForFilm,
+    )
+
     /**
-     * Take the viewer's choice, or Auto's verdict, to the decoder.
+     * Take the viewer's choice, or Auto's verdict, to whichever mechanism can
+     * actually carry it — see [pictureTurnFor] for which, and why.
      *
-     * A rotation reaches the decoder through `MediaFormat.KEY_ROTATION`, which is
-     * set once at codec configuration — so a change is only real after the codec
-     * has been configured again, and re-preparing the same player is what does
-     * that. Media3 agrees: `MediaCodecInfo.canReuseCodec` names a rotation change
-     * as a discard reason, which is the same statement from the other side.
+     * Three costs, and the branch order below is exactly the order of increasing
+     * price:
      *
-     * The question asked is "does the DECODER still owe this a re-prepare?", not
-     * "did the commanded number change?". The two part company in both
-     * directions: a re-prepare that declined leaves a recorded choice the decoder
-     * never got, which only a re-assert can repair; and a re-prepare in flight
-     * has not reached the decoder yet either, but re-issuing it would restart a
-     * re-buffer the viewer is already waiting through. [VideoRotationOverride]
-     * separates the two, and this is the only caller allowed to ask.
+     *  1. **A live effects graph, given a different turn.** A message. The codec
+     *     is configured at 0 under the graph whatever the turn is, so nothing
+     *     about it changes and there is no re-prepare and no re-buffer at all.
+     *  2. **The graph has to start or stop existing.** A new ExoPlayer instance,
+     *     because media3 can only build the graph while a renderer is first
+     *     enabled and can never take it away again. Costs what a re-prepare costs
+     *     plus a decoder and a surface bind.
+     *  3. **Neither** — the decoder is carrying it, exactly as before frames
+     *     existed. A rotation reaches the decoder through
+     *     `MediaFormat.KEY_ROTATION`, which is set once at codec configuration, so
+     *     a change is only real after the codec has been configured again and
+     *     re-preparing the same player is what does that. Media3 agrees:
+     *     `MediaCodecInfo.canReuseCodec` names a rotation change as a discard
+     *     reason, which is the same statement from the other side.
      *
-     * Nothing is committed until the re-prepare is going to run, and the command
-     * is marked as carried only once one has actually been issued.
+     * In case 3 the question asked is "does the DECODER still owe this a
+     * re-prepare?", not "did the commanded number change?". The two part company
+     * in both directions: a re-prepare that declined leaves a recorded choice the
+     * decoder never got, which only a re-assert can repair; and a re-prepare in
+     * flight has not reached the decoder yet either, but re-issuing it would
+     * restart a re-buffer the viewer is already waiting through.
+     * [VideoRotationOverride] separates the two, and this is the only caller
+     * allowed to ask.
+     *
+     * Nothing is committed until the work is going to run, and the command is
+     * marked as carried only once it has actually been issued.
      */
     private fun applyVideoRotation(): Boolean {
         val extraDegrees = videoRotation.extraDegrees ?: autoVideoRotationDegrees
-        if (!rotationOverride.needsDecoderReconfigure(extraDegrees)) return false
+        val turn = currentPictureTurn(extraDegrees)
+        turnNote = turn.note
+        val wantsFrames = turn.mechanism == TurnMechanism.Frames
+        val hasFrames = activeFrameDegrees != null
+        if (wantsFrames && hasFrames) {
+            val exo = player ?: return false
+            if (activeFrameDegrees == turn.frameDegrees) return false
+            // Recorded as a command so a later mechanism change can tell it from
+            // the one before it, and marked carried in the same breath because the
+            // graph takes it now — there is nothing for a re-prepare to deliver.
+            rotationOverride.commandTurn(extraDegrees, viaFrames = true)
+            rotationOverride.markRePrepareIssued()
+            setFrameTurn(exo, turn)
+            return true
+        }
+        if (wantsFrames != hasFrames) {
+            if (player == null || currentUrl == null) return false
+            rotationOverride.commandTurn(extraDegrees, viaFrames = wantsFrames)
+            val rebuilt = rebuildPlayerForTurn(if (wantsFrames) turn else null)
+            if (rebuilt) rotationOverride.markRePrepareIssued()
+            return rebuilt
+        }
+        if (!rotationOverride.needsDecoderReconfigure(extraDegrees, viaFrames = false)) return false
         if (player == null || currentUrl == null) return false
         rotationOverride.commandExtraDegrees(extraDegrees)
         val rePrepared = rePrepareForRotation()
         if (rePrepared) rotationOverride.markRePrepareIssued()
         return rePrepared
     }
+
+    /**
+     * Hand a turn to a graph that already exists.
+     *
+     * `PlaybackVideoGraphWrapper` re-registers its input stream with the new
+     * effect list rather than rebuilding anything, so this is a shader swap on the
+     * next frame. The decoder is not touched, the buffer is not touched, and the
+     * viewer sees the picture turn without the film stopping.
+     */
+    private fun setFrameTurn(exo: ExoPlayer, turn: PictureTurn) {
+        activeFrameDegrees = turn.frameDegrees
+        exo.setVideoEffects(frameTurnEffects(turn))
+    }
+
+    /**
+     * The one effect the receiver ever applies. Nothing is added to it: an empty
+     * list would still engage the whole GL pipeline, and every extra stage is
+     * another pass over a 4K frame.
+     */
+    private fun frameTurnEffects(turn: PictureTurn): List<Effect> = listOf(
+        ScaleAndRotateTransformation.Builder()
+            .setRotationDegrees(turn.frameDegreesCounterClockwise.toFloat())
+            .build(),
+    )
 
     /**
      * Re-prepare the LIVE player where the film already is. Everything the
@@ -852,11 +987,102 @@ class PlayerController(context: Context) : SessionPlayer {
         return true
     }
 
+    /**
+     * Swap the ExoPlayer instance where the film already is, because the effects
+     * graph is starting or stopping.
+     *
+     * Modelled on [playStartup]'s swap rather than on [rePrepareForRotation]: the
+     * graph is decided when a renderer is first enabled, so no amount of
+     * re-preparing an existing instance can add or remove it. Everything the cast
+     * owns survives — the URL, the position, the sideloaded subtitle, the media
+     * id, the platform session, the volume and the instrumentation — so this
+     * costs a re-buffer plus a decoder, and nothing about the transaction.
+     *
+     * The new instance is published to Compose BEFORE the old one is released, so
+     * `PlayerView` rebinds to a live player and `setKeepContentOnPlayerReset`
+     * holds the last frame across the gap rather than showing black.
+     */
+    private fun rebuildPlayerForTurn(turn: PictureTurn?): Boolean {
+        val previous = player ?: return false
+        val url = currentUrl ?: return false
+        cancelSubtitleReloadDeadline()
+        // A recovery queued against the released player would seek and re-prepare
+        // on top of this.
+        cancelPendingRecovery()
+        val resumeMs = previous.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+            ?: savedPositionMs.coerceAtLeast(0L)
+        val resumePlayWhenReady = previous.playWhenReady
+        savedPositionMs = resumeMs
+        pendingPlayWhenReady = resumePlayWhenReady
+        lastGoodPositionMs = resumeMs
+        stableReadySinceMs = 0L
+        val exo = createPlayer(turn)
+        // Switch the platform session to the new instance before the old one is
+        // released, so no controller can target a dead player.
+        bindMediaSession(exo)
+        player = exo
+        previous.removeListener(playerListener)
+        previous.removeAnalyticsListener(analyticsListener)
+        previous.release()
+        activeFrameDegrees = turn?.frameDegrees
+        exo.setMediaItem(
+            mediaItemFor(url, currentMediaId, currentSubtitle),
+            /* resetPosition = */ false,
+        )
+        if (resumeMs > 0L) exo.seekTo(resumeMs)
+        exo.prepare()
+        exo.playWhenReady = resumePlayWhenReady
+        FlickLog.i(
+            "player",
+            "turnMechanism via=${if (turn != null) "frames" else "decoder"} " +
+                "frameDegrees=${turn?.frameDegrees ?: 0} colour=$filmColour " +
+                "note=${turnNote ?: "none"} glOutput=${GlColourOutput.describe()}",
+        )
+        startupCallbacks?.onRotationRePrepare?.invoke()
+        return true
+    }
+
+    /**
+     * The effects graph failed on this film — give the viewer the film back.
+     *
+     * Media3 raises frame-processing failures as ordinary playback errors, and a
+     * decoder that will not configure against a `SurfaceTexture` raises a decoder
+     * failure, so both would otherwise end the cast on a diagnosis screen because
+     * the viewer pressed a rotation key. Neither says anything about the film's
+     * playability without the graph, which is how it was playing a moment ago.
+     *
+     * Latched per film, so this is one attempt and one fallback rather than a
+     * loop, and the fallback runs on the next main-thread turn: releasing a player
+     * from inside its own listener callback is not a thing to do.
+     */
+    private fun recoverFromFrameTurnFailure(error: PlaybackException): Boolean {
+        if (activeFrameDegrees == null || framesUnavailableForFilm) return false
+        if (!isFrameTurnFailure(error)) return false
+        framesUnavailableForFilm = true
+        FlickLog.w(
+            "player",
+            "turnFrames failed code=${error.errorCodeName}; showing this film as filed",
+        )
+        cancelPendingRecovery()
+        val runnable = Runnable {
+            pendingRecovery = null
+            applyVideoRotation()
+        }
+        pendingRecovery = runnable
+        recoveryHandler.post(runnable)
+        return true
+    }
+
     /** A new film is judged on its own container; it never inherits a choice. */
     private fun resetVideoRotation() {
         videoRotation = VideoRotation.Auto
         autoVideoRotationDegrees = 0
         orientationHint = null
+        turnNote = null
+        filmContainerRotationDegrees = 0
+        filmColour = PictureColour.Sdr
+        filmColorTransfer = Format.NO_VALUE
+        framesUnavailableForFilm = false
         rotationOverride.reset()
     }
 
@@ -879,18 +1105,21 @@ class PlayerController(context: Context) : SessionPlayer {
         }
         videoRotation = choice
         val extraDegrees = choice.extraDegrees ?: autoVideoRotationDegrees
-        val rePrepared = applyVideoRotation()
+        val carried = applyVideoRotation()
         // The receiver's half of the answer: what was asked for, what that resolved
-        // to in degrees, and whether it was carried to the decoder or was already
-        // there. `rotationToDecoder` is the decoder's own half — the two together
-        // say whether a turn the viewer chose reached the picture.
+        // to in degrees, which mechanism owns it, what that costs the picture, and
+        // whether anything had to be done or it was already there.
+        // `rotationToDecoder` is the far half — the two together say whether a turn
+        // the viewer chose reached the picture.
         FlickLog.i(
             "player",
             "rotation choice=${choice.name} extraDegrees=$extraDegrees " +
-                "rePrepared=$rePrepared decoderExtraDegrees=" +
+                "via=${if (rotationOverride.commandedViaFrames) "frames" else "decoder"} " +
+                "frameDegrees=${activeFrameDegrees ?: 0} note=${turnNote ?: "none"} " +
+                "carried=$carried decoderExtraDegrees=" +
                 (rotationOverride.decoderExtraDegrees?.toString() ?: "none"),
         )
-        return rePrepared
+        return carried
     }
 
     /** WS `setRotation` with `degrees`: an explicit quarter turn, or nothing at all. */
@@ -975,6 +1204,28 @@ class PlayerController(context: Context) : SessionPlayer {
      * network / IO / timeout, plus Media3's [StuckPlayerException] (a wedged
      * pipeline). Everything else (4xx, decoder init) is fatal → diagnosis UI.
      */
+    /**
+     * The failures a GL turn can produce that the same film has already proved it
+     * does not produce without one.
+     *
+     * The decoder codes are in the set deliberately. Under the effects graph the
+     * codec's output surface is a `SurfaceTexture` rather than the panel, and a
+     * TV decoder that will not configure against one — media3 carries a
+     * `c2.mtk.*` workaround for exactly that family of problems — fails at
+     * initialization with nothing that names the graph as the cause. The
+     * per-film latch is what keeps this from swallowing a genuine decoder
+     * shortfall: the fallback plays the film with no graph at all, and a second
+     * failure takes the ordinary route.
+     */
+    private fun isFrameTurnFailure(error: PlaybackException): Boolean = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED,
+        PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> true
+        else -> false
+    }
+
     private fun isTransientError(error: PlaybackException): Boolean {
         // Redirect/status responses must never enter the 2/4/8/15s recovery path.
         if (!PlaybackFailureClassifier.isSteadyStateRecoveryAllowed(error)) return false
@@ -1015,7 +1266,16 @@ class PlayerController(context: Context) : SessionPlayer {
 
     // --- Player construction -------------------------------------------------
 
-    private fun createPlayer(): ExoPlayer {
+    /**
+     * [turn] is non-null only when the picture has to be turned by media3's
+     * effects graph. It is a CONSTRUCTION parameter rather than something applied
+     * afterwards because `ExoPlayer.setVideoEffects` has to be called before the
+     * instance's first `prepare()` — the graph is built while the video renderer
+     * is first enabled, and nothing can add one later. Passing null is therefore
+     * not "no turn yet"; it is a player that will never have a graph, which is
+     * every ordinary cast.
+     */
+    private fun createPlayer(turn: PictureTurn? = null): ExoPlayer {
         // The allocator holds its segments on the Java heap, so every number below
         // is a fraction of THIS device's grant rather than of the one the tuning was
         // measured on — see [bufferBudgetFor]. Read at construction because the
@@ -1154,6 +1414,10 @@ class PlayerController(context: Context) : SessionPlayer {
                 // Restore the last commanded volume so it survives player rebuilds
                 // (background/foreground) and the control channel stays authoritative.
                 exo.volume = lastVolume
+                // Before the first prepare, and only when a turn needs it: this
+                // call is what decides, for the whole life of the instance,
+                // whether the frames take a GL pass at all.
+                if (turn != null) exo.setVideoEffects(frameTurnEffects(turn))
             }
     }
 
@@ -1227,7 +1491,12 @@ class PlayerController(context: Context) : SessionPlayer {
             if (currentUrl != null && mediaSession == null) bindMediaSession(existing)
             return
         }
-        val exo = createPlayer()
+        // A film that was turned by the effects graph must come back turned, and
+        // the graph is decided at construction — so the rebuilt instance is given
+        // the same verdict the released one was working under.
+        val turn = frameTurnInForce()
+        val exo = createPlayer(turn)
+        activeFrameDegrees = turn?.frameDegrees
         player = exo
         val url = currentUrl
         if (url != null) {
@@ -1260,6 +1529,9 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        // Describes the LIVE instance, and there is none. [onStart] re-derives it
+        // from the choice still in force, so a turned film comes back turned.
+        activeFrameDegrees = null
     }
 
     /** Terminal teardown (onDestroy / Compose onDispose). */
@@ -1274,6 +1546,7 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        activeFrameDegrees = null
     }
 
     // --- Playback control ----------------------------------------------------
@@ -1295,6 +1568,10 @@ class PlayerController(context: Context) : SessionPlayer {
         resetAudioFormat()
         resetVideoRotation()
         resetSubtitleState(subtitle = null, mediaId = null)
+        // A retained instance that still carries the previous film's effects graph
+        // is not reusable: nothing can take a graph away, and this film has
+        // asserted no turn. Replacing it is what keeps "no turn" free.
+        discardPlayerCarryingFrames()
         val exo = player ?: createPlayer().also { player = it }
         // stop() releases the terminal session but intentionally keeps this
         // foreground player instance reusable. Rebind before any new playback.
@@ -1302,6 +1579,21 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.setMediaItem(mediaItemFor(url, mediaId = null, subtitle = null))
         exo.prepare()
         exo.playWhenReady = true
+    }
+
+    /**
+     * Drop a retained ExoPlayer that is still carrying an effects graph, so the
+     * next film starts on the zero-cost path. A no-op for every ordinary one.
+     */
+    private fun discardPlayerCarryingFrames() {
+        if (activeFrameDegrees == null) return
+        activeFrameDegrees = null
+        val exo = player ?: return
+        releaseMediaSession()
+        exo.removeListener(playerListener)
+        exo.removeAnalyticsListener(analyticsListener)
+        exo.release()
+        player = null
     }
 
     /** Installs both startup callbacks before setting media or calling prepare. */
@@ -1330,7 +1622,10 @@ class PlayerController(context: Context) : SessionPlayer {
         // Switch the platform session to B before releasing A, then publish B
         // to Compose. This prevents a physical media key targeting released A.
         val previous = player
+        // Never with a graph: a new film has asserted nothing yet, so it starts
+        // on the byte-identical direct path and only earns one if it is turned.
         val exo = createPlayer()
+        activeFrameDegrees = null
         bindMediaSession(exo)
         player = exo
         previous?.let {

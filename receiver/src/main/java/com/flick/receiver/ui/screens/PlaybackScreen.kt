@@ -79,6 +79,7 @@ import com.flick.receiver.player.OrientationHint
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.player.TurnNote
 import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
@@ -323,6 +324,7 @@ fun PlaybackScreen(
     subtitleSize: SubtitleSize = SubtitleSize.Medium,
     videoRotation: VideoRotation = VideoRotation.Auto,
     autoVideoRotationDegrees: Int = 0,
+    turnNote: TurnNote? = null,
     orientationHint: OrientationHint? = null,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
@@ -684,6 +686,7 @@ fun PlaybackScreen(
                         subtitleSize = subtitleSize,
                         videoRotation = videoRotation,
                         autoVideoRotationDegrees = autoVideoRotationDegrees,
+                        turnNote = turnNote,
                         subtitlesRevealOrigin = subtitlesOrigin,
                         orientationRevealOrigin = orientationOrigin,
                         metricsRevealOrigin = metricsOrigin,
@@ -1140,6 +1143,7 @@ private fun PlaybackSidePanel(
     subtitleSize: SubtitleSize,
     videoRotation: VideoRotation,
     autoVideoRotationDegrees: Int,
+    turnNote: TurnNote?,
     subtitlesRevealOrigin: TvRevealOrigin,
     orientationRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
@@ -1224,6 +1228,7 @@ private fun PlaybackSidePanel(
                     PlaybackPanel.Orientation -> OrientationPanel(
                         rotation = videoRotation,
                         autoRotationDegrees = autoVideoRotationDegrees,
+                        turnNote = turnNote,
                         onSelectRotation = onSelectVideoRotation,
                         onDismiss = { onOpenPanel(PlaybackPanel.None) },
                         entryKey = entryKey,
