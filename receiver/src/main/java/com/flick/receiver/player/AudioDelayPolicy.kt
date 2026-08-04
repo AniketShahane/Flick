@@ -23,25 +23,29 @@ object AudioDelayPolicy {
     /**
      * The bound in both directions.
      *
-     * It is a frame-release bound, not an arbitrary one. A negative delay holds
-     * frames back, and `VideoFrameReleaseControl` answers anything more than
-     * 50 ms early with "try again later" — the renderer simply keeps the one
-     * decoded output buffer it is holding and re-asks on the next render tick,
-     * so the cost is decoder back-pressure absorbed by the load control, not a
-     * dropped frame. A positive delay pulls frames forward, so the video
-     * renderer needs samples half a second ahead of the audio clock; the buffer
-     * budget is measured in tens of seconds, so half a second is inside it with
-     * room to spare. Half a second is also far past any A/V error a remux
-     * actually carries.
+     * It is a BUFFER bound, not a taste one, and it is the same number on the
+     * phone — the two must agree exactly, because [accepts] refuses anything
+     * outside this range and a refused frame costs the whole control socket.
+     *
+     * A delay claims `|delay|` of forward buffer whichever way it points. A
+     * positive one pulls frames forward, so the video renderer reads that far
+     * ahead of the audio clock; a negative one holds them back, so the video
+     * sample queue keeps that much resident behind it. `BufferBudgetPolicy`'s
+     * smallest tier holds 2,282 ms of 100 Mbps content, so 2 s fits every device
+     * this runs on and 2.5 s would not fit that tier. A delay wider than the
+     * buffer is a renderer that runs out of samples, which is the one failure
+     * this app exists to prevent.
      *
      * What the bound costs is paid at a discontinuity — a change of shift, and
      * equally a seek at a settled one — never by uninterrupted playback; the
-     * thresholds are in `AudioDelayVideoRenderer`. The small [STEP_MS] bounds
-     * the first case to about a frame. Nothing bounds the second below the delay
-     * itself, which is the other half of why this stops at half a second.
+     * thresholds are in `AudioDelayVideoRenderer`. The phone walks a change so no
+     * single frame moves the picture by more than its own jump bound. Nothing
+     * bounds the second case below the delay itself: at the full 2 s a scrub or a
+     * ±10 s tap costs up to two seconds of skipped or frozen picture before it is
+     * right again.
      */
-    const val MIN_MS = -500
-    const val MAX_MS = 500
+    const val MIN_MS = -2_000
+    const val MAX_MS = 2_000
     const val STEP_MS = 25
 
     /**

@@ -43,9 +43,10 @@ class AudioDelayShift {
  * decoded buffers to the next keyframe.
  *
  * A CHANGE of shift costs the size of the change — toward "audio earlier" the
- * picture holds for it, the other way it drops that much. The phone steps in
- * 25 ms, so a press costs at most a frame; only slamming end to end in a single
- * frame reaches the drop-to-keyframe branch.
+ * picture holds for it, the other way it drops that much. The phone caps any
+ * single frame's move at 200 ms and walks anything larger as a run of absolute
+ * values, so no frame this renderer ever sees reaches the 500 ms
+ * drop-to-keyframe branch.
  *
  * A SEEK at a non-zero shift costs the whole delay, and re-pays it every time.
  * `resetPosition` deliberately gets the true position, so a seek to P leaves the
@@ -54,15 +55,19 @@ class AudioDelayShift {
  * arrive late and are dropped, behind it the target frame paints and then holds.
  * That is inherent to shifting a clock — a renderer cannot show frames it does
  * not have — so a scrub or a ±10 s tap at a settled delay skips or freezes for up
- * to half a second before it is right again.
+ * to the delay itself before it is right again: two seconds at the bound.
  *
  * Both self-correct, and uninterrupted playback at a settled shift costs nothing
  * beyond one held output buffer, which the load control's headroom absorbs.
  *
  * What this wraps is a [RotationCorrectingVideoRenderer], not a stock one:
  * [FlickRenderersFactory] stacks the two video customizations. They cannot
- * interact — rotation is settled once, when the decoder is configured, and the
- * shift only moves the instant a decoded frame is released.
+ * interact — rotation is settled where the picture is turned, and the shift only
+ * moves the instant a decoded frame is released. That holds under both turning
+ * mechanisms: with media3's effects graph engaged, the delegate hands frame
+ * release to the video sink, so the shifted position travels into the sink's own
+ * release control rather than the renderer's and the nudge lands in the same
+ * decision it always did.
  */
 internal class AudioDelayVideoRenderer(
     val delegate: Renderer,

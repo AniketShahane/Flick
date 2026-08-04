@@ -79,7 +79,7 @@ String/number limits are exact:
 | duration/position values | integer `0..604800000` ms (seven days) |
 | `seq` | integer `0..Long.MAX_VALUE`, strictly increasing per authenticated session |
 | `volume` / `level` | finite JSON number `0.0..1.0` |
-| `delayMs` | JSON integer `-500..500` inclusive **and** a multiple of `25` |
+| `delayMs` | JSON integer `-2000..2000` inclusive **and** a multiple of `25` |
 | startup/probe timings | integer `0..60000` ms |
 | HTTP status | integer `100..599`, only when HTTP was observed |
 
@@ -242,7 +242,7 @@ The canonical serialized fixtures enumerate every frame. This section defines se
 
 `durationMs` may be zero only when unknown; otherwise `startMs` and seek position cannot exceed it. With unknown duration, positions remain within the seven-day cap. `skip.deltaMs` is exactly `-10000` or `10000`. All commands except `loadMedia` and `ping` require current `castId`.
 
-`setAudioDelay` is the live A/V sync nudge, and its field set is exactly `t,v,castId,delayMs` — nothing else. **A positive `delayMs` means the audio is heard LATER than the picture; a negative one means it is heard EARLIER; `0` is in sync.** `delayMs` outside `-500..500`, off the 25 ms step, or not a JSON integer is a malformed frame and is refused exactly as an out-of-range `setVolume` level is — never clamped or rounded into a value the phone did not ask for. A frame naming a cast that is not current returns `commandRejected(stale_cast)`, like every other cast command.
+`setAudioDelay` is the live A/V sync nudge, and its field set is exactly `t,v,castId,delayMs` — nothing else. **A positive `delayMs` means the audio is heard LATER than the picture; a negative one means it is heard EARLIER; `0` is in sync.** `delayMs` outside `-2000..2000`, off the 25 ms step, or not a JSON integer is a malformed frame and is refused exactly as an out-of-range `setVolume` level is — never clamped or rounded into a value the phone did not ask for. The bound is two seconds because that is what the receiver's smallest load-control tier can hold: a delay claims `|delay|` of forward buffer whichever way it points, and `BufferBudgetPolicy`'s floor is 2,282 ms of 100 Mbps content. The range is **not** part of the `audio-delay` capability entry — the verb and its field set are unchanged — so a version-skewed pair still handshakes and a phone that has been widened alone will have a frame past the old bound refused, at the cost of the socket. A frame naming a cast that is not current returns `commandRejected(stale_cast)`, like every other cast command.
 
 The delay is **per cast and is never reported back**. There is no field for it on `state`, no event frame announces it, and the TV resets it to zero only when it adopts a genuinely new `castId` — not on a repeated `loadMedia` for the running cast, not on a seek, and not when the receiver rebuilds its player after a background/foreground cycle. The phone is therefore the sole display source of truth for the current value, which is what keeps the `state` feed and its 10 Hz cost unchanged. The receiver applies it by shifting the video renderers' clock rather than the audio, so it survives encoded audio passthrough and leaves the reported position, the scrub bar and the resume checkpoints exactly as they were; see `docs/implementation.md`.
 

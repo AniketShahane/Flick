@@ -101,7 +101,10 @@ private fun AudioDelayContent(controller: FlickController, onDismiss: () -> Unit
         Spacer(Modifier.height(5.dp))
         // The one claim this sheet makes about cost, in the seat both sibling sheets put
         // their explanatory line in: the nudge is a decode-time offset on the TV, so it
-        // costs neither a re-encode nor the re-buffer a subtitle swap does.
+        // costs neither a re-encode nor the re-buffer a subtitle swap does. The settling
+        // clause is not hedging — across a four-second range a large move holds or skips
+        // the picture for the size of the move, and a viewer who was promised that nothing
+        // happens would read that as the buffering this app exists to have got rid of.
         Text(
             stringResource(R.string.audio_delay_body),
             style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
@@ -214,7 +217,13 @@ private fun ColumnScope.AudioDelayReadout(delayMs: Int) {
     }
 }
 
-/** The fine control on either side of the coarse one, which is what makes the pair symmetrical. */
+/**
+ * The fine control on either side of the coarse one, which is what makes the pair
+ * symmetrical — and, across a four-second range, what makes it usable at all. The blade
+ * TRAVELS: one drag reaches any offset in the range and lands within a step or two of it.
+ * The steppers TRIM: 25 ms a press at every offset, because the error a film carries can
+ * sit anywhere in the range and the last 25 ms of it has to be reachable there.
+ */
 @Composable
 private fun ColumnScope.AudioDelayControls(
     delayMs: Int,
@@ -306,12 +315,14 @@ private fun Stepper(
  * the number.
  *
  * The value is quantised by [AudioDelayPolicy.clamp], so the finger lands on exactly the
- * steps the two buttons beside it reach, and a tick is spent only when it crosses one.
+ * steps the two buttons beside it reach. What it is FELT against is coarser — one tick per
+ * [AudioDelayPolicy.HAPTIC_TICK_MS], the same separation of the two grids the volume blade
+ * makes, and for the same reason: at 25 ms a tick this track would buzz rather than click.
  *
- * It reports on every pointer sample that crosses a step and NOT on release. A drag that
- * committed once at the end would be a single frame asking the TV to move the picture by
- * up to a second, which is the one thing the receiver cannot absorb quietly; streaming it
- * means an ordinary drag never asks for more than a step at a time. The session bounds
+ * It reports on every pointer sample that changes the value and NOT on release. A drag
+ * that committed once at the end would be a single frame asking the TV to move the picture
+ * by up to four seconds, which is the one thing the receiver cannot absorb quietly;
+ * streaming it keeps each report to what one sample of travel is worth. The session bounds
  * what is left — a tap on the far end of this track is still one sample, and it is walked
  * there rather than jumped.
  */
@@ -360,14 +371,20 @@ private fun AudioDelayBlade(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val width = { size.width.toFloat().coerceAtLeast(1f) }
-                    // Seeded from the value before the gesture: a tap on the blade itself
-                    // must stay silent, one that jumps the offset must tick once.
+                    // Both seeded from the value before the gesture: a tap that leaves the
+                    // offset where it was must stay silent, and one that jumps it ticks
+                    // once for arriving rather than once for every step it passed over.
                     var last = AudioDelayPolicy.clamp(currentDelay.value)
+                    var lastTick = AudioDelayPolicy.tickIndex(last)
                     val emit = { x: Float ->
                         val next = AudioDelayPolicy.clamp(delayAt(x / width()))
                         if (next != last) {
                             last = next
-                            haptics.sliderStep()
+                            val tick = AudioDelayPolicy.tickIndex(next)
+                            if (tick != lastTick) {
+                                lastTick = tick
+                                haptics.sliderStep()
+                            }
                             report.value(next)
                         }
                     }

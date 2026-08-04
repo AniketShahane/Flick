@@ -294,8 +294,10 @@ class PlaybackSession(
      * size, and past half a second the receiver's player abandons decoded buffers forward
      * to the next keyframe — a visible skip. So no single frame moves the picture by more
      * than [AudioDelayPolicy.MAX_JUMP_MS], and anything further arrives as a short run of
-     * absolute values instead. A stepper press and an ordinary drag are already inside
-     * that bound and go out in one frame, unwalked.
+     * absolute values at [AudioDelayPolicy.WALK_INTERVAL_MS] a hop instead: bound to bound
+     * across the whole four-second range that is 20 frames landing inside 800 ms. A
+     * stepper press and any drag short of a flick are already inside that bound and go out
+     * in one frame, unwalked.
      *
      * Latest-wins, like the seek throttle: a new target cancels the walk in flight and is
      * approached from wherever that walk had reached, never from where it was aimed.
@@ -318,7 +320,7 @@ class PlaybackSession(
         audioDelayWalk = scope.launch {
             var value = first
             while (value != target) {
-                delay(AUDIO_DELAY_WALK_MS)
+                delay(AudioDelayPolicy.WALK_INTERVAL_MS)
                 value = AudioDelayPolicy.approach(value, target)
                 emitAudioDelay(value)
             }
@@ -501,11 +503,6 @@ class PlaybackSession(
         const val SEEK_THROTTLE_MS = 50L      // ≤ ~20 seeks/s (control-channel §4)
         const val SYNC_GRACE_MS = 250L        // hiccup threshold
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
-        // One hop of a walked audio-delay move. At this cadence the widest move there is
-        // — a bound-to-bound slam, ten hops — lands in under 400 ms, and the burst peaks
-        // at 25 frames a second: the same order as [SEEK_THROTTLE_MS]'s ≤20, which is
-        // what this channel is already sized for under a drag.
-        const val AUDIO_DELAY_WALK_MS = 40L
         const val GENERIC_TITLE = "Video"
     }
 }

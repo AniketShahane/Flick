@@ -496,7 +496,7 @@ Authorization fields are rejected rather than truncated. Display labels are norm
 - all millisecond positions/durations: integer `0..604800000` (seven days);
 - `seq`: integer `0..Long.MAX_VALUE` and strictly increasing per authenticated session;
 - `volume`: finite JSON number `0.0..1.0`;
-- `delayMs`: JSON integer `-500..500` inclusive and a multiple of `25`.
+- `delayMs`: JSON integer `-2000..2000` inclusive and a multiple of `25`.
 
 No frame permits fields beyond the listed schema. Section 4 defines the complete pre-auth frames. The authenticated phone-to-TV schemas are:
 

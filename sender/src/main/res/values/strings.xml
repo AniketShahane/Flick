@@ -784,9 +784,11 @@
          which is VLC's and mpv's convention — but a sign alone reads either way round to
          most people, so nothing here states one without the direction in words beside it.
          The body is the sheet's whole claim about cost: the TV applies the offset while
-         decoding, so no byte is re-encoded and no buffer is refilled. -->
+         decoding, so no byte is re-encoded and no buffer is refilled. The settling clause
+         is the honest other half — the range reaches two seconds either way, and a move
+         that large holds or skips the picture for about as long as the move itself. -->
     <string name="audio_delay_title">Audio delay</string>
-    <string name="audio_delay_body">Shifts the sound against the picture on your TV. Nothing is re-encoded and nothing re-buffers.</string>
+    <string name="audio_delay_body">Shifts the sound against the picture on your TV. Nothing is re-encoded and nothing re-buffers, though a large shift takes the picture a moment to settle.</string>
     <string name="audio_delay_in_sync">In sync</string>
     <!-- The signed figure is built in code (U+2212 for the minus, to match the app\'s
          other readouts); only the label around it is copy. -->

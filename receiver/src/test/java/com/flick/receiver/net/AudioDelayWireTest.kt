@@ -36,8 +36,8 @@ class AudioDelayWireTest {
         assertEquals(250L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":250}"""))
         assertEquals(-250L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-250}"""))
         assertEquals(0L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":0}"""))
-        assertEquals(-500L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-500}"""))
-        assertEquals(500L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":500}"""))
+        assertEquals(-2000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-2000}"""))
+        assertEquals(2000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":2000}"""))
     }
 
     @Test fun rejectsAnExtraOrMissingField() {
@@ -49,8 +49,9 @@ class AudioDelayWireTest {
     // --- delayMs --------------------------------------------------------------
 
     @Test fun rejectsAValueOutsideTheRangeOrOffTheStep() {
-        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":501}"""))
-        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-501}"""))
+        // On the step grid, so it is the BOUND refusing these, not the step.
+        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":2025}"""))
+        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-2025}"""))
         assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":10}"""))
         assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-10}"""))
     }

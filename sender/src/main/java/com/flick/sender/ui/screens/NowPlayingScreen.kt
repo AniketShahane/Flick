@@ -176,8 +176,9 @@ private fun RemoteScreen(
     var showAudioDelay by rememberSaveable { mutableStateOf(false) }
     val subtitleAttached = controller.selectedSubtitle.collectAsState().value != null
     // Narrowed to the one bit this screen shows. The offset itself moves once per stepper
-    // press and once per detent under a drag, and unwrapping it here would rebuild the
-    // whole remote — poster, transport and all — behind a sheet that is covering it.
+    // press, once per pointer sample under a drag and once a hop while a large move is
+    // being walked, and unwrapping it here would rebuild the whole remote — poster,
+    // transport and all — behind a sheet that is covering it.
     val audioDelay = controller.audioDelayMs.collectAsState()
     val audioNudged by remember(audioDelay) {
         derivedStateOf { audioDelay.value != AudioDelayPolicy.IN_SYNC_MS }
