@@ -105,17 +105,26 @@ object MediaProbe {
     /**
      * Decode a scaled still at [positionMs] from an already-open [retriever] (no
      * setDataSource — the expensive container parse happens once per drag session).
-     * Blocking and non-cancellable; the caller confines it to [scrubDispatcher].
+     * Blocking and non-cancellable; the caller confines it to [scrubDispatcher] or to
+     * the equally single-threaded dispatcher [VideoStills] serializes its own decodes on.
+     *
+     * The box defaults to the scrub preview's, which is every caller on the drag path;
+     * the tile search asks for the size the frame will actually be shown at.
      */
-    internal fun decodeStill(retriever: MediaMetadataRetriever, positionMs: Long): Bitmap? {
+    internal fun decodeStill(
+        retriever: MediaMetadataRetriever,
+        positionMs: Long,
+        boxWidth: Int = PREVIEW_WIDTH_PX,
+        boxHeight: Int = PREVIEW_HEIGHT_PX,
+    ): Bitmap? {
         return try {
             val us = positionMs.coerceAtLeast(0L) * 1000L
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 retriever.getScaledFrameAtTime(
                     us,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    PREVIEW_WIDTH_PX,
-                    PREVIEW_HEIGHT_PX,
+                    boxWidth,
+                    boxHeight,
                 )
             } else {
                 // No scaling call before 27, and getFrameAtTime hands back the frame at
@@ -125,15 +134,15 @@ object MediaProbe {
                 // allocates another. Scaled into the same box the newer call takes, and the
                 // full-size frame released here rather than left to the collector.
                 retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?.let(::scaleToPreview)
+                    ?.let { scaleInto(it, boxWidth, boxHeight) }
             }
         } catch (_: Throwable) {
             null
         }
     }
 
-    private fun scaleToPreview(full: Bitmap): Bitmap {
-        val (width, height) = previewFrameSize(full.width, full.height)
+    private fun scaleInto(full: Bitmap, boxWidth: Int, boxHeight: Int): Bitmap {
+        val (width, height) = previewFrameSize(full.width, full.height, boxWidth, boxHeight)
         if (width == full.width && height == full.height) return full
         val scaled = Bitmap.createScaledBitmap(full, width, height, true)
         // createScaledBitmap is allowed to hand back its source; recycling then would
@@ -144,15 +153,21 @@ object MediaProbe {
 }
 
 /**
- * The box a scrub still is decoded into. It matches `getScaledFrameAtTime`'s contract —
- * fit inside the box, never upscale, preserve the source's own aspect ratio — so both
- * branches of [MediaProbe.decodeStill] produce the same picture on either side of API 27.
+ * The box a still is decoded into, defaulting to the scrub preview's. It matches
+ * `getScaledFrameAtTime`'s contract — fit inside the box, never upscale, preserve the
+ * source's own aspect ratio — so both branches of [MediaProbe.decodeStill] produce the
+ * same picture on either side of API 27.
  */
-internal fun previewFrameSize(sourceWidth: Int, sourceHeight: Int): Pair<Int, Int> {
-    if (sourceWidth <= 0 || sourceHeight <= 0) return PREVIEW_WIDTH_PX to PREVIEW_HEIGHT_PX
+internal fun previewFrameSize(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    boxWidth: Int = PREVIEW_WIDTH_PX,
+    boxHeight: Int = PREVIEW_HEIGHT_PX,
+): Pair<Int, Int> {
+    if (sourceWidth <= 0 || sourceHeight <= 0) return boxWidth to boxHeight
     val scale = minOf(
-        PREVIEW_WIDTH_PX.toFloat() / sourceWidth,
-        PREVIEW_HEIGHT_PX.toFloat() / sourceHeight,
+        boxWidth.toFloat() / sourceWidth,
+        boxHeight.toFloat() / sourceHeight,
         1f,
     )
     return (sourceWidth * scale).roundToInt().coerceAtLeast(1) to

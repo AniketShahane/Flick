@@ -3,12 +3,15 @@ package com.flick.sender
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaStyleNotificationHelper
+import com.flick.sender.ui.theme.Spark
 
 /** The four PendingIntents a posted cast notification can carry, minted per cast id. */
 internal data class CastNotificationIntents(
@@ -65,6 +68,11 @@ internal fun castMediaButtonPreferences(context: Context): List<CommandButton> =
  *
  * With no [session] (a Media3 session this device refused to create) the result is the
  * plain ongoing notification the service has always posted: serving never depends on it.
+ *
+ * [artwork] is the film's own still, and null is its ordinary state for the first moment
+ * of a cast — a foreground service must post promptly and a frame takes a decode to
+ * produce, so the art arrives in a later post. Null draws the notification exactly as this
+ * app drew it before there was any art at all.
  */
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 internal fun buildCastNotification(
@@ -73,6 +81,7 @@ internal fun buildCastNotification(
     session: MediaSession?,
     snapshot: CastTransportSnapshot?,
     intents: CastNotificationIntents,
+    artwork: Bitmap?,
 ): Notification {
     val shape = CastNotificationPolicy.shape(snapshot)
     val controls = shape.controls
@@ -92,6 +101,18 @@ internal fun buildCastNotification(
                     context.getString(R.string.notif_text_finished, device)
             },
         )
+        // The album art of a cast. On Android 13+ the media controls draw the artwork the
+        // SESSION carries instead of this one; both are set from the same still, and this
+        // is what the releases that still render a MediaStyle notification themselves show.
+        .setLargeIcon(artwork)
+        // Flick's amber, read from the palette token rather than restated as a hex — and the
+        // brand VALUE rather than the `spark` role, which inverts to blue in the app's dark
+        // set: the shade is not this app's canvas and takes one colour under both. Not
+        // `setColorized`, which a foreground service is one of the few things allowed to be —
+        // amber is this product's mark and never its ground. It tints what draws this as an
+        // ordinary row, and MediaStyle before 13; the Android 13+ media controls take their
+        // colours from the artwork above and ignore it, which is not a fault to chase.
+        .setColor(Spark.toArgb())
         .setContentIntent(intents.open)
         .setOngoing(true)
         // A transport, not a background chore. The category is what tells the platform

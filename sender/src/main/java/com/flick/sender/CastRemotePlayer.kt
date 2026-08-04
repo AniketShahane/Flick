@@ -11,6 +11,7 @@ import androidx.media3.common.SimpleBasePlayer.MediaItemData
 import androidx.media3.common.SimpleBasePlayer.PositionSupplier
 import androidx.media3.common.SimpleBasePlayer.State
 import androidx.media3.common.util.UnstableApi
+import com.flick.sender.media.CastArtwork
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -38,13 +39,21 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     // scrubber frozen between TV frames. One State per snapshot, cached until the
     // snapshot itself changes.
     private var lastSnapshot: CastTransportSnapshot? = null
+    // The still is decoded off the start path and arrives after the cast it belongs to, so
+    // it invalidates the cached State on its own terms: identity is enough, because the
+    // service publishes one instance per cast and never mutates it.
+    private var lastArtwork: CastArtwork? = null
     private var lastState: State = idleState()
+    private var lastMetadata: MediaMetadata? = null
+    private var lastMetadataOf: Triple<String, String?, CastArtwork?>? = null
 
     override fun getState(): State {
         val snapshot = CastTransportState.state.value
-        if (snapshot == lastSnapshot) return lastState
+        val artwork = CastArtworkState.artworkFor(snapshot?.castId)
+        if (snapshot == lastSnapshot && artwork === lastArtwork) return lastState
         lastSnapshot = snapshot
-        lastState = if (snapshot == null) idleState() else stateOf(snapshot)
+        lastArtwork = artwork
+        lastState = if (snapshot == null) idleState() else stateOf(snapshot, artwork)
         return lastState
     }
 
@@ -83,7 +92,7 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
         return Futures.immediateVoidFuture()
     }
 
-    private fun stateOf(snapshot: CastTransportSnapshot): State {
+    private fun stateOf(snapshot: CastTransportSnapshot, artwork: CastArtwork?): State {
         val controls = CastNotificationPolicy.controls(
             snapshot.phase,
             snapshot.commandable,
@@ -96,14 +105,7 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             snapshot.bufferedMs,
             snapshot.durationMs,
         )
-        val metadata = MediaMetadata.Builder()
-            .setTitle(snapshot.title)
-            // The subtitle line of the media card. Naming the TV is the one thing this
-            // surface can say that the phone's own screens cannot.
-            .setArtist(snapshot.deviceName)
-            .setIsBrowsable(false)
-            .setIsPlayable(true)
-            .build()
+        val metadata = metadataFor(snapshot, artwork)
         // The cast id is the item's identity: a re-target mints a new one, which is
         // exactly when the platform should read this as a different film.
         val item = MediaItemData.Builder(snapshot.castId)
@@ -146,6 +148,35 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             .setPlaybackParameters(PlaybackParameters.DEFAULT)
             .setIsLoading(stage == CastNotificationPolicy.Stage.BUFFERING)
             .build()
+    }
+
+    /**
+     * The media card's own facts, and none of what a `state` frame carries.
+     *
+     * Memoized because `MediaMetadata` copies the artwork bytes into every instance it
+     * builds and a frame arrives several times a second: rebuilding it per position would
+     * churn a still's worth of bytes for a card that did not change.
+     */
+    private fun metadataFor(snapshot: CastTransportSnapshot, artwork: CastArtwork?): MediaMetadata {
+        val identity = Triple(snapshot.title, snapshot.deviceName, artwork)
+        lastMetadata?.takeIf { lastMetadataOf == identity }?.let { return it }
+        return MediaMetadata.Builder()
+            .setTitle(snapshot.title)
+            // The subtitle line of the media card. Naming the TV is the one thing this
+            // surface can say that the phone's own screens cannot.
+            .setArtist(snapshot.deviceName)
+            // Compressed bytes rather than a URI: this frame was chosen and decoded out of
+            // the film itself, so there is no address a bitmap loader could fetch it from.
+            // It is what the Android 13+ media controls draw on the shade and the lock
+            // screen — the album art of a cast — and its absence costs only the picture.
+            .setArtworkData(artwork?.data, artwork?.let { MediaMetadata.PICTURE_TYPE_FRONT_COVER })
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .build()
+            .also {
+                lastMetadata = it
+                lastMetadataOf = identity
+            }
     }
 
     /**

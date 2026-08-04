@@ -4,8 +4,6 @@ import android.app.ActivityManager
 import android.content.Context
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
-import android.os.Build
-import android.os.CancellationSignal
 import android.util.Size as AndroidSize
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
@@ -80,6 +78,7 @@ import coil.size.Dimension
 import coil.size.Precision
 import com.flick.sender.R
 import com.flick.sender.media.ResumeProgress
+import com.flick.sender.media.VideoStills
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.ui.Format
@@ -95,8 +94,6 @@ import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -157,38 +154,40 @@ private const val LowRamBudgetDivisor = 12L
 private const val FrameCacheCapBytes = 16 * 1_048_576
 private const val LowRamFrameCacheCapBytes = 8 * 1_048_576
 
-// Cast surfaces keep the exact one-third 960x540 frame. Library and Detail ask MediaStore
-// for the same provider-cached scene at their own sizes; pre-Q and provider failures fall
-// through to the exact one-third decoder. Detail reads the library entry as its placeholder.
+// Library and Detail ask at their own sizes; the cast surfaces take the larger box because
+// a poster is the biggest a still is ever drawn here. Whatever the size, all of them go
+// through the same chosen frame, so the picture a tile shows is the picture that flies into
+// the detail sheet and lands on the remote. Detail reads the library entry as its placeholder.
 private const val FrameWidthPx = 960
 private const val FrameHeightPx = 540
 private const val LibraryFrameWidthPx = 512
 private const val LibraryFrameHeightPx = 288
 
-private object MediaStoreThumbnailFetcher : Fetcher.Factory<Uri> {
-    override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        return Fetcher {
-            suspendCancellableCoroutine { continuation ->
-                val cancellationSignal = CancellationSignal()
-                continuation.invokeOnCancellation { cancellationSignal.cancel() }
-                val target = options.thumbnailTargetSize()
-                val result = try {
-                    val bitmap = options.context.contentResolver.loadThumbnail(
-                        data,
-                        target,
-                        cancellationSignal,
-                    )
-                    DrawableResult(
-                        drawable = BitmapDrawable(options.context.resources, bitmap),
-                        isSampled = true,
-                        dataSource = DataSource.DISK,
-                    )
-                } catch (_: Exception) {
-                    null
-                }
-                if (continuation.isActive) continuation.resume(result)
-            }
+/**
+ * The still, chosen rather than taken on faith — see [VideoStills]. A frame that judges as
+ * a picture of nothing (the black open nearly every film has) is escalated to a small
+ * bounded search through the body of the film, off this thread and off any thread the grid
+ * can multiply.
+ *
+ * Returning null hands the request back to Coil's own [VideoFrameDecoder], which decodes
+ * the fixed one-third frame the request already names: a file this cannot open at all is
+ * drawn exactly as it was before any of this existed.
+ */
+private object VideoStillFetcher : Fetcher.Factory<Uri> {
+    override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher = Fetcher {
+        val target = options.thumbnailTargetSize()
+        VideoStills.still(
+            context = options.context,
+            uri = data,
+            durationMs = options.parameters.value<Long>(SourceDurationKey) ?: 0L,
+            width = target.width,
+            height = target.height,
+        )?.let { bitmap ->
+            DrawableResult(
+                drawable = BitmapDrawable(options.context.resources, bitmap),
+                isSampled = true,
+                dataSource = DataSource.DISK,
+            )
         }
     }
 }
@@ -197,6 +196,17 @@ private fun Options.thumbnailTargetSize(): AndroidSize = AndroidSize(
     (size.width as? Dimension.Pixels)?.px ?: LibraryFrameWidthPx,
     (size.height as? Dimension.Pixels)?.px ?: LibraryFrameHeightPx,
 )
+
+/**
+ * The file's own length, carried to the fetcher so the search knows where the middle of the
+ * film is. The null cache key is what keeps it OUT of the computed memory-cache key: the
+ * duration is a property of the very bytes the URI already names, and letting it in would
+ * fork the cache for every surface that rounds it differently.
+ */
+private fun ImageRequest.Builder.sourceDurationMs(durationMs: Long): ImageRequest.Builder =
+    setParameter(SourceDurationKey, durationMs, null)
+
+private const val SourceDurationKey = "flick#source_duration_ms"
 
 internal fun libraryThumbnailCacheKey(
     uri: String,
@@ -247,31 +257,23 @@ fun rememberVideoFrameRequest(
     crossfade: Boolean = false,
     memoryCacheKey: String? = null,
     placeholderMemoryCacheKey: String? = null,
-    preferMediaStoreThumbnail: Boolean = false,
 ): ImageRequest? {
     val context = LocalContext.current
-    return remember(
-        uri,
-        durationMs,
-        crossfade,
-        memoryCacheKey,
-        placeholderMemoryCacheKey,
-        preferMediaStoreThumbnail,
-    ) {
+    return remember(uri, durationMs, crossfade, memoryCacheKey, placeholderMemoryCacheKey) {
         uri?.let {
             ImageRequest.Builder(context)
                 .data(it)
-                // A third in: the head of a film is usually black or a title card.
+                // Where Coil's own decoder looks when every path in the fetcher failed. A
+                // third in: the head of a film is usually black or a title card.
                 .videoFrameMillis((durationMs / 3L).coerceAtLeast(1_000L))
+                .sourceDurationMs(durationMs)
                 .size(FrameWidthPx, FrameHeightPx)
                 .precision(Precision.INEXACT)
                 .crossfade(crossfade)
+                .fetcherFactory(VideoStillFetcher, Uri::class.java)
                 .apply {
                     memoryCacheKey?.let { key -> memoryCacheKey(key) }
                     placeholderMemoryCacheKey?.let { key -> placeholderMemoryCacheKey(key) }
-                    if (preferMediaStoreThumbnail) {
-                        fetcherFactory(MediaStoreThumbnailFetcher, Uri::class.java)
-                    }
                 }
                 .build()
         }
@@ -286,10 +288,11 @@ private fun rememberLibraryThumbnailRequest(item: MediaItem): ImageRequest {
         ImageRequest.Builder(context)
             .data(item.uri)
             .videoFrameMillis((item.durationMs / 3L).coerceAtLeast(1_000L))
+            .sourceDurationMs(item.durationMs)
             .size(LibraryFrameWidthPx, LibraryFrameHeightPx)
             .precision(Precision.INEXACT)
             .memoryCacheKey(cacheKey)
-            .fetcherFactory(MediaStoreThumbnailFetcher, Uri::class.java)
+            .fetcherFactory(VideoStillFetcher, Uri::class.java)
             .crossfade(true)
             .build()
     }
@@ -301,7 +304,6 @@ fun rememberDetailVideoFrameRequest(item: MediaItem): ImageRequest = rememberVid
     durationMs = item.durationMs,
     memoryCacheKey = heroFrameCacheKey(item),
     placeholderMemoryCacheKey = libraryThumbnailCacheKey(item),
-    preferMediaStoreThumbnail = true,
 )!!
 
 /**

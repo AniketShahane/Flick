@@ -57,6 +57,15 @@ class PreviewFrameSizeTest {
     }
 
     @Test
+    fun aNamedBoxIsHonouredInsteadOfThePreviewOne() {
+        // The tile search decodes into the size the still will be SHOWN at, and below API
+        // 27 that box is reached by this scale rather than by the platform's.
+        assertEquals(512 to 288, previewFrameSize(3840, 2160, 512, 288))
+        assertEquals(384 to 288, previewFrameSize(1440, 1080, 512, 288))
+        assertEquals(200 to 100, previewFrameSize(200, 100, 512, 288))
+    }
+
+    @Test
     fun aFrameThatReportsNoSizeStillAsksForTheBox() {
         // A retriever that hands back a bitmap with no usable dimensions must not produce a
         // zero-sized or negative-sized scale request, which throws.

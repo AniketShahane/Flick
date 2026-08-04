@@ -18,6 +18,8 @@ import android.util.Base64
 import androidx.core.app.ServiceCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
+import com.flick.sender.media.CastArtwork
+import com.flick.sender.media.castArtwork
 import com.flick.sender.net.ControlProtocolV2
 import com.flick.sender.util.FlickLog
 import java.security.SecureRandom
@@ -84,6 +86,10 @@ class CastServerService : Service() {
     // counting but the derived RATE never advances, so anything reading it would measure
     // nothing. This lives exactly as long as the served session does.
     private var samplerJob: Job? = null
+
+    // Started on main, cancelled from whichever thread tears the cast down.
+    @Volatile
+    private var artworkJob: Job? = null
 
     // The LAN IP the live socket is bound to, so a later subtitle retarget composes
     // its URL against the same origin the video URL already uses.
@@ -183,6 +189,7 @@ class CastServerService : Service() {
                     failCurrentStart(session, startId, getString(R.string.error_server_start))
                     return START_NOT_STICKY
                 }
+                startArtwork(session, uri)
 
                 serviceScope.launch {
                     if (!startGate.isLatest(session)) return@launch
@@ -283,6 +290,7 @@ class CastServerService : Service() {
         synchronized(teardownGuard) {
             val session = startGate.stop(castId) ?: return
             closeResourcesOwnedBy(session)
+            stopArtwork()
             ServerStateHolder.setIdle()
             ServerStateHolder.publishTerminal(session, SourceServerTerminalKind.STOPPED)
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -299,6 +307,7 @@ class CastServerService : Service() {
                 return
             }
             closeResourcesOwnedBy(session)
+            stopArtwork()
             ServerStateHolder.setError(session.castId, message)
             ServerStateHolder.publishTerminal(
                 session,
@@ -334,6 +343,7 @@ class CastServerService : Service() {
             resourceOwnership.releaseAll()
             releaseLocks()
             stopSampler()
+            stopArtwork()
             httpServer.stop()
             servedHost = null
             SubtitleServingState.clear()
@@ -360,6 +370,50 @@ class CastServerService : Service() {
     private fun stopSampler() {
         samplerJob?.cancel()
         samplerJob = null
+    }
+
+    // --- Notification artwork -----------------------------------------------
+
+    /**
+     * Decode the film's own still and give it to the media notification and the platform
+     * session — the album art of a cast.
+     *
+     * Deliberately NOT on the foreground-start path. A foreground service has to post its
+     * notification promptly and a frame costs a decode, so the first post goes out with no
+     * art and this replaces it in place when the still lands. The still itself is chosen by
+     * the same rule the library's tiles are, off the same single-threaded dispatcher, so it
+     * can never fan out against the socket that is about to stream the very same file —
+     * and a file the user reached through the grid has usually had its frame chosen already.
+     *
+     * Nothing here can fail loudly: no still simply means the notification the service has
+     * always posted.
+     */
+    private fun startArtwork(session: CastGeneration, uri: Uri) {
+        artworkJob?.cancel()
+        artworkJob = mainScope.launch {
+            val artwork = castArtwork(applicationContext, uri) ?: return@launch
+            synchronized(teardownGuard) {
+                // Under the guard for onTransportChanged's reason: a still arriving beside
+                // a teardown must not re-post a notification that was just taken away.
+                if (!startGate.isLatest(session)) return@launch
+                CastArtworkState.publish(session.castId, artwork)
+                getSystemService(NotificationManager::class.java)
+                    ?.notify(NOTIF_ID, buildNotification(session.castId))
+            }
+            // Outside the guard, as the transport's own refresh is: this re-enters Media3.
+            remotePlayer.refresh()
+        }
+    }
+
+    /**
+     * Retire the still with the cast it belongs to. Deliberately not part of the
+     * generation-scoped resource release, which a SUPERSEDED start also runs on its way
+     * out: that would cancel the artwork of the very cast that replaced it.
+     */
+    private fun stopArtwork() {
+        artworkJob?.cancel()
+        artworkJob = null
+        CastArtworkState.clear()
     }
 
     // --- Wake / Wi-Fi locks -------------------------------------------------
@@ -464,6 +518,7 @@ class CastServerService : Service() {
             session = mediaSession,
             snapshot = snapshot,
             intents = notificationIntents(castId),
+            artwork = CastArtworkState.artworkFor(castId)?.bitmap,
         )
     }
 
@@ -645,6 +700,35 @@ class CastServerService : Service() {
 }
 
 private object ControlCastId { fun valid(value: String) = ControlProtocolV2.id(value) }
+
+/**
+ * Process-wide publication of the still the media notification and the platform session
+ * draw, bridging the service that decodes it to [CastRemotePlayer] exactly as
+ * [SubtitleServingState] bridges the subtitle.
+ *
+ * Keyed by cast id and read by it: a re-target mints a new one, and the frame of the film
+ * that was playing a moment ago must never be the art of the film that replaced it. It
+ * holds one small bitmap for as long as a cast runs, and teardown drops it.
+ */
+internal object CastArtworkState {
+
+    private class Published(val castId: String, val artwork: CastArtwork)
+
+    @Volatile
+    private var published: Published? = null
+
+    fun publish(castId: String, artwork: CastArtwork) {
+        published = Published(castId, artwork)
+    }
+
+    /** Null unless [castId] is the cast this still was decoded for. */
+    fun artworkFor(castId: String?): CastArtwork? =
+        published?.takeIf { it.castId == castId }?.artwork
+
+    fun clear() {
+        published = null
+    }
+}
 
 /**
  * Process-wide publication of the sideloaded-subtitle capability the media server is
