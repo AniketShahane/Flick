@@ -2,6 +2,7 @@ package com.flick.receiver.player
 
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
+import com.flick.receiver.util.FlickLog
 
 /**
  * The live video-clock shift, written on the main thread by the control command
@@ -68,8 +69,26 @@ internal class AudioDelayVideoRenderer(
     private val shift: AudioDelayShift,
 ) : ForwardingRenderer(delegate) {
 
+    /**
+     * The last shift this renderer reported. Playback-thread only — [render] is
+     * the only reader and the only writer — so a plain field, not a volatile.
+     */
+    private var loggedShiftUs: Long = 0L
+
     override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
-        super.render(positionUs + shift.videoShiftUs, elapsedRealtimeUs)
+        val shiftUs = shift.videoShiftUs
+        // The command's log line is written before the player is touched at all,
+        // so it says a frame arrived and nothing more. This one is the other half:
+        // it is written from the thread that releases frames, by the renderer that
+        // is actually in the array, so the two together separate "the TV accepted
+        // the nudge" from "the nudge reached the picture". A user step changes the
+        // value at most a few times a second; every other tick compares and
+        // returns.
+        if (shiftUs != loggedShiftUs) {
+            loggedShiftUs = shiftUs
+            FlickLog.i("player", "audioDelayShift us=$shiftUs")
+        }
+        super.render(positionUs + shiftUs, elapsedRealtimeUs)
     }
 
     override fun getDurationToProgressUs(positionUs: Long, elapsedRealtimeUs: Long): Long =

@@ -556,9 +556,22 @@ class SessionController(
         beginSeek(before.posMs, clampedSeekTarget(before.posMs + deltaMs, before.durationMs))
     }
     override fun onSetVolume(castId: String, level: Float) { if (current(castId)) controller.setVolume(level) }
-    override fun onSetRotation(castId: String, degrees: Int) { if (current(castId)) controller.setVideoRotationDegrees(degrees) }
-    override fun onSetAutoRotation(castId: String) { if (current(castId)) controller.setAutoVideoRotation() }
-    override fun onSetAudioDelay(castId: String, delayMs: Int) { if (current(castId)) controller.setAudioDelay(delayMs) }
+    // The three verbs whose only evidence is the picture itself: nothing echoes a
+    // rotation or a delay back, so a frame dropped here is indistinguishable from
+    // one the socket never delivered unless the drop says so.
+    override fun onSetRotation(castId: String, degrees: Int) {
+        if (!current(castId)) return dropStale("setRotation", castId)
+        controller.setVideoRotationDegrees(degrees)
+    }
+    override fun onSetAutoRotation(castId: String) {
+        if (!current(castId)) return dropStale("setAutoRotation", castId)
+        controller.setAutoVideoRotation()
+    }
+    override fun onSetAudioDelay(castId: String, delayMs: Int) {
+        if (!current(castId)) return dropStale("setAudioDelay", castId)
+        controller.setAudioDelay(delayMs)
+    }
+
     override fun onCancelLoad(castId: String): Boolean {
         if (!current(castId)) return false
         invalidateToNone()
@@ -591,6 +604,11 @@ class SessionController(
     }
 
     private fun current(id: String) = id == castId
+
+    /** A command for a cast this session no longer owns, said out loud. */
+    private fun dropStale(command: String, id: String) {
+        FlickLog.i("cast", "command drop cmd=$command reason=not_current castIdFp=${FlickLog.fp(id)}")
+    }
 
     private fun invalidate(clearRetained: Boolean) {
         gate.forceInvalidate()

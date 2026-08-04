@@ -336,6 +336,23 @@ class PlayerController(context: Context) : SessionPlayer {
                 instrumentation.videoWidth = videoSize.width
                 instrumentation.videoHeight = videoSize.height
             }
+            // The last hop the receiver can observe, and deliberately not proof.
+            // `rotationToDecoder` shows media3 was HANDED the corrected rotation;
+            // media3 1.10.1 then swaps these dimensions and inverts the sample
+            // aspect from `Format.rotationDegrees` on its own assumption that the
+            // codec honoured `KEY_ROTATION` — which a Codec2 decoder can ignore.
+            // So this is the timestamp that makes the panel the instrument: a
+            // frame that changed shape against a re-prepare while the picture
+            // inside stayed sideways is the codec ignoring the key; a frame that
+            // did not change at all is media3 never processing the new format.
+            // Media3 notifies only on a change and a re-prepare re-arms that, so
+            // this is a handful of lines per film plus one per turn.
+            FlickLog.i(
+                "player",
+                "videoSize w=${videoSize.width} h=${videoSize.height} " +
+                    "par=${videoSize.pixelWidthHeightRatio} decoderExtraDegrees=" +
+                    (rotationOverride.decoderExtraDegrees?.toString() ?: "none"),
+            )
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -775,11 +792,26 @@ class PlayerController(context: Context) : SessionPlayer {
      * has been configured again, and re-preparing the same player is what does
      * that. Media3 agrees: `MediaCodecInfo.canReuseCodec` names a rotation change
      * as a discard reason, which is the same statement from the other side.
+     *
+     * The question asked is "does the DECODER still owe this a re-prepare?", not
+     * "did the commanded number change?". The two part company in both
+     * directions: a re-prepare that declined leaves a recorded choice the decoder
+     * never got, which only a re-assert can repair; and a re-prepare in flight
+     * has not reached the decoder yet either, but re-issuing it would restart a
+     * re-buffer the viewer is already waiting through. [VideoRotationOverride]
+     * separates the two, and this is the only caller allowed to ask.
+     *
+     * Nothing is committed until the re-prepare is going to run, and the command
+     * is marked as carried only once one has actually been issued.
      */
     private fun applyVideoRotation(): Boolean {
         val extraDegrees = videoRotation.extraDegrees ?: autoVideoRotationDegrees
-        if (!rotationOverride.setExtraDegrees(extraDegrees)) return false
-        return rePrepareForRotation()
+        if (!rotationOverride.needsDecoderReconfigure(extraDegrees)) return false
+        if (player == null || currentUrl == null) return false
+        rotationOverride.commandExtraDegrees(extraDegrees)
+        val rePrepared = rePrepareForRotation()
+        if (rePrepared) rotationOverride.markRePrepareIssued()
+        return rePrepared
     }
 
     /**
@@ -825,24 +857,53 @@ class PlayerController(context: Context) : SessionPlayer {
         videoRotation = VideoRotation.Auto
         autoVideoRotationDegrees = 0
         orientationHint = null
-        rotationOverride.setExtraDegrees(0)
+        rotationOverride.reset()
     }
 
-    /** The panel's choice. True when it reached the decoder. Main-thread only. */
+    /**
+     * The panel's choice. True when a re-prepare was issued for it. Main-thread only.
+     *
+     * A repeat of the choice already recorded is deliberately NOT refused here.
+     * The recorded choice is what the panel draws, the decoder's configuration is
+     * what the viewer sees, and those two can disagree; [applyVideoRotation] is
+     * the only place that can tell, so it is the only place that decides.
+     */
     fun setVideoRotation(choice: VideoRotation): Boolean {
-        if (choice == videoRotation) return false
         // Checked before the choice is recorded, not after: these are the only two
         // ways the re-prepare below can decline, and a cast that ended under an open
         // panel would otherwise leave the cell drawn as selected over a picture that
         // never turned.
-        if (player == null || currentUrl == null) return false
+        if (player == null || currentUrl == null) {
+            FlickLog.i("player", "rotation choice=${choice.name} outcome=noCast")
+            return false
+        }
         videoRotation = choice
-        return applyVideoRotation()
+        val extraDegrees = choice.extraDegrees ?: autoVideoRotationDegrees
+        val rePrepared = applyVideoRotation()
+        // The receiver's half of the answer: what was asked for, what that resolved
+        // to in degrees, and whether it was carried to the decoder or was already
+        // there. `rotationToDecoder` is the decoder's own half — the two together
+        // say whether a turn the viewer chose reached the picture.
+        FlickLog.i(
+            "player",
+            "rotation choice=${choice.name} extraDegrees=$extraDegrees " +
+                "rePrepared=$rePrepared decoderExtraDegrees=" +
+                (rotationOverride.decoderExtraDegrees?.toString() ?: "none"),
+        )
+        return rePrepared
     }
 
     /** WS `setRotation` with `degrees`: an explicit quarter turn, or nothing at all. */
     override fun setVideoRotationDegrees(degrees: Int) {
-        setVideoRotation(VideoRotation.forExtraDegrees(degrees) ?: return)
+        val choice = VideoRotation.forExtraDegrees(degrees)
+        if (choice == null) {
+            // The wire already refuses anything off the quarter-turn grid, so this
+            // is unreachable from a control frame and would otherwise be the one
+            // rotation path that declines without saying so.
+            FlickLog.i("player", "rotation ignored degrees=$degrees reason=offGrid")
+            return
+        }
+        setVideoRotation(choice)
     }
 
     /**
@@ -1276,6 +1337,12 @@ class PlayerController(context: Context) : SessionPlayer {
             it.removeListener(playerListener)
             it.removeAnalyticsListener(analyticsListener)
             it.release()
+            // The released player's playback thread can drain a queued format read
+            // between the reset above and this call, and record it against the new
+            // film's command. `release()` joins that thread, so this is the first
+            // point at which no further write is possible — the previous film
+            // cannot leave its decoder's turn behind for this one.
+            rotationOverride.reset()
         }
         exo.setMediaItem(mediaItemFor(url, mediaId, subtitle))
         if (startMs > 0) exo.seekTo(startMs)

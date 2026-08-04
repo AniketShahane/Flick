@@ -744,7 +744,7 @@ class ControlServer(
                     stale(cast)
                 } else if (type == "stop") {
                     return stopCast(connection, cast)
-                } else post(connection, cast) {
+                } else post(connection, cast, type) {
                     when (type) {
                         "play" -> commands.onPlay(cast)
                         "pause" -> commands.onPause(cast)
@@ -758,18 +758,18 @@ class ControlServer(
                 val cast = castId() ?: return false
                 val value = o.integer("deltaMs") ?: return false
                 if (!o.exactly(SKIP_FIELDS) || value !in setOf(-10_000L, 10_000L)) return false
-                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSkip(cast, value) }
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast, type) { commands.onSkip(cast, value) }
             }
             "setVolume" -> {
                 val cast = castId() ?: return false
                 val value = o.number("level") ?: return false
                 if (!o.exactly(VOLUME_FIELDS) || value !in 0.0..1.0) return false
-                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetVolume(cast, value.toFloat()) }
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast, type) { commands.onSetVolume(cast, value.toFloat()) }
             }
             "setRotation" -> {
                 val cast = castId() ?: return false
                 val rotation = RotationCommandSchema.read(o) ?: return false
-                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) {
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast, type) {
                     when (rotation) {
                         is RotationCommand.Explicit -> commands.onSetRotation(cast, rotation.degrees)
                         RotationCommand.Auto -> commands.onSetAutoRotation(cast)
@@ -782,7 +782,7 @@ class ControlServer(
                 // non-integral delayMs is malformed here rather than rounded.
                 val value = o.integer("delayMs") ?: return false
                 if (!o.exactly(AUDIO_DELAY_FIELDS) || !AudioDelayPolicy.accepts(value)) return false
-                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast) { commands.onSetAudioDelay(cast, value.toInt()) }
+                if (!ownership.isCurrent(connection.token, connection.generation, cast)) stale(cast) else post(connection, cast, type) { commands.onSetAudioDelay(cast, value.toInt()) }
             }
             else -> return false
         }
@@ -793,12 +793,25 @@ class ControlServer(
         val cast = o.string("castId")?.value?.takeIf(::id) ?: return false
         val value = o.integer(field) ?: return false
         if (!o.exactly(setOf("t", "v", "castId", field)) || !ms(value)) return false
-        if (!ownership.isCurrent(connection.token, connection.generation, cast)) emit(connection, commandRejected(cast, type, "stale_cast")) else post(connection, cast) { action(cast, value) }
+        if (!ownership.isCurrent(connection.token, connection.generation, cast)) emit(connection, commandRejected(cast, type, "stale_cast")) else post(connection, cast, type) { action(cast, value) }
         return true
     }
 
-    private fun post(connection: Connection, castId: String, action: () -> Unit) = main.post {
-        if (generation == connection.generation && ownership.isCurrent(connection.token, connection.generation, castId)) action()
+    /**
+     * The re-check is not the same check the caller already made: ownership is
+     * re-read on the main thread, where the cast can have been superseded between
+     * validating the frame on the Ktor worker and running it. A drop here is
+     * silent to the phone by design — the command was accepted on the wire — so
+     * it is logged, because for the verbs nothing echoes back (rotation, audio
+     * delay) this branch is otherwise indistinguishable from a frame the socket
+     * never delivered.
+     */
+    private fun post(connection: Connection, castId: String, command: String, action: () -> Unit) = main.post {
+        if (generation == connection.generation && ownership.isCurrent(connection.token, connection.generation, castId)) {
+            action()
+        } else {
+            FlickLog.i("ws", "command drop cmd=$command reason=superseded gen=${connection.generation} castIdFp=${FlickLog.fp(castId)}")
+        }
     }
 
     private fun stopCast(connection: Connection, castId: String): Boolean {

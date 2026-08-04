@@ -3,31 +3,177 @@ package com.flick.receiver.player
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+import com.flick.receiver.util.FlickLog
 
 /**
- * The rotation the video decoder is being configured with, written on the main
- * thread and read on the playback thread.
+ * One consumption of a rotation command by the decoder's format path — what the
+ * decoder was handed, which command that came from, and what turn it achieved.
  *
- * Volatile rather than synchronized because there is exactly one word of state
- * and the read happens inside codec configuration, on the thread that must not
- * be made to wait for a lock. Every write is followed by a `prepare()` on the
- * same thread, which posts to the playback thread and therefore carries the new
- * value across with it.
+ * Returned and recorded by the same [VideoRotationOverride.takeForDecoder] call,
+ * from a single read of the command, so the number the decoder gets and the
+ * number the log names can never be two different commands.
+ */
+class DecoderTurn internal constructor(
+    /** Written into `Format.rotationDegrees`, and from there `KEY_ROTATION`. */
+    val correctedDegrees: Int,
+    /** The extra turn commanded when this read happened. */
+    val commandedDegrees: Int,
+    /**
+     * The extra turn the decoder actually ends up applying, which is 0 — whatever
+     * was commanded — for a container off the quarter-turn grid: `KEY_ROTATION`
+     * accepts nothing else, so such a file is presented as filed and no command
+     * can move it.
+     */
+    val appliedDegrees: Int,
+    /** Which command this read consumed. */
+    internal val serial: Long,
+)
+
+/**
+ * The turn the video decoder is commanded to apply, and — the other direction —
+ * the command the decoder last actually consumed.
+ *
+ * ## Why a serial, and not a comparison of degrees
+ *
+ * A command reaches the decoder only through a re-prepare, and that costs a
+ * re-buffer measured in seconds at 4K over Wi-Fi. The decoder's record cannot
+ * change until it reads a format at the far end of that window, so "is the
+ * decoder presenting this?" answered from degrees alone says NO for the whole
+ * re-buffer — and the symptom of the re-buffer is a picture that has not turned,
+ * which is exactly what invites the viewer to press the same key again. Each
+ * repeat would then restart the re-buffer from the beginning, without bound. The
+ * serial is what separates "not yet, and one is already on its way" from "not
+ * yet, and nothing is coming" — the first is absorbed, the second is repaired.
+ *
+ * It also settles a container declaring something off the quarter-turn grid.
+ * Recording WHICH command the decoder consumed, rather than what turn resulted,
+ * means such a file's decoder counts as up to date even though the command
+ * achieved nothing; a re-assert is then a no-op instead of a re-buffer that
+ * provably cannot change the picture, forever.
+ *
+ * ## Threading
+ *
+ * [command] is written on the main thread and read on the playback thread;
+ * [consumed] the other way about. Each is one volatile reference, so a single
+ * read yields one coherent set of fields rather than a mixture of two states.
+ * [issuedSerial] is touched only on the main thread. Volatile rather than
+ * synchronized because the playback thread reads this inside codec
+ * configuration, on the thread that must not be made to wait for a lock; every
+ * command is followed by a `prepare()` on the main thread, which posts to the
+ * playback thread and carries the new value across with it.
+ *
+ * There IS an invariant across the two — [needsDecoderReconfigure] is a function
+ * of both and reads them non-atomically. The only interleaving possible is the
+ * playback thread recording a consumption between the two reads, and that can
+ * only move the answer from "owed" to "not owed" for the command already in
+ * flight: the re-prepare it would have issued is the one that has just landed.
  */
 class VideoRotationOverride {
 
-    @Volatile
-    private var extraDegrees: Int = 0
+    /** A commanded turn and the serial that tells a repeat from a change. */
+    private class Command(val degrees: Int, val serial: Long)
 
-    /** True when this actually changed the value the decoder will be given. */
-    fun setExtraDegrees(degrees: Int): Boolean {
-        if (degrees == extraDegrees) return false
-        extraDegrees = degrees
-        return true
+    @Volatile
+    private var command = Command(degrees = 0, serial = 0L)
+
+    /** null until the decoder has read a format for this film. */
+    @Volatile
+    private var consumed: DecoderTurn? = null
+
+    /**
+     * The serial a re-prepare was actually ISSUED for. Main-thread only, so a
+     * plain field: [markRePrepareIssued] and [needsDecoderReconfigure] are both
+     * reached only from `PlayerController`'s main-thread rotation path.
+     */
+    private var issuedSerial: Long = 0L
+
+    /** The turn currently commanded, on top of whatever the container declares. */
+    val commandedDegrees: Int get() = command.degrees
+
+    /** The extra turn the decoder last actually applied, or null before any. */
+    val decoderExtraDegrees: Int? get() = consumed?.appliedDegrees
+
+    /**
+     * Whether a re-prepare has to be spent to get [degrees] to the decoder.
+     *
+     * Three ways the answer is no, and each is a re-buffer not spent:
+     * - the decoder has consumed the command already, so it is configured from it
+     *   (including the off-grid container, where consuming it changed nothing and
+     *   re-consuming it never could);
+     * - the decoder has not read a format at all yet, because it is about to be
+     *   configured from the commanded value anyway — treating "unknown" as
+     *   "wrong" would spend a re-buffer during startup to reach the turn startup
+     *   was already going to use;
+     * - a re-prepare for this exact command is in flight, so the repeat that
+     *   arrived during its re-buffer is the same request already being served.
+     */
+    fun needsDecoderReconfigure(degrees: Int): Boolean {
+        val cmd = command
+        if (degrees != cmd.degrees) return true
+        val last = consumed ?: return false
+        if (last.serial >= cmd.serial) return false
+        // Commanded, not consumed: either a re-prepare is carrying it — leave it
+        // alone — or one was never issued and the decoder is stranded behind a
+        // choice the panel already draws, which only a re-assert can repair.
+        return issuedSerial != cmd.serial
     }
 
-    fun applyTo(containerRotationDegrees: Int): Int =
-        effectiveRotationDegrees(containerRotationDegrees, extraDegrees)
+    /**
+     * Record the turn the decoder is to be given, as a NEW command. Deliberately
+     * not a "did this change anything" verdict: what has to change is the
+     * DECODER's configuration, and only [needsDecoderReconfigure] can answer that.
+     */
+    fun commandExtraDegrees(degrees: Int) {
+        command = Command(degrees, command.serial + 1)
+    }
+
+    /**
+     * Say that a re-prepare is now carrying the current command. Called only
+     * after the re-prepare has actually been issued, so a command whose
+     * re-prepare declined stays repairable by the next re-assert.
+     */
+    fun markRePrepareIssued() {
+        issuedSerial = command.serial
+    }
+
+    /**
+     * The rotation for a container declaring [containerRotationDegrees], recorded
+     * as the command the decoder has now consumed. One read of [command], so the
+     * value returned, the value recorded and the value logged are one command.
+     *
+     * Recording here is accurate even though media3 may reuse the codec rather
+     * than configure it again: `MediaCodecInfo.canReuseCodec` names a rotation
+     * change as a discard reason, so a codec that survives this call is one whose
+     * rotation did not change.
+     */
+    fun takeForDecoder(containerRotationDegrees: Int): DecoderTurn {
+        val cmd = command
+        val corrected = effectiveRotationDegrees(containerRotationDegrees, cmd.degrees)
+        // [effectiveRotationDegrees] returns the container untouched when either
+        // turn is off the quarter-turn grid, because `MediaFormat.KEY_ROTATION`
+        // accepts nothing else. The decoder is then honouring the file rather than
+        // the command, and recording the command as applied would claim a turn
+        // nobody can see. Only a zero extra leaves the two equal otherwise.
+        val turn = DecoderTurn(
+            correctedDegrees = corrected,
+            commandedDegrees = cmd.degrees,
+            appliedDegrees = if (corrected == containerRotationDegrees) 0 else cmd.degrees,
+            serial = cmd.serial,
+        )
+        consumed = turn
+        return turn
+    }
+
+    /**
+     * A new film: no turn commanded, and its decoder is configured from scratch,
+     * so it has consumed nothing yet. The fresh command counts as issued because
+     * the film's own first codec configuration is what carries it.
+     */
+    fun reset() {
+        commandExtraDegrees(0)
+        consumed = null
+        markRePrepareIssued()
+    }
 }
 
 /**
@@ -59,14 +205,50 @@ internal class RotationCorrectingVideoRenderer(
     private val rotation: VideoRotationOverride,
 ) : MediaCodecVideoRenderer(builder) {
 
+    // The last line logged. Playback-thread only — this method is the only reader
+    // and the only writer — so plain fields, not volatiles.
+    private var loggedContainerDegrees: Int = NOT_LOGGED
+    private var loggedDecoderDegrees: Int = NOT_LOGGED
+    private var loggedSerial: Long = NOT_LOGGED_SERIAL
+
     override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
         val format = formatHolder.format
         if (format != null) {
-            val corrected = rotation.applyTo(format.rotationDegrees)
-            if (corrected != format.rotationDegrees) {
-                formatHolder.format = format.buildUpon().setRotationDegrees(corrected).build()
+            val container = format.rotationDegrees
+            val turn = rotation.takeForDecoder(container)
+            if (turn.correctedDegrees != container) {
+                formatHolder.format =
+                    format.buildUpon().setRotationDegrees(turn.correctedDegrees).build()
+            }
+            // The one place that can say a commanded turn actually became the
+            // decoder's configuration rather than only the receiver's intent. The
+            // command's serial is part of the key, so every re-prepare's read
+            // shows up beside the `rotation` line that caused it — without it, a
+            // container whose corrected rotation never changes (one off the
+            // quarter-turn grid) would go silent and read as a media3 failure.
+            // A film's own format changes carry neither a new pair nor a new
+            // serial, so they cost a comparison and nothing else.
+            if (container != loggedContainerDegrees ||
+                turn.correctedDegrees != loggedDecoderDegrees ||
+                turn.serial != loggedSerial
+            ) {
+                loggedContainerDegrees = container
+                loggedDecoderDegrees = turn.correctedDegrees
+                loggedSerial = turn.serial
+                FlickLog.i(
+                    "player",
+                    "rotationToDecoder container=$container decoder=${turn.correctedDegrees} " +
+                        "extraDegrees=${turn.commandedDegrees} applied=${turn.appliedDegrees} " +
+                        "command=${turn.serial}",
+                )
             }
         }
         return super.onInputFormatChanged(formatHolder)
+    }
+
+    private companion object {
+        /** Outside every rotation a container can declare, so the first pair logs. */
+        const val NOT_LOGGED = Int.MIN_VALUE
+        const val NOT_LOGGED_SERIAL = Long.MIN_VALUE
     }
 }
