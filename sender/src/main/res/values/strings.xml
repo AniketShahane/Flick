@@ -374,46 +374,29 @@
     <string name="subs_done">Done</string>
 
     <!--
-      Subtitles sheet · picture orientation, the same control the TV panel carries.
-      The degrees are the turn Flick adds to the container's own, so 0° means
-      "exactly as the file says" and is what corrects an Auto that read it wrong.
+      Picture orientation · the remote's poster key, named subs_* because the
+      subtitles sheet is where these choices first appeared. The degrees are the
+      turn Flick adds to the container's own, so 0° means "exactly as the file
+      says" and is what corrects an Auto that read it wrong.
     -->
-    <string name="subs_orientation_label">ORIENTATION</string>
-    <string name="subs_orientation_body">If the TV is showing this film on its side, turn it here. Auto lets the TV read the file for itself.</string>
     <string name="subs_orientation_auto">Auto</string>
     <string name="subs_orientation_as_filed">0°</string>
     <string name="subs_orientation_quarter">90°</string>
     <string name="subs_orientation_half">180°</string>
     <string name="subs_orientation_three_quarter">270°</string>
     <string name="subs_orientation_unavailable">Available once the TV is playing this film.</string>
-    <!-- The remote's poster carries the same choices as one key that steps through
-         them, so the gesture has to be named: the label above states the choice and
-         reads as a readout on its own. -->
+    <string name="a11y_subs_orientation">Picture orientation, %1$s</string>
+    <!-- The poster carries all five choices as one key that steps through them, so
+         the gesture has to be named: the label states the choice and reads as a
+         readout on its own. -->
     <string name="a11y_np_orientation_step">Turn the picture</string>
 
-    <!-- Subtitles sheet · the three sources. -->
+    <!-- Subtitles sheet · the two sources. -->
     <string name="subs_tab_file">File</string>
-    <string name="subs_tab_folder">Folder</string>
     <string name="subs_tab_online">Online</string>
 
     <string name="subs_pick_body">Pick the subtitle file yourself. Android never lets Flick read a .srt file you haven\'t chosen, so nothing is scanned in the background.</string>
     <string name="subs_pick_action">Choose a subtitle file</string>
-
-    <string name="subs_folder_body">Grant the folder your films live in, once. Flick then offers the matching subtitle for every video you cast, with no further prompts.</string>
-    <string name="subs_folder_action">Choose a folder</string>
-    <string name="subs_folder_change">Choose a different folder</string>
-    <string name="subs_folder_scanning">Reading that folder…</string>
-    <string name="subs_folder_lost">Android has dropped Flick\'s access to that folder. Choose it again.</string>
-    <string name="subs_folder_unreadable">That folder can\'t be read any more.</string>
-    <string name="subs_folder_empty">There are no subtitle files in that folder.</string>
-    <string name="subs_folder_no_match">Nothing in that folder is named like this video.</string>
-    <string name="subs_folder_show_all">Show the other %1$d subtitle files</string>
-    <string name="subs_folder_show_matches">Show matches only</string>
-
-    <!-- How strongly a folder file's name binds it to the video. -->
-    <string name="subs_match_exact">Same name</string>
-    <string name="subs_match_prefix">Same name, plus a suffix</string>
-    <string name="subs_match_fuzzy">Similar name</string>
 
     <!-- Subtitles sheet · what a picked file can be rejected for. -->
     <string name="subs_not_a_subtitle">That isn\'t a subtitle file. Pick an .srt, .vtt, .ass or .ssa.</string>
@@ -491,7 +474,6 @@
     <string name="a11y_subs_remove">Remove the attached subtitle</string>
     <string name="a11y_subs_attached">Attached</string>
     <string name="a11y_subs_online_language">Subtitle language, %1$s</string>
-    <string name="a11y_subs_orientation">Picture orientation, %1$s</string>
 
     <!-- OpenSubtitles /infos/languages catalog, in OpenSubtitlesLanguage enum order. -->
     <string-array name="subs_online_language_names">

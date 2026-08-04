@@ -1,28 +1,21 @@
 package com.flick.sender.media
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** How strongly a candidate subtitle file's name binds it to the video's name. */
-enum class SubtitleMatchKind { EXACT, PREFIX, FUZZY }
-
-/** [score] only orders candidates inside one [kind]; it is never compared across kinds. */
-data class SubtitleMatch(
-    val kind: SubtitleMatchKind,
-    val score: Float,
-    val language: String?,
-)
-
 /**
- * Name-only subtitle sourcing. Every function here is pure so the sidecar rules can be
- * tested without a device: on Android 16 there is no permission that would let Flick
- * scan the filesystem for sidecars (READ_MEDIA_VIDEO does not cover .srt and MediaStore
- * does not index it), so a folder the user granted once is matched by NAME and nothing
- * else — the content is never opened to decide.
+ * Name-only subtitle sourcing. Everything here is pure so the rules can be tested
+ * without a device.
+ *
+ * Nothing is ever DISCOVERED: on Android 16 there is no permission Flick may ask for that
+ * exposes .srt files (READ_MEDIA_VIDEO does not cover them and MediaStore does not index
+ * them), so a local subtitle is the single file the user pointed at. What is left to
+ * decide is decided from that file's NAME — the extension says whether Media3 can render
+ * it at all, a suffix says what language it is in — and its content is never opened.
  */
 object SubtitleFiles {
 
@@ -49,28 +42,6 @@ object SubtitleFiles {
     const val MaxSubtitleBytes = 5L * 1024L * 1024L
 
     private val Separators = charArrayOf('.', '_', '-', ' ', '(', ')', '[', ']', '+', ',', '\'')
-
-    /**
-     * Tokens that say nothing about WHICH title a file belongs to. A shared token from
-     * this set can never be the reason two names are called a match.
-     */
-    private val ReleaseNoise = setOf(
-        "1080p", "2160p", "720p", "480p", "4k", "uhd", "hd", "sd", "hdr", "hdr10", "dv",
-        "sdr", "10bit", "8bit", "x264", "x265", "h264", "h265", "hevc", "avc", "xvid",
-        "divx", "web", "webrip", "webdl", "bluray", "brrip", "bdrip", "dvdrip", "hdtv",
-        "remux", "proper", "repack", "extended", "unrated", "internal", "aac", "ac3",
-        "dts", "eac3", "truehd", "atmos", "multi", "dual", "audio", "subs", "subtitle",
-        "subtitles", "sub", "season", "episode", "part", "cd1", "cd2",
-    )
-
-    /**
-     * Words too common to prove two names are the same title. They are kept out of
-     * [ReleaseNoise] because [searchQuery] must not truncate "The Matrix" at "The".
-     */
-    private val CommonWords = setOf(
-        "the", "and", "for", "with", "from", "that", "this", "les", "des", "der",
-        "die", "das", "una", "los", "del", "you", "our", "his", "her",
-    )
 
     /** Suffix words that qualify a subtitle rather than name a language. */
     private val FlagSegments = setOf(
@@ -141,51 +112,6 @@ object SubtitleFiles {
     fun tokensOf(displayName: String): List<String> =
         baseName(displayName).split(*Separators).filter { it.isNotBlank() }.map { it.lowercase() }
 
-    /** Separator- and case-insensitive form two names can be compared in. */
-    fun normalize(displayName: String): String = tokensOf(displayName).joinToString(" ")
-
-    /**
-     * How well [candidateDisplayName] names the same title as [videoDisplayName], or
-     * null when it names something else — a non-match must stay a non-match, or the
-     * folder tab starts offering every subtitle on the phone for every film.
-     */
-    fun match(videoDisplayName: String, candidateDisplayName: String): SubtitleMatch? {
-        if (!isSubtitleName(candidateDisplayName)) return null
-        val videoTokens = tokensOf(videoDisplayName)
-        val candidateTokens = tokensOf(candidateDisplayName)
-        if (videoTokens.isEmpty() || candidateTokens.isEmpty()) return null
-        // Two SxxEyy markers that disagree are a different episode of the same show,
-        // which every other rule below would otherwise call a match.
-        val videoEpisode = episodeOf(videoDisplayName)
-        val candidateEpisode = episodeOf(candidateDisplayName)
-        if (videoEpisode != null && candidateEpisode != null && videoEpisode != candidateEpisode) return null
-        val language = languageTagOf(videoDisplayName, candidateDisplayName)
-
-        val video = videoTokens.joinToString(" ")
-        val candidate = candidateTokens.joinToString(" ")
-        if (video == candidate) return SubtitleMatch(SubtitleMatchKind.EXACT, 1f, language)
-        if (candidate.startsWith("$video ") || video.startsWith("$candidate ")) {
-            val shorter = minOf(video.length, candidate.length).toFloat()
-            return SubtitleMatch(SubtitleMatchKind.PREFIX, shorter / maxOf(video.length, candidate.length), language)
-        }
-
-        // Release names reorder and re-tag the same film, so the fallback is token
-        // overlap — measured against the CANDIDATE's own content tokens, because a
-        // sidecar carries fewer of them than the video it belongs to.
-        val videoContent = videoTokens.toSet()
-        val candidateContent = candidateTokens.filterIndexed { index, token ->
-            index == 0 || (primaryLanguage(token) == null && token !in FlagSegments)
-        }.toSet()
-        if (candidateContent.isEmpty()) return null
-        val shared = candidateContent.filter { it in videoContent }
-        if (shared.none { it.any(Char::isLetter) && it.length >= 3 && it !in ReleaseNoise && it !in CommonWords }) {
-            return null
-        }
-        val coverage = shared.size.toFloat() / candidateContent.size
-        if (coverage < FuzzyFloor) return null
-        return SubtitleMatch(SubtitleMatchKind.FUZZY, coverage, language)
-    }
-
     /**
      * BCP-47 tag parsed out of a sidecar's suffix (".en.srt", ".eng.srt", ".pt-BR.srt"),
      * or null when the name carries no language at all. The first segment is always the
@@ -209,18 +135,6 @@ object SubtitleFiles {
         return null
     }
 
-    fun searchQuery(videoDisplayName: String): String = VideoNames.parse(videoDisplayName).searchQuery
-
-    /** Season and episode read off an SxxEyy marker, or null when the name has none. */
-    fun episodeOf(videoDisplayName: String): Pair<Int, Int>? =
-        VideoNames.parse(videoDisplayName).let { parsed ->
-            if (parsed.season != null && parsed.episode != null) parsed.season to parsed.episode else null
-        }
-
-    /** Ranked best-first: an exact base name beats a prefix, which beats token overlap. */
-    fun bestFirst(matched: List<SubtitleMatch>): List<SubtitleMatch> =
-        matched.sortedWith(compareBy({ it.kind.ordinal }, { -it.score }))
-
     private fun primaryLanguage(segment: String): String? {
         val token = segment.lowercase()
         if (token in FlagSegments) return null
@@ -235,31 +149,15 @@ object SubtitleFiles {
     /** Some providers hand back a path rather than a bare display name. */
     private fun fileName(displayName: String): String =
         displayName.substringAfterLast('/').substringAfterLast('\\')
-
-    private const val FuzzyFloor = 0.6f
-}
-
-/** One subtitle file found in the granted folder. [match] is null when only the user can say. */
-data class SubtitleCandidate(
-    val uri: Uri,
-    val displayName: String,
-    val sizeBytes: Long,
-    val match: SubtitleMatch?,
-)
-
-/** Outcome of enumerating the remembered folder. [Found] may legitimately be empty. */
-sealed interface SidecarScan {
-    data class Found(val candidates: List<SubtitleCandidate>) : SidecarScan
-
-    /** The persisted grant is gone — the user must pick the folder again. */
-    data object AccessLost : SidecarScan
-    data object Unreadable : SidecarScan
 }
 
 /**
- * The one folder grant Flick keeps. ACTION_OPEN_DOCUMENT_TREE plus
- * takePersistableUriPermission is the only way to enumerate sidecars at all without
- * MANAGE_EXTERNAL_STORAGE, which is Play-policy restricted and is never requested.
+ * The folder grant a build BEFORE this one took, and the only handle left on it.
+ *
+ * That build offered a whole folder of sidecars, picked with ACTION_OPEN_DOCUMENT_TREE and
+ * held with takePersistableUriPermission — which nothing expires. The source is gone and
+ * nothing takes a tree grant any more, so all this can still do is name the grant so it
+ * can be handed back and then forget it. There is deliberately no way to save one.
  */
 class SubtitleFolderStore(context: Context) {
     private val prefs = context.applicationContext
@@ -267,87 +165,51 @@ class SubtitleFolderStore(context: Context) {
 
     fun folder(): Uri? = prefs.getString(FOLDER, null)?.let(Uri::parse)
 
-    fun save(tree: Uri): Boolean = prefs.edit().putString(FOLDER, tree.toString()).commit()
-
     fun forget(): Boolean = prefs.edit().remove(FOLDER).commit()
 
     private companion object { const val FOLDER = "sidecar_tree" }
 }
 
-/** Reads through the granted tree. Nothing here opens a file; names decide everything. */
-object SubtitleFolder {
-
-    private const val MaxDepth = 2
-    private const val MaxEntries = 4_000
-    private const val MaxCandidates = 300
-
-    /** True while the persisted read grant for [tree] is still held. */
-    fun holdsGrant(context: Context, tree: Uri): Boolean = runCatching {
-        context.contentResolver.persistedUriPermissions.any { it.isReadPermission && it.uri == tree }
-    }.getOrDefault(false)
-
-    /**
-     * Every subtitle file in [tree] (one level of subfolders included — "Subs/" next to
-     * the film is the common shape), each carrying its match against [videoDisplayName].
-     */
-    suspend fun scan(context: Context, tree: Uri, videoDisplayName: String?): SidecarScan =
-        withContext(Dispatchers.IO) {
-            if (!holdsGrant(context, tree)) return@withContext SidecarScan.AccessLost
-            val rootId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull()
-                ?: return@withContext SidecarScan.Unreadable
-            val resolver = context.contentResolver
-            val projection = arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE,
+/**
+ * Hand back the folder grant a build before this one took, and forget the preference
+ * naming it.
+ *
+ * Nothing expires a persistable URI permission, so without this that grant outlives every
+ * surface that could show it: a standing read over a folder of the user's files, held by an
+ * app with no screen left that admits to holding it. It used to run from the subtitles
+ * sheet, which is where it was taken — but that made expiry conditional on opening a sheet
+ * the user may never open again, and an invisible grant is exactly the thing that must not
+ * wait on being noticed.
+ *
+ * Released BEFORE the preference is cleared, because afterwards there is no URI left to
+ * release. Called once per process from the application and never waited on: this runs on
+ * [Dispatchers.IO] so it is off the path to the first frame, and on every phone but a
+ * developer's — this app has not shipped — the whole cost is one preference read answering
+ * null.
+ */
+suspend fun releaseRetiredSubtitleFolder(context: Context) {
+    withContext(Dispatchers.IO) {
+        val app = context.applicationContext
+        val store = SubtitleFolderStore(app)
+        val tree = store.folder() ?: return@withContext
+        runCatching {
+            app.contentResolver.releasePersistableUriPermission(
+                tree,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
-            val queue = ArrayDeque<Pair<String, Int>>()
-            queue += rootId to 0
-            val found = ArrayList<SubtitleCandidate>()
-            var visited = 0
-            var readAnything = false
-            while (queue.isNotEmpty() && visited < MaxEntries && found.size < MaxCandidates) {
-                val (documentId, depth) = queue.removeFirst()
-                val children = runCatching {
-                    DocumentsContract.buildChildDocumentsUriUsingTree(tree, documentId)
-                }.getOrNull() ?: continue
-                runCatching {
-                    resolver.query(children, projection, null, null, null)?.use { cursor ->
-                        readAnything = true
-                        val idColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                        val nameColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                        val mimeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                        val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                        while (cursor.moveToNext() && visited < MaxEntries && found.size < MaxCandidates) {
-                            visited++
-                            val childId = if (idColumn >= 0) cursor.getString(idColumn) else null
-                            val name = if (nameColumn >= 0) cursor.getString(nameColumn) else null
-                            val mime = if (mimeColumn >= 0) cursor.getString(mimeColumn) else null
-                            if (childId == null || name == null) continue
-                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                if (depth < MaxDepth - 1) queue += childId to depth + 1
-                                continue
-                            }
-                            if (!SubtitleFiles.isSubtitleName(name)) continue
-                            val size = if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
-                                cursor.getLong(sizeColumn)
-                            } else {
-                                -1L
-                            }
-                            if (size > SubtitleFiles.MaxSubtitleBytes) continue
-                            found += SubtitleCandidate(
-                                uri = DocumentsContract.buildDocumentUriUsingTree(tree, childId),
-                                displayName = name,
-                                sizeBytes = size,
-                                match = videoDisplayName?.let { SubtitleFiles.match(it, name) },
-                            )
-                        }
-                    }
-                }
-            }
-            if (!readAnything) SidecarScan.Unreadable else SidecarScan.Found(rank(found))
         }
+        store.forget()
+    }
+}
+
+/**
+ * What a picked subtitle document says about ITSELF, read off the provider's own columns.
+ *
+ * Nothing here opens a file and nothing here enumerates one: a DocumentsProvider answers a
+ * name and a size for the single URI the user chose, and those two answers are all the
+ * sheet needs to accept or refuse it.
+ */
+object SubtitleDocument {
 
     /** Display name of a single picked document, or null when the provider withholds one. */
     suspend fun displayNameOf(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
@@ -374,13 +236,4 @@ object SubtitleFolder {
                 }
         }.getOrNull() ?: -1L
     }
-
-    private fun rank(candidates: List<SubtitleCandidate>): List<SubtitleCandidate> =
-        candidates.sortedWith(
-            compareBy(
-                { it.match?.kind?.ordinal ?: Int.MAX_VALUE },
-                { -(it.match?.score ?: 0f) },
-                { it.displayName.lowercase() },
-            ),
-        )
 }

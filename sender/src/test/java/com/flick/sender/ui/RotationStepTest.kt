@@ -6,10 +6,10 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 /**
- * The single-key form of the orientation control. The sheet's five cells make every
- * choice one press away; a key that walks them makes that true only if the walk is a
- * closed cycle AND every press on it turns the picture, so the order — not the fact —
- * of the walk is what these test.
+ * The walk behind the phone's only orientation control. With no second surface to
+ * reach a choice from, every choice has to be reachable from every other AND every
+ * press has to turn the picture — so the order of the walk, not the fact of it, is
+ * what these test.
  */
 class RotationStepTest {
 

@@ -529,10 +529,13 @@ private fun ColumnScope.RemoteContent(
         height = posterHeight,
         rotation = rotation,
         commandable = commandable,
-        // Unguarded, exactly as the sheet's cells are: the choice held here is only
-        // what this phone last asked for, and the TV's own panel can have moved the
-        // picture since. Re-asserting is how the viewer takes it back, so it must
-        // reach the wire.
+        // Stepped from the choice this phone last ASKED for, which is the only one it
+        // has: no frame carries the TV's own rotation back, so the TV's panel can have
+        // moved the picture since. A press that cannot reach the wire records no turn:
+        // FlickController refuses it under the same predicate that dims this key, and
+        // PlaybackSession records the selection only once the frame is on a live socket.
+        // The residue is a write that fails after that hand-off — it is logged as a drop
+        // and it takes the socket with it, which is what dims this key a moment later.
         onRotate = { controller.setRotation(nextRotation(rotation)) },
         sharedScope = sharedScope,
         animatedScope = animatedScope,
@@ -841,10 +844,9 @@ private fun ColumnScope.Poster(
                         .padding(horizontal = 10.dp, vertical = 7.dp),
                 )
             }
-            // Only with a film on screen, for the reason the sheet gates its own section
-            // the same way: with nothing cast there is no picture to turn. A sibling of
-            // the frame rather than a child of it — inside the shared element it would
-            // fly between screens with the still.
+            // Only with a film on screen: with nothing cast there is no picture to turn.
+            // A sibling of the frame rather than a child of it — inside the shared
+            // element it would fly between screens with the still.
             if (item != null) {
                 OrientationKey(rotation = rotation, commandable = commandable, onClick = onRotate)
             } else {
@@ -858,10 +860,10 @@ private fun ColumnScope.Poster(
 
 /**
  * The picture's own orientation, in the still's free corner: one key that steps to the
- * next choice and sends it, where the subtitles sheet offers all five at once. The sheet
- * lays them out in [VideoRotation.ALL]'s order, the TV's own; this key spends each press
- * on a quarter turn and closes back on [VideoRotation.Auto], which is a different order
- * for the reason [nextRotation] gives.
+ * next choice and sends it. It is the phone's ONLY orientation control, which is what
+ * makes [nextRotation]'s walk load-bearing rather than a convenience — every choice has
+ * to be reachable from every other, and the circle has to close back on
+ * [VideoRotation.Auto], because there is no second surface to hand a choice back.
  *
  * What it states is the CHOICE, never a resolved angle: Auto is the receiver reading
  * the file for itself and no frame carries that verdict back — see
@@ -875,9 +877,9 @@ private fun ColumnScope.Poster(
  * rather than at an alpha — 15.8:1 live, 6.0:1 dead, both against the plate.
  *
  * Dimmed and inert rather than withdrawn: the verb needs an Active cast on a live
- * socket, the poster has no room for the sentence the sheet says that in, and a key
- * that vanishes from a corner the viewer just learned is worse than one that is
- * plainly not available. Screen readers still get the sheet's sentence.
+ * socket, the poster has no room to say so in words, and a key that vanishes from a
+ * corner the viewer just learned is worse than one that is plainly not available.
+ * Screen readers are told outright, through the state description.
  */
 @Composable
 private fun OrientationKey(
@@ -890,6 +892,8 @@ private fun OrientationKey(
     val haptics = rememberFlickTouchHaptics()
     val interaction = remember { MutableInteractionSource() }
     val label = stringResource(rotationLabelRes(rotation))
+    // The `subs_` ids outlived the sheet section they were minted for, for the reason
+    // rotationLabelRes states: the strings are live and translated, the prefix is not.
     val description = stringResource(R.string.a11y_subs_orientation, label)
     val stepLabel = stringResource(R.string.a11y_np_orientation_step)
     val unavailable = stringResource(R.string.subs_orientation_unavailable)

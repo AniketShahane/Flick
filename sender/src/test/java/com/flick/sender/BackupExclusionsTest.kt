@@ -214,8 +214,9 @@ class BackupExclusionsTest {
                 "a display-only readability choice is about the person and deliberately " +
                     "travels with them; it contains no filename, path, or credential",
             "flick_subtitles" to
-                "remembers which subtitle file was picked for a video — a SAF URI whose grant " +
-                    "does not survive the move, so it carries no authority anywhere else",
+                "held the SAF tree of the retired folder source; nothing writes to it any " +
+                    "more and the subtitles sheet reads it once only to release that grant " +
+                    "and remove the key, so a restored copy names a folder no code opens",
             "flick_support" to
                 "holds only a saturated successful-cast count and a one-way prompt-consumed " +
                     "marker; it contains no checkout URL, credential, or payment data",

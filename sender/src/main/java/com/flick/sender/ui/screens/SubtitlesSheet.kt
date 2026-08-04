@@ -7,7 +7,6 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -51,7 +50,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -69,7 +67,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -81,15 +78,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.media.MovieHash
-import com.flick.sender.media.SidecarScan
-import com.flick.sender.media.SubtitleCandidate
+import com.flick.sender.media.SubtitleDocument
 import com.flick.sender.media.SubtitleFiles
-import com.flick.sender.media.SubtitleFolder
-import com.flick.sender.media.SubtitleFolderStore
-import com.flick.sender.media.SubtitleMatchKind
 import com.flick.sender.media.VideoNames
-import com.flick.sender.model.PlaybackUiState
-import com.flick.sender.model.VideoRotation
 import com.flick.sender.net.ApiKeySource
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.OnlineSubtitle
@@ -103,7 +94,6 @@ import com.flick.sender.net.SubtitleLoginOutcome
 import com.flick.sender.net.SubtitleQuota
 import com.flick.sender.net.SubtitleSearchOutcome
 import com.flick.sender.ui.displayName
-import com.flick.sender.ui.rotationLabelRes
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -122,7 +112,7 @@ import kotlinx.coroutines.Job
 import java.util.Locale
 
 /** Where a subtitle can come from, in the order the sheet offers them. */
-private enum class SubtitleSource { FILE, FOLDER, ONLINE }
+private enum class SubtitleSource { FILE, ONLINE }
 
 /**
  * ACTION_OPEN_DOCUMENT with the persistable-grant flag the platform contract leaves
@@ -136,22 +126,14 @@ private class PickSubtitleDocument : ActivityResultContracts.OpenDocument() {
         )
 }
 
-/** Same reason as [PickSubtitleDocument]: the folder grant has to outlive the picker. */
-private class PickSubtitleFolder : ActivityResultContracts.OpenDocumentTree() {
-    override fun createIntent(context: Context, input: Uri?): Intent =
-        super.createIntent(context, input).addFlags(
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
-        )
-}
-
 /**
  * External subtitles for the video being cast. Forced cinematic, like every surface
  * the remote raises.
  *
- * The two local sources are name-based on purpose: on Android 16 no permission Flick may
- * ask for exposes .srt files, so the user either points at one file or grants one folder.
- * The third fetches from OpenSubtitles with the key this build carries, matched against a
- * fingerprint of the video file itself where the file can be read.
+ * The local source is one file the user points at, and it has to be: on Android 16 no
+ * permission Flick may ask for exposes .srt files, so nothing is ever discovered by
+ * scanning. The other fetches from OpenSubtitles with the key this build carries,
+ * matched against a fingerprint of the video file itself where the file can be read.
  */
 @Composable
 fun SubtitlesSheet(controller: FlickController, onDismiss: () -> Unit) {
@@ -164,21 +146,14 @@ fun SubtitlesSheet(controller: FlickController, onDismiss: () -> Unit) {
 private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
+    val context = LocalContext.current
 
     val item by controller.castingItem.collectAsState()
     val videoName = item?.name
     val videoDisplayName = item?.displayName()
     val attached = controller.selectedSubtitle.collectAsState().value
     val attachedName = attached?.displayName
-    val attachedUri = attached?.uri
     val attachedLanguage = attached?.language
-
-    // The session clock ticks ~10 Hz through this same state object and nothing in
-    // this sheet follows it, so the one field that matters is narrowed here rather
-    // than unwrapped: only a change of choice may rebuild the sheet.
-    val playbackState = controller.playback.collectAsState()
-    val rotation by remember(playbackState) { derivedStateOf { playbackState.value.rotation } }
-    val commandable by controller.commandable.collectAsState()
 
     var source by rememberSaveable { mutableStateOf(SubtitleSource.FILE) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -253,11 +228,6 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                         onAttach = ::attach,
                         onRejected = { notice = it },
                     )
-                    SubtitleSource.FOLDER -> FolderPane(
-                        videoName = videoName,
-                        attachedUri = attachedUri,
-                        onAttach = ::attach,
-                    )
                     SubtitleSource.ONLINE -> key(item?.uri) {
                         OnlinePane(
                             videoName = videoName,
@@ -284,25 +254,6 @@ private fun SubtitlesContent(controller: FlickController, onDismiss: () -> Unit)
                     if (videoName == null) R.string.subs_note_idle else R.string.subs_note,
                 ),
                 style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
-            )
-        }
-
-        // The picture's own orientation, in the panel the TV keeps it in — one
-        // feature reached the same way on both screens. Only while there is a film:
-        // with nothing cast there is no picture to turn.
-        if (item != null) {
-            Spacer(Modifier.height(20.dp))
-            OrientationSection(
-                rotation = rotation,
-                commandable = commandable,
-                // Unguarded, unlike the source tabs: the cell that looks selected is
-                // only what this phone last asked for, and the TV's own panel can have
-                // moved the picture since. Pressing it is how the viewer re-asserts,
-                // so it must reach the wire.
-                onSelect = { choice ->
-                    controller.setRotation(choice)
-                    haptics.toggle(true)
-                },
             )
         }
 
@@ -406,9 +357,6 @@ private fun ColumnScope.SourceTabs(selected: SubtitleSource, onSelect: (Subtitle
         SourceTab(R.string.subs_tab_file, selected == SubtitleSource.FILE) {
             onSelect(SubtitleSource.FILE)
         }
-        SourceTab(R.string.subs_tab_folder, selected == SubtitleSource.FOLDER) {
-            onSelect(SubtitleSource.FOLDER)
-        }
         SourceTab(R.string.subs_tab_online, selected == SubtitleSource.ONLINE) {
             onSelect(SubtitleSource.ONLINE)
         }
@@ -456,128 +404,6 @@ private fun RowScope.SourceTab(labelRes: Int, active: Boolean, onClick: () -> Un
     }
 }
 
-// --- the picture's own orientation --------------------------------------------------
-
-/**
- * The turn Flick adds to the container's own, in the same cell vocabulary the
- * subtitle sources above are picked with — one pill group, one selected fill, and
- * the same 48 dp touch target.
- *
- * Five cells rather than four: [VideoRotation.AsFiled] is what a viewer presses
- * when the TV's Auto read their file wrong, and without it the only way back to the
- * container's own answer would be the choice that just overruled it.
- *
- * There is no readout of what Auto decided. That verdict is the receiver's reading
- * of the file and no frame carries it back — see [PlaybackUiState.rotation] for why
- * the `state` frame must not grow one — so the phone states the choice it made and
- * claims nothing about the answer.
- */
-@Composable
-private fun ColumnScope.OrientationSection(
-    rotation: VideoRotation,
-    commandable: Boolean,
-    onSelect: (VideoRotation) -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    Text(
-        stringResource(R.string.subs_orientation_label),
-        style = FlickText.monoEyebrow.copy(color = colors.onSurfaceFaint),
-    )
-    Spacer(Modifier.height(8.dp))
-    Text(
-        stringResource(R.string.subs_orientation_body),
-        style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-    )
-    Spacer(Modifier.height(12.dp))
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(PillShape)
-            .background(colors.fillCard)
-            .padding(6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        VideoRotation.ALL.forEach { choice ->
-            OrientationCell(
-                labelRes = rotationLabelRes(choice),
-                selected = choice == rotation,
-                enabled = commandable,
-                onClick = { onSelect(choice) },
-            )
-        }
-    }
-    // Stated rather than left to a dead cell: the verb needs an Active cast on a
-    // live socket, and the same guard arms the media notification's transport.
-    if (!commandable) {
-        Spacer(Modifier.height(10.dp))
-        Text(
-            stringResource(R.string.subs_orientation_unavailable),
-            style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint),
-        )
-    }
-}
-
-/**
- * One cell. Deliberately the same lockup as [SourceTab] above — the sheet already
- * has a vocabulary for "pick one of these", and a second one would read as a
- * different kind of control.
- */
-@Composable
-private fun RowScope.OrientationCell(
-    @StringRes labelRes: Int,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    val reduceMotion = rememberReduceMotion()
-    val interaction = remember { MutableInteractionSource() }
-    val fill = animateColorAsState(
-        targetValue = if (selected) colors.inverseSurface else Color.Transparent,
-        animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastEffectsSpec<Color>()),
-        label = "orientation fill",
-    )
-    val ink = animateColorAsState(
-        targetValue = when {
-            selected -> colors.onInverseSurface
-            enabled -> colors.onSurfaceDim
-            else -> colors.onSurfaceDim.copy(alpha = 0.5f)
-        },
-        animationSpec = Motion.orSnap(reduceMotion, MaterialTheme.motionScheme.fastEffectsSpec<Color>()),
-        label = "orientation ink",
-    )
-    val label = stringResource(labelRes)
-    val description = stringResource(R.string.a11y_subs_orientation, label)
-    val unavailable = stringResource(R.string.subs_orientation_unavailable)
-    Box(
-        Modifier
-            .weight(1f)
-            .then(if (enabled) Modifier.pressScale(interaction) else Modifier)
-            .heightIn(min = 48.dp)
-            .clip(PillShape)
-            .background(fill.value)
-            .then(
-                if (enabled) {
-                    Modifier.clickable(
-                        interactionSource = interaction,
-                        indication = flickRipple(colors.onInverseSurface),
-                        onClick = onClick,
-                    )
-                } else {
-                    Modifier.semantics { disabled(); stateDescription = unavailable }
-                },
-            )
-            .semantics {
-                this.role = Role.RadioButton
-                this.selected = selected
-                contentDescription = description
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, style = FlickText.labelMedium.copy(color = ink.value), maxLines = 1)
-    }
-}
-
 // --- source 1: one file, picked by hand -------------------------------------------
 
 @Composable
@@ -604,11 +430,11 @@ private fun ColumnScope.FilePane(
             )
         }
         scope.launch {
-            val name = SubtitleFolder.displayNameOf(context, uri)
+            val name = SubtitleDocument.displayNameOf(context, uri)
             when {
                 name == null -> onRejected(unreadable)
                 !SubtitleFiles.isSubtitleName(name) -> onRejected(notASubtitle)
-                SubtitleFolder.sizeOf(context, uri) > SubtitleFiles.MaxSubtitleBytes ->
+                SubtitleDocument.sizeOf(context, uri) > SubtitleFiles.MaxSubtitleBytes ->
                     onRejected(tooLarge)
                 else -> onAttach(
                     uri,
@@ -630,142 +456,7 @@ private fun ColumnScope.FilePane(
     )
 }
 
-// --- source 2: sidecars out of one remembered folder -------------------------------
-
-@Composable
-private fun ColumnScope.FolderPane(
-    videoName: String?,
-    attachedUri: Uri?,
-    onAttach: (Uri, String, String?) -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    val context = LocalContext.current
-    val store = remember(context) { SubtitleFolderStore(context.applicationContext) }
-    var folder by remember { mutableStateOf(store.folder()) }
-    var scan by remember { mutableStateOf<SidecarScan?>(null) }
-    var scanning by remember { mutableStateOf(false) }
-    var showAll by remember { mutableStateOf(false) }
-
-    val chooser = rememberLauncherForActivityResult(remember { PickSubtitleFolder() }) { tree ->
-        val granted = tree ?: return@rememberLauncherForActivityResult
-        val kept = runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                granted,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-        }.isSuccess
-        // A folder that cannot be persisted is worse than no folder: it would be
-        // remembered and then fail silently on the next cast.
-        if (kept) {
-            store.save(granted)
-            folder = granted
-        }
-    }
-
-    LaunchedEffect(folder, videoName) {
-        val tree = folder
-        if (tree == null) {
-            scan = null
-            return@LaunchedEffect
-        }
-        scanning = true
-        scan = SubtitleFolder.scan(context, tree, videoName)
-        scanning = false
-    }
-
-    if (folder == null) {
-        Text(
-            stringResource(R.string.subs_folder_body),
-            style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-        )
-        Spacer(Modifier.height(14.dp))
-        FlickPrimaryButton(
-            text = stringResource(R.string.subs_folder_action),
-            onClick = { chooser.launch(null) },
-        )
-        return
-    }
-
-    when {
-        scanning -> BusyRow(stringResource(R.string.subs_folder_scanning))
-        scan is SidecarScan.AccessLost -> Text(
-            stringResource(R.string.subs_folder_lost),
-            style = FlickText.bodySmall.copy(color = colors.caution),
-        )
-        scan is SidecarScan.Unreadable -> Text(
-            stringResource(R.string.subs_folder_unreadable),
-            style = FlickText.bodySmall.copy(color = colors.caution),
-        )
-        else -> {
-            val candidates = (scan as? SidecarScan.Found)?.candidates.orEmpty()
-            val matched = candidates.filter { it.match != null }
-            val rest = candidates.filter { it.match == null }
-            when {
-                candidates.isEmpty() -> Text(
-                    stringResource(R.string.subs_folder_empty),
-                    style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-                )
-                matched.isEmpty() && !showAll -> Text(
-                    stringResource(R.string.subs_folder_no_match),
-                    style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-                )
-                else -> Unit
-            }
-            val shown = if (showAll) candidates else matched
-            shown.forEach { candidate ->
-                CandidateRow(
-                    candidate = candidate,
-                    attached = candidate.uri == attachedUri,
-                    onClick = {
-                        onAttach(candidate.uri, candidate.displayName, candidate.match?.language)
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-            if (rest.isNotEmpty()) {
-                FlickSubtleButton(
-                    text = if (showAll) {
-                        stringResource(R.string.subs_folder_show_matches)
-                    } else {
-                        stringResource(R.string.subs_folder_show_all, rest.size)
-                    },
-                    onClick = { showAll = !showAll },
-                )
-            }
-        }
-    }
-
-    Spacer(Modifier.height(4.dp))
-    FlickSubtleButton(
-        text = stringResource(R.string.subs_folder_change),
-        onClick = { chooser.launch(folder) },
-    )
-}
-
-@Composable
-private fun CandidateRow(
-    candidate: SubtitleCandidate,
-    attached: Boolean,
-    onClick: () -> Unit,
-) {
-    val detail = listOfNotNull(
-        languageLabel(candidate.match?.language),
-        when (candidate.match?.kind) {
-            SubtitleMatchKind.EXACT -> stringResource(R.string.subs_match_exact)
-            SubtitleMatchKind.PREFIX -> stringResource(R.string.subs_match_prefix)
-            SubtitleMatchKind.FUZZY -> stringResource(R.string.subs_match_fuzzy)
-            null -> null
-        },
-    ).joinToString(" · ").takeIf { it.isNotEmpty() }
-    SelectableRow(
-        title = candidate.displayName,
-        detail = detail,
-        attached = attached,
-        onClick = onClick,
-    )
-}
-
-// --- source 3: OpenSubtitles, keyed by the app and quota'd by the account -----------
+// --- source 2: OpenSubtitles, keyed by the app and quota'd by the account -----------
 
 /**
  * The online tab. Two things are being kept apart here, because conflating them is what

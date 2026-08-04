@@ -227,18 +227,51 @@ class ControlClient(private val scope: CoroutineScope) {
         }
     }
 
-    fun send(command: JSONObject) {
-        val active = session ?: return
+    /**
+     * Hand [command] to the control socket, answering whether it reached one.
+     *
+     * False means the frame provably never left this phone — there was no session to
+     * write to, or it does not fit the wire's cap. True is NOT delivery: the write
+     * itself completes on [scope], and a socket that dies under it is reported by the
+     * `write` drop below rather than by this return, because nothing here can wait for
+     * an answer a caller under a finger is not allowed to block on.
+     *
+     * Every drop is logged and no success is, deliberately. A scrub and a walked
+     * audio-delay each put frames on this channel around 20-25 times a second, so a line
+     * per send would bury the log it is meant to make readable — while a verb that dies
+     * here otherwise leaves no trace anywhere, since the receiver acknowledges none of
+     * them and `state` carries none of them back.
+     */
+    fun send(command: JSONObject): Boolean {
+        val verb = command.optString("t")
+        val active = session ?: run {
+            FlickLog.w("ws", "send drop t=$verb reason=no_session")
+            return false
+        }
         val augmented = withLoadSubtitle(command)
         var encoded = augmented.toString()
         if (!withinFrameCap(encoded)) {
             // An external subtitle must never cost the video its load: drop the
             // optional fields rather than the frame.
-            if (augmented === command) return
+            if (augmented === command) {
+                FlickLog.w("ws", "send drop t=$verb reason=oversize")
+                return false
+            }
             encoded = command.toString()
-            if (!withinFrameCap(encoded)) return
+            if (!withinFrameCap(encoded)) {
+                FlickLog.w("ws", "send drop t=$verb reason=oversize")
+                return false
+            }
         }
-        scope.launch { runCatching { active.send(Frame.Text(encoded)) } }
+        scope.launch {
+            runCatching { active.send(Frame.Text(encoded)) }.onFailure { error ->
+                FlickLog.w("ws", "send drop t=$verb reason=write ${error.javaClass.simpleName}")
+                // Cancellation is still cancellation: absorbing it here would leave this
+                // coroutine claiming to have finished a write its scope had already ended.
+                if (error is CancellationException) throw error
+            }
+        }
+        return true
     }
 
     /**

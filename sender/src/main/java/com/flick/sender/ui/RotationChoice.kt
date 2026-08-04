@@ -7,9 +7,10 @@ import com.flick.sender.model.VideoRotation
 /**
  * The label for each choice; the model enum carries no user-facing text.
  *
- * Shared rather than owned by either surface. The subtitles sheet lays the five
- * choices out as cells and the remote's poster steps through them with one key, and a
- * second copy of this mapping is how the same choice ends up called two things.
+ * The `subs_` prefixes are historical — these ids were minted for a subtitles-sheet
+ * section that no longer exists, and the strings themselves are unchanged. Renaming
+ * them would buy tidiness at the cost of re-translating five live strings, so the ids
+ * stay put and this is where that is written down.
  */
 @StringRes
 internal fun rotationLabelRes(rotation: VideoRotation): Int = when (rotation) {
@@ -52,8 +53,8 @@ private val RotationCycle: List<VideoRotation> = VideoRotation.ALL.sortedBy { it
  * 0° keeps its seat, last: it is the choice that means honour the file exactly, and a
  * full circle of turns is when a viewer wants it. The walk closes on Auto because Auto
  * is the receiver reading the file for itself — a forward-only control that could take
- * that reading away with no press that hands it back is the one thing the sheet's five
- * cells cannot do to a viewer, and so the one thing this must not do either.
+ * that reading away with no press that hands it back would strand a viewer holding the
+ * only surface that asks for it, so closing the circle is not a nicety.
  */
 internal fun nextRotation(current: VideoRotation): VideoRotation =
     RotationCycle[(RotationCycle.indexOf(current) + 1) % RotationCycle.size]

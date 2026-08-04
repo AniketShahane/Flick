@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.model.VideoRotation
+import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -252,17 +253,35 @@ class PlaybackSession(
      * control socket, so a verb with no cast to name is not sent at all.
      */
     fun setRotation(choice: VideoRotation) {
-        val cast = castId ?: return
+        val cast = castId ?: run {
+            FlickLog.w("cast", "setRotation drop reason=no_cast choice=$choice")
+            return
+        }
         // Deliberately NOT deduped against the held selection. That selection is
-        // optimistic, so when the TV's own panel moved the picture the phone is showing
-        // a choice the film does not have — and pressing the cell that already looks
-        // selected is precisely how a viewer hands the reading back. Dropping it would
-        // make the one recovery gesture the dead one. Re-asserting is free: the receiver
-        // no-ops an unchanged choice, and again an unchanged effective rotation, so
-        // nothing re-prepares unless the picture really has to turn.
-        _state.update { it.copy(rotation = choice) }
+        // optimistic — the TV's own panel can have moved the picture since — so it is
+        // not evidence about the film and must not be allowed to decide what goes out.
+        // Re-asserting costs nothing anyway: the receiver no-ops an unchanged choice,
+        // and again an unchanged effective rotation, so nothing re-prepares unless the
+        // picture really has to turn.
         val (field, value) = ControlProtocolV2.rotationField(choice)
-        control.send(cmd("setRotation", cast).put(field, value))
+        // The send is what decides whether the turn happened, so it runs BEFORE the
+        // selection is recorded and before anything is logged as asked for. A frame that
+        // never reached a socket would otherwise leave the phone holding a rotation the
+        // TV was never told about, under a log line saying it had been — and these lines
+        // are read to decide whether a turn that did not happen was lost on the phone or
+        // ignored by the TV, which is the one question a false "sent" answers backwards.
+        if (!control.send(cmd("setRotation", cast).put(field, value))) {
+            // `send` has already named the transport reason; this names the turn.
+            FlickLog.w("cast", "setRotation drop castIdFp=${FlickLog.fp(cast)} choice=$choice $field=$value")
+            return
+        }
+        _state.update { it.copy(rotation = choice) }
+        // Logged per field rather than by dumping the frame, which is the redaction
+        // contract, and logged HERE rather than at the button because nothing on this
+        // verb comes back: no ack, no state field, and a receiver that refuses it drops
+        // the socket instead of answering. The chosen shape and the value that carries
+        // it are the only evidence this phone can offer that the turn was ever asked for.
+        FlickLog.i("cast", "setRotation castIdFp=${FlickLog.fp(cast)} choice=$choice $field=$value")
     }
 
     /**
@@ -465,11 +484,8 @@ class PlaybackSession(
         control.send(cmd("seek").put("posMs", target))
     }
 
-    private fun cmd(t: String, overrideCastId: String? = castId): JSONObject {
-        val result = JSONObject().put("t", t).put("v", 2)
-        if (overrideCastId != null && t != "ping") result.put("castId", overrideCastId)
-        return result
-    }
+    private fun cmd(t: String, overrideCastId: String? = castId): JSONObject =
+        ControlProtocolV2.command(t, overrideCastId)
 
     private fun phaseOf(s: String?): PlaybackPhase = when (s) {
         "buffering" -> PlaybackPhase.BUFFERING

@@ -1,6 +1,7 @@
 package com.flick.sender.net
 
 import com.flick.sender.model.VideoRotation
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -57,6 +58,22 @@ object ControlProtocolV2 {
         if (compact.isEmpty()) return null
         val end = compact.offsetByCodePoints(0, compact.codePointCount(0, compact.length).coerceAtMost(maximum))
         return compact.substring(0, end)
+    }
+
+    /**
+     * The envelope EVERY command this phone sends goes out in: `t`, `v`, and the cast
+     * the verb belongs to. Fields specific to a verb are `put` on top of it in wire
+     * order, so insertion order here is the order the bytes take.
+     *
+     * One builder rather than one per caller, because the receiver validates each verb
+     * against an EXACT field set and a frame with one field too few or too many is not a
+     * weaker command — it is malformed, and a malformed frame costs the whole control
+     * socket. `ping` is the sole verb with no cast to name.
+     */
+    fun command(t: String, castId: String?): JSONObject {
+        val frame = JSONObject().put("t", t).put("v", VERSION)
+        if (castId != null && t != "ping") frame.put("castId", castId)
+        return frame
     }
 
     /**

@@ -1146,7 +1146,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun cancelCast(silent: Boolean) { currentCastId?.let { id -> castJob?.cancel(); cleanup(id, stopRemoteIfLoaded = true); if (!silent) _route.value = Route.Library } }
     fun stopCast() {
         currentCastId?.let { castId ->
-            control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId))
+            control.send(ControlProtocolV2.command("stop", castId))
             completeCastToLibrary(castId)
         } ?: run { _route.value = Route.Library }
     }
@@ -1271,16 +1271,24 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
 
     /**
-     * Gated by the same predicate the sheet offers it under, because the optimistic
-     * selection is recorded here: a choice kept for a verb that could not leave would
-     * draw a selected cell over a picture that never turned.
+     * Gated by the same predicate that dims the control offering it, because the
+     * optimistic selection is recorded downstream: a choice kept for a verb that could
+     * not leave would draw a turn the picture never took.
+     *
+     * The drop is logged because it is otherwise the one outcome of this verb that
+     * leaves no trace anywhere — the receiver never acknowledges a rotation and no
+     * `state` frame carries one back, so a phone log that recorded only the sends could
+     * not tell a dropped press from a TV that ignored one.
      */
-    fun setRotation(choice: VideoRotation) { if (transportCommandable()) session.setRotation(choice) }
+    fun setRotation(choice: VideoRotation) {
+        if (transportCommandable()) session.setRotation(choice)
+        else FlickLog.w("cast", "setRotation drop reason=not_commandable choice=$choice")
+    }
     fun setAudioDelay(delayMs: Int) = session.setAudioDelay(delayMs); fun nudgeAudioDelay(later: Boolean) = session.nudgeAudioDelay(later); fun resetAudioDelay() = session.resetAudioDelay()
     fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()
-    private fun requestRemoteStop(castId: String) { control.send(JSONObject().put("t", "stop").put("v", 2).put("castId", castId)) }
+    private fun requestRemoteStop(castId: String) { control.send(ControlProtocolV2.command("stop", castId)) }
     private fun enqueueProgress(write: PlaybackProgressWrite) {
         playbackProgressStore.enqueue(write.fingerprint, write.mutation) { success ->
             playbackProgressRecorder.acknowledge(write, success)

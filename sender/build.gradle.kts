@@ -231,6 +231,13 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+    // The real org.json, ahead of the stub `android.jar` AGP appends to the unit-test
+    // classpath. Without it every platform JSON call throws "Stub!", so a test of the bytes
+    // this phone puts on the control wire could only restate `JSONObject`'s own type
+    // dispatch instead of running it — and a change to a frame builder would keep passing
+    // while the wire broke. Upstream of the platform's own copy, and unit-test scope only:
+    // nothing here reaches an APK, where the platform class is the one that runs.
+    testImplementation("org.json:json:20250107")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
