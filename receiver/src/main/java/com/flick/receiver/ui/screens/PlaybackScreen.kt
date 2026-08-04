@@ -21,6 +21,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -59,7 +61,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -135,7 +136,7 @@ data class QualityInfo(
  * §5.4 / §5.5). The state is hoisted so the app can close a panel from its own
  * Back handling as well as from the panel itself.
  */
-enum class PlaybackPanel { None, Subtitles, Metrics }
+enum class PlaybackPanel { None, Subtitles, Orientation, Metrics }
 
 // Hoisted once (pure functions of size/weight) so the ~10 Hz chrome doesn't
 // allocate a fresh TextStyle every tick while the playhead runs.
@@ -158,7 +159,7 @@ private val TimecodeMinWidth = 60.dp
 private const val CHROME_EXIT_TRAVEL = 0.5f
 
 /**
- * Subtitles ↔ Metrics is one panel changing anchor and width, not two panels
+ * Any panel ↔ any other is one panel changing anchor and width, not two panels
  * swapping places. Damping 0.8 at the medium-low stiffness is the TV bias: enough
  * settle to carry weight, too little overshoot to wobble at 55 inches. This is a
  * `Rect` spec, which the scheme accessors cannot type without an explicit argument,
@@ -335,6 +336,7 @@ fun PlaybackScreen(
 ) {
     val safeArea = rememberTvSafeAreaPadding()
     val subtitlesCardFocus = remember { FocusRequester() }
+    val orientationCardFocus = remember { FocusRequester() }
     val metricsCardFocus = remember { FocusRequester() }
     val volumeFocus = remember { FocusRequester() }
     val scrubFocus = remember { FocusRequester() }
@@ -346,8 +348,9 @@ fun PlaybackScreen(
     val transportVisible = chromeVisible && openPanel == PlaybackPanel.None
 
     // Where focus goes when the bar comes back. A panel is summoned from one of
-    // the two side cards, and closing it has to put the remote back on the card
-    // that opened it — with the bar gone there is nothing else to return to.
+    // the row's three flanking controls, and closing it has to put the remote back
+    // on the one that opened it — with the bar gone there is nothing else to
+    // return to.
     // Cleared when the chrome goes down so an ordinary reveal still lands on the
     // primary key.
     var panelReturn by remember { mutableStateOf(PlaybackPanel.None) }
@@ -375,11 +378,19 @@ fun PlaybackScreen(
     // while it holds focus, and a D-pad OK can only reach a card that does — so
     // the recorded point is always the control the viewer actually pressed.
     val subtitlesOrigin = rememberTvRevealOrigin()
+    val orientationOrigin = rememberTvRevealOrigin()
     val metricsOrigin = rememberTvRevealOrigin()
+
+    // The turn currently on screen, resolved once: the transport tile wears it and
+    // the hint over the film names it, so the sign and the control cannot disagree.
+    val shownRotationLabel = stringResource(
+        rotationLabelRes(shownVideoRotation(videoRotation, autoVideoRotationDegrees)),
+    )
 
     val primaryLive = primaryTransportLive(phase, onReplay)
     val chromeEntryFocus = when {
         panelReturn == PlaybackPanel.Subtitles -> subtitlesCardFocus
+        panelReturn == PlaybackPanel.Orientation -> orientationCardFocus
         panelReturn == PlaybackPanel.Metrics -> metricsCardFocus
         primaryLive -> playFocusRequester
         else -> subtitlesCardFocus
@@ -575,7 +586,7 @@ fun PlaybackScreen(
                 // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
                 .padding(top = 42.dp),
         ) {
-            retainedHint?.let { OrientationHintCard(hint = it) }
+            retainedHint?.let { OrientationHintCard(hint = it, degrees = shownRotationLabel) }
         }
 
         AnimatedVisibility(
@@ -619,7 +630,12 @@ fun PlaybackScreen(
                 hdr = hdr,
                 diagnostics = diagnostics,
                 openPanel = openPanel,
-                selectedSubtitleLabel = selectedSubtitleLabel(subtitleTracks),
+                // The card states only that captions are running. Which track is
+                // one click away inside the panel, which is also the only surface
+                // that has room for a track name.
+                subtitlesOn = subtitleTracks.any { it.isSelected },
+                rotationLabel = shownRotationLabel,
+                rotationIsAuto = videoRotation == VideoRotation.Auto,
                 onOpenPanel = onOpenPanel,
                 onBack10 = onBack10,
                 onPlayPause = onPlayPause,
@@ -631,10 +647,12 @@ fun PlaybackScreen(
                 playFocusRequester = playFocusRequester,
                 scrubFocusRequester = scrubFocus,
                 subtitlesCardFocusRequester = subtitlesCardFocus,
+                orientationCardFocusRequester = orientationCardFocus,
                 metricsCardFocusRequester = metricsCardFocus,
                 volumeFocusRequester = volumeFocus,
                 endSessionFocusRequester = if (onEndSession != null) endSessionFocus else null,
                 subtitlesRevealOrigin = subtitlesOrigin,
+                orientationRevealOrigin = orientationOrigin,
                 metricsRevealOrigin = metricsOrigin,
                 safeArea = safeArea,
                 interactive = transportVisible,
@@ -667,6 +685,7 @@ fun PlaybackScreen(
                         videoRotation = videoRotation,
                         autoVideoRotationDegrees = autoVideoRotationDegrees,
                         subtitlesRevealOrigin = subtitlesOrigin,
+                        orientationRevealOrigin = orientationOrigin,
                         metricsRevealOrigin = metricsOrigin,
                         onOpenPanel = onOpenPanel,
                         onSelectSubtitleTrack = onSelectSubtitleTrack,
@@ -951,7 +970,9 @@ private fun AnimatedVisibilityScope.BottomChrome(
     hdr: HdrType,
     diagnostics: DiagnosticsSnapshot,
     openPanel: PlaybackPanel,
-    selectedSubtitleLabel: String?,
+    subtitlesOn: Boolean,
+    rotationLabel: String,
+    rotationIsAuto: Boolean,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onBack10: () -> Unit,
     onPlayPause: () -> Unit,
@@ -963,10 +984,12 @@ private fun AnimatedVisibilityScope.BottomChrome(
     playFocusRequester: FocusRequester,
     scrubFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
+    orientationCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
     volumeFocusRequester: FocusRequester,
     endSessionFocusRequester: FocusRequester?,
     subtitlesRevealOrigin: TvRevealOrigin,
+    orientationRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
     safeArea: PaddingValues,
     interactive: Boolean,
@@ -1054,7 +1077,9 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 phase = phase,
                 volume = volume,
                 openPanel = openPanel,
-                selectedSubtitleLabel = selectedSubtitleLabel,
+                subtitlesOn = subtitlesOn,
+                rotationLabel = rotationLabel,
+                rotationIsAuto = rotationIsAuto,
                 metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
                     stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
                 } else {
@@ -1069,9 +1094,11 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 playFocusRequester = playFocusRequester,
                 scrubFocusRequester = scrubFocusRequester,
                 subtitlesCardFocusRequester = subtitlesCardFocusRequester,
+                orientationCardFocusRequester = orientationCardFocusRequester,
                 metricsCardFocusRequester = metricsCardFocusRequester,
                 volumeFocusRequester = volumeFocusRequester,
                 subtitlesRevealOrigin = subtitlesRevealOrigin,
+                orientationRevealOrigin = orientationRevealOrigin,
                 metricsRevealOrigin = metricsRevealOrigin,
                 interactive = interactive,
             )
@@ -1114,6 +1141,7 @@ private fun PlaybackSidePanel(
     videoRotation: VideoRotation,
     autoVideoRotationDegrees: Int,
     subtitlesRevealOrigin: TvRevealOrigin,
+    orientationRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onSelectSubtitleTrack: (String?) -> Unit,
@@ -1175,10 +1203,10 @@ private fun PlaybackSidePanel(
             }
             TvOriginReveal(
                 visible = revealed,
-                origin = if (renderedPanel == PlaybackPanel.Metrics) {
-                    metricsRevealOrigin
-                } else {
-                    subtitlesRevealOrigin
+                origin = when (renderedPanel) {
+                    PlaybackPanel.Metrics -> metricsRevealOrigin
+                    PlaybackPanel.Orientation -> orientationRevealOrigin
+                    else -> subtitlesRevealOrigin
                 },
                 color = FlickColor.GlassPanel,
                 onRetreated = onRetreated,
@@ -1190,9 +1218,14 @@ private fun PlaybackSidePanel(
                         onSelectTrack = onSelectSubtitleTrack,
                         onSelectSize = onSelectSubtitleSize,
                         onDismiss = { onOpenPanel(PlaybackPanel.None) },
+                        entryKey = entryKey,
+                    )
+
+                    PlaybackPanel.Orientation -> OrientationPanel(
                         rotation = videoRotation,
                         autoRotationDegrees = autoVideoRotationDegrees,
                         onSelectRotation = onSelectVideoRotation,
+                        onDismiss = { onOpenPanel(PlaybackPanel.None) },
                         entryKey = entryKey,
                     )
 
@@ -1352,11 +1385,14 @@ private fun TransportScrubRow(
 }
 
 /**
- * `[Subtitles] ⟨−10 · play · +10⟩ [volume] [Stream metrics]`.
+ * `[SUBS][90°] ⟨−10 · play · +10⟩ [volume] [Stream metrics]`.
  *
  * The two flanking boxes carry equal weight, which centres the transport group
  * and lets either card ellipsise rather than overflow the panel on a narrow
- * viewport.
+ * viewport. The leading box carries two controls, not one: the subtitles card
+ * gave up the track name it used to state — the panel behind it is the only
+ * surface with room for one — and the square that opens the orientation panel is
+ * what the freed width became.
  *
  * **The row is traversed the way it is drawn.** Physical left/right used to be
  * captured as ±10 s seeks at the Activity boundary before Compose could see them,
@@ -1380,7 +1416,9 @@ private fun TransportControlRow(
     phase: PlaybackPhase,
     volume: Float,
     openPanel: PlaybackPanel,
-    selectedSubtitleLabel: String?,
+    subtitlesOn: Boolean,
+    rotationLabel: String,
+    rotationIsAuto: Boolean,
     metricsSubLabel: String,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onBack10: () -> Unit,
@@ -1391,9 +1429,11 @@ private fun TransportControlRow(
     playFocusRequester: FocusRequester,
     scrubFocusRequester: FocusRequester,
     subtitlesCardFocusRequester: FocusRequester,
+    orientationCardFocusRequester: FocusRequester,
     metricsCardFocusRequester: FocusRequester,
     volumeFocusRequester: FocusRequester,
     subtitlesRevealOrigin: TvRevealOrigin,
+    orientationRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
     interactive: Boolean,
 ) {
@@ -1414,24 +1454,48 @@ private fun TransportControlRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                PanelCard(
-                    glyph = FlickIcons.ClosedCaption,
-                    title = stringResource(R.string.subtitles_card_title),
-                    state = selectedSubtitleLabel ?: stringResource(R.string.subtitles_state_off),
-                    open = openPanel == PlaybackPanel.Subtitles,
-                    enabled = interactive,
-                    focusRequester = subtitlesCardFocusRequester,
-                    onClick = {
-                        onOpenPanel(
-                            if (openPanel == PlaybackPanel.Subtitles) PlaybackPanel.None
-                            else PlaybackPanel.Subtitles,
-                        )
-                    },
-                    // Applied at exactly one level, outside the button's own focus
-                    // target, so the centre it records is the card's layout centre
-                    // rather than a point inside the focus lift.
-                    modifier = Modifier.tvRevealSource(subtitlesRevealOrigin),
-                )
+                // One pair, so the gap between them is the sibling step rather
+                // than the row's own 14 dp between groups.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+                ) {
+                    PanelCard(
+                        glyph = FlickIcons.ClosedCaption,
+                        title = stringResource(R.string.subtitles_card_title),
+                        state = stringResource(
+                            if (subtitlesOn) R.string.subtitles_state_on
+                            else R.string.subtitles_state_off,
+                        ),
+                        open = openPanel == PlaybackPanel.Subtitles,
+                        enabled = interactive,
+                        focusRequester = subtitlesCardFocusRequester,
+                        onClick = {
+                            onOpenPanel(
+                                if (openPanel == PlaybackPanel.Subtitles) PlaybackPanel.None
+                                else PlaybackPanel.Subtitles,
+                            )
+                        },
+                        // Applied at exactly one level, outside the button's own
+                        // focus target, so the centre it records is the card's
+                        // layout centre rather than a point inside the focus lift.
+                        modifier = Modifier.tvRevealSource(subtitlesRevealOrigin),
+                    )
+                    OrientationTile(
+                        degrees = rotationLabel,
+                        auto = rotationIsAuto,
+                        open = openPanel == PlaybackPanel.Orientation,
+                        enabled = interactive,
+                        focusRequester = orientationCardFocusRequester,
+                        onClick = {
+                            onOpenPanel(
+                                if (openPanel == PlaybackPanel.Orientation) PlaybackPanel.None
+                                else PlaybackPanel.Orientation,
+                            )
+                        },
+                        modifier = Modifier.tvRevealSource(orientationRevealOrigin),
+                    )
+                }
             }
 
             TransportCluster(
@@ -1536,6 +1600,87 @@ private fun PanelCard(
                 color = FlickColor.OnSurfaceDim,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * The orientation tile's side — the [PanelCard] beside it, measured: 2 × 9 dp of
+ * card padding around a 16 sp/1.4 title line, a 3 dp gap and a 14 sp mono state
+ * line on Geist Mono's own 1.3 em box. Holding the two to one height is what makes
+ * the pair read as one control, and a square rather than a card with a box parked
+ * next to it.
+ *
+ * A MINIMUM and not a size: the tile's own content is 52 × 56 dp inside it at the
+ * scale that number was measured at, so the square is exact there — but a font
+ * scale that grows the card beside it grows this too, rather than clipping a
+ * degree glyph inside a box that cannot move.
+ */
+private val OrientationTileSide = 62.dp
+
+/**
+ * The picture-orientation tile — a square whose whole content is the turn
+ * currently on screen.
+ *
+ * Deliberately NOT the [PanelCard] lockup. That card names a thing and states it
+ * underneath; here the state IS the name — five values, none longer than four
+ * glyphs — so the degrees are the hero and a glyph beside them would have nothing
+ * left to add.
+ *
+ * [auto] is the one annotation it carries, and it is this tile's half of
+ * `video_rotation_auto_applied`: stacked rather than interpuncted, because
+ * "AUTO · 270°" is 108 dp of 14 sp mono and this square is [OrientationTileSide]
+ * wide. The spoken form keeps the interpunct — see the content description.
+ */
+@Composable
+private fun OrientationTile(
+    degrees: String,
+    auto: Boolean,
+    open: Boolean,
+    enabled: Boolean,
+    focusRequester: FocusRequester,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val readout = if (auto) {
+        stringResource(R.string.video_rotation_auto_applied, degrees)
+    } else {
+        degrees
+    }
+    FlickTvButton(
+        onClick = onClick,
+        modifier = modifier.defaultMinSize(
+            minWidth = OrientationTileSide,
+            minHeight = OrientationTileSide,
+        ),
+        selected = open,
+        enabled = enabled,
+        // The merged children would announce "AUTO 90°", which is the reading and
+        // not the control. This names both.
+        contentDescription = stringResource(R.string.video_rotation_card_description, readout),
+        focusRequester = focusRequester,
+        shape = FlickShape.Md,
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (auto) {
+                Text(
+                    text = stringResource(R.string.video_rotation_card_auto),
+                    style = FlickType.monoEyebrow(trackingEm = 0.14f),
+                    color = FlickColor.OnSurfaceDim,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = degrees,
+                style = FlickType.display(sizeSp = 20),
+                color = Color.White,
+                maxLines = 1,
             )
         }
     }
@@ -1688,20 +1833,35 @@ private fun PlaybackFinishedChip(modifier: Modifier = Modifier) {
 }
 
 /**
+ * The mini tile the hint carries. Wide enough for `270°` at the 0.6 em mono
+ * advance plus a little air, and short enough to sit inside the two lines beside
+ * it.
+ */
+private val OrientationHintTileSide = 38.dp
+
+/**
  * The picture-orientation hint (§ Picture orientation).
  *
- * Deliberately the [PanelCard] lockup — the panel glyph, a 16 sp bold line and a
- * mono eyebrow under it — because the card it is describing is that lockup. A
- * viewer who reads this and then looks down at the transport is looking for the
- * thing it just imitated, which is the whole job: the control was never missing,
- * only unsigned.
+ * It leads with the transport's orientation tile in miniature — the same square,
+ * the same unfocused control fill and hairline, the same degrees — because that
+ * is the thing it is sending the viewer to look for. A silhouette and not a copy:
+ * the hint only ever shows while the choice is Auto, so the real tile carries an
+ * `AUTO` eyebrow over these degrees that this square has no room for. The degrees
+ * are what the line beside it names, and they are what makes the tile findable.
+ *
+ * Drawn rather than the control itself: this is a sign, and a sign that could be
+ * pressed would be a second control appearing over the film.
  *
  * It is not a control and never becomes one. No focus target, no click, no
  * `tvRevealSource`: every remote key while this is up is still routed exactly as
  * it was, and the chrome's own 4 s countdown never sees it.
  */
 @Composable
-private fun OrientationHintCard(hint: OrientationHint, modifier: Modifier = Modifier) {
+private fun OrientationHintCard(
+    hint: OrientationHint,
+    degrees: String,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier = modifier
             .glassPanel(FlickShape.Md)
@@ -1709,12 +1869,21 @@ private fun OrientationHintCard(hint: OrientationHint, modifier: Modifier = Modi
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        Icon(
-            imageVector = FlickIcons.ClosedCaption,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(16.dp),
-        )
+        Box(
+            modifier = Modifier
+                .size(OrientationHintTileSide)
+                .clip(FlickShape.Sm)
+                .background(FlickColor.ControlFill)
+                .border(FlickDimens.Hairline, FlickColor.Outline, FlickShape.Sm),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = degrees,
+                style = FlickType.monoTabular(sizeSp = 14),
+                color = Color.White,
+                maxLines = 1,
+            )
+        }
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = stringResource(
@@ -1734,6 +1903,7 @@ private fun OrientationHintCard(hint: OrientationHint, modifier: Modifier = Modi
                         OrientationHint.TurnedUpright -> R.string.orientation_hint_turned_where
                         OrientationHint.ShownAsFiled -> R.string.orientation_hint_as_filed_where
                     },
+                    degrees,
                 ),
                 style = FlickType.monoEyebrow(trackingEm = 0.14f),
                 color = FlickColor.OnSurfaceDim,
@@ -2031,22 +2201,6 @@ internal fun audioCodecRes(mimeType: String?): Int? = when (mimeType?.lowercase(
     "audio/mpeg", "audio/mpeg-l1", "audio/mpeg-l2" -> R.string.codec_mp3
     "audio/raw" -> R.string.codec_pcm
     else -> null
-}
-
-/** The selected track's own name, uppercased for the card's mono state line. */
-@Composable
-private fun selectedSubtitleLabel(tracks: List<SubtitleTrackInfo>): String? {
-    val selected = tracks.firstOrNull { it.isSelected }
-    val numbered = if (selected != null && selected.label == null) {
-        stringResource(R.string.subtitles_track_fallback, selected.trackNumber)
-    } else {
-        null
-    }
-    val label = selected?.label ?: numbered
-    // The composition's locale, not the process default: casing is
-    // language-specific and `Locale.getDefault()` is not observable state, so a
-    // language change would leave this line cased for the old one.
-    return label?.uppercase(LocalLocale.current.platformLocale)
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────

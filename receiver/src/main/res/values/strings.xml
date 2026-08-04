@@ -144,7 +144,9 @@
     <string name="codec_pcm">PCM</string>
 
     <!-- Subtitles: transport card + panel -->
-    <string name="subtitles_card_title">Subtitles</string>
+    <!-- The card states only whether captions are running; the panel names the track. -->
+    <string name="subtitles_card_title">SUBS</string>
+    <string name="subtitles_state_on">ON</string>
     <string name="subtitles_state_off">OFF</string>
     <string name="subtitles_panel_title">Subtitles</string>
     <string name="subtitles_close">Close subtitles</string>
@@ -161,11 +163,16 @@
     <string name="subtitles_size_large">Large</string>
 
     <!--
-      Picture orientation, in the same panel. The degrees are the turn Flick adds
-      to the container's own, so 0° means "exactly as the file says" and is what
-      corrects an Auto that read the file wrong.
+      Picture orientation: the transport's square tile and the panel it opens. The
+      degrees are the turn Flick adds to the container's own, so 0° means "exactly
+      as the file says" and is what corrects an Auto that read the file wrong.
     -->
-    <string name="video_rotation_label">ORIENTATION</string>
+    <string name="video_rotation_panel_title">Orientation</string>
+    <string name="video_rotation_close">Close orientation</string>
+    <!-- The tile's eyebrow, over the degrees Auto settled on. -->
+    <string name="video_rotation_card_auto">AUTO</string>
+    <!-- Spoken, not drawn: the tile stacks the same two parts inside its square. -->
+    <string name="video_rotation_card_description">Picture orientation: %1$s</string>
     <string name="video_rotation_auto">Auto</string>
     <string name="video_rotation_as_filed">0°</string>
     <string name="video_rotation_quarter">90°</string>
@@ -176,13 +183,14 @@
 
     <!--
       The picture-orientation hint: two lines over the film, once per cast. The
-      second line has to name the panel — the control is real, but nobody whose
-      film is sideways goes looking for it under "Subtitles".
+      second line names the control by what it wears — the transport's tile carries
+      exactly these degrees — because a viewer whose film is sideways is looking at
+      the picture, not for the name of a panel.
     -->
     <string name="orientation_hint_turned_title">Turned this film upright</string>
-    <string name="orientation_hint_turned_where">CHANGE IT UNDER SUBTITLES</string>
+    <string name="orientation_hint_turned_where">CHANGE IT ON THE %1$s TILE</string>
     <string name="orientation_hint_as_filed_title">Showing this film as filed</string>
-    <string name="orientation_hint_as_filed_where">TURN IT UNDER SUBTITLES</string>
+    <string name="orientation_hint_as_filed_where">TURN IT ON THE %1$s TILE</string>
 
     <!-- Stream metrics: transport card + panel -->
     <string name="metrics_card_title">Stream metrics</string>

@@ -3,11 +3,12 @@ package com.flick.receiver.player
 /**
  * What the TV tells the viewer about the picture's orientation.
  *
- * The control for it lives in the **Subtitles** panel, and nobody looking at a
- * sideways film thinks to open "Subtitles" to fix it. Only the TV knows the
- * picture turned, or that it is presenting a tall strip on a landscape panel —
- * the phone is handed no such reading — so the TV is where the viewer is told
- * the control exists, at the moment it is worth knowing.
+ * The control is the transport's own orientation tile, and the transport is not
+ * on screen: the chrome auto-hides four seconds into a film, which is about when
+ * a viewer decides the picture is wrong. Only the TV knows the picture turned, or
+ * that it is presenting a tall strip on a landscape panel — the phone is handed
+ * no such reading — so the TV is where the viewer is told what to look for, at
+ * the moment it is worth knowing.
  */
 enum class OrientationHint {
     /** Flick overruled the container and stood a sideways film back up. */
@@ -79,12 +80,11 @@ fun orientationHintFor(
  * Whether the hint may be on screen, and whether it is finished.
  *
  * [panelOpen] spends it rather than merely hiding it, and both halves of that are
- * deliberate. The Subtitles panel IS the door this points at, so a viewer who has
- * opened it does not need the sign — and a metrics or subtitles panel is 292 dp
- * or 488 dp of glass reaching up the frame, which this would sit on top of. A
- * viewer who opened the panel before the reading was even made is in the same
- * position, so the hint is spent there too rather than ambushing them with it
- * when the panel closes.
+ * deliberate. A viewer with any panel open has the chrome up and the tile in front
+ * of them, so they no longer need the sign — and a panel is 200 dp to 488 dp of
+ * glass reaching up the frame, which this would sit on top of. A viewer who opened
+ * one before the reading was even made is in the same position, so the hint is
+ * spent there too rather than ambushing them with it when the panel closes.
  *
  * [filmVisible] and [qualityShowing] only delay. The reading lands while the cast
  * is still starting — `onTracksChanged` arrives before the first frame — so a
