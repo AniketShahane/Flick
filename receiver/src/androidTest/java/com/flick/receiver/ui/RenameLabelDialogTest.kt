@@ -1,5 +1,6 @@
 package com.flick.receiver.ui
 
+import android.view.KeyEvent
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.input.key.Key
+import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.RenameLabelDialog
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickTvTheme
@@ -44,9 +46,12 @@ class RenameLabelDialogTest {
 
         val field = composeRule.onNodeWithTag("rename-name-field")
         field.assertIsFocused()
-        field.assertTextEquals("Living Room TV")
+        // "Name" is the field's own floating label. The text field merges its
+        // descendants, so the label lands in the node's Text next to the editor's
+        // EditableText, and assertTextEquals compares that whole set.
+        field.assertTextEquals("Name", "Living Room TV")
         field.performTextInput("Den TV")
-        field.assertTextEquals("Den TV")
+        field.assertTextEquals("Name", "Den TV")
         field.performImeAction()
 
         composeRule.runOnIdle { assertEquals(listOf("Den TV"), saved) }
@@ -105,6 +110,14 @@ class RenameLabelDialogTest {
         composeRule.onNodeWithTag("rename-save").assertIsFocused()
     }
 
+    /**
+     * The Back has to be a real one. `performKeyInput` reaches only the key
+     * pipeline inside the composition, while `dismissOnBackPress` is served by
+     * the platform's back dispatcher, so an injected Compose Back never arrives
+     * and the dialog would never close. The field also opens the TV's soft
+     * keyboard, and the keyboard keeps the first press for itself — on a remote
+     * the dialog closes on the second — so this presses until one is seen.
+     */
     @Test
     fun backDismissesWithoutCommitting() {
         var commits = 0
@@ -120,10 +133,14 @@ class RenameLabelDialogTest {
             }
         }
 
-        composeRule.onNodeWithTag("rename-name-field").performKeyInput {
-            keyDown(Key.Back)
-            keyUp(Key.Back)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        repeat(3) {
+            if (dismisses == 0) {
+                instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+                runCatching { composeRule.waitUntil(2_000) { dismisses == 1 } }
+            }
         }
+
         composeRule.runOnIdle {
             assertEquals(0, commits)
             assertEquals(1, dismisses)
@@ -192,8 +209,14 @@ class RenameLabelDialogTest {
             }
         }
 
-        composeRule.onNodeWithTag("rename-save").performClick()
+        // Submitted through the editor's Done, which is the save a TV remote can
+        // actually reach: the on-screen keyboard's tick. A synthetic tap on the
+        // Save button commits too, but the tap makes the connected IME finish
+        // composing, and that arrives as an onValueChange which clears the
+        // failure flag before it is ever drawn.
+        composeRule.onNodeWithTag("rename-name-field").performImeAction()
         composeRule.onNodeWithText("Couldn’t save the name. Try again.").assertIsEnabled()
+        composeRule.onNodeWithTag("rename-save").assertIsEnabled()
         composeRule.onNodeWithTag("rename-name-field").assertIsFocused()
         composeRule.runOnIdle { assertEquals(0, dismisses) }
     }
