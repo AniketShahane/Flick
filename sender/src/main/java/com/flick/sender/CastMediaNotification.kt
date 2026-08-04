@@ -101,14 +101,16 @@ internal fun buildCastNotification(
                     context.getString(R.string.notif_text_finished, device)
             },
         )
-        // The album art of a cast — the film's own still, laid on a ground of Flick's amber by
-        // `mattedArtwork`. On Android 13+ the media controls draw the artwork the SESSION
-        // carries rather than this one, and both are set from that same matted picture; this is
-        // what the releases that render a MediaStyle notification themselves show.
+        // The album art of a cast — the film's own frame at the film's own shape, cropped to the
+        // aspect bounds by `croppedArtwork`. On Android 13+ the media controls draw the artwork
+        // the SESSION carries rather than this one, and both are set from that same picture; this
+        // is what the releases that render a MediaStyle notification themselves show.
         //
         // It is also, on every release this app runs on, the ONLY thing that decides what colour
         // that surface is painted: SystemUI extracts a scheme from the artwork bitmap and reads
-        // `setColor` nowhere in that path. See `mattedArtwork` for the extractor and the mat.
+        // `setColor` nowhere in that path. With nothing but the film in the picture the media
+        // card is therefore painted out of the film, which is the intended result and not a
+        // regression — see `artworkCrop` for the trade that was made and why.
         .setLargeIcon(artwork)
         // Flick's amber, read from the palette token rather than restated as a hex — and the
         // brand VALUE rather than the `spark` role, which inverts to blue in the app's dark

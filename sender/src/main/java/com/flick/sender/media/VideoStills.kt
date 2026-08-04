@@ -282,41 +282,54 @@ internal object VideoStills {
 internal class CastArtwork(val bitmap: Bitmap, val data: ByteArray)
 
 /**
- * Resolve the artwork for a cast of [uri]: the film's own still, matted on Flick's amber by
- * [mattedArtwork]. Null whenever no frame could be produced, and the caller then posts exactly
- * the notification it always did.
+ * Resolve the artwork for a cast of [uri]: the film's own frame at the film's own shape, trimmed
+ * to the aspect bounds and scaled into the budget by [croppedArtwork]. Null whenever no frame
+ * could be produced at all, and the caller then posts exactly the notification it always did.
  *
- * The still is asked for at [ARTWORK_STILL_BOX_PX] and the result is [ARTWORK_BOX_PX] square,
- * because the mat is the difference between them. The box being SQUARE is what makes a still's
- * long edge the bound whichever way the film was shot — a still is scaled to fit inside it
- * rather than to fill it, and the landscape box this once asked for handed a 1080x1920 file
- * 162x288, its short edge, when portrait and sideways video is exactly what this app plays.
+ * The still is asked for in a SQUARE box, which is what makes a still's long edge the bound
+ * whichever way the film was shot — a still is scaled to fit inside it rather than to fill it,
+ * and the landscape box this once asked for handed a 1080x1920 file 162x288, its short edge,
+ * when portrait and sideways video is exactly what this app plays.
  *
- * Deliberately small. This picture is parceled to SystemUI twice over — once as the
- * notification's large icon and again, decoded from these bytes, into the platform session's
- * metadata — and a Binder transaction that overruns takes the notification with it. The mat
- * makes that cost a constant rather than a worst case: every cast parcels 448x448, which is
- * 784 KiB at four bytes a pixel and leaves a quarter of the one-megabyte ceiling for the rest
- * of the notification. The JPEG is tens of kilobytes for a photographic frame, and a flat
- * ground costs it almost nothing — it is the raw bitmap this budget is really about.
+ * There is no one size any more; the shape belongs to the film. What stays constant is the COST,
+ * which is the number that was ever load-bearing: [artworkCrop] holds every shape to
+ * [ARTWORK_BUDGET_PX] pixels because this picture is parceled to SystemUI twice over — once as
+ * the notification's large icon and again, decoded from these bytes, into the platform session's
+ * metadata — and a Binder transaction that overruns takes the notification with it. The JPEG is
+ * tens of kilobytes for a photographic frame; it is the raw bitmap that budget is really about.
  */
 internal suspend fun castArtwork(context: Context, uri: Uri): CastArtwork? = withContext(Dispatchers.IO) {
     // Zero duration: a start intent carries a URI, a name and a size, and the length is
     // read off the container only if the search actually needs it.
-    val still = VideoStills.still(context, uri, 0L, ARTWORK_STILL_BOX_PX, ARTWORK_STILL_BOX_PX)
+    val still = VideoStills.still(context, uri, 0L, ARTWORK_SOURCE_BOX_PX, ARTWORK_SOURCE_BOX_PX)
         ?: return@withContext null
     // The still is this function's own — `still` decodes a fresh bitmap per call and memoizes
-    // only the position it chose — so once it has been drawn onto the mat it is nothing's
+    // only the position it chose — so once the artwork has been drawn out of it it is nothing's
     // picture but garbage.
-    val bitmap = mattedArtwork(still)?.also { still.recycle() } ?: still
+    val bitmap = croppedArtwork(still)?.also { still.recycle() } ?: still
     val stream = ByteArrayOutputStream()
     val compressed = runCatching {
         bitmap.compress(Bitmap.CompressFormat.JPEG, ARTWORK_QUALITY, stream)
     }.getOrDefault(false)
-    if (compressed) CastArtwork(bitmap, stream.toByteArray()) else null
+    if (!compressed) {
+        // Both halves or neither: nothing downstream ever received this one, so this function
+        // is still its only owner.
+        bitmap.recycle()
+        return@withContext null
+    }
+    CastArtwork(bitmap, stream.toByteArray())
 }
 
-/** The composed picture: the mat's own size, and so the size of every cast's artwork. */
-internal const val ARTWORK_BOX_PX = 448
+/**
+ * The box the still is decoded into, before [artworkCrop] takes the picture out of it.
+ *
+ * Larger than any single edge the artwork is finally drawn at, because the crop only ever REMOVES
+ * pixels: a scope frame gives up a quarter of its width to the wide bound and a phone clip a
+ * quarter of its height to the tall one, and asking for the budget's own edge length would hand
+ * those shapes back with less picture in them than they are allowed. A shape the crop has to trim
+ * still arrives under the ceiling rather than exactly at it — the alternative is decoding a much
+ * larger frame to make the trim free, and the ceiling is a limit, not a target.
+ */
+internal const val ARTWORK_SOURCE_BOX_PX = 640
 
 private const val ARTWORK_QUALITY = 85

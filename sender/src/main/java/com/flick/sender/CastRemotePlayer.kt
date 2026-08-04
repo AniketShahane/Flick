@@ -172,9 +172,10 @@ internal class CastRemotePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             // screen — the album art of a cast — and it takes precedence there over the
             // notification's own large icon, which SystemUI reaches for only when a session
             // carries no art. It is therefore also the picture the platform extracts that
-            // surface's ENTIRE colour scheme from, which is why it arrives already matted on
-            // Flick's amber; `mattedArtwork` holds that argument. Its absence costs only the
-            // picture — and the amber with it.
+            // surface's ENTIRE colour scheme from, and it carries nothing but the film: the
+            // card is deliberately painted out of the footage rather than out of this app's
+            // amber, which `artworkCrop` holds the argument for. Its absence costs the picture
+            // and leaves the card on the platform's own neutral scheme.
             .setArtworkData(artwork?.data, artwork?.let { MediaMetadata.PICTURE_TYPE_FRONT_COVER })
             .setIsBrowsable(false)
             .setIsPlayable(true)
