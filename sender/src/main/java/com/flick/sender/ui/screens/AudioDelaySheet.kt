@@ -102,7 +102,7 @@ private fun AudioDelayContent(controller: FlickController, onDismiss: () -> Unit
         // The one claim this sheet makes about cost, in the seat both sibling sheets put
         // their explanatory line in: the nudge is a decode-time offset on the TV, so it
         // costs neither a re-encode nor the re-buffer a subtitle swap does. The settling
-        // clause is not hedging — across a four-second range a large move holds or skips
+        // clause is not hedging — across a ten-second range a large move holds or skips
         // the picture for the size of the move, and a viewer who was promised that nothing
         // happens would read that as the buffering this app exists to have got rid of.
         Text(
@@ -219,7 +219,7 @@ private fun ColumnScope.AudioDelayReadout(delayMs: Int) {
 
 /**
  * The fine control on either side of the coarse one, which is what makes the pair
- * symmetrical — and, across a four-second range, what makes it usable at all. The blade
+ * symmetrical — and, across a ten-second range, what makes it usable at all. The blade
  * TRAVELS: one drag reaches any offset in the range and lands within a step or two of it.
  * The steppers TRIM: 25 ms a press at every offset, because the error a film carries can
  * sit anywhere in the range and the last 25 ms of it has to be reachable there.
@@ -321,7 +321,7 @@ private fun Stepper(
  *
  * It reports on every pointer sample that changes the value and NOT on release. A drag
  * that committed once at the end would be a single frame asking the TV to move the picture
- * by up to four seconds, which is the one thing the receiver cannot absorb quietly;
+ * by up to ten seconds, which is the one thing the receiver cannot absorb quietly;
  * streaming it keeps each report to what one sample of travel is worth. The session bounds
  * what is left — a tap on the far end of this track is still one sample, and it is walked
  * there rather than jumped.

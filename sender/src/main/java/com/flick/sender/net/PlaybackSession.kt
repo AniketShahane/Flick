@@ -295,9 +295,9 @@ class PlaybackSession(
      * to the next keyframe — a visible skip. So no single frame moves the picture by more
      * than [AudioDelayPolicy.MAX_JUMP_MS], and anything further arrives as a short run of
      * absolute values at [AudioDelayPolicy.WALK_INTERVAL_MS] a hop instead: bound to bound
-     * across the whole four-second range that is 20 frames landing inside 800 ms. A
-     * stepper press and any drag short of a flick are already inside that bound and go out
-     * in one frame, unwalked.
+     * across the whole ten-second range that is 40 frames landing inside 1.6 s, at the
+     * same 25 a second the narrower range burst at. A stepper press and any drag short of
+     * a flick are already inside that bound and go out in one frame, unwalked.
      *
      * Latest-wins, like the seek throttle: a new target cancels the walk in flight and is
      * approached from wherever that walk had reached, never from where it was aimed.

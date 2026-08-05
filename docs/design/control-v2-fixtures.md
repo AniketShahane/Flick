@@ -83,7 +83,7 @@ The twelfth field grew by `,audio-delay` (56 → 68 bytes, `0x38` → `0x44` in 
 {"t":"skip","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","deltaMs":10000}
 {"t":"setVolume","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","level":0.75}
 {"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":250}
-{"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":-2000}
+{"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":-5000}
 {"t":"setAudioDelay","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","delayMs":0}
 {"t":"cancelLoad","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg"}
 {"t":"stop","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg"}
@@ -111,7 +111,7 @@ The twelfth field grew by `,audio-delay` (56 → 68 bytes, `0x38` → `0x44` in 
 
 The following categories must reject/close rather than silently coerce: top-level array/string/null; duplicate JSON key; unknown field; absent required field; `v:1`; `"v":"2"`; invalid base64url length; number outside specified bound; `NaN`/`Infinity`; URL with a query/fragment/user-info/redirect/noncanonical token path/wrong peer/wrong port; code that is not four ASCII digits; cap reordered/duplicated/unknown; stale cast command; binary or fragmented message; 16 KiB + 1 decoded bytes.
 
-`setAudioDelay` adds four of its own, each of which must be refused rather than corrected: `"delayMs":2025` and `"delayMs":-2025` (past the bound, and deliberately ON the 25 ms grid so it is the bound that refuses them), `"delayMs":10` (inside the bound, off the 25 ms step), and `"delayMs":25.0` / `"delayMs":2.5e1` / `"delayMs":"25"` (not a JSON integer). The field set is exactly `t,v,castId,delayMs`.
+`setAudioDelay` adds four of its own, each of which must be refused rather than corrected: `"delayMs":5025` and `"delayMs":-5025` (past the bound, and deliberately ON the 25 ms grid so it is the bound that refuses them), `"delayMs":10` (inside the bound, off the 25 ms step), and `"delayMs":25.0` / `"delayMs":2.5e1` / `"delayMs":"25"` (not a JSON integer). The field set is exactly `t,v,castId,delayMs`.
 
 For test construction, exactly 16 KiB decoded UTF-8 input is eligible for schema parsing; 16 KiB plus one decoded byte closes 1009 before partial parsing. Pre-auth accepts at most three malformed frames under its existing unauthenticated budget, then closes 1008 generic. Authenticated malformed input may emit one safe `commandRejected` with `code:"malformed"`, then closes 1008. A valid but stale command emits `commandRejected` and keeps the authenticated session open.
 

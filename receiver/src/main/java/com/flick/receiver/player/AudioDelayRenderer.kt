@@ -44,7 +44,7 @@ class AudioDelayShift {
  *
  * A CHANGE of shift costs the size of the change — toward "audio earlier" the
  * picture holds for it, the other way it drops that much. The phone caps any
- * single frame's move at 200 ms and walks anything larger as a run of absolute
+ * single frame's move at 250 ms and walks anything larger as a run of absolute
  * values, so no frame this renderer ever sees reaches the 500 ms
  * drop-to-keyframe branch.
  *
@@ -55,7 +55,10 @@ class AudioDelayShift {
  * arrive late and are dropped, behind it the target frame paints and then holds.
  * That is inherent to shifting a clock — a renderer cannot show frames it does
  * not have — so a scrub or a ±10 s tap at a settled delay skips or freezes for up
- * to the delay itself before it is right again: two seconds at the bound.
+ * to the delay itself before it is right again: five seconds at the bound, and
+ * less on a TV whose buffer forced the delay down — see
+ * [AudioDelayPolicy.maxDelayMsFor]. That is the honest cost of the range, and it
+ * is paid only by a viewer who dialled the shift out that far.
  *
  * Both self-correct, and uninterrupted playback at a settled shift costs nothing
  * beyond one held output buffer, which the load control's headroom absorbs.

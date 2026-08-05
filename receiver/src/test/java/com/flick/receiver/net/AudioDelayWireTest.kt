@@ -36,7 +36,11 @@ class AudioDelayWireTest {
         assertEquals(250L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":250}"""))
         assertEquals(-250L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-250}"""))
         assertEquals(0L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":0}"""))
-        assertEquals(-2000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-2000}"""))
+        assertEquals(-5000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-5000}"""))
+        assertEquals(5000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":5000}"""))
+        // Inside the widened range, and the wire says so whatever heap this TV was
+        // granted — the buffer's own ceiling is applied at the player, never here.
+        assertEquals(-3275L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-3275}"""))
         assertEquals(2000L, command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":2000}"""))
     }
 
@@ -50,8 +54,8 @@ class AudioDelayWireTest {
 
     @Test fun rejectsAValueOutsideTheRangeOrOffTheStep() {
         // On the step grid, so it is the BOUND refusing these, not the step.
-        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":2025}"""))
-        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-2025}"""))
+        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":5025}"""))
+        assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-5025}"""))
         assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":10}"""))
         assertNull(command("""{"t":"setAudioDelay","v":2,"castId":"$castId","delayMs":-10}"""))
     }
