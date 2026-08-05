@@ -147,6 +147,9 @@
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
+    <!-- The subtitle this film was left with, confirmed where it is put back. The value is
+         the language when the memory names one and the file's own name when it does not. -->
+    <string name="detail_subtitle_attached">Subtitles · %1$s</string>
     <!-- The pair under the CTA. Both are button labels now rather than trailing text
          links, so the phone one lost its "instead": a button in a row of two is not a
          continuation of the sentence above it. Sentence case, like every other action
@@ -299,6 +302,8 @@
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
     <string name="a11y_resume_video">Resume %1$s from %2$s on %3$s</string>
     <string name="a11y_start_video_over">Start %1$s over on %2$s</string>
+    <!-- The row states what is attached; the separator it is drawn with is not a word. -->
+    <string name="a11y_detail_subtitle">Subtitles attached: %1$s</string>
     <!-- The phone action names no TV: it is the one control on this sheet that does not
          involve one. -->
     <string name="a11y_play_video_here">Play %1$s on this phone</string>

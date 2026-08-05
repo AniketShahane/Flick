@@ -124,6 +124,8 @@ fun DetailScreen(
     val castStart by controller.castStart.collectAsState()
     val playbackProgress by controller.playbackProgress.collectAsState()
     val unplayable by controller.unplayableFiles.collectAsState()
+    val selectedSubtitle by controller.selectedSubtitle.collectAsState()
+    val subtitleOwnerKey by controller.subtitleOwnerKey.collectAsState()
     val imageLoader = rememberVideoImageLoader()
     val rise = rememberSheetRise()
     // Geometry and opacity on separate clocks: the sheet's own scrim is fixed here, so its
@@ -149,6 +151,7 @@ fun DetailScreen(
         value = MediaProbe.detectHdr(context, item.uri)
     }
     val refusal = unplayable[item.uriKey]
+    val subtitle = selectedSubtitle?.takeIf { showAttachedSubtitle(subtitleOwnerKey, item.uriKey) }
 
     // What this file needs, against what this phone's link realistically carries. Polled
     // rather than read once, so the card clears by itself when the user takes its advice:
@@ -285,6 +288,16 @@ fun DetailScreen(
                     containerColor = colors.primaryContainer,
                     contentColor = colors.onPrimaryContainer,
                 )
+            }
+
+            // With the file's own facts rather than under the CTA, because it is one of
+            // them: what will be sent when the button is pressed. Deliberately not a chip
+            // beside them — those are the three the phone reads off the file itself, and a
+            // selection is not a source fact. Deliberately not a card either: the seat
+            // below belongs to one arrival at a time, and this sheet is capped at 640 dp.
+            if (subtitle != null) {
+                Spacer(Modifier.height(12.dp))
+                AttachedSubtitleRow(subtitle.displayName, subtitle.language)
             }
 
             Spacer(Modifier.height(17.dp))
@@ -440,6 +453,61 @@ private fun RowScope.SecondaryAction(
         )
     }
 }
+
+/**
+ * The subtitle this film is already carrying.
+ *
+ * A remembered one attaches while the sheet is being read, and nothing on this route would
+ * otherwise admit to it: the only surface that names a selection is a sheet reachable from
+ * Now Playing. Without this a viewer flicks a film carrying cues they did not choose in this
+ * session and had no way to see. Resume is not silent like that either — the CTA above says
+ * where it will start.
+ *
+ * Read-only on purpose. Removing a subtitle also forgets the memory behind it, and that
+ * decision stays where attaching lives rather than becoming a second destructive control on
+ * a sheet whose other controls all start a cast.
+ *
+ * The language when the record carries one, because that is what the viewer chose; the
+ * file's own name when it does not, which is honest and is already what the subtitles sheet
+ * shows. Neither is ever logged — a subtitle name names the film and the user's storage.
+ */
+@Composable
+private fun AttachedSubtitleRow(displayName: String, language: String?) {
+    val colors = LocalFlickColors.current
+    val label = languageLabel(language) ?: displayName
+    val spoken = stringResource(R.string.a11y_detail_subtitle, label)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = spoken },
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = FlickIcons.Captions,
+            contentDescription = null,
+            tint = colors.spark,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = stringResource(R.string.detail_subtitle_attached, label),
+            style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * Whether the sheet for [itemKey] may name the subtitle that is attached right now.
+ *
+ * There is one selection at a time and it belongs to the film it was picked or recalled
+ * for. A live cast owns it, so browsing to another film mid-cast is the ordinary way to
+ * arrive here with somebody else's subtitle attached — and `startCast` drops it rather than
+ * send it, which is the promise a sheet that had drawn it would already have broken.
+ */
+internal fun showAttachedSubtitle(ownerKey: String?, itemKey: String): Boolean =
+    ownerKey == itemKey
 
 /**
  * The direct-play promise: what happens when nothing has gone wrong. Carried on a solid

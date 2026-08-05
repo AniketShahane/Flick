@@ -1102,9 +1102,12 @@ private fun BusyRow(label: String) {
     }
 }
 
-/** The platform's own name for a BCP-47 tag; null when the tag names no language. */
+/**
+ * The platform's own name for a BCP-47 tag; null when the tag names no language. Shared
+ * with the Detail sheet, which names the same selection the attached row does.
+ */
 @Composable
-private fun languageLabel(tag: String?): String? {
+internal fun languageLabel(tag: String?): String? {
     if (tag.isNullOrBlank()) return null
     return remember(tag) {
         runCatching { Locale.forLanguageTag(tag).getDisplayName(Locale.getDefault()) }

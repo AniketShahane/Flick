@@ -281,9 +281,32 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var subtitleJob: Job? = null
     private var progressResolutionJob: Job? = null
     private var subtitleRecallJob: Job? = null
+    private val _subtitleOwnerKey = MutableStateFlow<String?>(null)
+
+    /**
+     * Which film [selectedSubtitle] belongs to, as that film's identity and nothing else.
+     *
+     * The selection is one per app and not one per film: a live cast owns it, so browsing
+     * to another film mid-cast leaves the casting film's subtitle attached while the screen
+     * in front of the viewer is showing something else entirely. A screen that names the
+     * selection has to answer that before it draws anything, and this key is all it needs
+     * to — never the owning item, which is more than the question asks for.
+     *
+     * A flow because a recall lands after the sheet is already drawn: the copy is proven on
+     * disk while the user is still reading it.
+     */
+    val subtitleOwnerKey: StateFlow<String?> = _subtitleOwnerKey.asStateFlow()
+
     // The item and not its Uri: a Uri cannot produce a fingerprint, and the subtitle
     // memory is filed under the same identity the resume checkpoint is.
     private var subtitleOwner: MediaItem? = null
+        set(value) {
+            field = value
+            // Published from the setter rather than written beside each assignment: a key
+            // that had drifted from the owner would let one film's screen name another
+            // film's subtitle, which is the one thing the owner exists to prevent.
+            _subtitleOwnerKey.value = value?.uriKey
+        }
     private val pairingGate = PairingAttemptGate()
     private val manualPairAttemptLedger = ManualPairAttemptLedger()
     private val pairCodeReset = PairCodeReset()
@@ -588,8 +611,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // different one drops it, but only while nothing is casting: a live cast owns
         // the served subtitle and must not lose it because the user opened Library.
         if (currentCastId == null && subtitleOwner?.uri != item.uri) {
-            subtitleOwner = item
+            // Dropped before the new owner is published, which is the order startCast
+            // already keeps: the selection and its owner are two flows, so a reader that
+            // catches them mid-swap has to find no selection rather than the previous
+            // film's under this film's name.
             _selectedSubtitle.value = null
+            subtitleOwner = item
             recallSubtitle(item)
         }
         _route.value = Route.Detail(item)
