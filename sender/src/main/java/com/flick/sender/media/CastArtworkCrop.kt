@@ -39,23 +39,34 @@ internal data class ArtworkCrop(
  * `setColor` nowhere along the way. That trade is deliberate: the picture is the film's, so the
  * colour is too.
  *
- * **Both bounds exist because every slot this reaches CROPS.** The surfaces fill their slot with
- * the artwork and discard the overflow, and those slots run from square — a notification's
- * right-hand icon, a car head unit, a watch — to roughly 2:1, the media card in the shade. So a
- * frame wider than the widest slot spends its width on columns nothing ever displays, and a frame
- * taller than square spends its height the same way. Both spend it out of a FIXED budget, which
- * means the waste is subtracted from the resolution of the part that IS seen. Bounding the aspect
- * is how the budget ends up spent on visible pixels.
+ * **Both bounds exist because every slot this reaches CROPS, and none of them can be told not
+ * to.** The platform's own scale type for both destinations is `centerCrop`, hard-coded in the
+ * layouts and reachable by no API: the artwork fills the slot and the overflow is discarded. The
+ * slots run from square — a notification's right-hand icon, a car head unit, a watch — to roughly
+ * 2:1, the media card in the shade. So a frame wider than the widest slot spends its width on
+ * columns nothing ever displays, and one taller than the tallest spends its height the same way.
+ * Both spend it out of a FIXED budget, which means the waste is subtracted from the resolution of
+ * the part that IS seen. Bounding the aspect is how the budget ends up spent on visible pixels,
+ * and it is the ONLY lever there is, because nothing between here and the screen will crop to a
+ * shape on this app's behalf.
  *
  * 16:9 is the wide bound because it is already the shape of nearly everything this app plays:
  * it passes through untouched, and the only films it trims are the ones no slot could show whole
  * anyway — a 2.39:1 scope frame loses a quarter of its width, from both sides equally.
  *
- * 3:4 is the tall bound, so portrait is deliberately not left native. A 9:16 clip is the worst
- * case a landscape card has: it shows the middle band and nothing else, so three quarters of the
- * pixels would be rows cropped before anyone saw them. Trimmed to 3:4 the same clip still reads
- * unmistakably as portrait — it is a shape cameras genuinely frame for — while every pixel left
- * in it is one a square slot can show.
+ * 4:3 is the tall bound, which makes the whole band a LANDSCAPE one: nothing this composes is
+ * ever taller than it is wide. Portrait used to be left at 3:4 on the argument that a phone clip
+ * should still read as a phone clip, and on the surface the viewer actually looks at that
+ * argument loses. The media card in the shade is `match_parent` wide by 184dp tall and crops to
+ * centre, so it is about 2:1, and what a frame keeps of its own HEIGHT there is its aspect over
+ * that 2 — 37% of a 3:4 frame against 67% of a 4:3 one. Holding the tall bound at 3:4 therefore
+ * spent the budget on rows the one surface with any size to it was always going to throw away,
+ * and left the viewer a sliver through the middle of their own clip. The square slots are
+ * indifferent between the two, because a square crop takes the same share off whichever edge is
+ * the longer one.
+ *
+ * The cost is real and lands on the tallest thing there is: a 9:16 clip keeps 42% of its height.
+ * Those rows were not being SEEN before the bound moved, only carried.
  *
  * **The COST is the constant that the SIZE used to be.** A still is scaled to fit [budgetPx]
  * pixels and never scaled up, so a small frame keeps its own pixels and a large one arrives at
@@ -157,7 +168,13 @@ private fun compose(still: Bitmap): Bitmap {
  * with: the number is unchanged from the square this app used to send.
  *
  * Holding the AREA rather than an edge is what lets the shape belong to the film. A 16:9 frame
- * spends the budget as 597 x 336, a 4:3 frame as 517 x 388, a square one as 448 x 448.
+ * spends the budget as 597 x 336, and a 4:3 one — the tallest the bounds allow — as 517 x 388.
+ * Both land inside the few-hundred-pixel band the platform's own downscalers are aiming at:
+ * `Icon.scaleDownIfNecessary` holds a notification's icon to `notification_right_icon_size`, and
+ * `MediaMetadata.Builder` holds the session's copy to `config_mediaMetadataBitmapMaxSize`, which
+ * is 320dp. Both of those scale UNIFORMLY and neither ever crops, so the shape that arrives is
+ * the shape composed here; all cropping happens at the far end, in an ImageView this app cannot
+ * reach.
  */
 internal const val ARTWORK_BUDGET_PX = 448 * 448
 
@@ -165,9 +182,9 @@ internal const val ARTWORK_BUDGET_PX = 448 * 448
 internal const val ARTWORK_WIDE_BOUND_W = 16
 internal const val ARTWORK_WIDE_BOUND_H = 9
 
-/** Taller than 3:4 is centre-cropped to it — [artworkCrop] holds why portrait is not left native. */
-internal const val ARTWORK_TALL_BOUND_W = 3
-internal const val ARTWORK_TALL_BOUND_H = 4
+/** Taller than 4:3 is centre-cropped to it — [artworkCrop] holds why the band is landscape-only. */
+internal const val ARTWORK_TALL_BOUND_W = 4
+internal const val ARTWORK_TALL_BOUND_H = 3
 
 /** ARGB_8888: the config every bitmap this file composes is drawn in. */
 internal const val ARTWORK_BYTES_PER_PIXEL = 4

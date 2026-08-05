@@ -45,19 +45,22 @@ class CastArtworkSizeTest {
         }
     }
 
-    @Test fun aSquareFrameIsTheWorstCaseAndCostsExactlyWhatTheOldSquareDid() {
-        // The budget was chosen as the old matted square's own area, so the shape that spends it
-        // most expensively spends precisely what every cast used to. Nothing about the Binder
-        // margin moved when the mat came off.
+    @Test fun theTallBoundIsTheWorstCaseAndStillCostsLessThanTheOldSquare() {
+        // The budget was chosen as the old matted square's own area, and no shape can reach that
+        // area any more: a square still is cropped to the tall bound before it is scaled, so the
+        // most expensive shape there is now is 4:3. The Binder margin only ever grew.
         val crop = artworkCrop(ARTWORK_SOURCE_BOX_PX, ARTWORK_SOURCE_BOX_PX)
-        assertEquals(448 to 448, crop.width to crop.height)
-        assertEquals(MaxBytes, crop.bytes)
+        assertEquals(517 to 388, crop.width to crop.height)
+        assertTrue("${crop.bytes} vs $MaxBytes", crop.bytes <= MaxBytes)
     }
 
     @Test fun theShapesTheBudgetIsSpentAsAreTheOnesTheCommentsName() {
         assertEquals("16:9", 597 to 336, artworkOf(3840 to 2160).let { it.width to it.height })
         assertEquals("4:3", 517 to 388, artworkOf(1440 to 1080).let { it.width to it.height })
-        assertEquals("1:1", 448 to 448, artworkOf(1080 to 1080).let { it.width to it.height })
+        // Both shapes outside the band land INSIDE the budget rather than on it: the crop takes
+        // them below it, and nothing here is ever scaled up to spend a budget it has not reached.
+        assertEquals("2.39:1", 476 to 268, artworkOf(3840 to 1608).let { it.width to it.height })
+        assertEquals("9:16", 360 to 270, artworkOf(1080 to 1920).let { it.width to it.height })
     }
 
     @Test fun aStillTheProviderSizedItselfIsHeldToTheSameCeiling() {

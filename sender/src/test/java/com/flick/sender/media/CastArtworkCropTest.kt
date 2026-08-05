@@ -10,7 +10,7 @@ class CastArtworkCropTest {
     @Test fun aFilmInsideTheBoundsKeepsItsWholeFrame() {
         // The headline of the whole file: the artwork is the film, at the film's own shape, with
         // nothing added round it and nothing taken off a shape the media surfaces can show.
-        for (name in listOf("16:9", "16:9 HD", "4:3", "3:4", "1:1", "small")) {
+        for (name in listOf("16:9", "16:9 HD", "4:3", "small")) {
             val crop = artworkOf(name)
             assertEquals("$name left", 0, crop.left)
             assertEquals("$name top", 0, crop.top)
@@ -48,22 +48,39 @@ class CastArtworkCropTest {
         assertTrue("${keptWidth("2.39:1")}", keptWidth("2.39:1") in 0.73f..0.76f)
     }
 
-    @Test fun aPhoneClipIsCentreCroppedToTheTallBoundAndStaysPortrait() {
+    @Test fun aPhoneClipIsCentreCroppedToTheTallBoundAndComesOutLandscape() {
         val crop = artworkOf("9:16")
         val (width, height) = stillOf("9:16")
         assertEquals("nothing comes off the sides", width, crop.sourceWidth)
         assertEquals(0, crop.left)
         assertEquals("trimmed equally from top and bottom", height - crop.sourceHeight, crop.top * 2)
         assertAspect(TallBound, crop.sourceWidth, crop.sourceHeight)
-        // Three quarters of the frame survives, and what it is a picture of is still a portrait
-        // one: the bound is there to stop the pixels being spent on rows a landscape card crops,
-        // not to turn a phone clip into a landscape one.
-        assertTrue("${crop.sourceHeight}", crop.sourceHeight.toFloat() / height in 0.74f..0.76f)
-        assertTrue("${crop.width} x ${crop.height}", crop.height > crop.width)
+        // What the bound costs the tallest thing there is, stated outright: a 9:16 clip keeps a
+        // little over two fifths of its height. Those rows were being carried rather than seen —
+        // the media card in the shade is about 2:1 and crops to centre, so it never showed them.
+        assertTrue("${crop.sourceHeight}", crop.sourceHeight.toFloat() / height in 0.41f..0.43f)
+    }
+
+    @Test fun nothingThisComposesIsEverTallerThanItIsWide() {
+        // The band is landscape end to end, which is the property the tall bound exists to give:
+        // a portrait frame reaching a landscape slot is spending its budget on rows that slot
+        // discards, and there is no slot anywhere in this app's reach that is taller than square.
+        for (name in Videos.keys) {
+            val crop = artworkOf(name)
+            assertTrue("$name: ${crop.width} x ${crop.height}", crop.width >= crop.height)
+            assertTrue("$name source", crop.sourceWidth >= crop.sourceHeight)
+        }
+    }
+
+    @Test fun everyShapeLandsInsideTheBandWhateverItWasShotAt() {
+        for (name in Videos.keys) {
+            val aspect = artworkOf(name).let { it.sourceWidth.toFloat() / it.sourceHeight }
+            assertTrue("$name is $aspect", aspect in TallBound * 0.99f..WideBound * 1.01f)
+        }
     }
 
     @Test fun aFrameShotExactlyAtABoundIsNotTrimmedByARoundingError() {
-        for ((width, height) in listOf(1920 to 1080, 640 to 360, 768 to 1024, 480 to 640)) {
+        for ((width, height) in listOf(1920 to 1080, 640 to 360, 1440 to 1080, 640 to 480)) {
             val crop = artworkCrop(width, height)
             assertEquals("$width x $height", width, crop.sourceWidth)
             assertEquals("$width x $height", height, crop.sourceHeight)
@@ -73,10 +90,12 @@ class CastArtworkCropTest {
     @Test fun aFilmSmallerThanTheBudgetKeepsItsOwnPixels() {
         // The budget is a ceiling, not a target: inventing pixels would cost memory on the one
         // bitmap this app holds live for the length of a cast and buy no detail at all.
+        // Measured against the rectangle the BOUNDS left, not against the still: a shape outside
+        // the band is cropped whatever its size, and what this is about is the scaling after it.
         for ((width, height) in listOf(320 to 240, 100 to 100, 400 to 300, 240 to 320)) {
             val crop = artworkCrop(width, height)
-            assertEquals("$width x $height", width, crop.width)
-            assertEquals("$width x $height", height, crop.height)
+            assertEquals("$width x $height", crop.sourceWidth, crop.width)
+            assertEquals("$width x $height", crop.sourceHeight, crop.height)
         }
     }
 
