@@ -41,15 +41,15 @@ class BackupExclusionsTest {
 
     @Test fun everyFingerprintKeyedStoreStaysOnThePhoneThatOwnsTheMedia() {
         assertEquals(
-            DEVICE_LOCAL_DATASTORE,
-            fileExcludes(fullBackupSection(xml("backup_rules.xml"))).intersect(DEVICE_LOCAL_DATASTORE),
+            DEVICE_LOCAL_FILES,
+            fileExcludes(fullBackupSection(xml("backup_rules.xml"))).intersect(DEVICE_LOCAL_FILES),
         )
         val root = xml("data_extraction_rules.xml")
         for (section in listOf("cloud-backup", "device-transfer")) {
             assertEquals(
-                "$section must exclude device-local playback progress",
-                DEVICE_LOCAL_DATASTORE,
-                fileExcludes(childSection(root, section)).intersect(DEVICE_LOCAL_DATASTORE),
+                "$section must exclude every device-local store",
+                DEVICE_LOCAL_FILES,
+                fileExcludes(childSection(root, section)).intersect(DEVICE_LOCAL_FILES),
             )
         }
     }
@@ -198,14 +198,21 @@ class BackupExclusionsTest {
         val SECRET_BEARING = setOf("flick_pairings", "flick_subtitles_online")
 
         /**
-         * Both are keyed by the same hash of a content URI and a MediaStore source
-         * revision, so neither names anything on a second device: restored, they are
-         * records that can only ever fail to match, taking up a bounded store's room
-         * against the films that phone actually holds.
+         * All three stores are keyed by the same hash of a content URI and a MediaStore
+         * source revision, so none of them names anything on a second device: restored,
+         * they are records that can only ever fail to match, taking up a bounded store's
+         * room against the films that phone actually holds.
+         *
+         * `subtitle_memory` is the directory those subtitle records name, and it is on
+         * this list for a second reason the others do not have: it holds verbatim copies
+         * of the user's own subtitle files. Excluding the records without the copies would
+         * leave the copies travelling alone.
          */
-        val DEVICE_LOCAL_DATASTORE = setOf(
+        val DEVICE_LOCAL_FILES = setOf(
             "datastore/flick_playback_progress.preferences_pb",
             "datastore/flick_audio_delay.preferences_pb",
+            "datastore/flick_subtitle_memory.preferences_pb",
+            "subtitle_memory",
         )
 
         /**

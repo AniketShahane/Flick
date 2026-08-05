@@ -22,6 +22,13 @@
         <exclude domain="file" path="datastore/flick_playback_progress.preferences_pb" />
         <!-- Remembered A/V nudges are keyed by that same hash and name nothing elsewhere. -->
         <exclude domain="file" path="datastore/flick_audio_delay.preferences_pb" />
+        <!--
+          Same hash again for the records — and the directory beside them holds verbatim
+          copies of the user's own subtitle files, which are their reading of the films
+          they watch and belong on the phone that made them and nowhere else.
+        -->
+        <exclude domain="file" path="datastore/flick_subtitle_memory.preferences_pb" />
+        <exclude domain="file" path="subtitle_memory" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="flick_pairings.xml" />
@@ -29,5 +36,7 @@
         <exclude domain="sharedpref" path="flick_library.xml" />
         <exclude domain="file" path="datastore/flick_playback_progress.preferences_pb" />
         <exclude domain="file" path="datastore/flick_audio_delay.preferences_pb" />
+        <exclude domain="file" path="datastore/flick_subtitle_memory.preferences_pb" />
+        <exclude domain="file" path="subtitle_memory" />
     </device-transfer>
 </data-extraction-rules>

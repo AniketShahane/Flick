@@ -34,8 +34,11 @@ import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.media.PlaybackProgressStore
 import com.flick.sender.media.PlaybackProgressWrite
 import com.flick.sender.media.PlaybackResumePolicy
+import com.flick.sender.media.SubtitleFiles
+import com.flick.sender.media.SubtitleMemoryStore
 import com.flick.sender.media.collectSettledAudioDelay
 import com.flick.sender.media.rememberedAudioDelayMs
+import com.flick.sender.media.rememberedSubtitle
 import com.flick.sender.media.resumePositionMs
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
@@ -265,6 +268,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val playbackProgressRecorder = PlaybackProgressRecorder()
     private val audioDelayStore = AudioDelayMemoryStore(appContext, scope)
     private val audioDelayRecorder = AudioDelayRecorder()
+    private val subtitleMemoryStore = SubtitleMemoryStore(appContext, scope)
     private val libraryFolderStore = LibraryFolderStore(appContext)
     private val videoNameStore = VideoNamePreferenceStore(appContext)
     private val videoNamePreference =
@@ -276,7 +280,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var libraryJob: Job? = null
     private var subtitleJob: Job? = null
     private var progressResolutionJob: Job? = null
-    private var subtitleOwnerUri: Uri? = null
+    private var subtitleRecallJob: Job? = null
+    // The item and not its Uri: a Uri cannot produce a fingerprint, and the subtitle
+    // memory is filed under the same identity the resume checkpoint is.
+    private var subtitleOwner: MediaItem? = null
     private val pairingGate = PairingAttemptGate()
     private val manualPairAttemptLedger = ManualPairAttemptLedger()
     private val pairCodeReset = PairCodeReset()
@@ -580,11 +587,76 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // A sideloaded subtitle belongs to the title it was picked for. Browsing to a
         // different one drops it, but only while nothing is casting: a live cast owns
         // the served subtitle and must not lose it because the user opened Library.
-        if (currentCastId == null && subtitleOwnerUri != item.uri) {
-            subtitleOwnerUri = item.uri
+        if (currentCastId == null && subtitleOwner?.uri != item.uri) {
+            subtitleOwner = item
             _selectedSubtitle.value = null
+            recallSubtitle(item)
         }
         _route.value = Route.Detail(item)
+    }
+
+    /**
+     * Put back the subtitle this film was last watched with, while the sheet is being read.
+     *
+     * The half of the recall that costs nothing: the copy is proven on disk while the user
+     * is still looking at the sheet, so a film opened with nothing casting reaches the
+     * Flick button already carrying its cues. It deliberately does not run while a cast is
+     * live, because that cast owns the selection — which is why [recalledSubtitleFor]
+     * exists to answer for the film that is about to replace it.
+     *
+     * The record is read WITHOUT waiting, for the audio delay's reason: the store starts
+     * reading at launch and fails open to Ready, and a recall that lost a race with the
+     * disk on one launch is a subtitle the viewer re-attaches in one tap — while holding
+     * a screen transition for a decoration is a stutter they see every time.
+     */
+    private fun recallSubtitle(item: MediaItem) {
+        subtitleRecallJob?.cancel()
+        val fingerprint = PlaybackMediaFingerprint.of(item)
+        val record = rememberedSubtitle(subtitleMemoryStore.state.value, fingerprint) ?: return
+        subtitleRecallJob = scope.launch {
+            val uri = subtitleMemoryStore.recall(fingerprint, record) ?: return@launch
+            // The film may have been navigated away from, or a cast started, while the
+            // copy was being proven — a stale recall must never land on either.
+            if (currentCastId != null || subtitleOwner?.uri != item.uri) return@launch
+            if (_selectedSubtitle.value != null) return@launch
+            _selectedSubtitle.value = SelectedSubtitle(uri, record.displayName, record.language)
+            FlickLog.i("cast", "subtitle recalled lang=${record.language ?: "unknown"}")
+        }
+    }
+
+    /**
+     * The subtitle [item] was last watched with, for a cast that is starting right now.
+     *
+     * [openDetail] cannot answer for this one. A live cast owns the served selection, so
+     * browsing to another film mid-cast leaves that film's memory unread — which is the
+     * ordinary way of switching films, not a corner: cast one, open Library, open the next,
+     * press Flick. Without this it would be cast bare and its subtitle would only come back
+     * on some later launch that happened to open its sheet first.
+     *
+     * The record is read from the StateFlow WITHOUT waiting, exactly as the remembered
+     * audio delay in [startCast] is. What this does add to the startup path is a stat and a
+     * length on an app-private file, and not the provider round-trip that rule exists to
+     * keep out of it.
+     */
+    private suspend fun recalledSubtitleFor(
+        item: MediaItem,
+        castId: String,
+        generation: Long,
+    ): SelectedSubtitle? {
+        val fingerprint = PlaybackMediaFingerprint.of(item)
+        val record = rememberedSubtitle(subtitleMemoryStore.state.value, fingerprint) ?: return null
+        val uri = subtitleMemoryStore.recall(fingerprint, record) ?: return null
+        // The cast may have been superseded while the copy was being proven, and a stale
+        // recall must land on neither the file being served nor the selection the sheet
+        // shows — including one the viewer picked themselves in the meantime.
+        if (!castGate.isCurrent(castId, generation) || currentCastId != castId) return null
+        if (_selectedSubtitle.value != null) return null
+        val selection = SelectedSubtitle(uri, record.displayName, record.language)
+        // Published as well as served: this is what the sheet names and what clearSubtitle
+        // takes back off, so a recall the viewer cannot see is one they cannot refuse.
+        _selectedSubtitle.value = selection
+        FlickLog.i("cast", "subtitle recalled lang=${record.language ?: "unknown"}")
+        return selection
     }
 
     /**
@@ -594,6 +666,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * confirmed, so the swap costs a re-buffer and nothing else.
      */
     fun selectSubtitle(uri: Uri, displayName: String, language: String?) {
+        // A pick outranks a recall that is still proving its copy on disk.
+        subtitleRecallJob?.cancel()
         val selection = SelectedSubtitle(
             uri,
             ControlProtocolV2.normalizedLabel(displayName, ControlProtocolV2.SUBTITLE_LABEL_MAX)
@@ -603,20 +677,68 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // The sheet names the casting item as what it is matching against, so that is
         // the title this pick belongs to; openDetail cannot bind it while a cast owns
         // the selection.
-        _castingItem.value?.uri?.let { subtitleOwnerUri = it }
+        _castingItem.value?.let { subtitleOwner = it }
         _selectedSubtitle.value = selection
         // Neither the URI nor the file name is ever logged: a subtitle path names the
         // film and the user's storage layout.
         FlickLog.i("cast", "subtitle selected lang=${selection.language ?: "unknown"}")
         retargetSubtitle(selection)
+        rememberSubtitle(uri, displayName, selection)
+    }
+
+    /**
+     * Keep a copy of this pick so the film can be opened with it again.
+     *
+     * [uri] is handed to the serving path above untouched and this copies it a second
+     * time, rather than the two sharing one file. The working path carries a 4K
+     * direct-play and it already reads a source both the picker and OpenSubtitles proved
+     * readable; making it depend on a copy that could still be running would put an IO
+     * step this feature owns in front of the one thing the app exists to do.
+     *
+     * The extension comes from the RAW name and not from the stored label: the label went
+     * through `normalizedLabel`, which truncates, and a name long enough to lose its
+     * extension there would be remembered as a file Media3 cannot parse.
+     */
+    private fun rememberSubtitle(uri: Uri, displayName: String, selection: SelectedSubtitle) {
+        val owner = subtitleOwner ?: return
+        val extension = SubtitleFiles.extensionOf(displayName)
+            ?.takeIf { it in SubtitleFiles.SubtitleExtensions } ?: return
+        // Launched and not held: the store serialises its own mutations in call order, and
+        // cancelling one from here is what would let a later removal overtake it. The write
+        // waits on the copy — a copy that fails writes no record — and neither outcome is
+        // ever visible to the film being served.
+        scope.launch {
+            subtitleMemoryStore.remember(
+                fingerprint = PlaybackMediaFingerprint.of(owner),
+                source = uri,
+                displayName = selection.displayName,
+                language = selection.language,
+                extension = extension,
+            )
+        }
     }
 
     /** Drop the external subtitle and revoke its token so the old `/s/{token}` 404s. */
     fun clearSubtitle() {
+        subtitleRecallJob?.cancel()
         if (_selectedSubtitle.value == null) return
         _selectedSubtitle.value = null
         FlickLog.i("cast", "subtitle cleared")
         retargetSubtitle(null)
+        forgetSubtitle()
+    }
+
+    /**
+     * Detaching is the audio delay's in-sync: the absence of a record, not a record of
+     * an absence. A viewer who takes the subtitle off is saying do not bring it back.
+     *
+     * Only this path forgets. [openDetail] and [startCast] drop `_selectedSubtitle` by
+     * direct assignment rather than through [clearSubtitle], which is exactly why browsing
+     * to another film — or casting one that owns no selection — leaves the memory alone.
+     */
+    private fun forgetSubtitle() {
+        val owner = subtitleOwner ?: return
+        scope.launch { subtitleMemoryStore.forget(PlaybackMediaFingerprint.of(owner)) }
     }
 
     private fun retargetSubtitle(selection: SelectedSubtitle?) {
@@ -1087,9 +1209,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // file it is serving — so a film browsed to mid-cast reaches here still carrying
         // the previous film's subtitle. Casting it must not inherit those cues, which
         // the receiver would auto-enable under SELECTION_FLAG_DEFAULT.
-        val subtitle = _selectedSubtitle.value?.takeIf { subtitleOwnerUri == item.uri }
-        if (subtitle == null) _selectedSubtitle.value = null
-        subtitleOwnerUri = item.uri
+        val owned = _selectedSubtitle.value?.takeIf { subtitleOwner?.uri == item.uri }
+        if (owned == null) _selectedSubtitle.value = null
+        subtitleOwner = item
         _castingItem.value = item; _route.value = Route.Connecting; publishCastStart(CastStartState.ConnectingControl(castId))
         castJob = scope.launch {
             var readyCommit = false
@@ -1109,6 +1231,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // moves. A null here is a file this feature will never have an opinion about.
                 linkMonitor.beginCast(castId, LinkCapacityPolicy.requiredBitrateBps(sizeBytes, item.durationMs))
                 publishCastStart(CastStartState.StartingSource(castId))
+                // Before the server is told what to serve, so a remembered subtitle rides
+                // the first loadMedia rather than arriving as a retarget the TV pays for
+                // with a re-buffer.
+                val subtitle = owned ?: recalledSubtitleFor(item, castId, thisGeneration)
                 ServerStateHolder.beginStarting(castId)
                 CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)
                 val server = withTimeoutOrNull(9_000) { ServerStateHolder.state.first { it.castId == castId && (it.status == ServerStatus.RUNNING || it.status == ServerStatus.ERROR) } }

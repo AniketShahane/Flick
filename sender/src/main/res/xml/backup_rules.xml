@@ -7,6 +7,15 @@
     <!-- Remembered A/V nudges are keyed by that same hash, so they name nothing elsewhere. -->
     <exclude domain="file" path="datastore/flick_audio_delay.preferences_pb" />
     <!--
+      The remembered subtitles, and the copies those records name. Two reasons, and the
+      second is the one that would not be obvious: the records are keyed by the same hash
+      of a MediaStore revision that exists only on this phone, so restored they can match
+      nothing — and the directory holds verbatim copies of the user's own subtitle files,
+      which are their reading of the films they watch and have no business in a cloud.
+    -->
+    <exclude domain="file" path="datastore/flick_subtitle_memory.preferences_pb" />
+    <exclude domain="file" path="subtitle_memory" />
+    <!--
       The library scope names a folder of THIS phone's storage. Since the chooser became a
       tree it is written as a normalised RELATIVE_PATH — "Movies/Marvel" — with the older
       MediaStore bucket id only ever read back, never written.
