@@ -39,7 +39,7 @@ class BackupExclusionsTest {
         }
     }
 
-    @Test fun playbackProgressStaysOnThePhoneThatOwnsTheMedia() {
+    @Test fun everyFingerprintKeyedStoreStaysOnThePhoneThatOwnsTheMedia() {
         assertEquals(
             DEVICE_LOCAL_DATASTORE,
             fileExcludes(fullBackupSection(xml("backup_rules.xml"))).intersect(DEVICE_LOCAL_DATASTORE),
@@ -196,7 +196,17 @@ class BackupExclusionsTest {
          * the first one's authority, which is exactly what neither is meant to do.
          */
         val SECRET_BEARING = setOf("flick_pairings", "flick_subtitles_online")
-        val DEVICE_LOCAL_DATASTORE = setOf("datastore/flick_playback_progress.preferences_pb")
+
+        /**
+         * Both are keyed by the same hash of a content URI and a MediaStore source
+         * revision, so neither names anything on a second device: restored, they are
+         * records that can only ever fail to match, taking up a bounded store's room
+         * against the films that phone actually holds.
+         */
+        val DEVICE_LOCAL_DATASTORE = setOf(
+            "datastore/flick_playback_progress.preferences_pb",
+            "datastore/flick_audio_delay.preferences_pb",
+        )
 
         /**
          * Prefs files that carry no credential, with the reason each is allowed to

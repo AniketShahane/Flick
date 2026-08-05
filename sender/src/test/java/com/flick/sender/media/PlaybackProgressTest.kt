@@ -155,7 +155,7 @@ class PlaybackProgressTest {
         }
         writes.close()
 
-        drainPlaybackWrites(writes) { write ->
+        drainStoreWrites(writes) { write ->
             if (write.fingerprint == "b") error("non-IO failure inside dataStore.edit")
             true
         }
@@ -170,7 +170,7 @@ class PlaybackProgressTest {
 
         assertThrows(CancellationException::class.java) {
             runBlocking {
-                drainPlaybackWrites(writes) { throw CancellationException("scope died") }
+                drainStoreWrites(writes) { throw CancellationException("scope died") }
             }
         }
 

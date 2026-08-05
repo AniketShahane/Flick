@@ -20,11 +20,14 @@
         <exclude domain="sharedpref" path="flick_library.xml" />
         <!-- Hashed checkpoints still name MediaStore revisions that exist only here. -->
         <exclude domain="file" path="datastore/flick_playback_progress.preferences_pb" />
+        <!-- Remembered A/V nudges are keyed by that same hash and name nothing elsewhere. -->
+        <exclude domain="file" path="datastore/flick_audio_delay.preferences_pb" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="flick_pairings.xml" />
         <exclude domain="sharedpref" path="flick_subtitles_online.xml" />
         <exclude domain="sharedpref" path="flick_library.xml" />
         <exclude domain="file" path="datastore/flick_playback_progress.preferences_pb" />
+        <exclude domain="file" path="datastore/flick_audio_delay.preferences_pb" />
     </device-transfer>
 </data-extraction-rules>

@@ -41,23 +41,32 @@ private const val READ_RETRY_MAX_MS = 60_000L
 internal fun readRetryDelayMs(attempt: Long): Long =
     (READ_RETRY_BASE_MS shl attempt.coerceIn(0L, 6L).toInt()).coerceAtMost(READ_RETRY_MAX_MS)
 
+/**
+ * A queued write that somebody is waiting on the answer to. The drain below is shared by
+ * every store on this phone that a recorder feeds, and the one thing it needs of a write
+ * is how to answer it.
+ */
+internal interface StoreWrite {
+    val complete: (Boolean) -> Unit
+}
+
 internal data class PlaybackStoreWrite(
     val fingerprint: String,
     val mutation: PlaybackProgressMutation,
-    val complete: (Boolean) -> Unit,
-)
+    override val complete: (Boolean) -> Unit,
+) : StoreWrite
 
 /**
- * Drains [writes], acknowledging every one exactly once. The recorder holds a
+ * Drains [writes], acknowledging every one exactly once. A recorder holds a
  * single-flight slot per cast until a write is acknowledged, so a [persist] that
  * throws must still report failure — dropping the acknowledgement would silently
  * stop every later checkpoint for that cast, and killing this loop would stop them
  * for the whole process. Only cancellation and Errors end the drain, and cancellation
  * still answers the write it was carrying.
  */
-internal suspend fun drainPlaybackWrites(
-    writes: ReceiveChannel<PlaybackStoreWrite>,
-    persist: suspend (PlaybackStoreWrite) -> Boolean,
+internal suspend fun <T : StoreWrite> drainStoreWrites(
+    writes: ReceiveChannel<T>,
+    persist: suspend (T) -> Boolean,
 ) {
     for (write in writes) {
         val stored = try {
@@ -201,7 +210,7 @@ internal class PlaybackProgressStore(
 
     init {
         scope.launch {
-            drainPlaybackWrites(writes) { persist(it.fingerprint, it.mutation) }
+            drainStoreWrites(writes) { persist(it.fingerprint, it.mutation) }
         }
     }
 

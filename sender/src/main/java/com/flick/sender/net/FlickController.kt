@@ -15,6 +15,9 @@ import com.flick.sender.ServerStatus
 import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
+import com.flick.sender.media.AudioDelayMemoryStore
+import com.flick.sender.media.AudioDelayRecorder
+import com.flick.sender.media.AudioDelayWrite
 import com.flick.sender.media.LibraryFolder
 import com.flick.sender.media.LibraryFolderChoice
 import com.flick.sender.media.LibraryFolderId
@@ -31,6 +34,8 @@ import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.media.PlaybackProgressStore
 import com.flick.sender.media.PlaybackProgressWrite
 import com.flick.sender.media.PlaybackResumePolicy
+import com.flick.sender.media.collectSettledAudioDelay
+import com.flick.sender.media.rememberedAudioDelayMs
 import com.flick.sender.media.resumePositionMs
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
@@ -258,6 +263,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val supportPromptStore = SupportPromptStore(appContext)
     private val playbackProgressStore = PlaybackProgressStore(appContext, scope)
     private val playbackProgressRecorder = PlaybackProgressRecorder()
+    private val audioDelayStore = AudioDelayMemoryStore(appContext, scope)
+    private val audioDelayRecorder = AudioDelayRecorder()
     private val libraryFolderStore = LibraryFolderStore(appContext)
     private val videoNameStore = VideoNamePreferenceStore(appContext)
     private val videoNamePreference =
@@ -413,6 +420,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         CastTransportState.attach(transportCommands)
         scope.launch { control.frames.collect(::onFrame) }
         scope.launch { session.haptics.collect { haptics.play(it) } }
+        // The offset the viewer stopped on, and none of the ones the blade or the walk
+        // passed through getting there. The recorder decides whether it is worth a write;
+        // this only decides when one is worth considering.
+        scope.launch {
+            collectSettledAudioDelay(session.audioDelayMs) { delayMs ->
+                audioDelayRecorder.settled(delayMs)?.let(::enqueueAudioDelay)
+            }
+        }
         scope.launch { TransferTelemetry.samples.collect(linkMonitor::onSample) }
         scope.launch { session.state.collect(linkMonitor::onPlayback) }
         // The TV's own frames are what move the notification's scrubber and flip its
@@ -1113,7 +1128,25 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
                     ?: appContext.getString(R.string.media_title_generic)
                 control.armLoadSubtitle(castId, subUrl, subtitle?.displayName, subtitle?.language)
+                val fingerprint = PlaybackMediaFingerprint.of(item)
+                // Read without waiting. This store starts reading at launch, fails open to
+                // Ready on an unreadable file, and has had the whole of pairing, the
+                // library and this startup to resolve — and a nudge is a decoration on a
+                // cast, so it may not hold one up. A memory missed on the one cast that
+                // outran the disk is a memory the viewer re-dials in one gesture.
+                val rememberedDelayMs = rememberedAudioDelayMs(audioDelayStore.state.value, fingerprint)
                 session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)
+                // Back in force before the first frame is decoded, and in one frame rather
+                // than a walk — see PlaybackSession.applyRememberedAudioDelay for why a
+                // cast with nothing on screen yet is the one move that needs no walking.
+                // The recorder is armed with the same value, so a film that is watched at
+                // the offset it was left at rewrites nothing.
+                rememberedDelayMs?.let(session::applyRememberedAudioDelay)
+                audioDelayRecorder.activate(
+                    castId,
+                    fingerprint,
+                    rememberedDelayMs ?: AudioDelayPolicy.IN_SYNC_MS,
+                )
                 withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
@@ -1123,7 +1156,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 publishCastStart(CastStartState.Active(castId))
                 playbackProgressRecorder.activate(
                     castId,
-                    PlaybackMediaFingerprint.of(item),
+                    fingerprint,
                     startOver = request.startOver,
                 )?.let(::enqueueProgress)
                 _route.value = Route.NowPlaying
@@ -1159,6 +1192,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // retarget or disarm the subtitle its load is about to carry.
         if (currentCastId == castId) {
             playbackProgressRecorder.finish(castId)?.let(::enqueueProgress)
+            // Before session.clear() below, which republishes in-sync: that value belongs
+            // to no film, and a recorder still active when it arrived would read it as the
+            // viewer cancelling the nudge on the one that just ended.
+            audioDelayRecorder.finish(castId, session.audioDelayTargetMs)?.let(::enqueueAudioDelay)
             subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
             currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
             if (clearStart) publishCastStart(CastStartState.Idle)
@@ -1292,6 +1329,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun enqueueProgress(write: PlaybackProgressWrite) {
         playbackProgressStore.enqueue(write.fingerprint, write.mutation) { success ->
             playbackProgressRecorder.acknowledge(write, success)
+        }
+    }
+    private fun enqueueAudioDelay(write: AudioDelayWrite) {
+        audioDelayStore.enqueue(write.fingerprint, write.mutation) { success ->
+            audioDelayRecorder.acknowledge(write, success)
         }
     }
     private fun failPendingResume(code: String) {

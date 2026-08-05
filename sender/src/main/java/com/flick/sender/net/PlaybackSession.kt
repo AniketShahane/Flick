@@ -56,6 +56,18 @@ class PlaybackSession(
     /** The run of absolute values a move too large for one frame is being walked as. */
     private var audioDelayWalk: Job? = null
 
+    /**
+     * The last offset that was ASKED for, which is not what [audioDelayMs] reads while a
+     * walk is still crossing the distance to it.
+     *
+     * Anything that has to record what the viewer chose reads this rather than the value
+     * on screen: a cast torn down mid-walk would otherwise be remembered at whichever hop
+     * the run had reached, which is a value nobody picked and the TV never finished
+     * applying either.
+     */
+    private var audioDelayTarget = AudioDelayPolicy.IN_SYNC_MS
+    val audioDelayTargetMs: Int get() = audioDelayTarget
+
     /** Haptic cues for the hand (grip/detent/snap/confirm). */
     val haptics = MutableSharedFlow<HapticCue>(extraBufferCapacity = 16)
 
@@ -108,6 +120,7 @@ class PlaybackSession(
             audioDelayWalk?.cancel()
             audioDelayWalk = null
             _audioDelayMs.value = AudioDelayPolicy.IN_SYNC_MS
+            audioDelayTarget = AudioDelayPolicy.IN_SYNC_MS
         }
         this.castId = castId
         lastSeq = -1L
@@ -304,6 +317,7 @@ class PlaybackSession(
      */
     fun setAudioDelay(delayMs: Int) {
         val target = AudioDelayPolicy.clamp(delayMs)
+        audioDelayTarget = target
         audioDelayWalk?.cancel()
         // No cast, no picture to protect and no frame to send — the walk exists only for
         // the TV's sake, so with no TV in it the value simply arrives.
@@ -325,6 +339,27 @@ class PlaybackSession(
                 emitAudioDelay(value)
             }
         }
+    }
+
+    /**
+     * Put the nudge a previous viewing of this film settled on back in force, as ONE
+     * frame rather than a walk.
+     *
+     * [setAudioDelay] walks a large move because a change of offset is paid for by the
+     * picture that is ALREADY on screen: past half a second late the receiver's player
+     * abandons decoded buffers forward to the next keyframe, which is a visible skip. A
+     * cast that has only just been loaded has rendered nothing yet, so there is no such
+     * picture to protect — and forty frames spread over 1.6 s would only mean the first
+     * frame the viewer does see could still be arriving at the offset they already chose.
+     *
+     * It must land AFTER [loadMedia], which is what resets both ends of the wire to
+     * in-sync for a genuinely new cast. Sent before, it would be the value that is reset.
+     */
+    fun applyRememberedAudioDelay(delayMs: Int) {
+        audioDelayWalk?.cancel()
+        audioDelayWalk = null
+        audioDelayTarget = AudioDelayPolicy.clamp(delayMs)
+        emitAudioDelay(audioDelayTarget)
     }
 
     private fun emitAudioDelay(value: Int) {
@@ -360,6 +395,7 @@ class PlaybackSession(
         lastSeq = -1L
         _state.value = PlaybackUiState()
         _audioDelayMs.value = AudioDelayPolicy.IN_SYNC_MS
+        audioDelayTarget = AudioDelayPolicy.IN_SYNC_MS
     }
 
     // --- TV → phone --------------------------------------------------------
