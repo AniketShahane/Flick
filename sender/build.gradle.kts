@@ -1,6 +1,7 @@
 // Imported rather than written as `java.util.Properties`: inside a Kotlin build script
 // `java` resolves to Gradle's own java extension, not to the package root, so the
 // qualified name does not compile here.
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -55,6 +56,67 @@ fun supportCheckoutUrl(propertyName: String, environmentName: String): String {
 val supportStripe3Url = supportCheckoutUrl("support.stripe3Url", "FLICK_SUPPORT_STRIPE_3_URL")
 val supportStripe8Url = supportCheckoutUrl("support.stripe8Url", "FLICK_SUPPORT_STRIPE_8_URL")
 val supportStripe15Url = supportCheckoutUrl("support.stripe15Url", "FLICK_SUPPORT_STRIPE_15_URL")
+
+/**
+ * The same shape `SupportCatalog.validatedCheckoutUrl` demands at runtime. Kept in step with
+ * it by hand because a build script cannot see the app's own classes, and deliberately no
+ * looser: a link this accepts and that one rejects would be a build that passed and a tier
+ * that vanished.
+ *
+ * [URI] is imported rather than written qualified for the reason the file header gives about
+ * `Properties`: `java` names Gradle's own extension inside a build script, so `java.net.URI`
+ * does not resolve here.
+ */
+fun malformedCheckoutUrl(value: String): Boolean {
+    val uri = runCatching { URI(value) }.getOrNull() ?: return true
+    val path = uri.rawPath.orEmpty()
+    return !(
+        uri.scheme == "https" && uri.host == "buy.stripe.com" && uri.rawUserInfo == null &&
+            uri.port == -1 && path.startsWith('/') && path.drop(1).isNotBlank() &&
+            uri.rawQuery == null && uri.rawFragment == null
+        )
+}
+
+/**
+ * Configured wrongly must fail the build; configured not at all must not.
+ *
+ * `SupportCatalog` is all-or-nothing on purpose — one bad tier would otherwise present a dead
+ * checkout — but that atomicity is silent: a link with a tracking query on it, or two tiers
+ * filled in and the third forgotten, compiles clean and ships an app whose support sheet
+ * simply never opens. Nothing logs it, because nothing went wrong as far as the app is
+ * concerned. This is the only place that difference is still cheap to notice.
+ *
+ * An unconfigured clone stays buildable, which the empty default exists for; every path in the
+ * app already degrades honestly with no catalog. The failure text names the property and never
+ * the value — a build log is the wrong place for deployment config, whether or not the value
+ * happens to be public.
+ */
+run {
+    val tiers = listOf(
+        "support.stripe3Url" to supportStripe3Url,
+        "support.stripe8Url" to supportStripe8Url,
+        "support.stripe15Url" to supportStripe15Url,
+    )
+    val configured = tiers.filter { it.second.isNotEmpty() }
+    if (configured.isNotEmpty()) {
+        val missing = tiers.filter { it.second.isEmpty() }.map { it.first }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Support checkout is all-or-nothing: ${missing.joinToString()} " +
+                    "${if (missing.size == 1) "is" else "are"} unset while the others are. " +
+                    "Set all three or none.",
+            )
+        }
+        val malformed = configured.filter { malformedCheckoutUrl(it.second) }.map { it.first }
+        if (malformed.isNotEmpty()) {
+            throw GradleException(
+                "Support checkout link rejected: ${malformed.joinToString()}. " +
+                    "Must be https://buy.stripe.com/<path> with no query, fragment, port or " +
+                    "userinfo — a link copied with a tracking parameter fails here.",
+            )
+        }
+    }
+}
 
 /** Java string-literal escaping: BuildConfig is generated source, not a resource. */
 fun javaStringLiteral(value: String): String = value
