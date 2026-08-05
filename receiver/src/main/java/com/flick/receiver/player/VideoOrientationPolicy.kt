@@ -195,7 +195,7 @@ fun autoRotation(shape: MediaShape): AutoRotation {
  * film is settled and only Auto changing its mind — while Auto is still the
  * choice — is worth asking again, because `onTracksChanged` fires for every
  * text-track change and for the panel's 2 Hz re-read, and a resolution can cost a
- * player rebuild.
+ * re-prepare.
  */
 fun resolvesPictureTurn(
     alreadyResolved: Boolean,
@@ -223,11 +223,12 @@ enum class PictureShape { Landscape, Portrait, Neither }
  * been added to the container's own turn.
  *
  * Derived from the container rather than read back off a decoded frame, and that
- * is the point: the only reason to ask is to say something about a film at the
- * moment it starts, and media3 publishes the presented size no earlier than the
- * first output format. The two agree — `MediaCodecVideoRenderer` configures the
- * decoder with the rotation and swaps width against height for a quarter turn
- * while building its `VideoSize` — so this is the same reading, one step sooner.
+ * is the point twice over. The only reason to ask is to say something about a film
+ * at the moment it starts, and media3 publishes the presented size no earlier than
+ * the first output format. And the reported `VideoSize` does not answer this at
+ * all once the picture is turned by the view: the decoder is then configured at 0,
+ * so media3 transposes nothing and reports the CODED shape. Reading the container
+ * states what the viewer is looking at whichever mechanism produced it.
  *
  * A turn off the quarter-turn grid is [Neither]: `MediaFormat.KEY_ROTATION`
  * accepts nothing else, so what the panel would do with it is not knowable here.

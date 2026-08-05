@@ -12,10 +12,11 @@ import org.junit.Test
  *
  * Every answer here is worth a re-buffer of the film, in one direction or the
  * other. Saying "yes" too readily costs the viewer seconds of frozen 4K for a
- * turn that is already on its way or that provably cannot arrive; saying "no" too
- * readily strands the picture on a turn the panel no longer draws, with no way
- * back. The three states the sequences below pin apart — consumed, in flight,
- * commanded but never carried — are what separates those.
+ * turn that is already on its way, that provably cannot arrive, or that the
+ * decoder was never going to be asked to do; saying "no" too readily strands the
+ * picture on a turn the panel no longer draws, with no way back. The states the
+ * sequences below pin apart — configured, in flight, commanded but never carried
+ * — are what separates those.
  *
  * NOT covered, and not coverable here: the threading. The class is exercised on
  * one thread by these tests, so the volatile publication between the main and
@@ -27,11 +28,11 @@ class VideoRotationOverrideTest {
 
     /**
      * What `PlayerController.applyVideoRotation` does for a turn it can act on:
-     * commit the command, then mark it as carried because a re-prepare went out.
+     * commit the command, then mark it carried because a re-prepare went out.
      */
-    private fun VideoRotationOverride.commandAndRePrepare(degrees: Int) {
-        commandExtraDegrees(degrees)
-        markRePrepareIssued()
+    private fun VideoRotationOverride.commandAndRePrepare(degrees: Int, viaView: Boolean = false) {
+        commandTurn(degrees, viaView)
+        markCarried()
     }
 
     // --- What the decoder is given -------------------------------------------
@@ -89,8 +90,9 @@ class VideoRotationOverrideTest {
         assertNull(override.decoderExtraDegrees)
         // And it is not owed a re-prepare to reach the turn its first codec is
         // about to be configured with anyway.
-        assertFalse(override.needsDecoderReconfigure(0))
-        assertTrue(override.needsDecoderReconfigure(90))
+        assertFalse(override.needsDecoderReconfigure())
+        override.commandTurn(90, viaView = false)
+        assertFalse(override.needsDecoderReconfigure())
     }
 
     // --- The container that cannot be turned ---------------------------------
@@ -99,24 +101,25 @@ class VideoRotationOverrideTest {
      * `MediaFormat.KEY_ROTATION` accepts quarter turns only, so a container
      * declaring anything else is played as filed and no command can move it.
      *
-     * The trap this pins is that the decoder's reading then records a turn of 0
-     * whatever was commanded, so a rule written on degrees alone would find the
-     * decoder "behind" forever — and every re-prepare it demanded would re-record
-     * the same 0. A permanent re-buffer loop over a picture that never changes.
+     * The trap this pins is that such a file's decoder is configured with the
+     * container's own value whatever is commanded, so a rule written on the
+     * commanded degrees would find the decoder "behind" forever — and every
+     * re-prepare it demanded would land on the same value again. A permanent
+     * re-buffer loop over a picture that never changes.
      */
     @Test fun aContainerOffTheQuarterTurnGridNeverAsksForASecondRePrepare() {
         val override = VideoRotationOverride()
         override.takeForDecoder(45)
-        assertTrue(override.needsDecoderReconfigure(90))
-        override.commandAndRePrepare(90)
+        override.commandTurn(90, viaView = false)
+        // The command asks for the container's own 45, because that is what
+        // `effectiveRotationDegrees` resolves an off-grid file to.
+        assertFalse(override.needsDecoderReconfigure())
         val turn = override.takeForDecoder(45)
         assertEquals(45, turn.correctedDegrees)
         // Claiming otherwise would report a turn nobody can see as applied.
         assertEquals(0, turn.appliedDegrees)
         assertEquals(0, override.decoderExtraDegrees)
-        // The decoder has consumed the command; that it achieved nothing is a
-        // fact about the file, not a re-prepare still owed.
-        assertFalse(override.needsDecoderReconfigure(90))
+        assertFalse(override.needsDecoderReconfigure())
     }
 
     // --- Whether a re-prepare is owed ----------------------------------------
@@ -125,39 +128,41 @@ class VideoRotationOverrideTest {
         val override = VideoRotationOverride()
         override.commandAndRePrepare(90)
         override.takeForDecoder(0)
-        assertFalse(override.needsDecoderReconfigure(90))
+        assertFalse(override.needsDecoderReconfigure())
     }
 
     @Test fun aChangedTurnIsOwedAReconfigure() {
         val override = VideoRotationOverride()
         override.takeForDecoder(0)
-        assertTrue(override.needsDecoderReconfigure(90))
-        assertTrue(override.needsDecoderReconfigure(180))
-        assertTrue(override.needsDecoderReconfigure(270))
+        for (degrees in listOf(90, 180, 270)) {
+            override.commandTurn(degrees, viaView = false)
+            assertTrue(override.needsDecoderReconfigure())
+        }
     }
 
     @Test fun afterAReconfigureTheSameChoiceStopsAskingForOne() {
         val override = VideoRotationOverride()
         override.takeForDecoder(0)
-        assertTrue(override.needsDecoderReconfigure(270))
-        override.commandAndRePrepare(270)
+        override.commandTurn(270, viaView = false)
+        assertTrue(override.needsDecoderReconfigure())
+        override.markCarried()
         override.takeForDecoder(0)
-        assertFalse(override.needsDecoderReconfigure(270))
+        assertFalse(override.needsDecoderReconfigure())
     }
 
     /**
-     * Startup: the renderer has not read a format yet, so the decoder's turn is
-     * unknown — and it is about to be configured from the commanded value anyway.
-     * Treating unknown as wrong would spend a re-buffer to reach the turn the
-     * first codec was already going to be given.
+     * Startup: the renderer has not read a format yet, so the decoder's
+     * configuration is unknown — and it is about to be taken from the commanded
+     * value anyway. Treating unknown as wrong would spend a re-buffer to reach the
+     * turn the first codec was already going to be given.
      */
     @Test fun aDecoderThatHasNotReportedYetIsNotOwedAReconfigure() {
         val override = VideoRotationOverride()
-        assertFalse(override.needsDecoderReconfigure(0))
-        override.commandAndRePrepare(90)
-        assertFalse(override.needsDecoderReconfigure(90))
-        // A turn that is neither commanded nor known-applied still is owed one.
-        assertTrue(override.needsDecoderReconfigure(180))
+        assertFalse(override.needsDecoderReconfigure())
+        override.commandTurn(90, viaView = false)
+        assertFalse(override.needsDecoderReconfigure())
+        override.commandTurn(180, viaView = false)
+        assertFalse(override.needsDecoderReconfigure())
     }
 
     // --- In flight versus never carried --------------------------------------
@@ -172,13 +177,20 @@ class VideoRotationOverrideTest {
     @Test fun everyRepeatDuringOneRePrepareIsAbsorbed() {
         val override = VideoRotationOverride()
         override.takeForDecoder(0)
-        assertTrue(override.needsDecoderReconfigure(90))
-        override.commandAndRePrepare(90)
+        override.commandTurn(90, viaView = false)
+        assertTrue(override.needsDecoderReconfigure())
+        override.markCarried()
         // Still re-buffering: the decoder has read nothing for this command yet.
-        repeat(5) { assertFalse(override.needsDecoderReconfigure(90)) }
+        repeat(5) {
+            override.commandTurn(90, viaView = false)
+            assertFalse(override.needsDecoderReconfigure())
+        }
         // And once it lands, the same answer for the same reason.
         override.takeForDecoder(0)
-        repeat(5) { assertFalse(override.needsDecoderReconfigure(90)) }
+        repeat(5) {
+            override.commandTurn(90, viaView = false)
+            assertFalse(override.needsDecoderReconfigure())
+        }
     }
 
     /** A different turn is a different request, and re-buffering for it is right. */
@@ -186,7 +198,8 @@ class VideoRotationOverrideTest {
         val override = VideoRotationOverride()
         override.takeForDecoder(0)
         override.commandAndRePrepare(90)
-        assertTrue(override.needsDecoderReconfigure(180))
+        override.commandTurn(180, viaView = false)
+        assertTrue(override.needsDecoderReconfigure())
     }
 
     /**
@@ -199,29 +212,32 @@ class VideoRotationOverrideTest {
     @Test fun aCommandNoRePrepareCarriedIsRepairedByAReAssert() {
         val override = VideoRotationOverride()
         override.takeForDecoder(0)
-        override.commandExtraDegrees(90)
-        assertTrue(override.needsDecoderReconfigure(90))
+        override.commandTurn(90, viaView = false)
+        assertTrue(override.needsDecoderReconfigure())
+        // Re-asserting the identical choice keeps the same request alive rather
+        // than minting a new one, and still finds it unpaid.
+        override.commandTurn(90, viaView = false)
+        assertTrue(override.needsDecoderReconfigure())
         // And the repair is one re-prepare, not one per re-assert: once it is
         // carrying the turn, the next press waits for it like any other.
-        override.markRePrepareIssued()
-        assertFalse(override.needsDecoderReconfigure(90))
+        override.markCarried()
+        assertFalse(override.needsDecoderReconfigure())
     }
 
-    // --- When the effects graph is carrying the turn --------------------------
+    // --- When the video surface is carrying the turn --------------------------
 
     /**
-     * The codec is configured at ZERO under the graph, and not at the container's
-     * own value. Two mechanisms both applying the turn would land 180 out on any
-     * device whose codec transform does work, and a non-zero here would also make
-     * media3 transpose the reported `VideoSize` away from the size of the frames
-     * that actually arrive.
+     * The codec is configured at ZERO under a view turn, and not at the
+     * container's own value. Two mechanisms both applying the turn would land 180
+     * out on any device whose codec transform does work, and a non-zero here
+     * would also make media3 transpose the reported `VideoSize` away from the
+     * shape of the frames that actually arrive.
      */
-    @Test fun aTurnCarriedByFramesLeavesTheDecoderAtZero() {
+    @Test fun aTurnCarriedByTheViewLeavesTheDecoderAtZero() {
         val override = VideoRotationOverride()
-        override.commandTurn(90, viaFrames = true)
-        override.markRePrepareIssued()
+        override.commandAndRePrepare(90, viaView = true)
         assertEquals(0, override.takeForDecoder(0).correctedDegrees)
-        // Including the container's own turn, which the graph has taken over too.
+        // Including the container's own turn, which the view has taken over too.
         assertEquals(0, override.takeForDecoder(90).correctedDegrees)
         assertEquals(0, override.takeForDecoder(45).correctedDegrees)
     }
@@ -229,50 +245,55 @@ class VideoRotationOverrideTest {
     /** The decoder applied nothing, and the reading says which mechanism did. */
     @Test fun theReadingNamesTheMechanismThatCarriedIt() {
         val override = VideoRotationOverride()
-        override.commandTurn(90, viaFrames = true)
-        val viaFrames = override.takeForDecoder(0)
-        assertEquals(90, viaFrames.commandedDegrees)
-        assertEquals(0, viaFrames.appliedDegrees)
-        assertTrue(viaFrames.viaFrames)
-        assertEquals(true, override.decoderReadViaFrames)
-        assertTrue(override.commandedViaFrames)
+        override.commandTurn(90, viaView = true)
+        val viaView = override.takeForDecoder(0)
+        assertEquals(90, viaView.commandedDegrees)
+        assertEquals(0, viaView.appliedDegrees)
+        assertTrue(viaView.viaView)
+        assertEquals(true, override.decoderReadViaView)
+        assertTrue(override.commandedViaView)
 
-        override.commandExtraDegrees(90)
+        override.commandTurn(90, viaView = false)
         val viaDecoder = override.takeForDecoder(0)
         assertEquals(90, viaDecoder.appliedDegrees)
-        assertFalse(viaDecoder.viaFrames)
-        assertEquals(false, override.decoderReadViaFrames)
-        assertFalse(override.commandedViaFrames)
+        assertFalse(viaDecoder.viaView)
+        assertEquals(false, override.decoderReadViaView)
+        assertFalse(override.commandedViaView)
     }
 
     /**
-     * A change of MECHANISM on unchanged degrees still owes the codec a
-     * reconfigure, because what the codec is given changes with it — 90 carried
-     * by the decoder is a codec configured at 90, and 90 carried by frames is a
-     * codec configured at 0.
+     * The saving that made the view turn worth building, stated as the rule that
+     * produces it: handing a turn from the codec to the surface on a film whose
+     * container declares nothing leaves the codec configured exactly as it was, so
+     * the viewer's key press costs no re-buffer at all.
      */
-    @Test fun swappingMechanismOnTheSameDegreesIsOwedAReconfigure() {
+    @Test fun handingTheTurnToTheViewOwesNothingWhenTheCodecEndsUpTheSame() {
         val override = VideoRotationOverride()
-        override.commandExtraDegrees(90)
-        override.markRePrepareIssued()
         override.takeForDecoder(0)
-        assertFalse(override.needsDecoderReconfigure(90, viaFrames = false))
-        assertTrue(override.needsDecoderReconfigure(90, viaFrames = true))
-        override.commandTurn(90, viaFrames = true)
-        override.markRePrepareIssued()
-        override.takeForDecoder(0)
-        assertFalse(override.needsDecoderReconfigure(90, viaFrames = true))
-        assertTrue(override.needsDecoderReconfigure(90, viaFrames = false))
+        override.commandTurn(90, viaView = true)
+        assertFalse(override.needsDecoderReconfigure())
+    }
+
+    /**
+     * And the mirror of it: the same hand-over on a container-rotated film DOES
+     * change the codec's configuration — from the container's 90 to 0 — so it is
+     * owed the one re-prepare that makes the turn happen exactly once.
+     */
+    @Test fun handingTheTurnToTheViewOwesOneWhenTheCodecWasCarryingSomething() {
+        val override = VideoRotationOverride()
+        override.takeForDecoder(90)
+        override.commandTurn(0, viaView = true)
+        assertTrue(override.needsDecoderReconfigure())
     }
 
     /** A new film goes back to the free path with nothing carried over. */
-    @Test fun aNewFilmForgetsThatFramesWereCarryingTheTurn() {
+    @Test fun aNewFilmForgetsThatTheViewWasCarryingTheTurn() {
         val override = VideoRotationOverride()
-        override.commandTurn(90, viaFrames = true)
+        override.commandTurn(90, viaView = true)
         override.takeForDecoder(0)
         override.reset()
-        assertFalse(override.commandedViaFrames)
-        assertNull(override.decoderReadViaFrames)
+        assertFalse(override.commandedViaView)
+        assertNull(override.decoderReadViaView)
         assertEquals(90, override.takeForDecoder(90).correctedDegrees)
     }
 }

@@ -16,14 +16,14 @@ import org.junit.Test
  * add to the container's turn; [pictureTurnFor] answers who can carry the TOTAL.
  * They part company exactly where the user's films live: a phone-shot portrait
  * clip is a container declaring 90 that Auto correctly leaves at 0, so a
- * resolution triggered by Auto's ANSWER moving never fires for it, no graph is
- * ever built, and the decoder is configured with a turn the verified TV's display
- * pipeline drops. Every such clip then plays as a sideways landscape picture from
- * the first frame, with no key pressed.
+ * resolution triggered by Auto's ANSWER moving never fires for it, the picture is
+ * never moved onto a surface that can turn it, and the decoder is configured with
+ * a turn the verified TV's display pipeline drops. Every such clip then plays as a
+ * sideways landscape picture from the first frame, with no key pressed.
  *
  * The counterweight is the other test in each pair: an ordinary film must resolve
- * to no work whatsoever, because a rebuild or a re-prepare spent on a cast that
- * needs neither is the anti-buffering thesis being spent for nothing.
+ * to no work whatsoever, because a re-prepare spent on a cast that needs none is
+ * the anti-buffering thesis being spent for nothing.
  */
 class PictureTurnResolutionTest {
 
@@ -70,8 +70,7 @@ class PictureTurnResolutionTest {
         containerDegrees = shape.video!!.rotationDegrees,
         extraDegrees = extraDegrees,
         colour = pictureColourOf(shape.video.sampleMimeType, shape.video.colorTransfer),
-        hdrSurvivesFrames = false,
-        framesUnavailable = false,
+        turnUnavailable = false,
     )
 
     // --- The defect -----------------------------------------------------------
@@ -89,12 +88,12 @@ class PictureTurnResolutionTest {
 
     /**
      * And the total nobody was asking about is a quarter turn this TV can only
-     * show through the effects graph.
+     * show on a surface it can transform.
      */
-    @Test fun theClipsTotalTurnNeedsTheFramesMechanism() {
+    @Test fun theClipsTotalTurnNeedsTheViewMechanism() {
         val turn = turnFor(phonePortraitClip(), extraDegrees = 0)
-        assertEquals(TurnMechanism.Frames, turn.mechanism)
-        assertEquals(90, turn.frameDegrees)
+        assertEquals(TurnMechanism.View, turn.mechanism)
+        assertEquals(90, turn.viewDegrees)
         // Zero, not the container's own 90: two mechanisms both applying the turn
         // would land 180 out on a TV whose decoder transform does work.
         assertEquals(0, turn.decoderDegrees)
@@ -114,23 +113,23 @@ class PictureTurnResolutionTest {
 
     // --- The cast that must stay byte-identical --------------------------------
 
-    @Test fun anOrdinaryFilmResolvesToNoGraphAndNoTurnAtAll() {
+    @Test fun anOrdinaryFilmResolvesToNoViewTurnAndNoTurnAtAll() {
         val turn = turnFor(ordinaryFilm(), extraDegrees = 0)
         assertEquals(TurnMechanism.Decoder, turn.mechanism)
-        assertEquals(0, turn.frameDegrees)
+        assertEquals(0, turn.viewDegrees)
         assertEquals(0, turn.decoderDegrees)
         assertNull(turn.note)
     }
 
-    /** Including the one this app exists for, whose GL pass would cost the grade. */
-    @Test fun a4kDolbyVisionCastResolvesToNoGraphEither() {
+    /** Including the one this app exists for, which a turn would cost its colour. */
+    @Test fun a4kDolbyVisionCastResolvesToNoViewTurnEither() {
         val film = ordinaryFilm(
             sampleMimeType = MimeTypes.VIDEO_DOLBY_VISION,
             colorTransfer = C.COLOR_TRANSFER_ST2084,
         )
         val turn = turnFor(film, extraDegrees = 0)
         assertEquals(TurnMechanism.Decoder, turn.mechanism)
-        assertEquals(0, turn.frameDegrees)
+        assertEquals(0, turn.viewDegrees)
         assertNull(turn.note)
     }
 
@@ -143,17 +142,44 @@ class PictureTurnResolutionTest {
     @Test fun anOrdinaryFilmIsOwedNoRePrepareBeforeOrAfterItsFirstFormat() {
         val override = VideoRotationOverride()
         override.reset()
-        assertFalse(override.needsDecoderReconfigure(0, viaFrames = false))
+        override.commandTurn(0, viaView = false)
+        assertFalse(override.needsDecoderReconfigure())
         assertEquals(0, override.takeForDecoder(0).correctedDegrees)
-        assertFalse(override.needsDecoderReconfigure(0, viaFrames = false))
+        assertFalse(override.needsDecoderReconfigure())
+    }
+
+    /**
+     * The saving the view turn buys, and the one a viewer feels: asserting a turn
+     * on an ordinary film hands the surface a 90 and leaves the codec at the 0 it
+     * already had, so no re-prepare and no re-buffer is owed at all.
+     */
+    @Test fun turningAnOrdinaryFilmOwesTheDecoderNothing() {
+        val override = VideoRotationOverride()
+        override.reset()
+        assertEquals(0, override.takeForDecoder(0).correctedDegrees)
+        override.commandTurn(90, viaView = true)
+        assertFalse(override.needsDecoderReconfigure())
+    }
+
+    /**
+     * And the case that does cost one: the phone clip, whose codec was configured
+     * with the container's own 90 and has to be taken back to 0 so the turn
+     * happens exactly once.
+     */
+    @Test fun turningAContainerRotatedFilmOwesTheDecoderOneRePrepare() {
+        val override = VideoRotationOverride()
+        override.reset()
+        assertEquals(90, override.takeForDecoder(90).correctedDegrees)
+        override.commandTurn(0, viaView = true)
+        assertTrue(override.needsDecoderReconfigure())
     }
 
     // --- Once per film, not once per delivery ----------------------------------
 
     /**
      * `onTracksChanged` fires again for every text-track change and for the
-     * panel's 2 Hz re-read. A resolution can cost a player rebuild, so a settled
-     * film must not ask for one on each delivery.
+     * panel's 2 Hz re-read. A resolution can cost a re-prepare, so a settled film
+     * must not ask for one on each delivery.
      */
     @Test fun laterDeliveriesOfTheSameSettledFilmResolveNothing() {
         repeat(5) {
@@ -207,15 +233,14 @@ class PictureTurnResolutionTest {
         )
     }
 
-    /** A film the graph already failed on is never given another one. */
-    @Test fun aFilmThatLostItsGraphIsShownAsFiledAndSaysSo() {
+    /** A film the turn already failed on is never given another one. */
+    @Test fun aFilmThatLostItsTurnIsShownAsFiledAndSaysSo() {
         val shape = phonePortraitClip()
         val turn = pictureTurnFor(
             containerDegrees = shape.video!!.rotationDegrees,
             extraDegrees = 0,
             colour = PictureColour.Sdr,
-            hdrSurvivesFrames = false,
-            framesUnavailable = true,
+            turnUnavailable = true,
         )
         assertEquals(TurnMechanism.Decoder, turn.mechanism)
         assertEquals(90, turn.decoderDegrees)
@@ -223,7 +248,7 @@ class PictureTurnResolutionTest {
     }
 
     /** A clip whose container is off the quarter-turn grid is left exactly as filed. */
-    @Test fun aContainerOffTheGridIsNeverGivenAGraph() {
+    @Test fun aContainerOffTheGridIsNeverGivenAViewTurn() {
         val shape = phonePortraitClip().let {
             it.copy(video = it.video!!.copy(rotationDegrees = 45))
         }

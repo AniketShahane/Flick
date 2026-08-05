@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The video surface for a film whose picture has to be turned.
+
+  This layout exists for one attribute. `PlayerView` decides its surface type in
+  its constructor and exposes no setter, and only a `TextureView` can be turned by
+  a view transform — a `SurfaceView` is its own SurfaceFlinger layer, which a view
+  transform cannot reach into. Everything else about this player is configured in
+  code, beside the SurfaceView-backed one it swaps with, so the two cannot drift
+  apart.
+-->
+<androidx.media3.ui.PlayerView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="texture_view" />

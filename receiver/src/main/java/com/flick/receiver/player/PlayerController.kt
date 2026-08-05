@@ -13,7 +13,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.common.C
-import androidx.media3.common.Effect
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -26,7 +25,6 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.StuckPlayerException
 import androidx.media3.datasource.HttpDataSource
-import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -256,18 +254,20 @@ class PlayerController(context: Context) : SessionPlayer {
         private set
 
     /**
-     * The clockwise turn media3's effects graph is applying on the LIVE ExoPlayer
-     * instance, or null when that instance has no graph at all.
+     * The turn the VIDEO SURFACE is carrying, and the picture it has to fit.
      *
-     * This is a property of the INSTANCE rather than of the film, and that is the
-     * whole reason it is tracked separately from the command. The graph can only
-     * be created while a renderer is being enabled for the first time
-     * (`MediaCodecVideoRenderer.onEnabled` guards it with `hasSetVideoSink`, which
-     * only `onReset` clears), and `videoEffects` can never be set back to null —
-     * so engaging or disengaging it is a new player, while CHANGING the turn
-     * inside a live one is a message that costs nothing.
+     * Compose state, because a turn is carried by a different view: a `TextureView`
+     * is the only surface whose contents a view transform can reach, and
+     * `PlayerView` fixes its surface type at construction. [SurfaceTurn.NONE] is
+     * therefore not merely "no turn" — it is the whole ordinary path, the
+     * `SurfaceView` a cast would have had if this feature did not exist.
+     *
+     * A property of the FILM rather than of the ExoPlayer instance, so a turned
+     * film comes back turned after a background/foreground cycle rebuilds the
+     * player under it.
      */
-    private var activeFrameDegrees: Int? = null
+    var surfaceTurn by mutableStateOf(SurfaceTurn.NONE)
+        private set
 
     /** The selected video track's container turn, for [pictureTurnFor]. */
     private var filmContainerRotationDegrees: Int = 0
@@ -275,22 +275,19 @@ class PlayerController(context: Context) : SessionPlayer {
     /** The selected video track's colour class, for [pictureTurnFor]. */
     private var filmColour: PictureColour = PictureColour.Sdr
 
-    /** The selected video track's transfer, for the HDR-survives-a-GL-pass question. */
-    private var filmColorTransfer: Int = Format.NO_VALUE
-
     /**
-     * Set when the effects graph failed on THIS film, so it is never engaged for
-     * it again. Cleared with the film — but not back to false for a film this
-     * session has already condemned; see [filmsWithoutFrames].
+     * Set when the turn failed on THIS film, so it is never engaged for it again.
+     * Cleared with the film — but not back to false for a film this session has
+     * already condemned; see [filmsWithoutTurn].
      */
-    private var framesUnavailableForFilm: Boolean = false
+    private var turnUnavailableForFilm: Boolean = false
 
     /**
      * Every film this session has condemned, so a retry of one of them does not
-     * re-engage the graph that wedged it. The keys are media URLs and carry the
+     * re-engage the turn that wedged it. The keys are media URLs and carry the
      * sender's token: held, compared, never logged.
      */
-    private val filmsWithoutFrames = FilmsWithoutFrames()
+    private val filmsWithoutTurn = FilmsWithoutTurn()
 
     /**
      * Whether this film's turn has been resolved against [pictureTurnFor] at all.
@@ -299,56 +296,38 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     private var pictureTurnResolvedForFilm: Boolean = false
 
-    /** One-shot deadline for an engagement of the effects graph; see [FrameTurnWatchdog]. */
-    private val frameTurnWatchdog = FrameTurnWatchdog()
-    private var pendingFrameTurnDeadline: Runnable? = null
+    /** The liveness deadline a turn is watched by; see [TurnWatchdog]. */
+    private val turnWatchdog = TurnWatchdog()
+    private var pendingTurnDeadline: Runnable? = null
 
     /**
-     * The one-shot hand-back of a film whose graph was condemned, in its OWN slot.
+     * The one-shot hand-back of a film whose turn was condemned, in its OWN slot.
      *
      * [PendingWork] carries why it cannot share [pendingRecovery]'s: an error
-     * queued behind this used to cancel it and re-prepare the graph-carrying
-     * player instead, leaving a frozen picture nothing was on its way to fix.
+     * queued behind this used to cancel it and re-prepare the still-turned player
+     * instead, leaving a frozen picture nothing was on its way to fix.
      */
-    private val pendingFrameTurnFallback = PendingWork(
+    private val pendingTurnFallback = PendingWork(
         schedule = { work, delayMs -> recoveryHandler.postDelayed(work, delayMs) },
         unschedule = { work -> recoveryHandler.removeCallbacks(work) },
     )
 
     /**
-     * The graph's own proof of life, and the only per-frame one media3 offers.
+     * The turn's proof of life, and the only per-frame signal media3 offers.
      *
-     * `onRenderedFirstFrame` is not usable for this on its own:
-     * `MediaCodecVideoRenderer.maybeNotifyRenderedFirstFrame` is gated on
-     * `VideoFrameReleaseControl.onFrameReleasedIsFirstFrame`, and re-registering a
-     * LIVE graph with a new effect list resets nothing there — `InputVideoSink`
-     * only calls `registerInputStream` again — so a shader swap on a running film
-     * would look exactly like a dead one. `DefaultVideoSink`'s frame renderer
-     * calls this for every frame it renders under the graph, so it is the one
-     * signal both ways of engaging it share.
+     * `onRenderedFirstFrame` is not usable for this: it fires once and is gated on
+     * `VideoFrameReleaseControl`'s first-frame state, which says nothing about a
+     * picture that renders one frame and then stops — the failure this watches
+     * for. `MediaCodecVideoRenderer` calls this listener immediately before it
+     * releases every buffer to the output surface, so it is a per-frame heartbeat
+     * on exactly the path the turn uses.
      *
-     * It cannot, however, tell an old-effect frame from a new-effect one: media3
-     * drops `VideoFrameProcessor.Listener.onInputStreamRegistered` at the
-     * `VideoGraph.Listener` boundary, and the only per-frame fact that reaches
-     * here about the graph's OUTPUT is the size `DefaultVideoSink` rebuilds from
-     * the graph's `VideoSize` — which a 90°-to-270° swap leaves identical. So the
-     * frame is timestamped and [FrameTurnWatchdog.evidenceGenerationFor] decides
-     * whether it counts.
-     *
-     * Playback thread. Installed only on an instance that actually carries a
-     * graph, and the armed flag is checked before anything else happens, so a
-     * working turn costs one volatile read per frame.
+     * Playback thread, and one volatile write with no branch and no main-thread
+     * post. Installed only while a turn is in force, so an untouched cast keeps
+     * `frameMetadataListener` null and media3 skips the call entirely.
      */
-    private val frameTurnFrameListener = VideoFrameMetadataListener { _, _, _, _ ->
-        if (frameTurnWatchdog.isArmed) {
-            val generation =
-                frameTurnWatchdog.evidenceGenerationFor(SystemClock.elapsedRealtime())
-            if (generation != FrameTurnWatchdog.NOT_ARMED) {
-                recoveryHandler.post {
-                    if (frameTurnWatchdog.onFrameRendered(generation)) cancelFrameTurnDeadline()
-                }
-            }
-        }
+    private val turnFrameListener = VideoFrameMetadataListener { _, _, _, _ ->
+        turnWatchdog.onFrameRendered(SystemClock.elapsedRealtime())
     }
 
     /**
@@ -457,6 +436,17 @@ class PlayerController(context: Context) : SessionPlayer {
                 instrumentation.videoWidth = videoSize.width
                 instrumentation.videoHeight = videoSize.height
             }
+            // A turned film's geometry is derived from the picture's own shape, so
+            // a new shape has to reach the surface transform. Guarded on the turn
+            // rather than published always: this is Compose state, and an
+            // untouched cast must not recompose the playback surface at all.
+            if (surfaceTurn.isTurned && videoSize.width > 0 && videoSize.height > 0) {
+                surfaceTurn = surfaceTurn.copy(
+                    pictureWidthPx = videoSize.width,
+                    pictureHeightPx = videoSize.height,
+                    pixelWidthHeightRatio = videoSize.pixelWidthHeightRatio,
+                )
+            }
             // What the RENDERER thinks the picture's shape is, which is not the
             // same claim under the two mechanisms and is the reason this line
             // exists.
@@ -466,21 +456,21 @@ class PlayerController(context: Context) : SessionPlayer {
             // that the codec honoured `KEY_ROTATION` — which the verified TV's
             // display pipeline does not. A box that changed shape over a picture
             // that stayed sideways is exactly that failure, and is what put the
-            // frames mechanism here.
+            // view turn here.
             //
-            // Under the frames: the codec is configured at 0, so these stay the
+            // Under the view: the codec is configured at 0, so these stay the
             // CODED dimensions — landscape for a film turned on end — and that is
-            // correct rather than a symptom. The graph is registered with the same
-            // coded size, and `FinalShaderProgramWrapper` fits the turned frame
-            // into the surface itself.
+            // correct rather than a symptom. It is also load-bearing: they are the
+            // shape the frames actually arrive in, and therefore the shape the
+            // surface transform has to be computed from.
             FlickLog.i(
                 "player",
                 "videoSize w=${videoSize.width} h=${videoSize.height} " +
                     "par=${videoSize.pixelWidthHeightRatio} decoderExtraDegrees=" +
                     (rotationOverride.decoderExtraDegrees?.toString() ?: "none") +
-                    " via=" + when (rotationOverride.decoderReadViaFrames) {
+                    " via=" + when (rotationOverride.decoderReadViaView) {
                     null -> "none"
-                    true -> "frames"
+                    true -> "view"
                     false -> "decoder"
                 },
             )
@@ -528,10 +518,10 @@ class PlayerController(context: Context) : SessionPlayer {
             // startup callback, the recovery budget, or the diagnosis UI.
             if (dropFailedExternalSubtitle()) return
             // A rotation key must never cost the user the film either. Checked
-            // before startup for the same reason: the graph can fail during the
+            // before startup for the same reason: the turn can fail during the
             // startup window, and the film without it is the one that was about
             // to play.
-            if (recoverFromFrameTurnFailure(error)) return
+            if (recoverFromTurnFailure(error)) return
             // Startup is a separate, short transaction. It must not inherit the
             // long steady-state recovery policy or hide format/decoder failures.
             startupCallbacks?.let { callbacks ->
@@ -840,11 +830,12 @@ class PlayerController(context: Context) : SessionPlayer {
      * decoder it does not have, and the 2/4/8/15 s recovery budget would only spend
      * 29 s before showing the same answer.
      *
-     * The one exception is a shortfall that appears only once the effects graph
-     * does. This verdict does not travel through `onPlayerError`, so it would
-     * otherwise reach the diagnosis screen without ever passing
-     * [recoverFromFrameTurnFailure] — a cast ended by a rotation key, which is the
-     * outcome the fallback exists to prevent. See [failFrameTurn].
+     * It is deliberately NOT routed through the turn's fallback, which the effects
+     * graph needed: a shortfall is `getTrackSupport`'s answer, decided by the
+     * codec's own capability check, and nothing about which view the frames are
+     * presented in enters it. Handing a genuinely unplayable film back "as filed"
+     * first would spend a re-prepare out of the startup budget and show the
+     * viewer a note about orientation before the real diagnosis.
      */
     private fun reportUnplayableVideoTrack(tracks: Tracks) {
         if (videoShortfallReported) return
@@ -865,16 +856,6 @@ class PlayerController(context: Context) : SessionPlayer {
             "videoUnplayable shortfall=$shortfall mime=${mimeType ?: "unknown"} " +
                 "support=${supports.joinToString(",")} decoderPolicy=hardwareOnly",
         )
-        // This film was playing without a graph a moment ago, so a shortfall
-        // reached under one is evidence about the graph rather than about the file.
-        // Deliberately BEFORE the report is latched: the fallback player has to be
-        // judged on its own tracks, and the per-film latch is what stops a second
-        // verdict — the one with no graph in the way — from coming back here.
-        if (activeFrameDegrees != null &&
-            failFrameTurn("reason=videoUnplayableUnderGraph shortfall=$shortfall")
-        ) {
-            return
-        }
         videoShortfallReported = true
         val error = PlaybackException(
             "video track unplayable",
@@ -915,10 +896,9 @@ class PlayerController(context: Context) : SessionPlayer {
         )
         // The two facts every turn is decided from, kept off the playback thread
         // and off the format callbacks: which way the container says the frames
-        // lie, and what a GL pass would cost their colour.
+        // lie, and what leaving the video layer would cost their colour.
         shape.video?.let { video ->
             filmContainerRotationDegrees = video.rotationDegrees
-            filmColorTransfer = video.colorTransfer
             filmColour = pictureColourOf(video.sampleMimeType, video.colorTransfer)
         }
         val auto = autoRotation(shape)
@@ -946,8 +926,8 @@ class PlayerController(context: Context) : SessionPlayer {
         // [resolvesPictureTurn] carries the rule and the reason. The first delivery
         // resolves whatever the choice is, because an explicit turn taken before
         // the tracks landed was resolved against a container of 0 — the wrong film;
-        // [applyVideoRotation] reads the choice itself and declines when the
-        // mechanism and the degrees both already hold.
+        // [applyVideoRotation] reads the choice itself and declines when both the
+        // surface and the decoder already hold it.
         if (
             !resolvesPictureTurn(
                 alreadyResolved = pictureTurnResolvedForFilm,
@@ -961,202 +941,159 @@ class PlayerController(context: Context) : SessionPlayer {
         applyVideoRotation()
     }
 
-    /** The turn a rebuilt player has to be constructed with, or null for no graph. */
-    private fun frameTurnInForce(): PictureTurn? =
-        currentPictureTurn(videoRotation.extraDegrees ?: autoVideoRotationDegrees)
-            .takeIf { it.mechanism == TurnMechanism.Frames }
-
     /** The mechanism, the numbers and the cost for a turn of [extraDegrees] on this film. */
     private fun currentPictureTurn(extraDegrees: Int): PictureTurn = pictureTurnFor(
         containerDegrees = filmContainerRotationDegrees,
         extraDegrees = extraDegrees,
         colour = filmColour,
-        hdrSurvivesFrames = GlColourOutput.hdrSurvivesFrames(filmColorTransfer),
-        framesUnavailable = framesUnavailableForFilm,
+        turnUnavailable = turnUnavailableForFilm,
     )
 
     /**
      * Take the viewer's choice, or Auto's verdict, to whichever mechanism can
      * actually carry it — see [pictureTurnFor] for which, and why.
      *
-     * Three costs, and the branch order below is exactly the order of increasing
-     * price:
+     * Two independent things can be owed, and the common case owes only the first:
      *
-     *  1. **A live effects graph, given a different turn.** A message. The codec
-     *     is configured at 0 under the graph whatever the turn is, so nothing
-     *     about it changes and there is no re-prepare and no re-buffer at all.
-     *  2. **The graph has to start or stop existing.** A new ExoPlayer instance,
-     *     because media3 can only build the graph while a renderer is first
-     *     enabled and can never take it away again. Costs what a re-prepare costs
-     *     plus a decoder and a surface bind.
-     *  3. **Neither** — the decoder is carrying it, exactly as before frames
-     *     existed. A rotation reaches the decoder through
-     *     `MediaFormat.KEY_ROTATION`, which is set once at codec configuration, so
-     *     a change is only real after the codec has been configured again and
-     *     re-preparing the same player is what does that. Media3 agrees:
-     *     `MediaCodecInfo.canReuseCodec` names a rotation change as a discard
-     *     reason, which is the same statement from the other side.
+     *  1. **The video surface.** Publishing [surfaceTurn] is what moves the film
+     *     onto a `TextureView` and puts the turn in its matrix. The player is not
+     *     rebuilt and the media is not re-fetched: `MediaCodecVideoRenderer.setOutput`
+     *     hands a live codec its new surface through `MediaCodec.setOutputSurface`,
+     *     and re-initialises the codec only where that call is unavailable — the
+     *     worst case is a decoder restart inside one film, never a re-prepare and
+     *     never a re-buffer of bytes off the LAN. And the case that matters most:
+     *     CHANGING a turn already in force is a new matrix on a view and nothing
+     *     else at all, because the surface does not move for it.
+     *  2. **The decoder's configuration.** `MediaFormat.KEY_ROTATION` is read once
+     *     at codec configuration, so a change is only real after the codec has
+     *     been configured again, and re-preparing the same player is what does
+     *     that. Media3 agrees from the other side: `MediaCodecInfo.canReuseCodec`
+     *     names a rotation change as a discard reason.
      *
-     * In case 3 the question asked is "does the DECODER still owe this a
-     * re-prepare?", not "did the commanded number change?". The two part company
-     * in both directions: a re-prepare that declined leaves a recorded choice the
-     * decoder never got, which only a re-assert can repair; and a re-prepare in
-     * flight has not reached the decoder yet either, but re-issuing it would
-     * restart a re-buffer the viewer is already waiting through.
-     * [VideoRotationOverride] separates the two, and this is the only caller
-     * allowed to ask.
+     * The second is owed far less often than the command changes, and that is the
+     * whole reason the question is "does the DECODER still owe this a
+     * re-prepare?" rather than "did the commanded number move?". A turn asserted
+     * on an ordinary film hands the surface a 90 and leaves the codec at the 0 it
+     * already had. [VideoRotationOverride] is what can tell those apart, and this
+     * is the only caller allowed to ask.
      *
-     * Nothing is committed until the work is going to run, and the command is
-     * marked as carried only once it has actually been issued.
+     * The command is recorded before the question, because the question is about
+     * the command; and it is marked carried either by the re-prepare that goes out
+     * or, when none is owed, by the decoder that is already configured for it.
      */
     private fun applyVideoRotation(): Boolean {
+        val exo = player ?: return false
+        if (currentUrl == null) return false
         val extraDegrees = videoRotation.extraDegrees ?: autoVideoRotationDegrees
         val turn = currentPictureTurn(extraDegrees)
         turnNote = turn.note
-        val wantsFrames = turn.mechanism == TurnMechanism.Frames
-        val hasFrames = activeFrameDegrees != null
-        if (wantsFrames && hasFrames) {
-            val exo = player ?: return false
-            if (activeFrameDegrees == turn.frameDegrees) return false
-            // Recorded as a command so a later mechanism change can tell it from
-            // the one before it, and marked carried in the same breath because the
-            // graph takes it now — there is nothing for a re-prepare to deliver.
-            rotationOverride.commandTurn(extraDegrees, viaFrames = true)
-            rotationOverride.markRePrepareIssued()
-            setFrameTurn(exo, turn)
-            return true
-        }
-        if (wantsFrames != hasFrames) {
-            if (player == null || currentUrl == null) return false
-            rotationOverride.commandTurn(extraDegrees, viaFrames = wantsFrames)
-            val rebuilt = rebuildPlayerForTurn(if (wantsFrames) turn else null)
-            if (rebuilt) rotationOverride.markRePrepareIssued()
-            return rebuilt
-        }
-        if (!rotationOverride.needsDecoderReconfigure(extraDegrees, viaFrames = false)) return false
-        if (player == null || currentUrl == null) return false
-        rotationOverride.commandExtraDegrees(extraDegrees)
-        val rePrepared = rePrepareForRotation()
-        if (rePrepared) rotationOverride.markRePrepareIssued()
-        return rePrepared
-    }
-
-    /**
-     * Hand a turn to a graph that already exists.
-     *
-     * `PlaybackVideoGraphWrapper` re-registers its input stream with the new
-     * effect list rather than rebuilding anything, so this is a shader swap on the
-     * next frame. The decoder is not touched, the buffer is not touched, and the
-     * viewer sees the picture turn without the film stopping.
-     *
-     * [activeFrameDegrees] is moved only after the swap has been accepted:
-     * `ExoPlayerImpl.setVideoEffects` does its lib-effect reflection check BEFORE
-     * it sends the renderer message, so a throw leaves the live graph carrying its
-     * previous effect list — and leaving the field describing a graph that is not
-     * there would send the fallback down the wrong branch.
-     */
-    private fun setFrameTurn(exo: ExoPlayer, turn: PictureTurn) {
-        if (!engageFrameTurn(exo, turn)) return
-        activeFrameDegrees = turn.frameDegrees
-        armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.LiveSwap)
-    }
-
-    /**
-     * Ask media3 to carry [turn] in its effects graph, and answer whether it
-     * accepted — the one place `setVideoEffects` is ever called.
-     *
-     * It can refuse synchronously, which no caller of this class is in a position
-     * to survive: disassembling `ExoPlayerImpl.setVideoEffects` in media3 1.10.1
-     * shows it doing
-     * `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")
-     * .getConstructor(VideoFrameProcessor$Factory.class)` before the renderer
-     * message goes out, and throwing `IllegalStateException("Could not find
-     * required lib-effect dependencies.")` on `ClassNotFoundException` or
-     * `NoSuchMethodException`. R8 keeps that class unrenamed in the current
-     * release APK, so this is not the live fault — but the throw would propagate
-     * out of a control-command handler and end the cast because the viewer pressed
-     * a rotation key, which is precisely the outcome the whole fallback exists to
-     * prevent. Anything thrown is therefore the same event as a graph that fails
-     * later: this film is shown as filed.
-     */
-    private fun engageFrameTurn(exo: ExoPlayer, turn: PictureTurn): Boolean {
-        val outcome = runCatching { exo.setVideoEffects(frameTurnEffects(turn)) }
-        val failure = outcome.exceptionOrNull() ?: return true
-        // Named, never the message: a media3 exception can quote a URI.
-        failFrameTurn("reason=setVideoEffects thrown=${failure.javaClass.simpleName}")
-        return false
-    }
-
-    /**
-     * The one effect the receiver ever applies. Nothing is added to it: an empty
-     * list would still engage the whole GL pipeline, and every extra stage is
-     * another pass over a 4K frame.
-     */
-    private fun frameTurnEffects(turn: PictureTurn): List<Effect> = listOf(
-        ScaleAndRotateTransformation.Builder()
-            .setRotationDegrees(turn.frameDegreesCounterClockwise.toFloat())
-            .build(),
-    )
-
-    /**
-     * Watch a newly engaged graph until it has put one frame on the panel that is
-     * actually evidence about it.
-     *
-     * [FRAME_TURN_DEADLINE_MS] is the whole judgement and
-     * [FRAME_TURN_SWAP_SETTLE_MS] is what a [FrameTurnWatchdog.Engagement.LiveSwap]
-     * discounts from it; the state machine is [FrameTurnWatchdog]. A deadline that
-     * comes due while the film is paused or finished re-arms rather than firing —
-     * a picture nobody is waiting on is no evidence about the graph — and one that
-     * comes due against a player that has since been replaced is dropped.
-     */
-    private fun armFrameTurnDeadline(
-        exo: ExoPlayer,
-        engagement: FrameTurnWatchdog.Engagement,
-    ) {
-        cancelFrameTurnDeadline()
-        val generation = frameTurnWatchdog.arm(
-            engagement = engagement,
-            nowMs = SystemClock.elapsedRealtime(),
-            swapSettleMs = FRAME_TURN_SWAP_SETTLE_MS,
+        rotationOverride.commandTurn(extraDegrees, viaView = turn.mechanism == TurnMechanism.View)
+        val owedRePrepare = rotationOverride.needsDecoderReconfigure()
+        // Marked before anything else can decline: nothing is left for a
+        // re-prepare to deliver, so the command is carried the moment it is
+        // recorded, and a repeat of it must not read as one nobody carried.
+        if (!owedRePrepare) rotationOverride.markCarried()
+        val surfaceMoves = surfaceTurn.degrees != turn.viewDegrees
+        if (!owedRePrepare && !surfaceMoves) return false
+        if (surfaceMoves) engageSurfaceTurn(exo, turn.viewDegrees)
+        val rePrepared = if (owedRePrepare) rePrepareForRotation() else false
+        if (rePrepared) rotationOverride.markCarried()
+        FlickLog.i(
+            "player",
+            "turnMechanism via=${if (turn.viewDegrees != 0) "view" else "decoder"} " +
+                "viewDegrees=${turn.viewDegrees} decoderDegrees=${turn.decoderDegrees} " +
+                "colour=$filmColour note=${turnNote ?: "none"} rePrepared=$rePrepared",
         )
+        return rePrepared || surfaceMoves
+    }
+
+    /**
+     * Move the picture onto the surface that can carry [viewDegrees], or off it.
+     *
+     * The frame listener and its deadline are installed with the turn and removed
+     * with it, so a film nobody has turned never gets a per-frame callback at all
+     * — which is what keeps the ordinary path identical to having no rotation
+     * feature. The picture's shape is sampled here rather than remembered because
+     * the transform is derived from it; a shape that changes later arrives through
+     * `onVideoSizeChanged`.
+     */
+    private fun engageSurfaceTurn(exo: ExoPlayer, viewDegrees: Int) {
+        cancelTurnDeadline()
+        if (viewDegrees == 0) {
+            if (surfaceTurn.isTurned) exo.clearVideoFrameMetadataListener(turnFrameListener)
+            surfaceTurn = SurfaceTurn.NONE
+            return
+        }
+        val size = exo.videoSize
+        surfaceTurn = SurfaceTurn(
+            degrees = viewDegrees,
+            pictureWidthPx = size.width,
+            pictureHeightPx = size.height,
+            pixelWidthHeightRatio = size.pixelWidthHeightRatio,
+        )
+        exo.setVideoFrameMetadataListener(turnFrameListener)
+        armTurnDeadline(exo)
+    }
+
+    /**
+     * Watch a turn for as long as it is in force.
+     *
+     * Deliberately not one-shot: the deadline re-arms after every verdict, because
+     * the failure that hid the longest was a picture that rendered its first frame
+     * and then froze — which a watchdog that cancels itself on that frame cannot
+     * see. [TURN_DEADLINE_MS] is the whole judgement and [TurnWatchdog] is the
+     * state machine. A deadline that comes due while the film is paused, finished
+     * or refilling its buffer re-arms rather than firing, and one that comes due
+     * against a player that has since been replaced is dropped.
+     */
+    private fun armTurnDeadline(exo: ExoPlayer) {
+        cancelTurnDeadline()
+        val generation = turnWatchdog.engage(SystemClock.elapsedRealtime())
         lateinit var deadline: Runnable
         deadline = Runnable {
-            if (pendingFrameTurnDeadline !== deadline) return@Runnable
-            pendingFrameTurnDeadline = null
+            if (pendingTurnDeadline !== deadline) return@Runnable
+            pendingTurnDeadline = null
             if (player !== exo) {
-                frameTurnWatchdog.cancel()
+                turnWatchdog.disengage()
                 return@Runnable
             }
-            when (
-                frameTurnWatchdog.consumeDeadline(
-                    generation = generation,
-                    renderingExpected = framesExpectedFrom(exo.playWhenReady, exo.playbackState),
-                )
-            ) {
-                FrameTurnWatchdog.Verdict.Stale -> Unit
-                FrameTurnWatchdog.Verdict.NotYet -> {
-                    pendingFrameTurnDeadline = deadline
-                    recoveryHandler.postDelayed(deadline, FRAME_TURN_DEADLINE_MS)
+            val verdict = turnWatchdog.consumeDeadline(
+                generation = generation,
+                nowMs = SystemClock.elapsedRealtime(),
+                renderingExpected = framesExpectedFrom(
+                    playWhenReady = exo.playWhenReady,
+                    playbackState = exo.playbackState,
+                    provenOnce = turnWatchdog.hasRenderedAFrame,
+                ),
+            )
+            when (verdict) {
+                TurnWatchdog.Verdict.Stale -> Unit
+                TurnWatchdog.Verdict.NotYet, TurnWatchdog.Verdict.Alive -> {
+                    pendingTurnDeadline = deadline
+                    recoveryHandler.postDelayed(deadline, TURN_DEADLINE_MS)
                 }
-                FrameTurnWatchdog.Verdict.NoFrames ->
-                    failFrameTurn("reason=frameWatchdog deadlineMs=$FRAME_TURN_DEADLINE_MS")
+                TurnWatchdog.Verdict.NoFrames ->
+                    failTurn("reason=turnWatchdog deadlineMs=$TURN_DEADLINE_MS")
             }
         }
-        pendingFrameTurnDeadline = deadline
-        recoveryHandler.postDelayed(deadline, FRAME_TURN_DEADLINE_MS)
+        pendingTurnDeadline = deadline
+        recoveryHandler.postDelayed(deadline, TURN_DEADLINE_MS)
     }
 
-    private fun cancelFrameTurnDeadline() {
-        pendingFrameTurnDeadline?.let { recoveryHandler.removeCallbacks(it) }
-        pendingFrameTurnDeadline = null
-        frameTurnWatchdog.cancel()
+    private fun cancelTurnDeadline() {
+        pendingTurnDeadline?.let { recoveryHandler.removeCallbacks(it) }
+        pendingTurnDeadline = null
+        turnWatchdog.disengage()
     }
 
     /**
-     * Re-prepare the LIVE player where the film already is. Everything the
-     * picture depends on survives — the ExoPlayer instance, its surface, the
-     * MediaSession, the sideloaded subtitle and the track selection — so the
-     * change costs a re-buffer and nothing else, exactly as [reloadInPlace] does.
+     * Re-prepare the LIVE player where the film already is, which is the only way
+     * to change what the codec was configured with. Everything the cast owns
+     * survives — the ExoPlayer instance, the MediaSession, the sideloaded subtitle
+     * and the track selection — so the change costs a re-buffer and nothing else,
+     * exactly as [reloadInPlace] does. It is spent only when the decoder's own
+     * rotation has to move; a turn the video surface takes over from a codec that
+     * was already at 0 never reaches here.
      *
      * A subtitle attach still inside its 12 s watchdog window forfeits that
      * window: the rebuilt item carries no attempt tag, so the deadline could only
@@ -1191,130 +1128,60 @@ class PlayerController(context: Context) : SessionPlayer {
     }
 
     /**
-     * Swap the ExoPlayer instance where the film already is, because the effects
-     * graph is starting or stopping.
+     * The turn failed on this film — give the viewer the film back.
      *
-     * Modelled on [playStartup]'s swap rather than on [rePrepareForRotation]: the
-     * graph is decided when a renderer is first enabled, so no amount of
-     * re-preparing an existing instance can add or remove it. Everything the cast
-     * owns survives — the URL, the position, the sideloaded subtitle, the media
-     * id, the platform session, the volume and the instrumentation — so this
-     * costs a re-buffer plus a decoder, and nothing about the transaction.
-     *
-     * The new instance is published to Compose BEFORE the old one is released, so
-     * `PlayerView` rebinds to a live player and `setKeepContentOnPlayerReset`
-     * holds the last frame across the gap rather than showing black.
-     */
-    private fun rebuildPlayerForTurn(turn: PictureTurn?): Boolean {
-        val previous = player ?: return false
-        val url = currentUrl ?: return false
-        cancelSubtitleReloadDeadline()
-        // A recovery queued against the released player would seek and re-prepare
-        // on top of this.
-        pendingRecovery.cancel()
-        val resumeMs = previous.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
-            ?: savedPositionMs.coerceAtLeast(0L)
-        val resumePlayWhenReady = previous.playWhenReady
-        savedPositionMs = resumeMs
-        pendingPlayWhenReady = resumePlayWhenReady
-        lastGoodPositionMs = resumeMs
-        stableReadySinceMs = 0L
-        val exo = createPlayer(turn)
-        // [createPlayer] latches [framesUnavailableForFilm] when media3 refuses the
-        // graph outright, and a refused graph is not one this instance carries.
-        val engagedTurn = turn?.takeUnless { framesUnavailableForFilm }
-        // Switch the platform session to the new instance before the old one is
-        // released, so no controller can target a dead player.
-        bindMediaSession(exo)
-        player = exo
-        previous.removeListener(playerListener)
-        previous.removeAnalyticsListener(analyticsListener)
-        previous.release()
-        activeFrameDegrees = engagedTurn?.frameDegrees
-        exo.setMediaItem(
-            mediaItemFor(url, currentMediaId, currentSubtitle),
-            /* resetPosition = */ false,
-        )
-        if (resumeMs > 0L) exo.seekTo(resumeMs)
-        exo.prepare()
-        exo.playWhenReady = resumePlayWhenReady
-        // Armed after prepare, so the deadline measures the fill and the first
-        // frame together — which is what it is sized against.
-        if (engagedTurn != null) {
-            armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.NewGraph)
-        }
-        FlickLog.i(
-            "player",
-            "turnMechanism via=${if (engagedTurn != null) "frames" else "decoder"} " +
-                "frameDegrees=${engagedTurn?.frameDegrees ?: 0} colour=$filmColour " +
-                "note=${turnNote ?: "none"} glOutput=${GlColourOutput.describe()}",
-        )
-        // Right here rather than after the first frame: the cast transaction is
-        // measuring wall clock against a budget that is still outstanding, and this
-        // rebuild is work the receiver chose — see [StartupDeadlinePolicy]. Reached
-        // only while [startupCallbacks] is non-null, which IS the startup window.
-        startupCallbacks?.onRotationRePrepare?.invoke()
-        return true
-    }
-
-    /**
-     * The effects graph failed on this film — give the viewer the film back.
-     *
-     * Media3 raises frame-processing failures as ordinary playback errors, and a
-     * decoder that will not configure against a `SurfaceTexture` raises a decoder
-     * failure, so both would otherwise end the cast on a diagnosis screen because
-     * the viewer pressed a rotation key. Neither says anything about the film's
-     * playability without the graph, which is how it was playing a moment ago.
+     * A decoder that will not configure against a `SurfaceTexture` raises a
+     * decoder failure, and that would otherwise end the cast on a diagnosis screen
+     * because the viewer pressed a rotation key. It says nothing about the film's
+     * playability untouched, which is how it was playing a moment ago.
      *
      * This is only the errors media3 chose to raise, which is the narrower half of
-     * the net; [failFrameTurn] carries the rest.
+     * the net; [failTurn] carries the rest.
      */
-    private fun recoverFromFrameTurnFailure(error: PlaybackException): Boolean {
+    private fun recoverFromTurnFailure(error: PlaybackException): Boolean {
         // The hand-back for this film is already queued and is itself a full
         // re-prepare from the last good position. Whatever media3 raises in the
-        // one main-thread turn between the latch and that rebuild is the
-        // condemned graph's, so it must not spend a recovery attempt on the
-        // player still carrying it, and must not reach the diagnosis screen ahead
-        // of the film being handed back — which is the whole point of the latch.
-        if (pendingFrameTurnFallback.isPending) {
+        // one main-thread turn between the latch and that hand-back belongs to the
+        // condemned turn, so it must not spend a recovery attempt on the player
+        // still carrying it, and must not reach the diagnosis screen ahead of the
+        // film being handed back — which is the whole point of the latch.
+        if (pendingTurnFallback.isPending) {
             FlickLog.w(
                 "player",
-                "turnFrames absorbed code=${error.errorCodeName}; fallback already queued",
+                "turn absorbed code=${error.errorCodeName}; fallback already queued",
             )
             return true
         }
-        if (activeFrameDegrees == null || framesUnavailableForFilm) return false
-        if (!isFrameTurnFailure(error)) return false
-        return failFrameTurn("reason=playerError code=${error.errorCodeName}")
+        if (!surfaceTurn.isTurned || turnUnavailableForFilm) return false
+        if (!isTurnFailure(error)) return false
+        return failTurn("reason=playerError code=${error.errorCodeName}")
     }
 
     /**
-     * Latch this film's graph as unusable and hand the film back, whatever said so.
+     * Latch this film's turn as unusable and hand the film back, whatever said so.
      *
-     * Three things can say it: a `PlaybackException` media3 raised, a
-     * `setVideoEffects` that refused the graph outright, and a graph that produced
-     * no frame at all within [FRAME_TURN_DEADLINE_MS]. They differ only in what
-     * they name in the log — the film without the graph is the one that was
-     * playing in all three, and the recovery is identical.
+     * Two things can say it: a `PlaybackException` media3 raised, and a turned
+     * picture that went a whole [TURN_DEADLINE_MS] without a frame. They differ
+     * only in what they name in the log — the film as filed is the one that was
+     * playing in both, and the recovery is identical.
      *
      * Latched per film, so this is one attempt and one fallback rather than a
-     * loop, and the fallback runs on the next main-thread turn: releasing a player
-     * from inside its own listener callback — or from inside the construction of
-     * its replacement — is not a thing to do. It goes in its own slot, because a
-     * hand-back the generic recovery canceller can collect is no hand-back at
-     * all; see [PendingWork].
+     * loop, and the fallback runs on the next main-thread turn: re-preparing a
+     * player from inside its own listener callback is not a thing to do. It goes
+     * in its own slot, because a hand-back the generic recovery canceller can
+     * collect is no hand-back at all; see [PendingWork].
      */
-    private fun failFrameTurn(reason: String): Boolean {
-        if (framesUnavailableForFilm) return false
-        framesUnavailableForFilm = true
+    private fun failTurn(reason: String): Boolean {
+        if (turnUnavailableForFilm) return false
+        turnUnavailableForFilm = true
         // Keyed on the URL and not the media id: the session builds that from the
         // cast's generation, so it is a different string on every retry of the
         // same film — which is the loop this memory exists to break.
-        filmsWithoutFrames.remember(currentUrl)
-        cancelFrameTurnDeadline()
-        FlickLog.w("player", "turnFrames failed $reason; showing this film as filed")
+        filmsWithoutTurn.remember(currentUrl)
+        cancelTurnDeadline()
+        FlickLog.w("player", "turn failed $reason; showing this film as filed")
         pendingRecovery.cancel()
-        pendingFrameTurnFallback.post { applyVideoRotation() }
+        pendingTurnFallback.post { applyVideoRotation() }
         return true
     }
 
@@ -1326,16 +1193,19 @@ class PlayerController(context: Context) : SessionPlayer {
         turnNote = null
         filmContainerRotationDegrees = 0
         filmColour = PictureColour.Sdr
-        filmColorTransfer = Format.NO_VALUE
+        // The listener goes back off the player the new film may well reuse: the
+        // ordinary path is defined by the absence of a per-frame callback.
+        if (surfaceTurn.isTurned) player?.clearVideoFrameMetadataListener(turnFrameListener)
+        surfaceTurn = SurfaceTurn.NONE
         // Not simply false: a film this session already condemned keeps its
-        // verdict, so a startup retry of THAT film does not re-engage the graph
+        // verdict, so a startup retry of THAT film does not re-engage the turn
         // that wedged it and fail identically for as long as the viewer keeps
         // trying. Every caller sets [currentUrl] to the film being judged — or to
         // null, which is remembered about nothing — before reaching here.
-        framesUnavailableForFilm = filmsWithoutFrames.remembers(currentUrl)
+        turnUnavailableForFilm = filmsWithoutTurn.remembers(currentUrl)
         pictureTurnResolvedForFilm = false
-        cancelFrameTurnDeadline()
-        pendingFrameTurnFallback.cancel()
+        cancelTurnDeadline()
+        pendingTurnFallback.cancel()
         rotationOverride.reset()
     }
 
@@ -1367,8 +1237,8 @@ class PlayerController(context: Context) : SessionPlayer {
         FlickLog.i(
             "player",
             "rotation choice=${choice.name} extraDegrees=$extraDegrees " +
-                "via=${if (rotationOverride.commandedViaFrames) "frames" else "decoder"} " +
-                "frameDegrees=${activeFrameDegrees ?: 0} note=${turnNote ?: "none"} " +
+                "via=${if (rotationOverride.commandedViaView) "view" else "decoder"} " +
+                "viewDegrees=${surfaceTurn.degrees} note=${turnNote ?: "none"} " +
                 "carried=$carried decoderExtraDegrees=" +
                 (rotationOverride.decoderExtraDegrees?.toString() ?: "none"),
         )
@@ -1458,21 +1328,19 @@ class PlayerController(context: Context) : SessionPlayer {
      * pipeline). Everything else (4xx, decoder init) is fatal → diagnosis UI.
      */
     /**
-     * The failures a GL turn can produce that the same film has already proved it
+     * The failures a turn can produce that the same film has already proved it
      * does not produce without one.
      *
-     * The decoder codes are in the set deliberately. Under the effects graph the
-     * codec's output surface is a `SurfaceTexture` rather than the panel, and a
-     * TV decoder that will not configure against one — media3 carries a
-     * `c2.mtk.*` workaround for exactly that family of problems — fails at
-     * initialization with nothing that names the graph as the cause. The
+     * They are all decoder codes, and that is the whole point: a `TextureView`'s
+     * surface is backed by a `SurfaceTexture` rather than by the panel's own
+     * buffer queue, and a TV decoder that will not configure against one — media3
+     * carries a `c2.mtk.*` workaround for exactly that family of problems — fails
+     * at initialization with nothing that names the turn as the cause. The
      * per-film latch is what keeps this from swallowing a genuine decoder
-     * shortfall: the fallback plays the film with no graph at all, and a second
-     * failure takes the ordinary route.
+     * shortfall: the fallback plays the film untouched, and a second failure takes
+     * the ordinary route.
      */
-    private fun isFrameTurnFailure(error: PlaybackException): Boolean = when (error.errorCode) {
-        PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED,
-        PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED,
+    private fun isTurnFailure(error: PlaybackException): Boolean = when (error.errorCode) {
         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
         PlaybackException.ERROR_CODE_DECODING_FAILED,
         PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> true
@@ -1511,15 +1379,12 @@ class PlayerController(context: Context) : SessionPlayer {
     // --- Player construction -------------------------------------------------
 
     /**
-     * [turn] is non-null only when the picture has to be turned by media3's
-     * effects graph. It is a CONSTRUCTION parameter rather than something applied
-     * afterwards because `ExoPlayer.setVideoEffects` has to be called before the
-     * instance's first `prepare()` — the graph is built while the video renderer
-     * is first enabled, and nothing can add one later. Passing null is therefore
-     * not "no turn yet"; it is a player that will never have a graph, which is
-     * every ordinary cast.
+     * Every player this class builds is the same player, and the picture turn is
+     * no longer a construction concern at all: the turn lives on the view that
+     * presents the frames, and media3 accepts a new output surface on a live
+     * instance. Nothing here knows whether a film is turned.
      */
-    private fun createPlayer(turn: PictureTurn? = null): ExoPlayer {
+    private fun createPlayer(): ExoPlayer {
         // The allocator holds its segments on the Java heap, so every number below
         // is a fraction of THIS device's grant rather than of the one the tuning was
         // measured on — see [bufferBudgetFor]. Read at construction because the
@@ -1658,17 +1523,6 @@ class PlayerController(context: Context) : SessionPlayer {
                 // Restore the last commanded volume so it survives player rebuilds
                 // (background/foreground) and the control channel stays authoritative.
                 exo.volume = lastVolume
-                // Before the first prepare, and only when a turn needs it: this
-                // call is what decides, for the whole life of the instance,
-                // whether the frames take a GL pass at all. A refusal latches the
-                // film and leaves an ordinary player, which the callers read back
-                // off [framesUnavailableForFilm].
-                if (turn != null && engageFrameTurn(exo, turn)) {
-                    // Only on an instance that carries a graph: this is a per-frame
-                    // callback, and every frame it sees has already paid for a GL
-                    // pass.
-                    exo.setVideoFrameMetadataListener(frameTurnFrameListener)
-                }
             }
     }
 
@@ -1742,13 +1596,7 @@ class PlayerController(context: Context) : SessionPlayer {
             if (currentUrl != null && mediaSession == null) bindMediaSession(existing)
             return
         }
-        // A film that was turned by the effects graph must come back turned, and
-        // the graph is decided at construction — so the rebuilt instance is given
-        // the same verdict the released one was working under.
-        val turn = frameTurnInForce()
-        val exo = createPlayer(turn)
-        val engagedTurn = turn?.takeUnless { framesUnavailableForFilm }
-        activeFrameDegrees = engagedTurn?.frameDegrees
+        val exo = createPlayer()
         player = exo
         val url = currentUrl
         if (url != null) {
@@ -1757,11 +1605,15 @@ class PlayerController(context: Context) : SessionPlayer {
             exo.prepare()
             if (savedPositionMs > 0L) exo.seekTo(savedPositionMs)
             exo.playWhenReady = pendingPlayWhenReady
-            // A restore builds a graph on a decoder and a surface that are both
-            // new, so it is as much a fresh engagement as the rebuild that first
-            // asked for one.
-            if (engagedTurn != null) {
-                armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.NewGraph)
+            // The turn survives with the film — [surfaceTurn] is state and the view
+            // carrying it is still composed — but the frame listener and the
+            // deadline belonged to the instance that was released, so a restored
+            // turn is watched from scratch on a decoder and a surface that are both
+            // new. The decoder is configured from the command that survived too:
+            // [rotationOverride] outlives every player.
+            if (surfaceTurn.isTurned) {
+                exo.setVideoFrameMetadataListener(turnFrameListener)
+                armTurnDeadline(exo)
             }
         }
     }
@@ -1769,13 +1621,13 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
         cancelSubtitleReloadDeadline()
-        // The graph this was watching is about to be released with its player, so
-        // there is nothing left for the deadline to be evidence about. The
-        // hand-back goes with it: the latch survives, so [onStart] rebuilds this
-        // film without a graph anyway and there is nothing left for the fallback
-        // to take off.
-        cancelFrameTurnDeadline()
-        pendingFrameTurnFallback.cancel()
+        // The decoder this was watching is about to be released with its player,
+        // so there is nothing left for the deadline to be evidence about; [onStart]
+        // engages a fresh one if the film is still turned. The hand-back goes with
+        // it: the latch survives, so a condemned film comes back as filed anyway
+        // and there is nothing left for the fallback to take off.
+        cancelTurnDeadline()
+        pendingTurnFallback.cancel()
         val exo = player ?: run {
             releaseMediaSession()
             return
@@ -1794,16 +1646,13 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
-        // Describes the LIVE instance, and there is none. [onStart] re-derives it
-        // from the choice still in force, so a turned film comes back turned.
-        activeFrameDegrees = null
     }
 
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
         cancelSubtitleReloadDeadline()
-        cancelFrameTurnDeadline()
-        pendingFrameTurnFallback.cancel()
+        cancelTurnDeadline()
+        pendingTurnFallback.cancel()
         pendingRecovery.cancel()
         releaseMediaSession()
         val exo = player ?: return
@@ -1813,7 +1662,6 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
-        activeFrameDegrees = null
     }
 
     // --- Playback control ----------------------------------------------------
@@ -1826,7 +1674,7 @@ class PlayerController(context: Context) : SessionPlayer {
         savedPositionMs = 0L
         pendingPlayWhenReady = true
         cancelSubtitleReloadDeadline()
-        cancelFrameTurnDeadline()
+        cancelTurnDeadline()
         pendingRecovery.cancel()
         recoveryGateCount = 0
         lastGoodPositionMs = 0L
@@ -1836,10 +1684,9 @@ class PlayerController(context: Context) : SessionPlayer {
         resetAudioFormat()
         resetVideoRotation()
         resetSubtitleState(subtitle = null, mediaId = null)
-        // A retained instance that still carries the previous film's effects graph
-        // is not reusable: nothing can take a graph away, and this film has
-        // asserted no turn. Replacing it is what keeps "no turn" free.
-        discardPlayerCarryingFrames()
+        // The retained instance is reusable whatever the previous film did: a turn
+        // was never built into it. [resetVideoRotation] has already taken the frame
+        // listener back off it and put the picture on the ordinary surface.
         val exo = player ?: createPlayer().also { player = it }
         // stop() releases the terminal session but intentionally keeps this
         // foreground player instance reusable. Rebind before any new playback.
@@ -1847,21 +1694,6 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.setMediaItem(mediaItemFor(url, mediaId = null, subtitle = null))
         exo.prepare()
         exo.playWhenReady = true
-    }
-
-    /**
-     * Drop a retained ExoPlayer that is still carrying an effects graph, so the
-     * next film starts on the zero-cost path. A no-op for every ordinary one.
-     */
-    private fun discardPlayerCarryingFrames() {
-        if (activeFrameDegrees == null) return
-        activeFrameDegrees = null
-        val exo = player ?: return
-        releaseMediaSession()
-        exo.removeListener(playerListener)
-        exo.removeAnalyticsListener(analyticsListener)
-        exo.release()
-        player = null
     }
 
     /** Installs both startup callbacks before setting media or calling prepare. */
@@ -1880,7 +1712,7 @@ class PlayerController(context: Context) : SessionPlayer {
         savedPositionMs = 0L
         pendingPlayWhenReady = true
         cancelSubtitleReloadDeadline()
-        cancelFrameTurnDeadline()
+        cancelTurnDeadline()
         pendingRecovery.cancel()
         recoveryGateCount = 0
         instrumentation.reset()
@@ -1891,10 +1723,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // Switch the platform session to B before releasing A, then publish B
         // to Compose. This prevents a physical media key targeting released A.
         val previous = player
-        // Never with a graph: a new film has asserted nothing yet, so it starts
-        // on the byte-identical direct path and only earns one if it is turned.
         val exo = createPlayer()
-        activeFrameDegrees = null
         bindMediaSession(exo)
         player = exo
         previous?.let {
@@ -2277,46 +2106,34 @@ class PlayerController(context: Context) : SessionPlayer {
         // fresh 4K decoder prepare on the verified Google TV Streamer.
         const val SUBTITLE_RELOAD_DEADLINE_MS = 12_000L
 
-        // How long a newly engaged effects graph gets to put one frame on the
-        // panel before it is treated as dead. Deliberately generous, because the
-        // two errors are not symmetric: waiting too long costs a viewer who is
-        // already looking at a stalled picture a few more seconds of it, while
-        // firing too early costs them the turn for the WHOLE film — the fallback
-        // latch is per film and is never retried.
+        // How long a turned picture may go without a frame before it is treated as
+        // dead. Deliberately generous, because the two errors are not symmetric:
+        // waiting too long costs a viewer who is already looking at a stalled
+        // picture a few more seconds of it, while firing too early costs them the
+        // turn for the WHOLE film — the fallback latch is per film and is never
+        // retried.
         //
-        // Sized on what an engagement legitimately costs, which is a re-buffer and
-        // not merely a shader compile: `bufferForPlaybackAfterRebufferMs` is
+        // Sized on the most expensive honest silence, which is the engagement that
+        // also owes the decoder a re-prepare: `bufferForPlaybackAfterRebufferMs` is
         // 4,765 ms of media on the verified tier, and that at the planned 100 Mbps
         // peak is ~60 MB to re-fetch over the LAN; the codec teardown, configure
         // and one byte-range round trip on top of it are what
         // `StartupDeadlinePolicy` budgets its 6 s for. Near eleven seconds of
         // honest worst case, so anything under this would fire on an ordinary slow
-        // engagement.
+        // engagement. A turn that owes the decoder nothing — the common one — is a
+        // surface swap and costs a frame interval, so it never comes near this.
         //
         // It is also bounded from above, which is why it is not larger still: an
-        // engagement during startup has to be judged AND the fallback player has to
-        // reach its own first frame, both inside the cast's 18 s budget plus the
-        // one 6 s rotation extension. Off a rebuild a second or two in, twelve
-        // seconds leaves the fallback the better part of ten.
-        const val FRAME_TURN_DEADLINE_MS = 12_000L
-
-        // How long after a LIVE effect swap a rendered frame starts meaning
-        // anything — see [FrameTurnWatchdog.Engagement.LiveSwap] for why any
-        // earlier frame is the PREVIOUS effect list's and proves nothing.
+        // engagement during startup has to be judged AND the film handed back has
+        // to reach its own first frame, both inside the cast's 18 s budget plus the
+        // one 6 s rotation extension. Off a resolution a second or two in, twelve
+        // seconds leaves the hand-back the better part of ten.
         //
-        // It is a bound on the pre-swap drain with a wide margin, not a guess.
-        // Media3 admits at most `Util.getMaxPendingFramesCountForMediaCodecDecoders`
-        // frames into the graph — 5, or 1 where surface-input frame drop is
-        // allowed — and `FinalShaderProgramWrapper.SURFACE_INPUT_CAPACITY` is 1,
-        // so about half a dozen frames can still be carrying the old list. Each
-        // is released at its own presentation time, which on a playing film is
-        // real time: ~250 ms at 24 fps, less above it. Six times that.
-        //
-        // Bounded from above by what it costs the other judgement: it is spent
-        // out of [FRAME_TURN_DEADLINE_MS], so the drought that condemns a swapped
-        // graph is 10.5 s rather than 12 s. Both are far beyond any frame
-        // interval, and the difference costs nothing a viewer can see.
-        const val FRAME_TURN_SWAP_SETTLE_MS = 1_500L
+        // It is a repeating deadline, not a one-shot: the same number is what a
+        // turned picture is allowed to go quiet for at any point in the film, and
+        // what it is measured against once it has rendered is a player that says it
+        // is READY and playing — see [framesExpectedFrom].
+        const val TURN_DEADLINE_MS = 12_000L
     }
 }
 

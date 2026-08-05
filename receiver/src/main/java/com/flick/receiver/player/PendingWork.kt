@@ -4,15 +4,15 @@ package com.flick.receiver.player
  * One outstanding piece of main-thread work, owned by exactly one caller.
  *
  * This is a type rather than a pair of nullable fields because the two the
- * receiver keeps used to be one. The bounded auto-recovery and the effects-graph
+ * receiver keeps used to be one. The bounded auto-recovery and the picture-turn
  * fallback shared a slot, so every canceller of the recovery — `scheduleRecovery`
  * re-arming itself, the sideloaded-subtitle rollback, a rotation re-prepare —
  * removed whichever runnable happened to be in it. A `PlaybackException` already
- * queued when the graph was condemned therefore ran FIRST, cancelled the
- * fallback, and re-prepared the player that still carried the graph: the film
- * latched as un-turnable, the graph still installed, and nothing on its way to
- * take it off. The viewer sat on a frozen picture over a healthy player, which is
- * the exact outcome the fallback exists to prevent.
+ * queued when the turn was condemned therefore ran FIRST, cancelled the
+ * fallback, and re-prepared the player still presenting through the condemned
+ * surface: the film latched as un-turnable, the turn still in force, and nothing
+ * on its way to take it off. The viewer sat on a frozen picture over a healthy
+ * player, which is the exact outcome the fallback exists to prevent.
  *
  * Two instances cannot reach each other's work, so no future caller of either
  * [cancel] can collect the other's.

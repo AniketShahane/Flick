@@ -25,11 +25,12 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener
  * lands in the format the decoder is configured from; the shift lands in the
  * frame-release decision; neither can see the other.
  *
- * The OTHER turning mechanism — media3's effects graph, engaged only while a turn
- * is genuinely in force — needs nothing from this factory. It is switched on with
- * `ExoPlayer.setVideoEffects` before the instance's first prepare, and reaches
- * the renderer built here as an ordinary `MSG_SET_VIDEO_EFFECTS`, forwarded by
- * `ForwardingRenderer.handleMessage` through the audio-delay wrapper.
+ * The OTHER turning mechanism — the video surface's own transform, in force only
+ * while a film is genuinely turned — needs nothing from this factory. It changes
+ * which view the frames are presented in and what that view's matrix is, and the
+ * renderer built here is told only through the ordinary output-surface and
+ * frame-metadata messages, forwarded by `ForwardingRenderer.handleMessage`
+ * through the audio-delay wrapper.
  *
  * With no rotation asserted and a zero shift this builds and behaves as
  * `DefaultRenderersFactory` does, minus the extension-renderer branch noted

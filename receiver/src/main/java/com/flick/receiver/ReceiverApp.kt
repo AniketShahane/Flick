@@ -1,12 +1,16 @@
 package com.flick.receiver
 
 import android.content.ComponentCallbacks
+import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color as AndroidColor
+import android.graphics.Matrix
 import android.os.Build
 import android.util.TypedValue
 import android.view.KeyEvent as AndroidKeyEvent
+import android.view.LayoutInflater
 import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -39,6 +43,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
@@ -66,6 +71,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.media3.common.Player
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
@@ -89,10 +95,12 @@ import com.flick.receiver.player.PlayerController
 import com.flick.receiver.player.SUBTITLE_GLYPH_BACKGROUND_ALPHA
 import com.flick.receiver.player.SUBTITLE_WINDOW_ALPHA
 import com.flick.receiver.player.SubtitleTrackInfo
+import com.flick.receiver.player.SurfaceTurn
 import com.flick.receiver.player.ThroughputHistory
 import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.player.orientationHintPhase
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
+import com.flick.receiver.player.surfaceTurnTransform
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
 import com.flick.receiver.ui.components.FlickLoader
@@ -711,6 +719,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     LaunchedEffect(window, requestedRefreshRate, refreshRateDelayMs, playerView) {
         if (refreshRateDelayMs > 0L) delay(refreshRateDelayMs)
         RefreshRateHelper.applyToWindow(window, requestedRefreshRate)
+        // Only a `SurfaceView` has a surface of its own for the display to match a
+        // cadence against. A turned film is presented through a `TextureView`,
+        // whose frames are composited into the app's window instead of into a
+        // layer of their own, so the surface-level hint has nothing to address and
+        // the window hint above is the whole of what the panel is told. The
+        // `SurfaceTexture` behind the TextureView is deliberately NOT wrapped in a
+        // `Surface` to hint at: that would be a different Surface object from the
+        // one ExoPlayer renders through, and hinting at it would claim a cadence
+        // for a producer nobody is presenting.
         val surface = (playerView?.videoSurfaceView as? SurfaceView)?.holder?.surface
         RefreshRateHelper.applyToSurface(surface, requestedRefreshRate)
     }
@@ -1387,29 +1404,175 @@ private fun PlayerSurface(
     // find on the playback surface; the label belongs on the real surface, not only
     // on a test's stand-in for it.
     val surfaceDescription = stringResource(R.string.playback_surface_description)
-    AndroidView(
-        modifier = modifier.semantics { contentDescription = surfaceDescription },
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                useController = false
-                setKeepContentOnPlayerReset(true)
-                setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setBackgroundColor(FlickColor.CanvasPlayback.toArgb())
-                configureSubtitles(
-                    ctx.getSystemService(CaptioningManager::class.java),
-                    subtitleSizePreference,
-                )
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-            }.also(onViewAvailable)
-        },
-        // controller.player is Compose state — the view rebinds whenever the
-        // ExoPlayer instance is recreated across stop/start cycles.
-        update = { view -> view.player = controller.player },
-    )
+    val turn = controller.surfaceTurn
+    // A turned film is the ONLY one that leaves the `SurfaceView`, and the swap is
+    // keyed rather than updated because `PlayerView` fixes its surface type in its
+    // constructor: a different surface is a different view. Changing a turn already
+    // in force keys the same — [SurfaceTurn.isTurned] and not the degrees — so the
+    // view, its surface and the player's binding all survive it.
+    val binding = remember { PlayerViewBinding() }
+    key(turn.isTurned) {
+        val turnedSurface = remember { TurnedVideoSurface() }
+        AndroidView(
+            modifier = modifier.semantics { contentDescription = surfaceDescription },
+            factory = { ctx ->
+                val view = if (turn.isTurned) inflateTurnedPlayerView(ctx) else PlayerView(ctx)
+                view.apply {
+                    useController = false
+                    setKeepContentOnPlayerReset(true)
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                    // Unrelated to the turn, and defaults to false: media3's
+                    // workaround for an API 34 platform bug that leaves a
+                    // `SurfaceView` inside a Compose `AndroidView` drawing
+                    // stretched or cropped video (androidx/media#2811). This app
+                    // is exactly that shape and the verified TV is exactly that
+                    // API level. Set on both surfaces because media3 gates it
+                    // itself, twice over: the sync group is constructed only when
+                    // SDK_INT is exactly 34, and `onSurfaceSizeChanged` acts only when the
+                    // video surface `is SurfaceView`. So it is inert on the
+                    // turned player and on every other API level, and a
+                    // detached view is handled too — the posted register
+                    // returns early when `getRootSurfaceControl()` is null.
+                    setEnableComposeSurfaceSyncWorkaround(true)
+                    // FILL is what keeps a turn off the captions. `exo_subtitles`
+                    // is a child of the same `exo_content_frame` as the video
+                    // surface, so sizing that frame to the turned picture's aspect
+                    // — media3's own long-deleted approach — would squeeze the
+                    // captions into a portrait column beside it. Under FILL the
+                    // frame is full-bleed, `PlayerView`'s own aspect-ratio updates
+                    // are ignored rather than fought over, and the whole fit lives
+                    // in the matrix instead; see [surfaceTurnTransform].
+                    resizeMode = if (turn.isTurned) {
+                        AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    } else {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                    setBackgroundColor(FlickColor.CanvasPlayback.toArgb())
+                    configureSubtitles(
+                        ctx.getSystemService(CaptioningManager::class.java),
+                        subtitleSizePreference,
+                    )
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    turnedSurface.attach(this)
+                }.also(onViewAvailable)
+            },
+            // controller.player is Compose state — the view rebinds whenever the
+            // ExoPlayer instance is recreated across stop/start cycles.
+            update = { view ->
+                binding.bind(view, controller.player)
+                turnedSurface.carry(turn)
+            },
+            onRelease = { view ->
+                binding.markStale(view)
+                turnedSurface.detach()
+            },
+        )
+    }
+}
+
+/**
+ * Which `PlayerView` owns the player's video output, across a swap of the two.
+ *
+ * A view leaving composition must NOT unbind itself while it is still the output,
+ * and the reason is a cost rather than a nicety: `PlayerView.setPlayer(null)`
+ * clears the player's video surface, `ExoPlayerImpl` blocks on that detach, and
+ * `MediaCodecVideoRenderer` may release the codec outright for want of a surface —
+ * so clearing the old view before the new one binds turns a free surface swap into
+ * a decoder teardown. Binding the new one FIRST is a single
+ * `MediaCodec.setOutputSurface`, and the old view's clear afterwards is a no-op the
+ * player itself refuses: `clearVideoSurfaceHolder` and `clearVideoTextureView` both
+ * compare against the view it currently holds.
+ *
+ * So the outgoing view is only marked, and is unbound by whichever of the two
+ * events lands second. When the playback surface leaves composition altogether the
+ * mark is never collected, which is deliberate: there is no replacement to hand
+ * the output to, and the player itself is released moments later.
+ */
+private class PlayerViewBinding {
+
+    private var bound: PlayerView? = null
+    private var stale: PlayerView? = null
+
+    fun bind(view: PlayerView, player: Player?) {
+        view.player = player
+        bound = view
+        stale?.takeIf { it !== view }?.player = null
+        stale = null
+    }
+
+    fun markStale(view: PlayerView) {
+        if (bound === view) stale = view else view.player = null
+    }
+}
+
+/**
+ * A null inflation root is right here rather than merely tolerated: `AndroidView`
+ * has no parent to offer at construction, and the caller replaces the root's
+ * layout params on the next line anyway.
+ */
+@Suppress("InflateParams")
+private fun inflateTurnedPlayerView(context: Context): PlayerView =
+    LayoutInflater.from(context).inflate(R.layout.player_view_turned, null) as PlayerView
+
+/**
+ * The turn a `TextureView` is carrying, kept in force across every layout the
+ * player view performs on its own.
+ *
+ * The transform depends on the view's laid-out size, so it cannot be set once:
+ * `PlayerView` re-measures its content frame whenever the video size changes, and
+ * the first layout happens after the factory has returned. Hence the layout
+ * listener, which is also what makes a turn correct on the frame it first appears
+ * on rather than a frame later.
+ *
+ * Only the video surface is transformed. Rotating the `PlayerView` — or wrapping
+ * the `AndroidView` in a `graphicsLayer` — would take media3's `SubtitleView` with
+ * it and stand the captions on their side.
+ */
+private class TurnedVideoSurface {
+
+    private var texture: TextureView? = null
+    private var turn: SurfaceTurn = SurfaceTurn.NONE
+    private val matrix = Matrix()
+
+    private val onLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> draw() }
+
+    fun attach(view: PlayerView) {
+        val texture = view.videoSurfaceView as? TextureView ?: return
+        this.texture = texture
+        texture.addOnLayoutChangeListener(onLayout)
+    }
+
+    fun detach() {
+        texture?.removeOnLayoutChangeListener(onLayout)
+        texture = null
+    }
+
+    fun carry(turn: SurfaceTurn) {
+        this.turn = turn
+        draw()
+    }
+
+    private fun draw() {
+        val texture = texture ?: return
+        val transform = surfaceTurnTransform(
+            viewWidthPx = texture.width,
+            viewHeightPx = texture.height,
+            pictureWidthPx = turn.pictureWidthPx,
+            pictureHeightPx = turn.pictureHeightPx,
+            pixelWidthHeightRatio = turn.pixelWidthHeightRatio,
+            turnDegrees = turn.degrees,
+        )
+        matrix.reset()
+        matrix.postRotate(transform.rotationDegrees, transform.pivotX, transform.pivotY)
+        matrix.postScale(transform.scaleX, transform.scaleY, transform.pivotX, transform.pivotY)
+        texture.setTransform(matrix)
+        // `setTransform` marks the matrix dirty but schedules no draw of its own,
+        // and a turn changed on a paused film has no layout pass behind it.
+        texture.invalidate()
+    }
 }
 
 private fun PlayerView.configureSubtitles(

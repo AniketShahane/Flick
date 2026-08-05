@@ -67,10 +67,8 @@ class AudioDelayShift {
  * [FlickRenderersFactory] stacks the two video customizations. They cannot
  * interact — rotation is settled where the picture is turned, and the shift only
  * moves the instant a decoded frame is released. That holds under both turning
- * mechanisms: with media3's effects graph engaged, the delegate hands frame
- * release to the video sink, so the shifted position travels into the sink's own
- * release control rather than the renderer's and the nudge lands in the same
- * decision it always did.
+ * mechanisms: the view turn changes which surface the delegate releases into and
+ * what that view's matrix is, neither of which the release decision can see.
  */
 internal class AudioDelayVideoRenderer(
     val delegate: Renderer,

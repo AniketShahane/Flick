@@ -10,11 +10,11 @@ import org.junit.Test
  *
  * The defect this pins had nothing to do with what either piece of work does and
  * everything to do with where it was kept. The bounded auto-recovery and the
- * effects-graph hand-back shared one slot, so `scheduleRecovery` re-arming itself
+ * picture-turn hand-back shared one slot, so `scheduleRecovery` re-arming itself
  * — or a subtitle rollback, or a rotation re-prepare — removed whichever runnable
- * was in it. A `PlaybackException` already queued when the graph was condemned
+ * was in it. A `PlaybackException` already queued when the turn was condemned
  * therefore ran first and took the hand-back with it, and the film was left
- * latched as un-turnable with the graph still installed and nothing on the way to
+ * latched as un-turnable with the turn still in force and nothing on the way to
  * remove it. The two are correlated in practice: a twelve-second frame drought
  * and an HTTP read timeout have the same cause.
  */
@@ -50,13 +50,13 @@ class PendingWorkTest {
     // --- The race ------------------------------------------------------------
 
     /**
-     * The exact sequence: the watchdog condemns the graph and queues the
+     * The exact sequence: the watchdog condemns the turn and queues the
      * hand-back; the error that was already in flight runs first and takes the
      * transient branch, which cancels the recovery slot and schedules its own
-     * re-prepare of the player still carrying the graph. The hand-back must
-     * survive that, run first because it was posted first with no delay, and
-     * cancel the re-prepare on its way through — which is what `rebuildPlayerForTurn`
-     * does.
+     * re-prepare of the player still presenting the condemned turn. The hand-back
+     * must survive that, run first because it was posted first with no delay, and
+     * cancel the re-prepare on its way through — which is what
+     * `rePrepareForRotation` does.
      */
     @Test fun anErrorQueuedBehindTheHandBackCannotCollectIt() {
         val main = FakeMainThread()

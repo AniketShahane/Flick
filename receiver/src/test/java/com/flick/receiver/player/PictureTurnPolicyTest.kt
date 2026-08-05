@@ -4,9 +4,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -14,11 +12,11 @@ import org.junit.Test
  *
  * The whole product thesis is at stake in one of these answers: an ordinary cast
  * must reach the decoder on the same path it would take if this feature did not
- * exist, because that path is the one proven to direct-play 4K Dolby Vision with
- * no stalls. Everything else here is about being honest when the cheap mechanism
- * cannot deliver — the verified Google TV Streamer's display pipeline drops the
- * codec's rotation transform, and its EGL has neither BT.2020 colour space, so a
- * turn on that TV is either free and invisible or effective and paid for.
+ * exist, on the same `SurfaceView`, because that path is the one proven to
+ * direct-play 4K Dolby Vision with no stalls. Everything else here is about being
+ * honest when the cheap mechanism cannot deliver — the verified Google TV
+ * Streamer's display pipeline drops the codec's rotation transform, so a turn on
+ * that TV is either free and invisible or effective and paid for.
  */
 class PictureTurnPolicyTest {
 
@@ -26,23 +24,23 @@ class PictureTurnPolicyTest {
         container: Int,
         extra: Int,
         colour: PictureColour = PictureColour.Sdr,
-        hdrSurvives: Boolean = false,
-        framesUnavailable: Boolean = false,
-    ) = pictureTurnFor(container, extra, colour, hdrSurvives, framesUnavailable)
+        turnUnavailable: Boolean = false,
+    ) = pictureTurnFor(container, extra, colour, turnUnavailable)
 
     // --- The path an ordinary cast takes -------------------------------------
 
     /**
      * The one that matters most. A film nobody has turned reaches the decoder
-     * with the container's own value and NO graph — which is what makes a 4K
-     * Dolby Vision cast byte-identical to having no rotation feature at all.
+     * with the container's own value and NO view turn — which is what keeps a 4K
+     * Dolby Vision cast on the `SurfaceView`, the hardware overlay and the
+     * tunneling path it would have had without this feature.
      */
-    @Test fun aFilmNobodyHasTurnedNeverBuildsAGraph() {
+    @Test fun aFilmNobodyHasTurnedNeverLeavesTheOrdinarySurface() {
         for (colour in PictureColour.values()) {
             val t = turn(container = 0, extra = 0, colour = colour)
             assertEquals(TurnMechanism.Decoder, t.mechanism)
             assertEquals(0, t.decoderDegrees)
-            assertEquals(0, t.frameDegrees)
+            assertEquals(0, t.viewDegrees)
             assertNull(t.note)
         }
     }
@@ -64,59 +62,60 @@ class PictureTurnPolicyTest {
         val t = turn(container = 45, extra = 90)
         assertEquals(TurnMechanism.Decoder, t.mechanism)
         assertEquals(45, t.decoderDegrees)
+        assertEquals(0, t.viewDegrees)
         assertNull(t.note)
     }
 
     // --- A turn that has to actually happen ----------------------------------
 
     /**
-     * The reported bug. Container 0, viewer presses 90: the graph takes the whole
+     * The reported bug. Container 0, viewer presses 90: the view takes the whole
      * turn and the decoder is given ZERO rather than 90 — both because the two
      * mechanisms applying it would land 180 out on hardware where the codec's
      * transform does work, and because a zero keeps media3's reported `VideoSize`
-     * equal to the coded size, which is the size of the frames that arrive.
+     * equal to the coded size, which is the shape the frames arrive in and the
+     * shape the surface transform is computed from.
      */
-    @Test fun anAssertedTurnGoesToTheGraphAndTheDecoderGetsZero() {
+    @Test fun anAssertedTurnGoesToTheViewAndTheDecoderGetsZero() {
         val t = turn(container = 0, extra = 90)
-        assertEquals(TurnMechanism.Frames, t.mechanism)
+        assertEquals(TurnMechanism.View, t.mechanism)
         assertEquals(0, t.decoderDegrees)
-        assertEquals(90, t.frameDegrees)
+        assertEquals(90, t.viewDegrees)
         assertNull(t.note)
     }
 
-    /** The container's own turn is the graph's to apply too, not the codec's. */
-    @Test fun theGraphCarriesTheContainersTurnAsWellAsFlicks() {
+    /** The container's own turn is the view's to apply too, not the codec's. */
+    @Test fun theViewCarriesTheContainersTurnAsWellAsFlicks() {
         val t = turn(container = 90, extra = 90)
-        assertEquals(TurnMechanism.Frames, t.mechanism)
-        assertEquals(180, t.frameDegrees)
+        assertEquals(TurnMechanism.View, t.mechanism)
+        assertEquals(180, t.viewDegrees)
         assertEquals(0, t.decoderDegrees)
     }
 
     /** Past a full turn wraps rather than asking for something no API accepts. */
     @Test fun aTotalPastAFullTurnWraps() {
-        assertEquals(90, turn(container = 270, extra = 180).frameDegrees)
+        assertEquals(90, turn(container = 270, extra = 180).viewDegrees)
     }
 
     /**
-     * `Format.rotationDegrees` is clockwise; `ScaleAndRotateTransformation` is
-     * counterclockwise. Getting this backwards turns 90 into 270 and looks like a
-     * working feature installed upside down.
+     * `Format.rotationDegrees` is clockwise and so is `Matrix.postRotate` on a
+     * screen whose y axis points down, so the number handed to the view is the
+     * total exactly as resolved. The effects graph this replaced took the
+     * opposite sense and needed a conversion; getting that wrong turned 90 into
+     * 270 and looked like a working feature installed upside down.
      */
-    @Test fun theGraphIsGivenTheOppositeSenseOfTheSameTurn() {
-        assertEquals(270, turn(container = 0, extra = 90).frameDegreesCounterClockwise)
-        assertEquals(180, turn(container = 0, extra = 180).frameDegreesCounterClockwise)
-        assertEquals(90, turn(container = 0, extra = 270).frameDegreesCounterClockwise)
-        // And a turn of nothing is a turn of nothing in either sense.
-        assertEquals(0, turn(container = 0, extra = 0).frameDegreesCounterClockwise)
+    @Test fun theViewIsGivenTheTurnInTheSameSenseTheContainerStatesIt() {
+        assertEquals(90, turn(container = 0, extra = 90).viewDegrees)
+        assertEquals(180, turn(container = 0, extra = 180).viewDegrees)
+        assertEquals(270, turn(container = 0, extra = 270).viewDegrees)
     }
 
     // --- What a turn is allowed to cost --------------------------------------
 
     /**
-     * Dolby Vision never enters the graph. `GlUtil.createEglSurface` accepts SDR,
-     * BT.2020 PQ and BT.2020 HLG and nothing else, so there is no surface a DV
-     * RPU can be presented through — the turn would cost the very thing the
-     * product exists to deliver.
+     * Dolby Vision is never turned. The RPU is metadata the display applies to a
+     * video layer, and a turned film has none — the base layer arriving
+     * uninterpreted would cost the very thing the product exists to deliver.
      */
     @Test fun dolbyVisionKeepsItsPictureAndSaysSo() {
         val t = turn(container = 0, extra = 90, colour = PictureColour.DolbyVision)
@@ -131,32 +130,33 @@ class PictureTurnPolicyTest {
     }
 
     /**
-     * HDR10 or HLG on a panel whose EGL cannot present BT.2020 — the verified
-     * hardware — is turned, and the grade is the price. Media3 does not fail
-     * there, it quietly tone maps, so the note is the only thing that stops the
-     * loss being silent.
+     * HDR10 or HLG is turned, and the grade is the price — on every TV, not only
+     * on the verified one. An HDR transfer is applied to a video layer, and the
+     * turned film's frames are a texture composited into the app's own window, so
+     * there is no panel capability that can buy the grade back. The note is the
+     * only thing that stops the loss being silent.
      */
     @Test fun hdrIsTurnedAndSaysWhatItCost() {
-        val t = turn(container = 0, extra = 90, colour = PictureColour.Hdr, hdrSurvives = false)
-        assertEquals(TurnMechanism.Frames, t.mechanism)
-        assertEquals(90, t.frameDegrees)
+        val t = turn(container = 0, extra = 90, colour = PictureColour.Hdr)
+        assertEquals(TurnMechanism.View, t.mechanism)
+        assertEquals(90, t.viewDegrees)
         assertEquals(TurnNote.ShownInSdr, t.note)
     }
 
-    /** On a panel that can present it, the same turn costs nothing and says nothing. */
-    @Test fun hdrOnACapablePanelKeepsItsGrade() {
-        val t = turn(container = 0, extra = 90, colour = PictureColour.Hdr, hdrSurvives = true)
-        assertEquals(TurnMechanism.Frames, t.mechanism)
+    /** An HDR film nobody turned keeps its grade and is told nothing. */
+    @Test fun hdrThatWasNeverTurnedIsUntouchedAndSilent() {
+        val t = turn(container = 0, extra = 0, colour = PictureColour.Hdr)
+        assertEquals(TurnMechanism.Decoder, t.mechanism)
         assertNull(t.note)
     }
 
     /**
-     * A graph that already failed on this film is never built for it again — the
+     * A film the turn already failed on is never sent back to it — the
      * alternative is a rotation key that can end the cast on a diagnosis screen,
      * once per press.
      */
-    @Test fun aFilmTheGraphFailedOnIsNeverSentBackToIt() {
-        val t = turn(container = 0, extra = 90, framesUnavailable = true)
+    @Test fun aFilmTheTurnFailedOnIsNeverSentBackToIt() {
+        val t = turn(container = 0, extra = 90, turnUnavailable = true)
         assertEquals(TurnMechanism.Decoder, t.mechanism)
         assertEquals(90, t.decoderDegrees)
         assertEquals(TurnNote.NotOnThisTv, t.note)
@@ -168,8 +168,7 @@ class PictureTurnPolicyTest {
      * The MIME type is read before the transfer, and that ordering is the whole
      * point: Dolby Vision profile 8.1 carries an ordinary HDR10-compatible
      * `ColorInfo` for its base layer, so a rule written on the transfer alone
-     * would call it plain HDR10 and send it into a pipeline that cannot carry its
-     * RPU.
+     * would call it plain HDR10 and turn a film that must not be.
      */
     @Test fun dolbyVisionIsRecognisedByItsMimeTypeNotItsTransfer() {
         assertEquals(
@@ -191,30 +190,25 @@ class PictureTurnPolicyTest {
         assertEquals(PictureColour.Sdr, pictureColourOf(null, Format.NO_VALUE))
     }
 
-    // --- Whether HDR survives a GL pass --------------------------------------
+    // --- SDR, HDR, Dolby Vision, side by side ---------------------------------
 
     /**
-     * Reproduces `PlaybackVideoGraphWrapper.registerInput` and
-     * `GlUtil.isColorTransferSupported` from media3 1.10.1, because the answer
-     * decides whether a turn silently costs the viewer the grade.
-     *
-     * The verified Google TV Streamer is the last row: OpenGL ES 3.2 and
-     * `GL_EXT_YUV_target`, so it can READ HDR, and neither BT.2020 EGL colour
-     * space, so it cannot PRESENT it.
+     * The whole selection table on one film's worth of turn, because the three
+     * answers are the product decision and not an implementation detail: SDR is
+     * turned for free, HDR is turned and says what it cost, and Dolby Vision is
+     * refused rather than shown wrong.
      */
-    @Test fun hdrOutputFollowsTheEglColourSpaces() {
-        // HDR10 needs the PQ extension, full stop.
-        assertTrue(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_ST2084, true, false, 34))
-        assertFalse(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_ST2084, false, true, 34))
-        // HLG output landed a release after PQ output, so below API 34 media3
-        // converts HLG to PQ where PQ is available.
-        assertTrue(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_HLG, false, true, 34))
-        assertTrue(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_HLG, true, false, 33))
-        assertFalse(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_HLG, true, false, 34))
-        // SDR asks nothing of the panel.
-        assertTrue(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_SDR, false, false, 34))
-        // The verified hardware.
-        assertFalse(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_ST2084, false, false, 34))
-        assertFalse(hdrSurvivesFrameProcessing(C.COLOR_TRANSFER_HLG, false, false, 34))
+    @Test fun theMechanismFollowsTheColourAndNothingElse() {
+        val sdr = turn(container = 0, extra = 90, colour = PictureColour.Sdr)
+        assertEquals(TurnMechanism.View, sdr.mechanism)
+        assertNull(sdr.note)
+
+        val hdr = turn(container = 0, extra = 90, colour = PictureColour.Hdr)
+        assertEquals(TurnMechanism.View, hdr.mechanism)
+        assertEquals(TurnNote.ShownInSdr, hdr.note)
+
+        val dv = turn(container = 0, extra = 90, colour = PictureColour.DolbyVision)
+        assertEquals(TurnMechanism.Decoder, dv.mechanism)
+        assertEquals(TurnNote.NotOnThisTv, dv.note)
     }
 }

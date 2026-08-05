@@ -1,15 +1,13 @@
 package com.flick.receiver.player
 
-import android.opengl.EGL14
-import android.os.Build
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 
 /**
  * Who actually turns the picture.
  *
- * There are only two mechanisms on Android, and the difference between them is
- * the whole of this file.
+ * Two mechanisms are left on this TV, and the difference between them is the
+ * whole of this file.
  *
  * [Decoder] writes the turn into `MediaFormat.KEY_ROTATION`. The platform turns
  * that into a buffer transform on the codec's output surface, and the display
@@ -21,41 +19,91 @@ import androidx.media3.common.MimeTypes
  * because `MediaCodecVideoRenderer.onOutputFormatChanged` transposes width
  * against height from `Format.rotationDegrees` on the assumption the transform
  * was applied. The visible result is a picture whose BOX turns while the pixels
- * inside it do not. That is what the verified Google TV Streamer does.
+ * inside it do not. That is what the verified Google TV Streamer does — logged on
+ * the device at 90, then 180, then 270, then back to 0, because the viewer kept
+ * pressing a key that moved nothing on screen.
  *
- * [Frames] routes the decoded frames through media3's video-effects graph — a
- * real GL pass, with the turn in the vertex shader — and renders the result to
- * the same `SurfaceView`. It always works, because nothing outside the app is
- * asked to rotate anything. It costs a texture pass per frame, and on a panel
- * whose EGL cannot present BT.2020 it costs the HDR as well: media3 falls back
- * to tone mapping when the output colour transfer has no EGL extension.
+ * [View] renders the film into a `TextureView` and puts the turn in that view's
+ * own transform. It cannot fail the way the decoder's does, and the reason is
+ * worth stating: nothing outside the app is asked to rotate anything, and no
+ * separate compositor layer is involved. A `SurfaceView` is its own SurfaceFlinger
+ * layer — which is precisely why a view transform cannot reach its contents, and
+ * why it can never carry this — while a `TextureView` is drawn through the
+ * ordinary hardware canvas and is transformable like any other view. What it
+ * costs is the video layer itself: the frames become a texture composited into
+ * the app's own window, so there is no layer left for tunneling, for an HDR
+ * transfer, or for a TV that upscales its UI layer to present at panel
+ * resolution. See [PictureColour] and [TurnNote], which are how that reaches the
+ * viewer.
+ *
+ * Rotating the `SurfaceView` from Compose instead is not a cheaper version of
+ * this; it is nothing at all. `Modifier.graphicsLayer` composites offscreen by
+ * default, and a `SurfaceView` punches a hole through the view hierarchy and is
+ * composited separately by SurfaceFlinger — so the offscreen buffer that gets
+ * rotated never contains a single video pixel. It does not look slow or wrong. It
+ * looks like nothing happened.
+ *
+ * ## The mechanism that used to sit between these two
+ *
+ * media3's video-effects graph is gone rather than kept as a third option. On the
+ * verified hardware it consumed frames and presented none: the decoder ran at full
+ * rate for the whole of a twelve-second deadline, no EGL error was raised
+ * anywhere, and what the viewer got was a frozen picture over a healthy player.
+ * That is a known failure class rather than this project's bad luck —
+ * androidx/media#1139 (a `flush()` that hangs forever on a latch when
+ * `ExternalTextureManager` skips `onFlushComplete` after dropping frames; fixed
+ * May 2024) and androidx/media#1535 (filed after that fix: a `flush()` landing
+ * between `releaseOutputBuffer` and `SurfaceTexture.onFrameAvailable` drops the
+ * queued buffer silently and the callback never fires again; maintainer-confirmed,
+ * closed by a stale bot with no fix named). Both present exactly as observed: a
+ * permanent silent stall with nothing thrown.
+ *
+ * Two structural facts finish the case. `ExoPlayer.setVideoEffects` builds a graph
+ * only if effects were set before the video renderer's FIRST enable —
+ * `MediaCodecVideoRenderer.onEnabled` says so in as many words — so effects handed
+ * to a renderer that had none are stored and silently never applied, which is why
+ * engaging a turn used to cost a whole new player. And a graph is incompatible with
+ * tunneling by definition: AOSP defines tunnel mode as compressed data reaching
+ * the display "without being processed by app code or Android framework code",
+ * which is precisely the `SurfaceTexture` access a graph exists to have.
  */
 enum class TurnMechanism {
     /** `MediaFormat.KEY_ROTATION`. Free, and not always obeyed. */
     Decoder,
 
-    /** media3's effects graph. Always obeyed, and never free. */
-    Frames,
+    /** The video surface's own transform. Always obeyed, and never free. */
+    View,
 }
 
 /**
  * What the picture is made of, as far as a turn is concerned.
  *
- * Only three answers matter, because only three outcomes exist when frames are
- * pushed through a GL pass: nothing is lost, the HDR grade is lost, or the
- * format cannot enter the pipeline at all.
+ * Only three answers matter, because only three outcomes exist once the frames
+ * leave the video layer for a texture in the app's window: nothing is lost, the
+ * grade is lost, or there is nothing honest left to put on the panel.
  */
 enum class PictureColour {
-    /** A GL pass costs this nothing. */
+    /** A view transform costs this nothing. */
     Sdr,
 
-    /** HDR10 or HLG. Survives a GL pass only where the panel's EGL can present it. */
+    /**
+     * HDR10 or HLG. The grade does not survive a turn, and this is a platform
+     * fact rather than a property of this TV: Android's own media guidance states
+     * that from API 33 a `TextureView` transcodes HDR to SDR, "resulting in
+     * playback with possible loss of detail including clipped colors and video
+     * banding", and recommends a `SurfaceView` for HDR playback wherever
+     * possible. So there is no panel capability to probe and no EGL extension
+     * that buys it back — the previous mechanism's question, which asked exactly
+     * that, was retired with it.
+     */
     Hdr,
 
     /**
-     * Dolby Vision. `GlUtil.createEglSurface` accepts exactly three output
-     * transfers — SDR, BT.2020 PQ and BT.2020 HLG — so there is no surface a DV
-     * RPU can be presented through, and the dynamic metadata has nowhere to go.
+     * Dolby Vision, which loses more than the grade. The RPU is dynamic metadata
+     * the display applies to the video layer, so a DV film drawn through the view
+     * hierarchy arrives as an uninterpreted base layer: washed out where that
+     * layer is HDR10-compatible, and not the film's colours at all where it is
+     * not. There is no honest picture to show, so it is never turned.
      */
     DolbyVision,
 }
@@ -65,8 +113,7 @@ enum class PictureColour {
  *
  * Read from the MIME type first: a Dolby Vision track carries a perfectly
  * ordinary HDR10-compatible `ColorInfo` for its base layer, so the transfer
- * alone would call profile 8.1 plain HDR10 and send it into a pipeline that
- * cannot carry its RPU.
+ * alone would call profile 8.1 plain HDR10 and turn a film that must not be.
  */
 fun pictureColourOf(sampleMimeType: String?, colorTransfer: Int): PictureColour = when {
     sampleMimeType != null &&
@@ -81,6 +128,15 @@ fun pictureColourOf(sampleMimeType: String?, colorTransfer: Int): PictureColour 
  * What the viewer is owed about a turn that could not be given to them intact.
  *
  * Null is the ordinary case and means the picture is exactly what was asked for.
+ *
+ * Neither note covers what a turn costs an SDR film, because there is one thing
+ * it costs every turned film and nothing can be done about it: media3's own
+ * surface guidance gives a `SurfaceView` "full resolution of the display on
+ * Android TV devices that upscale the UI layer", and a turned film is drawn in
+ * that UI layer. So on such a TV a turned 4K picture may reach the panel
+ * upscaled from whatever the UI layer runs at. It is not said out loud because
+ * the alternative on offer is not turning the picture at all, and a viewer who
+ * pressed the key has already answered that question.
  */
 enum class TurnNote {
     /** Asked for, and this TV cannot do it without destroying the picture. */
@@ -92,32 +148,27 @@ enum class TurnNote {
 
 /**
  * One resolved turn: the number the decoder is configured with, the number the
- * frame pipeline applies, and what the viewer is owed about the difference.
+ * video surface's own transform applies, and what the viewer is owed about the
+ * difference.
  *
- * Exactly one of the two numbers is ever non-zero. When [frameDegrees] carries
- * the turn, [decoderDegrees] is 0 rather than the container's own value — see
+ * Exactly one of the two numbers is ever non-zero. When [viewDegrees] carries the
+ * turn, [decoderDegrees] is 0 rather than the container's own value — see
  * [pictureTurnFor].
+ *
+ * [viewDegrees] is CLOCKWISE, which is both `Format.rotationDegrees`' own sense
+ * and `android.graphics.Matrix.postRotate`'s on a screen whose y axis points
+ * down. That the two conventions agree is why no conversion lives here; the
+ * effects graph this replaced took counterclockwise degrees and needed one.
  */
 data class PictureTurn(
     /** Written into `Format.rotationDegrees`, and from there `KEY_ROTATION`. */
     val decoderDegrees: Int,
-    /** The clockwise turn the effects graph applies; 0 when it is not engaged. */
-    val frameDegrees: Int,
+    /** The clockwise turn the video surface applies; 0 when it is not carrying one. */
+    val viewDegrees: Int,
     val note: TurnNote?,
 ) {
     val mechanism: TurnMechanism
-        get() = if (frameDegrees != 0) TurnMechanism.Frames else TurnMechanism.Decoder
-
-    /**
-     * The same turn in the units `ScaleAndRotateTransformation` takes.
-     *
-     * `Format.rotationDegrees` is documented as "the clockwise rotation that
-     * should be applied to the video for it to be rendered in the correct
-     * orientation"; `ScaleAndRotateTransformation.setRotationDegrees` is
-     * documented as counterclockwise. The two conventions are opposite, and this
-     * is the only place that knows it.
-     */
-    val frameDegreesCounterClockwise: Int get() = (360 - frameDegrees) % 360
+        get() = if (viewDegrees != 0) TurnMechanism.View else TurnMechanism.Decoder
 }
 
 /**
@@ -131,12 +182,12 @@ data class PictureTurn(
  *    corrected, where the container's 90 and Flick's 270 cancel to 0. Both reach
  *    the decoder as rotation 0, which is not a transform at all, so no display
  *    pipeline can fail to honour it. Every ordinary cast is this case, including
- *    every 4K Dolby Vision one, and it is byte-identical to having no rotation
- *    feature at all.
+ *    every 4K Dolby Vision one, and it stays on the `SurfaceView` it would have
+ *    had if this feature did not exist.
  *
  *  - **Something to do.** The total is a quarter turn away from how the frames
  *    are coded, so a transform has to happen somewhere. On the verified hardware
- *    the decoder's transform is dropped, so [TurnMechanism.Frames] is the only
+ *    the decoder's transform is dropped, so [TurnMechanism.View] is the only
  *    mechanism that can produce a turned picture — and the decoder is then given
  *    0 rather than the total, because two mechanisms both applying the turn
  *    would land 180 out on any device where the decoder's one DOES work.
@@ -144,106 +195,36 @@ data class PictureTurn(
  * Giving the decoder 0 has a second effect that is load-bearing rather than
  * incidental: media3 transposes the reported `VideoSize` from
  * `Format.rotationDegrees`, so a zero there keeps the reported size equal to the
- * coded size — which is also the size of the texture the graph is registered
- * with, and the size of the frames that actually arrive. The whole chain then
- * agrees, and `FinalShaderProgramWrapper` letterboxes the turned frame into the
- * surface on its own.
+ * coded size — which is the shape the frames actually arrive in, and therefore
+ * the shape the surface transform has to be computed from. A decoder left
+ * carrying the turn would have the whole chain describing a picture the panel is
+ * not being sent.
  *
- * [framesUnavailable] is the film's own history: the effects graph was engaged
- * for it once and the player failed. It is never retried for that film.
+ * [turnUnavailable] is the film's own history: the view turn was engaged for it
+ * once and the picture did not survive. It is never retried for that film.
  */
 fun pictureTurnFor(
     containerDegrees: Int,
     extraDegrees: Int,
     colour: PictureColour,
-    hdrSurvivesFrames: Boolean,
-    framesUnavailable: Boolean,
+    turnUnavailable: Boolean,
 ): PictureTurn {
     val effective = effectiveRotationDegrees(containerDegrees, extraDegrees)
     val quarter = quarterTurn(effective)
     // Off the quarter-turn grid is the container's own value, untouched: neither
-    // KEY_ROTATION nor SurfaceInfo accepts anything else, and inventing one would
-    // be a worse answer than the file's.
-    if (quarter == null || quarter == 0) return PictureTurn(effective, frameDegrees = 0, note = null)
-    if (colour == PictureColour.DolbyVision || framesUnavailable) {
+    // KEY_ROTATION nor a quarter-turn matrix is the right home for it, and
+    // inventing one would be a worse answer than the file's.
+    if (quarter == null || quarter == 0) return PictureTurn(effective, viewDegrees = 0, note = null)
+    if (colour == PictureColour.DolbyVision || turnUnavailable) {
         // The decoder keeps the turn: free, and on a TV whose display pipeline
         // does honour it, correct. On one that does not, the picture stays as
         // filed — which is what [TurnNote.NotOnThisTv] exists to say out loud.
-        return PictureTurn(effective, frameDegrees = 0, note = TurnNote.NotOnThisTv)
+        return PictureTurn(effective, viewDegrees = 0, note = TurnNote.NotOnThisTv)
     }
-    val note = if (colour == PictureColour.Hdr && !hdrSurvivesFrames) TurnNote.ShownInSdr else null
-    return PictureTurn(decoderDegrees = 0, frameDegrees = quarter, note = note)
-}
-
-/**
- * Whether an HDR transfer reaches the panel intact through media3's effects
- * graph, given which EGL colour-space extensions the device has.
- *
- * This reproduces `PlaybackVideoGraphWrapper.registerInput` and
- * `GlUtil.isColorTransferSupported` from media3 1.10.1 rather than guessing at
- * them, because the answer decides whether a turn silently costs the viewer the
- * grade. Media3's own fallback for an unpresentable transfer is OpenGL tone
- * mapping to SDR — it does not fail, it just quietly stops being HDR.
- *
- * The one non-obvious branch is HLG below API 34: media3 converts it to PQ
- * there, because PQ output landed a release before HLG output did.
- */
-fun hdrSurvivesFrameProcessing(
-    colorTransfer: Int,
-    bt2020PqSupported: Boolean,
-    bt2020HlgSupported: Boolean,
-    sdkInt: Int,
-): Boolean = when (colorTransfer) {
-    C.COLOR_TRANSFER_ST2084 -> bt2020PqSupported
-    C.COLOR_TRANSFER_HLG -> bt2020HlgSupported || (sdkInt < 34 && bt2020PqSupported)
-    else -> true
-}
-
-/**
- * What this device's EGL can present, asked once.
- *
- * Queried directly rather than assumed, because it is the fact that decides
- * whether turning an HDR film costs its grade, and it is a property of the
- * silicon rather than of Android: the verified Google TV Streamer advertises
- * `GL_EXT_YUV_target` and OpenGL ES 3.2 — everything media3 needs to READ HDR —
- * and neither BT.2020 colour-space extension, which is what it would need to
- * PRESENT it. A TV that has them keeps its HDR through a turn, and this is how
- * that TV is told from this one.
- *
- * The default display is initialized rather than assumed live: `eglInitialize`
- * is reference-counted and idempotent, and this process has a display already,
- * so this adds a query and nothing else. Anything thrown means the question
- * cannot be answered, and an unanswerable question about HDR is treated as a no.
- */
-object GlColourOutput {
-
-    private const val EXTENSION_BT2020_PQ = "EGL_EXT_gl_colorspace_bt2020_pq"
-    private const val EXTENSION_BT2020_HLG = "EGL_EXT_gl_colorspace_bt2020_hlg"
-
-    private val extensions: String by lazy { readEglExtensions() }
-
-    /** Media3 refuses PQ output below API 33 whatever the extension says. */
-    private val bt2020PqSupported: Boolean by lazy {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            extensions.contains(EXTENSION_BT2020_PQ)
-    }
-
-    private val bt2020HlgSupported: Boolean by lazy { extensions.contains(EXTENSION_BT2020_HLG) }
-
-    fun hdrSurvivesFrames(colorTransfer: Int): Boolean = hdrSurvivesFrameProcessing(
-        colorTransfer = colorTransfer,
-        bt2020PqSupported = bt2020PqSupported,
-        bt2020HlgSupported = bt2020HlgSupported,
-        sdkInt = Build.VERSION.SDK_INT,
-    )
-
-    /** For the one log line that says what this panel can and cannot present. */
-    fun describe(): String = "pq=$bt2020PqSupported hlg=$bt2020HlgSupported"
-
-    private fun readEglExtensions(): String = runCatching {
-        val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-        if (display == EGL14.EGL_NO_DISPLAY) return@runCatching ""
-        EGL14.eglInitialize(display, IntArray(1), 0, IntArray(1), 0)
-        EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty()
-    }.getOrDefault("")
+    // Unconditional, unlike the graph this replaced: that lost HDR only where the
+    // panel's EGL could not present BT.2020, so it was worth asking. A
+    // `TextureView` transcodes HDR to SDR from API 33 whatever the panel can do —
+    // see [PictureColour.Hdr] — so there is nothing left to ask.
+    val note = if (colour == PictureColour.Hdr) TurnNote.ShownInSdr else null
+    return PictureTurn(decoderDegrees = 0, viewDegrees = quarter, note = note)
 }

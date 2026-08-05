@@ -1,12 +1,12 @@
 package com.flick.receiver.player
 
 /**
- * The films whose effects graph failed during this run of the app.
+ * The films whose picture could not be turned during this run of the app.
  *
- * `framesUnavailableForFilm` is cleared with the film, which is right for a
+ * `turnUnavailableForFilm` is cleared with the film, which is right for a
  * DIFFERENT film and wrong for the same one. `StartupRetryPolicy` re-prepares the
  * identical media inside one cast, `resetVideoRotation` hands the verdict back on
- * each attempt, the same graph is engaged and wedges the same way — the permanent
+ * each attempt, the same turn is engaged and fails the same way — the permanent
  * "this film will not cast" loop [com.flick.receiver.session.StartupDeadlinePolicy]
  * warns about, reached from the other side. So the verdict is kept against
  * whatever identifies the film across those attempts, and nothing else is: it is
@@ -17,7 +17,7 @@ package com.flick.receiver.player
  * that from the cast's own generation. What the URL does NOT survive is the
  * viewer pressing retry on the phone — that mints a fresh capability token per
  * start, so the receiver is handed a film it has demonstrably never seen and
- * cannot honestly refuse a graph to. That attempt engages the graph again and is
+ * cannot honestly refuse a turn to. That attempt engages the turn again and is
  * caught again by one deadline, which is the bounded cost rather than the loop.
  *
  * [CAPACITY] is small deliberately. This is a session memory of a rare failure
@@ -28,7 +28,7 @@ package com.flick.receiver.player
  * The keys carry the sender's capability token. They are held and compared here
  * and must never be logged — see `FlickLog`.
  */
-internal class FilmsWithoutFrames(private val capacity: Int = CAPACITY) {
+internal class FilmsWithoutTurn(private val capacity: Int = CAPACITY) {
 
     // Insertion-ordered, so the entry evicted is the one condemned longest ago.
     private val keys = LinkedHashSet<String>()

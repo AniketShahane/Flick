@@ -140,15 +140,13 @@ dependencies {
     implementation("androidx.media3:media3-common:1.10.1")
     implementation("androidx.media3:media3-datasource:1.10.1")
     implementation("androidx.media3:media3-session:1.10.1")
-    // Required by ExoPlayer.setVideoEffects, which is how the picture is turned
-    // on a TV whose display pipeline ignores MediaFormat.KEY_ROTATION.
-    // media3-exoplayer reaches this module only by reflection
-    // (PlaybackVideoGraphWrapper -> androidx.media3.effect.SingleInputVideoGraph),
-    // does NOT depend on it, and throws IllegalStateException if it is absent —
-    // so it has to be declared here and has to stay on the same version. The
-    // pipeline is built only while a turn is in force; an untouched cast never
-    // constructs one.
-    implementation("androidx.media3:media3-effect:1.10.1")
+    // media3-effect is deliberately absent. It was here for
+    // ExoPlayer.setVideoEffects, which turned the picture through a GL pass and
+    // presented no frames at all on the verified hardware; the turn is now the
+    // video surface's own transform. Nothing reaches androidx.media3.effect
+    // without it: MediaCodecVideoRenderer.onEnabled builds its
+    // PlaybackVideoGraphWrapper only when videoEffects is non-null, and
+    // media3-exoplayer declares no dependency on the module.
 
     // --- Coroutines ---
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
