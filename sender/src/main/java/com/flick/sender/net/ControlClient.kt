@@ -1,5 +1,6 @@
 package com.flick.sender.net
 
+import android.os.SystemClock
 import com.flick.sender.NetworkUtils
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.util.FlickLog
@@ -241,6 +242,16 @@ class ControlClient(private val scope: CoroutineScope) {
      * per send would bury the log it is meant to make readable — while a verb that dies
      * here otherwise leaves no trace anywhere, since the receiver acknowledges none of
      * them and `state` carries none of them back.
+     *
+     * The two timing lines are written to that same budget — [logsSendHandoff] keeps the
+     * handoff line off exactly the verbs a gesture produces at that rate, and the elapsed
+     * line is emitted only past [CONTROL_SLOW_SEND_MS]. Between them they answer the one
+     * question a hung cast cannot answer from either end alone. `active.send` is an OFFER
+     * to Ktor's outgoing queue, which sits in front of the socket: a fast return proves
+     * only that the queue had room, while a slow one proves it did not, and a full queue
+     * is the writer blocked on a peer that stopped reading. So a handoff line followed by
+     * a receiver that logs the frame seconds later indicts the network or the TV's read
+     * loop, and an elapsed line indicts backpressure — never both.
      */
     fun send(command: JSONObject): Boolean {
         val verb = command.optString("t")
@@ -264,11 +275,22 @@ class ControlClient(private val scope: CoroutineScope) {
             }
         }
         scope.launch {
+            // elapsedRealtime and never a wall clock: this is an interval, and a clock
+            // step mid-cast would invent or erase one. It is also the stamp the receiver's
+            // own frame trace carries, so the two logs are read in one idiom.
+            val handedAtMs = SystemClock.elapsedRealtime()
+            if (logsSendHandoff(verb)) FlickLog.i("ws", "send handoff t=$verb atMs=$handedAtMs")
             runCatching { active.send(Frame.Text(encoded)) }.onFailure { error ->
                 FlickLog.w("ws", "send drop t=$verb reason=write ${error.javaClass.simpleName}")
                 // Cancellation is still cancellation: absorbing it here would leave this
                 // coroutine claiming to have finished a write its scope had already ended.
                 if (error is CancellationException) throw error
+            }
+            val queuedMs = SystemClock.elapsedRealtime() - handedAtMs
+            // The handoff stamp repeats rather than a fresh one being taken, so the pair
+            // reads as one frame the way `frame in` / `frame done` do on the receiver.
+            if (queuedMs >= CONTROL_SLOW_SEND_MS) {
+                FlickLog.w("ws", "send slow t=$verb queuedMs=$queuedMs atMs=$handedAtMs")
             }
         }
         return true
@@ -582,3 +604,31 @@ class ControlClient(private val scope: CoroutineScope) {
  */
 internal fun controlDecisionBudgetMs(firstTimePairing: Boolean): Long =
     if (firstTimePairing) ControlClient.PAIR_DECISION_TIMEOUT_MS else 0L
+
+/**
+ * Verbs a single gesture puts on the wire at up to ~25 frames a second, and therefore
+ * the ones whose handoff must stay unlogged.
+ *
+ * A scrub throttles to one `seek` every 50 ms (`PlaybackSession.SEEK_THROTTLE_MS`) and a
+ * walked nudge emits one `setAudioDelay` every 40 ms
+ * ([AudioDelayPolicy.WALK_INTERVAL_MS]); a volume drag is not throttled at all. The
+ * diagnostics ring holds 200 lines, so one of those runs would evict the whole of the
+ * cast it was made during — including the handoff this instrumentation exists to
+ * correlate against the receiver's log.
+ */
+private val RateDrivenVerbs = setOf("seek", "setVolume", "setAudioDelay")
+
+/** Whether a frame of [verb] is rare enough that its handoff is worth a line. */
+internal fun logsSendHandoff(verb: String): Boolean = verb !in RateDrivenVerbs
+
+/**
+ * How long an offer to Ktor's outgoing queue may take before it is worth saying so.
+ *
+ * The floor has to clear ordinary jitter: the two rate-driven verbs above produce a
+ * frame every 40-50 ms, so a write inside that interval is keeping up by definition and
+ * a threshold near it would fire on a single GC pause or dispatch hiccup. Five of those
+ * intervals is a queue that has provably GROWN rather than one that wobbled — and it is
+ * still two orders of magnitude below the tens of seconds a stalled peer costs, so
+ * nothing this exists to catch can hide under it.
+ */
+internal const val CONTROL_SLOW_SEND_MS = 250L

@@ -325,6 +325,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val unplayableMemory = UnplayableMemory()
     private val linkMonitor = LinkCapacityMonitor { SystemClock.elapsedRealtime() }
 
+    // The last moment this phone provably put bytes on the media socket, off the same
+    // 1 Hz readings the capacity monitor measures on. It is the second witness a control
+    // link that has gone quiet is judged against — see [ControlRecoveryPolicy].
+    private var lastServedByteAtMs = 0L
+    private var controlRecoveries = 0
+    private var lastControlRecoveryAtMs = 0L
+
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
     val route: StateFlow<Route> = _route.asStateFlow()
     private val _pendingPairLaunch = MutableStateFlow<PendingPairLaunch?>(null)
@@ -458,7 +465,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 audioDelayRecorder.settled(delayMs)?.let(::enqueueAudioDelay)
             }
         }
-        scope.launch { TransferTelemetry.samples.collect(linkMonitor::onSample) }
+        scope.launch {
+            TransferTelemetry.samples.collect { sample ->
+                // A sample that carried nothing says only that the TV's buffer was full;
+                // one that carried bytes is the TV proving it is still there.
+                if (sample.bytes > 0L) lastServedByteAtMs = SystemClock.elapsedRealtime()
+                linkMonitor.onSample(sample)
+            }
+        }
         scope.launch { session.state.collect(linkMonitor::onPlayback) }
         // The TV's own frames are what move the notification's scrubber and flip its
         // play/pause face; the service re-posts only when what it renders actually changed.
@@ -487,9 +501,70 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
         scope.launch { control.connection.collect { status ->
             if (status == ConnectionStatus.CONNECTED) session.onConnected()
-            if ((status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.FAILED) && currentCastId != null) terminal(currentCastId!!, "control_disconnected")
+            if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.FAILED) {
+                currentCastId?.let(::onControlLost)
+            }
             publishTransport()
         } }
+    }
+
+    /**
+     * The control socket went down under a live cast.
+     *
+     * It used to be a terminal on sight, and that cost a viewer a film it had no business
+     * costing them: Ktor's ping watchdog reports a lost link after 30 s of missing pong,
+     * and the phone was still serving the TV tens of megabits a second the whole time.
+     * A WebSocket that went quiet is one witness; the media socket is the other, and
+     * [ControlRecoveryPolicy] is where the two are weighed. Where the bytes stopped too,
+     * the TV really has gone and the terminal below is unchanged.
+     *
+     * Recovery is a re-cast rather than a bare reconnect, and it has to be: the receiver
+     * tears its own session down the moment this socket closes
+     * (`SessionController.onControlLost`), so there is no playback left on the far end for
+     * a re-established link to re-adopt. What it costs the viewer is the re-buffer a seek
+     * costs; what it saves them is the film.
+     */
+    private fun onControlLost(castId: String) {
+        val nowMs = SystemClock.elapsedRealtime()
+        val serving = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, nowMs)
+        val request = currentRequest
+        val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
+        val attempt = ControlRecoveryPolicy.attempt(controlRecoveries, lastControlRecoveryAtMs, nowMs)
+        val recovers = ControlRecoveryPolicy.recovers(
+            reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId,
+            mediaServing = serving,
+            canDial = request != null && pairing != null,
+            attempt = attempt,
+        )
+        FlickLog.w("cast", "control lost castIdFp=${FlickLog.fp(castId)} serving=$serving attempt=$attempt recovering=$recovers")
+        if (!recovers || request == null) {
+            // Retryable now, whatever the reason. A link that dropped says nothing about
+            // the file, and the error face has to be able to offer the film back — which
+            // for this code it could not, so the cast simply ended.
+            terminal(castId, "control_disconnected", retryable = true)
+            return
+        }
+        controlRecoveries = attempt
+        lastControlRecoveryAtMs = nowMs
+        val playback = session.state.value
+        val resumed = CastRetryPolicy.start(
+            originalStartMs = request.startMs,
+            originalStartOver = request.startOver,
+            active = true,
+            confirmedMs = playback.confirmedMs,
+            durationMs = playback.durationMs,
+            wireDurationMs = request.item.durationMs,
+        )
+        // The face before the dial: this cast is being re-established rather than failing,
+        // and the connecting screen is the only one that says so.
+        publishCastStart(CastStartState.ConnectingControl(castId))
+        _route.value = Route.Connecting
+        // Then the dead cast, in full, BEFORE the re-dial. Every failure path inside a
+        // resume assumes this coordinator holds no cast, and one left standing would keep
+        // a foreground server and a media notification alive behind an error face. No
+        // remote stop is sent: the socket that would carry it is the one that just went.
+        cleanup(castId, clearStart = false, stopRemoteIfLoaded = false)
+        flickToTv(request.copy(startMs = resumed.startMs, startOver = resumed.startOver))
     }
 
     private fun transportCommandable(): Boolean =
@@ -1198,18 +1273,29 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 progressResolutionJob = scope.launch {
                     val ready = playbackProgress.first { it is PlaybackProgressState.Ready }
                     progressResolutionJob = null
-                    flickToTv(CastRequest(item, resumePosition(item, ready) ?: 0L))
+                    beginUserCast(CastRequest(item, resumePosition(item, ready) ?: 0L))
                 }
             }
             is PlaybackProgressState.Ready ->
-                flickToTv(CastRequest(item, resumePosition(item, progress) ?: 0L))
+                beginUserCast(CastRequest(item, resumePosition(item, progress) ?: 0L))
         }
     }
 
     fun startOver(item: MediaItem) {
         progressResolutionJob?.cancel()
         progressResolutionJob = null
-        flickToTv(CastRequest(item, 0L, startOver = true))
+        beginUserCast(CastRequest(item, 0L, startOver = true))
+    }
+
+    /**
+     * A cast the user asked for, which is what separates this from the re-cast
+     * [onControlLost] performs: a viewing they started themselves is a fresh run, and the
+     * recovery budget the previous one may have spent is not theirs to inherit.
+     */
+    private fun beginUserCast(request: CastRequest) {
+        controlRecoveries = 0
+        lastControlRecoveryAtMs = 0L
+        flickToTv(request)
     }
 
     private fun flickToTv(request: CastRequest) {
@@ -1329,12 +1415,36 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     fun cancelCast() = cancelCast(silent = false)
-    private fun cancelCast(silent: Boolean) { currentCastId?.let { id -> castJob?.cancel(); cleanup(id, stopRemoteIfLoaded = true); if (!silent) _route.value = Route.Library } }
+
+    /**
+     * Cancels the cast that is running AND the one queued behind a resume, because during
+     * a control recovery the second exists without the first: the connecting screen is up,
+     * its Cancel button is under the viewer's thumb, and the only thing to cancel is a
+     * dial in flight. Leaving that running would restart the film after they said stop.
+     *
+     * The silent path is [startCast]'s own supersede, which clears [pendingCast] before
+     * calling this — so a cast starting normally never reaches the pairing invalidation
+     * below and the sequence it has always run is unchanged.
+     */
+    private fun cancelCast(silent: Boolean) {
+        val queued = pendingCast != null
+        pendingCast = null
+        val live = currentCastId
+        if (live != null) { castJob?.cancel(); cleanup(live, stopRemoteIfLoaded = true) }
+        if (queued) invalidatePairingAttempt()
+        if (!silent && (queued || live != null)) _route.value = Route.Library
+    }
     fun stopCast() {
         currentCastId?.let { castId ->
             control.send(ControlProtocolV2.command("stop", castId))
             completeCastToLibrary(castId)
-        } ?: run { _route.value = Route.Library }
+        } ?: run {
+            // Stop during a control recovery finds no cast to command — the dial is still
+            // in flight — and the film it would start must not arrive after the viewer
+            // said stop. With nothing queued this is the no-op it has always been.
+            cancelCast()
+            _route.value = Route.Library
+        }
     }
     private fun cleanup(castId: String, clearStart: Boolean = true, stopRemoteIfLoaded: Boolean = false) {
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
@@ -1351,6 +1461,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             audioDelayRecorder.finish(castId, session.audioDelayTargetMs)?.let(::enqueueAudioDelay)
             subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
             currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
+            // Nothing one cast's socket proved may be read as evidence about the next.
+            lastServedByteAtMs = 0L
             if (clearStart) publishCastStart(CastStartState.Idle)
             // The terminal path keeps the Failed state, so it never reaches publishCastStart
             // — and the notification has to go with the cast either way.
@@ -1475,7 +1587,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         else FlickLog.w("cast", "setRotation drop reason=not_commandable choice=$choice")
     }
     fun setAudioDelay(delayMs: Int) = session.setAudioDelay(delayMs); fun nudgeAudioDelay(later: Boolean) = session.nudgeAudioDelay(later); fun resetAudioDelay() = session.resetAudioDelay()
-    fun retryCast() { retryItem?.let { request -> retryItem = null; flickToTv(request) } }
+    fun retryCast() { retryItem?.let { request -> retryItem = null; beginUserCast(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()
     private fun requestRemoteStop(castId: String) { control.send(ControlProtocolV2.command("stop", castId)) }

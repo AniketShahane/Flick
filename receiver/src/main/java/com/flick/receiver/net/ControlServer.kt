@@ -386,7 +386,14 @@ class ControlServer(
         }
 
         val emitLock = Mutex()
-        val emit: suspend (String) -> Unit = { payload -> emitLock.withLock { send(Frame.Text(payload)) } }
+        // When the writer last ACCEPTED a frame, which is not when TCP flushed one:
+        // Ktor's send suspends once the outgoing channel backs up behind a socket
+        // that is not draining. A value that stops advancing is therefore a stalled
+        // write side — what a phone whose ping never came back is looking at from
+        // the far end, and indistinguishable at the sender from a TV that stopped
+        // reading.
+        val lastTxMs = AtomicLong(SystemClock.elapsedRealtime())
+        val emit: suspend (String) -> Unit = { payload -> emitLock.withLock { send(Frame.Text(payload)); lastTxMs.set(SystemClock.elapsedRealtime()) } }
         // Deliberately outlives [authenticate]: the lease decision below is the
         // point a concurrent forget has to be able to reach, so the ticket is
         // dropped there rather than when the handshake returns. The finally is the
@@ -463,15 +470,40 @@ class ControlServer(
             }
 
             stateFeed(connection)
+            // Seeded at the lease rather than at connect, so the first beat measures
+            // this session and not the handshake that ran before it.
+            val lastRxMs = AtomicLong(SystemClock.elapsedRealtime())
+            heartbeat(connection, lastRxMs, lastTxMs)
             val pings = PingGate(SystemClock::elapsedRealtime)
             try {
                 for (frame in incoming) {
+                    // Monotonic, and taken before anything is parsed: this is when the
+                    // frame reached the app, so every interval derived from it starts
+                    // there rather than after work this loop chose to do first. Wall
+                    // clock cannot be used — a TV that steps its clock mid-cast would
+                    // otherwise report a negative or an invented delay.
+                    val rxAtMs = SystemClock.elapsedRealtime()
+                    lastRxMs.set(rxAtMs)
                     if (frame !is Frame.Text || !frame.fin) { closeUnsupported(); return }
                     val text = frame.readText()
                     if (text.toByteArray(Charsets.UTF_8).size > MAX_FRAME) { closeTooBig(); return }
                     val objectValue = StrictJson.objectOnly(text)
                     if (objectValue == null) { rejectMalformed(connection, null, null); return }
-                    if (!authenticatedCommand(objectValue, connection, peer, pings)) { rejectMalformed(connection, objectValue.string("t")?.value, objectValue.string("castId")?.value); return }
+                    val type = objectValue.string("t")?.value
+                    val command = controlCommandLabel(type)
+                    // Info and not verbose, which is the whole difference between a
+                    // diagnostic and a decoration: [FlickLog.v] reaches logcat only under
+                    // BuildConfig.DEBUG, and the builds a stall like this is reproduced on
+                    // are release ones. A line that exists only in the build nobody hits
+                    // the bug on is not instrumentation.
+                    FlickLog.i("ws", "frame in cmd=$command atMs=$rxAtMs")
+                    val handled = authenticatedCommand(objectValue, connection, peer, pings)
+                    // Paired with the line above by atMs, and the pair is the point: a
+                    // frame that arrived on time and took thirty seconds to handle is a
+                    // different defect from one the socket delivered thirty seconds
+                    // late, and neither line alone tells the two apart.
+                    FlickLog.i("ws", "frame done cmd=$command tookMs=${SystemClock.elapsedRealtime() - rxAtMs} atMs=$rxAtMs")
+                    if (!handled) { rejectMalformed(connection, type, objectValue.string("castId")?.value); return }
                 }
             } finally {
                 val released = synchronized(serverLock) {
@@ -852,15 +884,62 @@ class ControlServer(
         }
     }
 
+    /**
+     * Whether the coroutine machinery servicing THIS socket stopped being serviced,
+     * reported by the beat that finally got a thread back.
+     *
+     * A read loop parked in `for (frame in incoming)` is suspended and can log nothing
+     * about itself, so the beat is a child of the same session scope and runs on the same
+     * dispatcher. What it measures is its OWN lateness: a `delay` of
+     * [CONTROL_HEARTBEAT_MS] that took materially longer to come back is a dispatcher
+     * that had no thread for this session, and a channel resume for the read loop would
+     * have been starved alongside it. That is the one thing a command's own timestamps
+     * cannot say — they show when a frame was handled, never whether anything could have
+     * handled it sooner.
+     *
+     * Silent while healthy, which is what lets it ship. Beating unconditionally would be
+     * one line every [CONTROL_HEARTBEAT_MS] for the length of a film — thousands per cast
+     * into logcat, and a 200-entry on-screen ring that evicts the bind, pairing and load
+     * lines of the very session whoever opened it came to read. The information was only
+     * ever in the beats that came late; the ones on time say nothing a reader did not
+     * already assume.
+     *
+     * Deliberately NOT gated on how long since a frame ARRIVED. A control link carries
+     * nothing at all while a film simply plays — the phone sends on user action, and its
+     * pings are WebSocket control frames this loop never sees as text — so a quiet link
+     * and a broken one look identical from here. Lateness is the honest signal because it
+     * is measured against something this coroutine asked for itself.
+     */
+    private fun DefaultWebSocketServerSession.heartbeat(
+        connection: Connection,
+        lastRxMs: AtomicLong,
+        lastTxMs: AtomicLong,
+    ) = launch {
+        while (isActive && generation == connection.generation) {
+            val askedAtMs = SystemClock.elapsedRealtime()
+            delay(CONTROL_HEARTBEAT_MS)
+            if (ownership.currentCast(connection.token, connection.generation) == null) continue
+            val now = SystemClock.elapsedRealtime()
+            val lateByMs = now - askedAtMs - CONTROL_HEARTBEAT_MS
+            if (!heartbeatStalled(lateByMs)) continue
+            // Info and not verbose: [FlickLog.v] reaches logcat only under
+            // BuildConfig.DEBUG, and a stall is reproduced on release builds. A line that
+            // exists only in the build nobody hits the bug on is not instrumentation.
+            FlickLog.i(
+                "ws",
+                "alive late byMs=$lateByMs sinceRxMs=${now - lastRxMs.get()} " +
+                    "sinceTxMs=${now - lastTxMs.get()} gen=${connection.generation} atMs=$now",
+            )
+        }
+    }
+
     private fun rejectMalformed(connection: Connection, type: String?, castId: String?) {
         if (ascii(type, 32) && id(castId)) emit(connection, commandRejected(castId!!, type!!, "malformed"))
         // The command's NAME, and nothing else taken off the frame. Refusing one closes the whole
         // control socket, so without this the log records that a cast was dropped and never which
         // command dropped it — which is the only question worth asking when a viewer reports the
-        // connection failing. Guarded by the same [ascii] check the wire echo above runs under, so
-        // what reaches logcat cannot carry a newline or a control code however the peer framed it.
-        val named = type?.takeIf { ascii(it, 32) } ?: "unnamed"
-        connection.session.launch { connection.session.closePolicy("postauth_malformed t=$named") }
+        // connection failing.
+        connection.session.launch { connection.session.closePolicy("postauth_malformed t=${controlCommandLabel(type)}") }
     }
     private fun emit(connection: Connection, payload: String) {
         if (active?.token !== connection.token || active?.generation != connection.generation || generation != connection.generation) return
@@ -999,6 +1078,59 @@ internal fun isSubtitleLanguageTag(value: String?): Boolean =
     value != null && value.length <= 20 && value.matches(LANGUAGE_TAG)
 
 private val LANGUAGE_TAG = Regex("^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$")
+
+/**
+ * The only thing taken off a control frame that a diagnostic line may carry: the
+ * command's NAME, or nothing at all. Never a URL, a token, a label, a subtitle
+ * path or any other payload field.
+ *
+ * Printable ASCII and no longer than any verb this protocol defines, which is the
+ * same rule the `commandRejected` wire echo runs under — so what reaches logcat
+ * and the on-screen ring cannot carry a newline or a control code however the
+ * peer framed it. An over-long or non-printable `t` is reported as absent rather
+ * than trimmed to fit; a truncation would still be bytes the peer chose.
+ *
+ * An EMPTY `t` is admitted by that printable-ASCII rule vacuously, so it does
+ * reach here, and it would emit `cmd=` with nothing after it — which reads as a
+ * line that got cut off rather than as a frame that named nothing.
+ */
+internal fun controlCommandLabel(type: String?): String =
+    if (type != null && type.isNotEmpty() && type.length <= MAX_COMMAND_NAME && type.all { it.code in 0x20..0x7e }) type else "unnamed"
+
+private const val MAX_COMMAND_NAME = 32
+
+/**
+ * How often a control socket carrying a live cast checks that it is still being
+ * serviced. Declared at file scope rather than in the companion so the resolution
+ * it has to meet can be asserted without binding a Ktor engine.
+ */
+internal const val CONTROL_HEARTBEAT_MS = 3_000L
+
+/**
+ * Whether a beat that came back [lateByMs] later than it asked to is evidence of a
+ * stall rather than of an ordinary busy moment.
+ *
+ * A whole missed interval is the threshold, and it is chosen to be unarguable. A TV
+ * decoding 4K reschedules a timer tens of milliseconds late constantly, and a beat that
+ * cried about that would be the unconditional beat again wearing a condition. Losing a
+ * full [CONTROL_HEARTBEAT_MS] is not jitter — nothing else on this dispatcher runs long
+ * enough to cause it — and it is still a fifth of the sender's 15 s ping tolerance, so a
+ * gap that would go on to cost a cast is named several beats before the phone gives up.
+ */
+internal fun heartbeatStalled(lateByMs: Long): Boolean = lateByMs >= CONTROL_HEARTBEAT_MS
+
+/**
+ * Whether a beat every [heartbeatMs] can tell a real stall of [stallMs] from a
+ * beat that was merely late.
+ *
+ * One missing beat is scheduling noise on a TV already decoding 4K, so a stall has
+ * to read as a RUN of them; three missing beats is the shortest run that is not
+ * arguable, which puts the ceiling at a quarter of the shortest stall worth
+ * naming. That stall is the sender's 15 s ping interval: a gap the ping outlives
+ * never costs a cast, and one it does not is the whole reason the line exists.
+ */
+internal fun heartbeatResolvesStall(heartbeatMs: Long, stallMs: Long): Boolean =
+    heartbeatMs > 0 && heartbeatMs * 4 <= stallMs
 
 /**
  * Whether forgetting [forgottenKeyId] must end the live control session.
