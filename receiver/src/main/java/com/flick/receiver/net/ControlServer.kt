@@ -854,7 +854,13 @@ class ControlServer(
 
     private fun rejectMalformed(connection: Connection, type: String?, castId: String?) {
         if (ascii(type, 32) && id(castId)) emit(connection, commandRejected(castId!!, type!!, "malformed"))
-        connection.session.launch { connection.session.closePolicy("postauth_malformed") }
+        // The command's NAME, and nothing else taken off the frame. Refusing one closes the whole
+        // control socket, so without this the log records that a cast was dropped and never which
+        // command dropped it — which is the only question worth asking when a viewer reports the
+        // connection failing. Guarded by the same [ascii] check the wire echo above runs under, so
+        // what reaches logcat cannot carry a newline or a control code however the peer framed it.
+        val named = type?.takeIf { ascii(it, 32) } ?: "unnamed"
+        connection.session.launch { connection.session.closePolicy("postauth_malformed t=$named") }
     }
     private fun emit(connection: Connection, payload: String) {
         if (active?.token !== connection.token || active?.generation != connection.generation || generation != connection.generation) return
