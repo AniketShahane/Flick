@@ -40,6 +40,7 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionResult
 import com.flick.receiver.net.ExternalSubtitle
@@ -204,7 +205,12 @@ class PlayerController(context: Context) : SessionPlayer {
 
     // --- Bounded auto-recovery state (all touched on the main thread only) ------
     private val recoveryHandler = Handler(Looper.getMainLooper())
-    private var pendingRecovery: Runnable? = null
+
+    /** The delayed re-prepare a rough patch schedules; see [scheduleRecovery]. */
+    private val pendingRecovery = PendingWork(
+        schedule = { work, delayMs -> recoveryHandler.postDelayed(work, delayMs) },
+        unschedule = { work -> recoveryHandler.removeCallbacks(work) },
+    )
 
     /** Attempts within the current rough patch; gates [MAX_RECOVERY_ATTEMPTS], re-armed after a stable stretch. */
     private var recoveryGateCount: Int = 0
@@ -274,9 +280,76 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /**
      * Set when the effects graph failed on THIS film, so it is never engaged for
-     * it again. Cleared with the film, because the next one gets its own attempt.
+     * it again. Cleared with the film — but not back to false for a film this
+     * session has already condemned; see [filmsWithoutFrames].
      */
     private var framesUnavailableForFilm: Boolean = false
+
+    /**
+     * Every film this session has condemned, so a retry of one of them does not
+     * re-engage the graph that wedged it. The keys are media URLs and carry the
+     * sender's token: held, compared, never logged.
+     */
+    private val filmsWithoutFrames = FilmsWithoutFrames()
+
+    /**
+     * Whether this film's turn has been resolved against [pictureTurnFor] at all.
+     * The rule it feeds, and why the resolution cannot be driven by Auto's answer
+     * moving, are [resolvesPictureTurn]'s. Cleared with the film.
+     */
+    private var pictureTurnResolvedForFilm: Boolean = false
+
+    /** One-shot deadline for an engagement of the effects graph; see [FrameTurnWatchdog]. */
+    private val frameTurnWatchdog = FrameTurnWatchdog()
+    private var pendingFrameTurnDeadline: Runnable? = null
+
+    /**
+     * The one-shot hand-back of a film whose graph was condemned, in its OWN slot.
+     *
+     * [PendingWork] carries why it cannot share [pendingRecovery]'s: an error
+     * queued behind this used to cancel it and re-prepare the graph-carrying
+     * player instead, leaving a frozen picture nothing was on its way to fix.
+     */
+    private val pendingFrameTurnFallback = PendingWork(
+        schedule = { work, delayMs -> recoveryHandler.postDelayed(work, delayMs) },
+        unschedule = { work -> recoveryHandler.removeCallbacks(work) },
+    )
+
+    /**
+     * The graph's own proof of life, and the only per-frame one media3 offers.
+     *
+     * `onRenderedFirstFrame` is not usable for this on its own:
+     * `MediaCodecVideoRenderer.maybeNotifyRenderedFirstFrame` is gated on
+     * `VideoFrameReleaseControl.onFrameReleasedIsFirstFrame`, and re-registering a
+     * LIVE graph with a new effect list resets nothing there — `InputVideoSink`
+     * only calls `registerInputStream` again — so a shader swap on a running film
+     * would look exactly like a dead one. `DefaultVideoSink`'s frame renderer
+     * calls this for every frame it renders under the graph, so it is the one
+     * signal both ways of engaging it share.
+     *
+     * It cannot, however, tell an old-effect frame from a new-effect one: media3
+     * drops `VideoFrameProcessor.Listener.onInputStreamRegistered` at the
+     * `VideoGraph.Listener` boundary, and the only per-frame fact that reaches
+     * here about the graph's OUTPUT is the size `DefaultVideoSink` rebuilds from
+     * the graph's `VideoSize` — which a 90°-to-270° swap leaves identical. So the
+     * frame is timestamped and [FrameTurnWatchdog.evidenceGenerationFor] decides
+     * whether it counts.
+     *
+     * Playback thread. Installed only on an instance that actually carries a
+     * graph, and the armed flag is checked before anything else happens, so a
+     * working turn costs one volatile read per frame.
+     */
+    private val frameTurnFrameListener = VideoFrameMetadataListener { _, _, _, _ ->
+        if (frameTurnWatchdog.isArmed) {
+            val generation =
+                frameTurnWatchdog.evidenceGenerationFor(SystemClock.elapsedRealtime())
+            if (generation != FrameTurnWatchdog.NOT_ARMED) {
+                recoveryHandler.post {
+                    if (frameTurnWatchdog.onFrameRendered(generation)) cancelFrameTurnDeadline()
+                }
+            }
+        }
+    }
 
     /**
      * The commanded audio delay, in the form the video renderers read. Built once
@@ -285,6 +358,16 @@ class PlayerController(context: Context) : SessionPlayer {
      * background/foreground cycle is already in force on the rebuilt renderers.
      */
     private val audioDelayShift = AudioDelayShift()
+
+    /**
+     * The widest delay this device's buffer can carry, read once. The heap grant
+     * is a property of the process and [bufferBudgetFor] is a pure function of it,
+     * so this cannot change while the app is running — and it is deliberately not
+     * part of the wire rule; see [AudioDelayPolicy.accepts].
+     */
+    private val audioDelayCapMs: Int by lazy {
+        AudioDelayPolicy.maxDelayMsFor(bufferBudgetFor(Runtime.getRuntime().maxMemory()))
+    }
 
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
@@ -495,7 +578,7 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelSubtitleReloadDeadline()
         // A recovery queued for the item that still contained the failed subtitle
         // must not re-prepare over this one-shot rollback.
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         subtitleFailureState.recordRollback()
         currentSubtitle = null
         val resumePositionMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
@@ -756,6 +839,12 @@ class PlayerController(context: Context) : SessionPlayer {
      * recovery path is skipped outright: no amount of re-preparing gives this TV a
      * decoder it does not have, and the 2/4/8/15 s recovery budget would only spend
      * 29 s before showing the same answer.
+     *
+     * The one exception is a shortfall that appears only once the effects graph
+     * does. This verdict does not travel through `onPlayerError`, so it would
+     * otherwise reach the diagnosis screen without ever passing
+     * [recoverFromFrameTurnFailure] — a cast ended by a rotation key, which is the
+     * outcome the fallback exists to prevent. See [failFrameTurn].
      */
     private fun reportUnplayableVideoTrack(tracks: Tracks) {
         if (videoShortfallReported) return
@@ -771,12 +860,22 @@ class PlayerController(context: Context) : SessionPlayer {
             }
         }
         val shortfall = videoTrackShortfall(supports, anySelected, mimeType) ?: return
-        videoShortfallReported = true
         FlickLog.w(
             "player",
             "videoUnplayable shortfall=$shortfall mime=${mimeType ?: "unknown"} " +
                 "support=${supports.joinToString(",")} decoderPolicy=hardwareOnly",
         )
+        // This film was playing without a graph a moment ago, so a shortfall
+        // reached under one is evidence about the graph rather than about the file.
+        // Deliberately BEFORE the report is latched: the fallback player has to be
+        // judged on its own tracks, and the per-film latch is what stops a second
+        // verdict — the one with no graph in the way — from coming back here.
+        if (activeFrameDegrees != null &&
+            failFrameTurn("reason=videoUnplayableUnderGraph shortfall=$shortfall")
+        ) {
+            return
+        }
+        videoShortfallReported = true
         val error = PlaybackException(
             "video track unplayable",
             UnplayableVideoTrackException(shortfall),
@@ -836,13 +935,30 @@ class PlayerController(context: Context) : SessionPlayer {
             orientationHint = hint
             FlickLog.i("player", "orientationHint=${hint ?: "none"} verdict=${auto.verdict}")
         }
-        if (auto.extraDegrees == autoVideoRotationDegrees) return
-        autoVideoRotationDegrees = auto.extraDegrees
-        FlickLog.i(
-            "player",
-            "autoRotation extraDegrees=${auto.extraDegrees} verdict=${auto.verdict}",
-        )
-        if (videoRotation == VideoRotation.Auto) applyVideoRotation()
+        val autoChanged = auto.extraDegrees != autoVideoRotationDegrees
+        if (autoChanged) {
+            autoVideoRotationDegrees = auto.extraDegrees
+            FlickLog.i(
+                "player",
+                "autoRotation extraDegrees=${auto.extraDegrees} verdict=${auto.verdict}",
+            )
+        }
+        // [resolvesPictureTurn] carries the rule and the reason. The first delivery
+        // resolves whatever the choice is, because an explicit turn taken before
+        // the tracks landed was resolved against a container of 0 — the wrong film;
+        // [applyVideoRotation] reads the choice itself and declines when the
+        // mechanism and the degrees both already hold.
+        if (
+            !resolvesPictureTurn(
+                alreadyResolved = pictureTurnResolvedForFilm,
+                autoChanged = autoChanged,
+                choiceIsAuto = videoRotation == VideoRotation.Auto,
+            )
+        ) {
+            return
+        }
+        pictureTurnResolvedForFilm = true
+        applyVideoRotation()
     }
 
     /** The turn a rebuilt player has to be constructed with, or null for no graph. */
@@ -932,10 +1048,43 @@ class PlayerController(context: Context) : SessionPlayer {
      * effect list rather than rebuilding anything, so this is a shader swap on the
      * next frame. The decoder is not touched, the buffer is not touched, and the
      * viewer sees the picture turn without the film stopping.
+     *
+     * [activeFrameDegrees] is moved only after the swap has been accepted:
+     * `ExoPlayerImpl.setVideoEffects` does its lib-effect reflection check BEFORE
+     * it sends the renderer message, so a throw leaves the live graph carrying its
+     * previous effect list — and leaving the field describing a graph that is not
+     * there would send the fallback down the wrong branch.
      */
     private fun setFrameTurn(exo: ExoPlayer, turn: PictureTurn) {
+        if (!engageFrameTurn(exo, turn)) return
         activeFrameDegrees = turn.frameDegrees
-        exo.setVideoEffects(frameTurnEffects(turn))
+        armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.LiveSwap)
+    }
+
+    /**
+     * Ask media3 to carry [turn] in its effects graph, and answer whether it
+     * accepted — the one place `setVideoEffects` is ever called.
+     *
+     * It can refuse synchronously, which no caller of this class is in a position
+     * to survive: disassembling `ExoPlayerImpl.setVideoEffects` in media3 1.10.1
+     * shows it doing
+     * `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")
+     * .getConstructor(VideoFrameProcessor$Factory.class)` before the renderer
+     * message goes out, and throwing `IllegalStateException("Could not find
+     * required lib-effect dependencies.")` on `ClassNotFoundException` or
+     * `NoSuchMethodException`. R8 keeps that class unrenamed in the current
+     * release APK, so this is not the live fault — but the throw would propagate
+     * out of a control-command handler and end the cast because the viewer pressed
+     * a rotation key, which is precisely the outcome the whole fallback exists to
+     * prevent. Anything thrown is therefore the same event as a graph that fails
+     * later: this film is shown as filed.
+     */
+    private fun engageFrameTurn(exo: ExoPlayer, turn: PictureTurn): Boolean {
+        val outcome = runCatching { exo.setVideoEffects(frameTurnEffects(turn)) }
+        val failure = outcome.exceptionOrNull() ?: return true
+        // Named, never the message: a media3 exception can quote a URI.
+        failFrameTurn("reason=setVideoEffects thrown=${failure.javaClass.simpleName}")
+        return false
     }
 
     /**
@@ -948,6 +1097,60 @@ class PlayerController(context: Context) : SessionPlayer {
             .setRotationDegrees(turn.frameDegreesCounterClockwise.toFloat())
             .build(),
     )
+
+    /**
+     * Watch a newly engaged graph until it has put one frame on the panel that is
+     * actually evidence about it.
+     *
+     * [FRAME_TURN_DEADLINE_MS] is the whole judgement and
+     * [FRAME_TURN_SWAP_SETTLE_MS] is what a [FrameTurnWatchdog.Engagement.LiveSwap]
+     * discounts from it; the state machine is [FrameTurnWatchdog]. A deadline that
+     * comes due while the film is paused or finished re-arms rather than firing —
+     * a picture nobody is waiting on is no evidence about the graph — and one that
+     * comes due against a player that has since been replaced is dropped.
+     */
+    private fun armFrameTurnDeadline(
+        exo: ExoPlayer,
+        engagement: FrameTurnWatchdog.Engagement,
+    ) {
+        cancelFrameTurnDeadline()
+        val generation = frameTurnWatchdog.arm(
+            engagement = engagement,
+            nowMs = SystemClock.elapsedRealtime(),
+            swapSettleMs = FRAME_TURN_SWAP_SETTLE_MS,
+        )
+        lateinit var deadline: Runnable
+        deadline = Runnable {
+            if (pendingFrameTurnDeadline !== deadline) return@Runnable
+            pendingFrameTurnDeadline = null
+            if (player !== exo) {
+                frameTurnWatchdog.cancel()
+                return@Runnable
+            }
+            when (
+                frameTurnWatchdog.consumeDeadline(
+                    generation = generation,
+                    renderingExpected = framesExpectedFrom(exo.playWhenReady, exo.playbackState),
+                )
+            ) {
+                FrameTurnWatchdog.Verdict.Stale -> Unit
+                FrameTurnWatchdog.Verdict.NotYet -> {
+                    pendingFrameTurnDeadline = deadline
+                    recoveryHandler.postDelayed(deadline, FRAME_TURN_DEADLINE_MS)
+                }
+                FrameTurnWatchdog.Verdict.NoFrames ->
+                    failFrameTurn("reason=frameWatchdog deadlineMs=$FRAME_TURN_DEADLINE_MS")
+            }
+        }
+        pendingFrameTurnDeadline = deadline
+        recoveryHandler.postDelayed(deadline, FRAME_TURN_DEADLINE_MS)
+    }
+
+    private fun cancelFrameTurnDeadline() {
+        pendingFrameTurnDeadline?.let { recoveryHandler.removeCallbacks(it) }
+        pendingFrameTurnDeadline = null
+        frameTurnWatchdog.cancel()
+    }
 
     /**
      * Re-prepare the LIVE player where the film already is. Everything the
@@ -968,7 +1171,7 @@ class PlayerController(context: Context) : SessionPlayer {
         val url = currentUrl ?: return false
         cancelSubtitleReloadDeadline()
         // A recovery queued against the old item would re-prepare on top of this.
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = exo.playWhenReady
@@ -1008,7 +1211,7 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelSubtitleReloadDeadline()
         // A recovery queued against the released player would seek and re-prepare
         // on top of this.
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         val resumeMs = previous.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = previous.playWhenReady
@@ -1017,6 +1220,9 @@ class PlayerController(context: Context) : SessionPlayer {
         lastGoodPositionMs = resumeMs
         stableReadySinceMs = 0L
         val exo = createPlayer(turn)
+        // [createPlayer] latches [framesUnavailableForFilm] when media3 refuses the
+        // graph outright, and a refused graph is not one this instance carries.
+        val engagedTurn = turn?.takeUnless { framesUnavailableForFilm }
         // Switch the platform session to the new instance before the old one is
         // released, so no controller can target a dead player.
         bindMediaSession(exo)
@@ -1024,7 +1230,7 @@ class PlayerController(context: Context) : SessionPlayer {
         previous.removeListener(playerListener)
         previous.removeAnalyticsListener(analyticsListener)
         previous.release()
-        activeFrameDegrees = turn?.frameDegrees
+        activeFrameDegrees = engagedTurn?.frameDegrees
         exo.setMediaItem(
             mediaItemFor(url, currentMediaId, currentSubtitle),
             /* resetPosition = */ false,
@@ -1032,12 +1238,21 @@ class PlayerController(context: Context) : SessionPlayer {
         if (resumeMs > 0L) exo.seekTo(resumeMs)
         exo.prepare()
         exo.playWhenReady = resumePlayWhenReady
+        // Armed after prepare, so the deadline measures the fill and the first
+        // frame together — which is what it is sized against.
+        if (engagedTurn != null) {
+            armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.NewGraph)
+        }
         FlickLog.i(
             "player",
-            "turnMechanism via=${if (turn != null) "frames" else "decoder"} " +
-                "frameDegrees=${turn?.frameDegrees ?: 0} colour=$filmColour " +
+            "turnMechanism via=${if (engagedTurn != null) "frames" else "decoder"} " +
+                "frameDegrees=${engagedTurn?.frameDegrees ?: 0} colour=$filmColour " +
                 "note=${turnNote ?: "none"} glOutput=${GlColourOutput.describe()}",
         )
+        // Right here rather than after the first frame: the cast transaction is
+        // measuring wall clock against a budget that is still outstanding, and this
+        // rebuild is work the receiver chose — see [StartupDeadlinePolicy]. Reached
+        // only while [startupCallbacks] is non-null, which IS the startup window.
         startupCallbacks?.onRotationRePrepare?.invoke()
         return true
     }
@@ -1051,25 +1266,55 @@ class PlayerController(context: Context) : SessionPlayer {
      * the viewer pressed a rotation key. Neither says anything about the film's
      * playability without the graph, which is how it was playing a moment ago.
      *
-     * Latched per film, so this is one attempt and one fallback rather than a
-     * loop, and the fallback runs on the next main-thread turn: releasing a player
-     * from inside its own listener callback is not a thing to do.
+     * This is only the errors media3 chose to raise, which is the narrower half of
+     * the net; [failFrameTurn] carries the rest.
      */
     private fun recoverFromFrameTurnFailure(error: PlaybackException): Boolean {
+        // The hand-back for this film is already queued and is itself a full
+        // re-prepare from the last good position. Whatever media3 raises in the
+        // one main-thread turn between the latch and that rebuild is the
+        // condemned graph's, so it must not spend a recovery attempt on the
+        // player still carrying it, and must not reach the diagnosis screen ahead
+        // of the film being handed back — which is the whole point of the latch.
+        if (pendingFrameTurnFallback.isPending) {
+            FlickLog.w(
+                "player",
+                "turnFrames absorbed code=${error.errorCodeName}; fallback already queued",
+            )
+            return true
+        }
         if (activeFrameDegrees == null || framesUnavailableForFilm) return false
         if (!isFrameTurnFailure(error)) return false
+        return failFrameTurn("reason=playerError code=${error.errorCodeName}")
+    }
+
+    /**
+     * Latch this film's graph as unusable and hand the film back, whatever said so.
+     *
+     * Three things can say it: a `PlaybackException` media3 raised, a
+     * `setVideoEffects` that refused the graph outright, and a graph that produced
+     * no frame at all within [FRAME_TURN_DEADLINE_MS]. They differ only in what
+     * they name in the log — the film without the graph is the one that was
+     * playing in all three, and the recovery is identical.
+     *
+     * Latched per film, so this is one attempt and one fallback rather than a
+     * loop, and the fallback runs on the next main-thread turn: releasing a player
+     * from inside its own listener callback — or from inside the construction of
+     * its replacement — is not a thing to do. It goes in its own slot, because a
+     * hand-back the generic recovery canceller can collect is no hand-back at
+     * all; see [PendingWork].
+     */
+    private fun failFrameTurn(reason: String): Boolean {
+        if (framesUnavailableForFilm) return false
         framesUnavailableForFilm = true
-        FlickLog.w(
-            "player",
-            "turnFrames failed code=${error.errorCodeName}; showing this film as filed",
-        )
-        cancelPendingRecovery()
-        val runnable = Runnable {
-            pendingRecovery = null
-            applyVideoRotation()
-        }
-        pendingRecovery = runnable
-        recoveryHandler.post(runnable)
+        // Keyed on the URL and not the media id: the session builds that from the
+        // cast's generation, so it is a different string on every retry of the
+        // same film — which is the loop this memory exists to break.
+        filmsWithoutFrames.remember(currentUrl)
+        cancelFrameTurnDeadline()
+        FlickLog.w("player", "turnFrames failed $reason; showing this film as filed")
+        pendingRecovery.cancel()
+        pendingFrameTurnFallback.post { applyVideoRotation() }
         return true
     }
 
@@ -1082,7 +1327,15 @@ class PlayerController(context: Context) : SessionPlayer {
         filmContainerRotationDegrees = 0
         filmColour = PictureColour.Sdr
         filmColorTransfer = Format.NO_VALUE
-        framesUnavailableForFilm = false
+        // Not simply false: a film this session already condemned keeps its
+        // verdict, so a startup retry of THAT film does not re-engage the graph
+        // that wedged it and fail identically for as long as the viewer keeps
+        // trying. Every caller sets [currentUrl] to the film being judged — or to
+        // null, which is remembered about nothing — before reaching here.
+        framesUnavailableForFilm = filmsWithoutFrames.remembers(currentUrl)
+        pictureTurnResolvedForFilm = false
+        cancelFrameTurnDeadline()
+        pendingFrameTurnFallback.cancel()
         rotationOverride.reset()
     }
 
@@ -1246,22 +1499,13 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Post a delayed re-prepare of the current player at [lastGoodPositionMs]. */
     private fun scheduleRecovery(attempt: Int) {
-        cancelPendingRecovery()
         val delayMs = RECOVERY_BACKOFF_MS[(attempt - 1).coerceIn(0, RECOVERY_BACKOFF_MS.lastIndex)]
-        val runnable = Runnable {
-            pendingRecovery = null
-            val exo = player ?: return@Runnable
+        pendingRecovery.post(delayMs) {
+            val exo = player ?: return@post
             exo.seekTo(lastGoodPositionMs)
             exo.prepare()
             exo.playWhenReady = true
         }
-        pendingRecovery = runnable
-        recoveryHandler.postDelayed(runnable, delayMs)
-    }
-
-    private fun cancelPendingRecovery() {
-        pendingRecovery?.let { recoveryHandler.removeCallbacks(it) }
-        pendingRecovery = null
     }
 
     // --- Player construction -------------------------------------------------
@@ -1416,8 +1660,15 @@ class PlayerController(context: Context) : SessionPlayer {
                 exo.volume = lastVolume
                 // Before the first prepare, and only when a turn needs it: this
                 // call is what decides, for the whole life of the instance,
-                // whether the frames take a GL pass at all.
-                if (turn != null) exo.setVideoEffects(frameTurnEffects(turn))
+                // whether the frames take a GL pass at all. A refusal latches the
+                // film and leaves an ordinary player, which the callers read back
+                // off [framesUnavailableForFilm].
+                if (turn != null && engageFrameTurn(exo, turn)) {
+                    // Only on an instance that carries a graph: this is a per-frame
+                    // callback, and every frame it sees has already paid for a GL
+                    // pass.
+                    exo.setVideoFrameMetadataListener(frameTurnFrameListener)
+                }
             }
     }
 
@@ -1496,7 +1747,8 @@ class PlayerController(context: Context) : SessionPlayer {
         // the same verdict the released one was working under.
         val turn = frameTurnInForce()
         val exo = createPlayer(turn)
-        activeFrameDegrees = turn?.frameDegrees
+        val engagedTurn = turn?.takeUnless { framesUnavailableForFilm }
+        activeFrameDegrees = engagedTurn?.frameDegrees
         player = exo
         val url = currentUrl
         if (url != null) {
@@ -1505,19 +1757,32 @@ class PlayerController(context: Context) : SessionPlayer {
             exo.prepare()
             if (savedPositionMs > 0L) exo.seekTo(savedPositionMs)
             exo.playWhenReady = pendingPlayWhenReady
+            // A restore builds a graph on a decoder and a surface that are both
+            // new, so it is as much a fresh engagement as the rebuild that first
+            // asked for one.
+            if (engagedTurn != null) {
+                armFrameTurnDeadline(exo, FrameTurnWatchdog.Engagement.NewGraph)
+            }
         }
     }
 
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
         cancelSubtitleReloadDeadline()
+        // The graph this was watching is about to be released with its player, so
+        // there is nothing left for the deadline to be evidence about. The
+        // hand-back goes with it: the latch survives, so [onStart] rebuilds this
+        // film without a graph anyway and there is nothing left for the fallback
+        // to take off.
+        cancelFrameTurnDeadline()
+        pendingFrameTurnFallback.cancel()
         val exo = player ?: run {
             releaseMediaSession()
             return
         }
         // Drop any queued recovery: it targets the player we're about to release;
         // onStart() re-prepares from savedPositionMs instead.
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         // Close any in-progress rebuffer window BEFORE removing listeners so the
         // decoder release doesn't leave currentRebufferStartMs non-zero and
         // corrupt cumulativeRebufferMs with backgrounded wall-clock time.
@@ -1537,7 +1802,9 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
         cancelSubtitleReloadDeadline()
-        cancelPendingRecovery()
+        cancelFrameTurnDeadline()
+        pendingFrameTurnFallback.cancel()
+        pendingRecovery.cancel()
         releaseMediaSession()
         val exo = player ?: return
         // Close any in-progress rebuffer window before tearing down.
@@ -1559,7 +1826,8 @@ class PlayerController(context: Context) : SessionPlayer {
         savedPositionMs = 0L
         pendingPlayWhenReady = true
         cancelSubtitleReloadDeadline()
-        cancelPendingRecovery()
+        cancelFrameTurnDeadline()
+        pendingRecovery.cancel()
         recoveryGateCount = 0
         lastGoodPositionMs = 0L
         stableReadySinceMs = 0L
@@ -1612,7 +1880,8 @@ class PlayerController(context: Context) : SessionPlayer {
         savedPositionMs = 0L
         pendingPlayWhenReady = true
         cancelSubtitleReloadDeadline()
-        cancelPendingRecovery()
+        cancelFrameTurnDeadline()
+        pendingRecovery.cancel()
         recoveryGateCount = 0
         instrumentation.reset()
         resetAudioFormat()
@@ -1668,7 +1937,7 @@ class PlayerController(context: Context) : SessionPlayer {
         firstFrameGate.clear()
         // A recovery queued against the old media would seek and re-prepare on
         // top of this one.
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         // The live player's own clock, not the frame's: the phone's startMs is the
         // TV's confirmed position sampled at 10 Hz and already a tick stale.
         val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
@@ -1728,7 +1997,7 @@ class PlayerController(context: Context) : SessionPlayer {
         clearStartupListener()
         pendingPlayWhenReady = false
         cancelSubtitleReloadDeadline()
-        cancelPendingRecovery()
+        pendingRecovery.cancel()
         stableReadySinceMs = 0L
         // Terminal stop must withdraw the platform session as well as clear the
         // media. Otherwise Android keeps advertising an idle empty player and
@@ -1812,11 +2081,18 @@ class PlayerController(context: Context) : SessionPlayer {
      * every tick, so the next rendered frame already carries the new offset —
      * there is no re-prepare, no seek and no re-buffer, and passthrough audio is
      * never touched.
+     *
+     * The wire range is the widest any TV may be asked for; how much of it THIS
+     * one can carry is a property of the heap it was granted, so the shift is
+     * clamped a second time here — see [AudioDelayPolicy.maxDelayMsFor]. Both
+     * numbers are logged because a device that is capping is otherwise
+     * indistinguishable from a phone that is not sending what its dial reads.
      */
     override fun setAudioDelay(delayMs: Int) {
-        val applied = AudioDelayPolicy.clamp(delayMs)
+        val commanded = AudioDelayPolicy.clamp(delayMs)
+        val applied = commanded.coerceIn(-audioDelayCapMs, audioDelayCapMs)
         audioDelayShift.videoShiftUs = AudioDelayPolicy.videoShiftUs(applied)
-        FlickLog.i("player", "audioDelay ms=$applied")
+        FlickLog.i("player", "audioDelay ms=$applied commandedMs=$commanded capMs=$audioDelayCapMs")
     }
 
     // --- Subtitle track surface ----------------------------------------------
@@ -2000,6 +2276,47 @@ class PlayerController(context: Context) : SessionPlayer {
         // Well below the phone's control-lease loss floor, but long enough for a
         // fresh 4K decoder prepare on the verified Google TV Streamer.
         const val SUBTITLE_RELOAD_DEADLINE_MS = 12_000L
+
+        // How long a newly engaged effects graph gets to put one frame on the
+        // panel before it is treated as dead. Deliberately generous, because the
+        // two errors are not symmetric: waiting too long costs a viewer who is
+        // already looking at a stalled picture a few more seconds of it, while
+        // firing too early costs them the turn for the WHOLE film — the fallback
+        // latch is per film and is never retried.
+        //
+        // Sized on what an engagement legitimately costs, which is a re-buffer and
+        // not merely a shader compile: `bufferForPlaybackAfterRebufferMs` is
+        // 4,765 ms of media on the verified tier, and that at the planned 100 Mbps
+        // peak is ~60 MB to re-fetch over the LAN; the codec teardown, configure
+        // and one byte-range round trip on top of it are what
+        // `StartupDeadlinePolicy` budgets its 6 s for. Near eleven seconds of
+        // honest worst case, so anything under this would fire on an ordinary slow
+        // engagement.
+        //
+        // It is also bounded from above, which is why it is not larger still: an
+        // engagement during startup has to be judged AND the fallback player has to
+        // reach its own first frame, both inside the cast's 18 s budget plus the
+        // one 6 s rotation extension. Off a rebuild a second or two in, twelve
+        // seconds leaves the fallback the better part of ten.
+        const val FRAME_TURN_DEADLINE_MS = 12_000L
+
+        // How long after a LIVE effect swap a rendered frame starts meaning
+        // anything — see [FrameTurnWatchdog.Engagement.LiveSwap] for why any
+        // earlier frame is the PREVIOUS effect list's and proves nothing.
+        //
+        // It is a bound on the pre-swap drain with a wide margin, not a guess.
+        // Media3 admits at most `Util.getMaxPendingFramesCountForMediaCodecDecoders`
+        // frames into the graph — 5, or 1 where surface-input frame drop is
+        // allowed — and `FinalShaderProgramWrapper.SURFACE_INPUT_CAPACITY` is 1,
+        // so about half a dozen frames can still be carrying the old list. Each
+        // is released at its own presentation time, which on a playing film is
+        // real time: ~250 ms at 24 fps, less above it. Six times that.
+        //
+        // Bounded from above by what it costs the other judgement: it is spent
+        // out of [FRAME_TURN_DEADLINE_MS], so the drought that condemns a swapped
+        // graph is 10.5 s rather than 12 s. Both are far beyond any frame
+        // interval, and the difference costs nothing a viewer can see.
+        const val FRAME_TURN_SWAP_SETTLE_MS = 1_500L
     }
 }
 

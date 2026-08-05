@@ -178,6 +178,32 @@ fun autoRotation(shape: MediaShape): AutoRotation {
 }
 
 /**
+ * Whether a delivery of `Tracks` has to resolve which mechanism turns this
+ * film's picture.
+ *
+ * The trap this rule exists for is that [autoRotation]'s answer and the film's
+ * TOTAL turn are different questions, and only the second one chooses a
+ * mechanism. A phone-shot portrait clip is a container declaring 90 which
+ * [autoRotation] correctly leaves alone at 0 — the value a new film already
+ * starts at — so a resolution triggered by Auto's answer MOVING never fires for
+ * it, [pictureTurnFor] is never asked, and the picture is left to a decoder
+ * transform the verified TV's display pipeline drops. Every clip shot on the
+ * user's phone then plays sideways from the first frame with no key pressed.
+ *
+ * So the first delivery always resolves: it is where the container's own turn
+ * becomes knowable at all, and it is the larger half of the total. After that the
+ * film is settled and only Auto changing its mind — while Auto is still the
+ * choice — is worth asking again, because `onTracksChanged` fires for every
+ * text-track change and for the panel's 2 Hz re-read, and a resolution can cost a
+ * player rebuild.
+ */
+fun resolvesPictureTurn(
+    alreadyResolved: Boolean,
+    autoChanged: Boolean,
+    choiceIsAuto: Boolean,
+): Boolean = !alreadyResolved || (autoChanged && choiceIsAuto)
+
+/**
  * The rotation the decoder is configured with — the container's own turn plus
  * Flick's. A container value off the quarter-turn grid is returned untouched:
  * `MediaFormat.KEY_ROTATION` accepts nothing else, and inventing one would be a
