@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -186,6 +187,12 @@ class SubtitleFolderStore(context: Context) {
  * [Dispatchers.IO] so it is off the path to the first frame, and on every phone but a
  * developer's — this app has not shipped — the whole cost is one preference read answering
  * null.
+ *
+ * [releaseInheritedUriGrants] now sweeps this same grant, and this stays its own function
+ * anyway. The preference is this one's alone to clear, and the release above it must not
+ * become conditional on an enumeration answering for a URI this store can already name.
+ * Neither ordering matters: whichever runs first, the other finds a grant already handed
+ * back and asks for nothing.
  */
 suspend fun releaseRetiredSubtitleFolder(context: Context) {
     withContext(Dispatchers.IO) {
@@ -199,6 +206,71 @@ suspend fun releaseRetiredSubtitleFolder(context: Context) {
             )
         }
         store.forget()
+    }
+}
+
+/**
+ * Whether a grant persisted at [persistedAtMs] was taken before this process started at
+ * [processStartedAtMs].
+ *
+ * The timestamp is the guard and the timing is not. Running the sweep early does not make it
+ * safe on its own: the subtitles sheet is reachable while it is still enumerating, and a
+ * pick whose grant it then handed back would lose the read on the file being served. Every
+ * grant taken this session is stamped strictly later than the moment the process began, so
+ * comparing against that moment is what puts such a pick out of reach — in whatever order
+ * the two actually run.
+ *
+ * Wall-clock milliseconds on both sides, because that is the clock `UriPermission`'s
+ * `getPersistedTime()` is stamped in; against `elapsedRealtime` this would not be a
+ * comparison at all. A tie is kept rather than released: the pick is the side that must not
+ * be broken.
+ */
+internal fun grantPredatesProcess(persistedAtMs: Long, processStartedAtMs: Long): Boolean =
+    persistedAtMs < processStartedAtMs
+
+/**
+ * Hand back every persisted URI grant this app is still holding from an earlier process.
+ *
+ * The subtitles sheet takes a persistable read on every subtitle the user picks, and nothing
+ * expires one. Without this the app accumulates a permanent standing read on every subtitle
+ * file it has ever been pointed at — [releaseRetiredSubtitleFolder]'s objection, once per
+ * pick, and with no screen that admits to holding any of them.
+ *
+ * Since the memory keeps its own copy, no grant is needed across a process boundary at all:
+ * the selection does not survive process death, and a recalled subtitle resolves to this
+ * app's own file under `filesDir`. A grant is worth holding only for the life of the
+ * selection actually being served, which is this process — so one older than it is a read
+ * nothing alive is using.
+ *
+ * A blanket sweep rather than a list of URIs to release, because such a list would have to
+ * be written by the same pick that takes the grant and would then be the thing that goes
+ * missing. Nothing else in this app takes a grant to lose: the picker is the only caller of
+ * `takePersistableUriPermission`, and the library folder chooser persists a MediaStore
+ * relative path rather than a tree.
+ *
+ * Handed back with the modes each grant actually carries. Releasing READ alone from a
+ * read/write grant would leave the write standing, which is the opposite of the point.
+ *
+ * No URI and no file name is ever logged — a subtitle path names the film and the user's
+ * storage layout — so a count is the whole record.
+ */
+suspend fun releaseInheritedUriGrants(context: Context) {
+    // Read before the dispatch below, so the boundary is the moment the launch asked for
+    // the sweep and not the moment a pool thread got round to it.
+    val processStartedAtMs = System.currentTimeMillis()
+    withContext(Dispatchers.IO) {
+        val resolver = context.applicationContext.contentResolver
+        var released = 0
+        resolver.persistedUriPermissions.forEach { grant ->
+            if (!grantPredatesProcess(grant.persistedTime, processStartedAtMs)) return@forEach
+            var modes = 0
+            if (grant.isReadPermission) modes = modes or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            if (grant.isWritePermission) modes = modes or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            if (modes == 0) return@forEach
+            runCatching { resolver.releasePersistableUriPermission(grant.uri, modes) }
+                .onSuccess { released++ }
+        }
+        if (released > 0) FlickLog.i("cast", "persisted uri grants released n=$released")
     }
 }
 

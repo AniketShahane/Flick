@@ -1,6 +1,7 @@
 package com.flick.sender
 
 import android.app.Application
+import com.flick.sender.media.releaseInheritedUriGrants
 import com.flick.sender.media.releaseRetiredSubtitleFolder
 import com.flick.sender.net.CastCoordinator
 import kotlinx.coroutines.CoroutineScope
@@ -29,5 +30,10 @@ class FlickApplication : Application() {
         // as far as its own `withContext(Dispatchers.IO)` — nothing it does is on the path
         // to the first frame, and nothing waits for it.
         applicationScope.launch { releaseRetiredSubtitleFolder(applicationContext) }
+        // The same objection, once per subtitle the user has ever picked. Its own launch
+        // rather than a second call inside the one above: this scope's SupervisorJob
+        // isolates its direct children only, so sharing a coroutine would let either
+        // failure take the other's work down with it.
+        applicationScope.launch { releaseInheritedUriGrants(applicationContext) }
     }
 }
