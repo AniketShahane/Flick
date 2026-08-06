@@ -637,13 +637,6 @@
     <string name="support_checkout_unavailable">Couldn’t open checkout. Try again when a browser is available.</string>
     <string name="settings_support_title">Support Flick</string>
     <string name="settings_support_summary">Leave a voluntary one-time tip</string>
-    <!-- Decorative, never spoken. Emoji 1.0, and that is the whole constraint: this app
-         bundles no emoji font, so a phone only renders what its own system font carries,
-         and minSdk 26 ships Emoji 5.0. A jar (14.0) or a coin (13.0) — either of which
-         would say "tip" more literally — lands as tofu on an Oreo device. A yellow heart
-         is also the one glyph whose own colour matches the accent in all three schemes:
-         spark is amber in Light and Dark, and primary is amber in Cinematic. -->
-    <string name="settings_support_emoji" translatable="false">💛</string>
 
     <!-- Appearance. "Match system" is the default because following the platform is what
          a user who has never opened this row already expects. -->

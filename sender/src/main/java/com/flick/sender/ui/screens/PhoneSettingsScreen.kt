@@ -39,14 +39,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,6 +58,7 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillMorphShape
 import com.flick.sender.ui.theme.PressedPillShape
+import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
@@ -160,8 +159,13 @@ fun PhoneSettingsScreen(
  */
 private val SupportBadgeSize = 46.dp
 
-/** An icon that happens to be a glyph — see [SupportBadge] for why this is a `Dp`. */
-private val SupportEmojiSize = 24.dp
+/**
+ * Larger than the 24 dp an icon usually takes here, and measured against what it replaced: a
+ * colour emoji fills nearly the whole of its em box, so the glyph this stands in for read as
+ * about 21 dp across inside the disc. The heart's own path occupies 18 of its 24 grid units,
+ * so it takes 28 to hold the same room and keep the badge from going timid.
+ */
+private val SupportHeartSize = 28.dp
 
 /**
  * The support entrance that never goes away, and therefore the only one most people will
@@ -230,21 +234,20 @@ private fun SupportFlickSection(onOpen: () -> Unit) {
 }
 
 /**
- * The emoji on a disc rather than loose on the fill.
+ * The mark on a disc rather than loose on the fill: `onSpark` is a dark ground in every set
+ * — deep brown under Light and Dark, near-black navy under Cinematic — and it is what gives
+ * the glyph an edge on the cinematic card, where the fill is nearly white.
  *
- * A colour emoji arrives with its own palette and cannot be tinted, so the only way to know
- * what it will stand against is to give it a ground this scheme owns. `onSpark` is that
- * ground in every set — deep brown under Light and Dark, near-black navy under Cinematic —
- * and it is what keeps a warm glyph from floating on the cinematic card, where the spark
- * family turns pale blue.
+ * The heart is a fixed [Spark] rather than the scheme's own accent token, which is the one
+ * place this card steps outside its palette and does it deliberately. `spark` is amber in
+ * Light and Dark and BLUE in the cinematic set, where `primary` has taken the warm end;
+ * tinting from it would recolour this heart on one theme only. A mark that is the card's
+ * single warm note cannot be warm on two screens out of three, and the ground it stands on
+ * is dark in every set, so a constant is safe here in a way it would not be on the fill.
  */
 @Composable
 private fun SupportBadge() {
     val colors = LocalFlickColors.current
-    // Pinned to density and not to the font scale, because this is an icon in the shape of
-    // a glyph: sized in sp it would outgrow the disc at a 2x scale and be clipped into a
-    // crescent by it, which is not what a larger type setting was asking for.
-    val glyph = with(LocalDensity.current) { SupportEmojiSize.toSp() }
     Box(
         modifier = Modifier
             .size(SupportBadgeSize)
@@ -252,13 +255,13 @@ private fun SupportBadge() {
             .background(colors.onSpark),
         contentAlignment = Alignment.Center,
     ) {
-        // Cleared rather than described: the title beside it already names the card, and
-        // "yellow heart" ahead of it is a word a reader has to spend before reaching one
-        // that means something.
-        Text(
-            text = stringResource(R.string.settings_support_emoji),
-            style = TextStyle(fontSize = glyph),
-            modifier = Modifier.clearAndSetSemantics {},
+        Icon(
+            imageVector = FlickIcons.Heart,
+            // The title beside it already names the card; a second description of the same
+            // thing is one more stop between a screen reader and the row's purpose.
+            contentDescription = null,
+            tint = Spark,
+            modifier = Modifier.size(SupportHeartSize),
         )
     }
 }

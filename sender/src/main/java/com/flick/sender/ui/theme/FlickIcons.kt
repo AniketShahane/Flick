@@ -163,6 +163,30 @@ object FlickIcons {
         close()
     }
 
+    /**
+     * The support badge's glyph, and the reason it is a path at all: the card carried a
+     * colour emoji before this, which on a Samsung device is a glossy, shaded, three-
+     * dimensional object with a specular highlight on it — a foreign body on a surface where
+     * every other mark is flat, and one no theme could tint or restyle.
+     *
+     * Two lobes and a point, symmetric about x = 12: every control point on the left flank
+     * is its twin's 24 − x. The lobes are full and their shoulders round, tracking Material
+     * Symbols Rounded rather than the older baseline heart, whose narrow shoulders and
+     * needle tip read as sharp next to the rest of this set. The bottom point is left a
+     * point — a heart with a rounded bottom is a peach — but a blunt one, its two flanks
+     * meeting at about 97°.
+     */
+    val Heart: ImageVector = fillIcon("Heart") {
+        moveTo(12f, 20.8f)
+        curveTo(15.6f, 17.6f, 19f, 14.4f, 20.4f, 11.6f)
+        curveTo(21.9f, 8.6f, 20.6f, 4.2f, 16.9f, 3.6f)
+        curveTo(14.9f, 3.3f, 13f, 4.4f, 12f, 6.2f)
+        curveTo(11f, 4.4f, 9.1f, 3.3f, 7.1f, 3.6f)
+        curveTo(3.4f, 4.2f, 2.1f, 8.6f, 3.6f, 11.6f)
+        curveTo(5f, 14.4f, 8.4f, 17.6f, 12f, 20.8f)
+        close()
+    }
+
     val Tune: ImageVector = fillIcon("Tune") {
         roundRect(3f, 6.1f, 21f, 7.9f, 0.9f)
         circle(8.6f, 7f, 2.7f)

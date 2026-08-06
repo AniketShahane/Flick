@@ -274,6 +274,28 @@ class FlickColorsTest {
     }
 
     /**
+     * The Settings support badge draws a fixed [Spark] heart on each palette's own
+     * `onSpark` disc — the one mark in the app that steps outside the set it sits in, and
+     * deliberately, because `spark` itself turns blue in the cinematic assignment and a
+     * heart that is the card's single warm note cannot be warm on two screens out of three.
+     *
+     * What makes the constant safe is only that the disc is dark in every set. A palette
+     * that ever lightened `onSpark` would leave a warm mark on a warm ground with nothing
+     * to catch it, and that is a thing no palette listing shows.
+     */
+    @Test fun theSupportHeartStillReadsOnItsOwnDiscInEverySet() {
+        for ((name, c) in allPalettes) {
+            val onDisc = contrast(Spark, c.onSpark)
+            assertTrue(
+                "$name: the support badge's Spark ${Spark.hex()} on onSpark " +
+                    "${c.onSpark.hex()} is $onDisc, under the 3:1 a mark needs against its " +
+                    "own background",
+                onDisc >= 3.0f,
+            )
+        }
+    }
+
+    /**
      * The ink ramp keeps its order. Three roles that have crossed over are three roles
      * that no longer mean anything, and the crossing is invisible in a palette listing.
      */
