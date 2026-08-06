@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -25,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -34,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.support.SupportCatalog
 import com.flick.sender.support.SupportOption
+import com.flick.sender.ui.components.TipJarMark
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
@@ -41,6 +44,13 @@ import com.flick.sender.ui.theme.PillMorphShape
 import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+
+/**
+ * Big enough for the vessel to read as one and for a coin to be a coin rather than a dot,
+ * and no bigger: the tiers are what this sheet is for, and a mark that pushed them under
+ * the fold would be decoration charging rent.
+ */
+private val TipJarSize = 108.dp
 
 /** The catalog is already all-or-nothing; this sheet never creates or transforms a checkout URL. */
 @Composable
@@ -56,7 +66,17 @@ fun SupportFlickSheet(
     val checkoutLaunch = remember { SupportCheckoutLaunchGate() }
     BottomSheet(onDismiss = onDismiss, visible = visible, onLeaving = onLeaving, paneLabel = title) {
         SheetGrabber()
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
+        // Decorative and unlabelled: the heading under it already says what this sheet is,
+        // and a second description of the same thing is one more stop between a screen
+        // reader and the tiers.
+        TipJarMark(
+            Modifier
+                .align(Alignment.CenterHorizontally)
+                .size(TipJarSize)
+                .clearAndSetSemantics {},
+        )
+        Spacer(Modifier.height(10.dp))
         Text(
             text = title,
             style = FlickText.headlineMedium.copy(color = colors.onSurface),
