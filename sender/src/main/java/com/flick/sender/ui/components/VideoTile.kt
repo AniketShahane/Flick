@@ -323,6 +323,39 @@ private val FrameFlight = spring(
 )
 
 /**
+ * The same flight home.
+ *
+ * Leaving is quicker than arriving here for the reason it already is everywhere else in the
+ * shell — the route a frame flies with fades its outgoing half at the scheme's FAST effects
+ * spring and its incoming half at the default one. A frame growing out of a grid is the
+ * point of the gesture and is worth watching; the same frame going back is a screen the
+ * viewer has already finished with, and every millisecond of it is spent waiting.
+ *
+ * The tempo is the scheme's own fast-spatial stiffness rather than a number chosen for
+ * feel. Only the tempo is borrowed: that spring is damped 0.6 and would land the still with
+ * a bounce, which is what the note above rules out for both directions. Against the flight
+ * out, a spring this much stiffer settles in about seven tenths of the time.
+ */
+private val FrameReturn = spring(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = 800f,
+    visibilityThreshold = Rect.VisibilityThreshold,
+)
+
+/**
+ * Whether a flight is a return — the frame is on its way to a seat smaller than the one it
+ * left.
+ *
+ * Read off the geometry rather than declared by the caller, because it is true of every
+ * pair this modifier serves: a grid cell grows into a hero, a connecting card grows into
+ * the cast poster, and each comes back the other way. An interrupted return that is sent
+ * forward again therefore picks the outward spring on its own, which is what a frame that
+ * has changed its mind should do.
+ */
+internal fun frameReturning(from: Rect, to: Rect): Boolean =
+    to.width * to.height < from.width * from.height
+
+/**
  * Marks a decoded frame as the surface that becomes the next screen. Both scopes null
  * leaves the modifier inert, so anything composed outside the shell's
  * `SharedTransitionLayout` renders exactly as it did before.
@@ -351,7 +384,13 @@ fun Modifier.flickSharedFrame(
     if (sharedScope == null || animatedScope == null) return this
     val reduceMotion = rememberReduceMotion()
     val bounds = remember(reduceMotion) {
-        BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else FrameFlight }
+        BoundsTransform { from, to ->
+            when {
+                reduceMotion -> snap()
+                frameReturning(from, to) -> FrameReturn
+                else -> FrameFlight
+            }
+        }
     }
     val clip = if (restCorner.isSpecified) rememberFrameMorphClip(sharedScope, restCorner) else null
     return with(sharedScope) {
