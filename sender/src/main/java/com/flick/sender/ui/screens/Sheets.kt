@@ -317,7 +317,38 @@ fun BottomSheet(
                     )
                 }
                 .semantics { contentDescription = dismissDescription }
-                .clickable(interactionSource = scrimSource, indication = null, onClick = leave),
+                // Taken off the modifier chain entirely the moment the sheet commits to
+                // leaving, which is the whole point of the flag being observable.
+                //
+                // [gone] is what removes this Box, and it deliberately does not run until
+                // the surface has finished travelling off the window — so for the length of
+                // the exit the scrim is still full-screen and still on top. Left clickable
+                // it swallows the first tap on the app behind a sheet the user has already
+                // dismissed, and answers it by asking for a dismissal already under way.
+                // One whole tap, every time, which is exactly how it was reported.
+                //
+                // REMOVED and not merely `enabled = false`: a disabled `clickable` still
+                // installs its pointer-input node and still consumes, so nothing behind it
+                // is reached either way (b/239789641). That was tried here first and
+                // changed nothing on device. A node that is not in the chain cannot
+                // consume; `fillMaxSize`, `drawBehind` and `semantics` take no pointer
+                // input, so the tap lands on what it was aimed at.
+                //
+                // The sheet's own surface stays deaf for that same stretch — see the
+                // Initial-pass consumer on it — because a row tapped on a surface half off
+                // the screen would answer for a sheet already spent. Only the app behind
+                // becomes reachable early, which is where the user is now looking.
+                .then(
+                    if (motion.leaving) {
+                        Modifier
+                    } else {
+                        Modifier.clickable(
+                            interactionSource = scrimSource,
+                            indication = null,
+                            onClick = leave,
+                        )
+                    },
+                ),
         ) {
             BoxWithConstraints(
                 Modifier
@@ -620,8 +651,17 @@ internal class SheetMotion {
     /** The sheet's own height in pixels. Written from layout, read from draw and gestures. */
     var heightPx by mutableFloatStateOf(0f)
 
-    /** Set the moment the sheet is on its way out; every later request is the same one. */
-    var leaving = false
+    /**
+     * Set the moment the sheet is on its way out; every later request is the same one.
+     *
+     * Observable, and read from composition by exactly one thing: whether the scrim still
+     * takes taps. That costs a single recomposition per exit — the flag moves once — and it
+     * buys back the window in which the scrim was swallowing every tap on the app behind a
+     * sheet the user had already dismissed. The gesture loops below and on the surface read
+     * it too, and those reads are not in composition and subscribe to nothing, so a drag or
+     * an exit still costs no recomposition of the content the sheet is carrying.
+     */
+    var leaving by mutableStateOf(false)
         private set
 
     val riseAmount: () -> Float = { rise.value }

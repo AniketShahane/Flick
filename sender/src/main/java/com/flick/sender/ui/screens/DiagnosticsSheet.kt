@@ -48,12 +48,16 @@ import java.util.Locale
  * where each line is WRITTEN, not where it is exported.
  */
 @Composable
-fun DiagnosticsSheet(onDismiss: () -> Unit) {
+fun DiagnosticsSheet(
+    visible: Boolean,
+    onLeaving: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
     val entries by FlickLog.entries.collectAsState()
 
-    BottomSheet(onDismiss = onDismiss) {
+    BottomSheet(onDismiss = onDismiss, visible = visible, onLeaving = onLeaving) {
         SheetGrabber()
         Spacer(Modifier.height(4.dp))
         Text(stringResource(R.string.diagnostics_title), style = FlickText.headlineMedium.copy(color = colors.onSurface))

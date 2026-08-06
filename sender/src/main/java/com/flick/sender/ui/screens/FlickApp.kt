@@ -80,7 +80,7 @@ import kotlinx.coroutines.delay
  * carries the channel a control publishes an origin on, so the layer below can spend
  * whatever was published without knowing which control did it.
  */
-private enum class Overlay(val revealTarget: RevealTarget?) {
+internal enum class Overlay(val revealTarget: RevealTarget?) {
     QUALITY(RevealTarget.QUALITY),
     DIAGNOSTICS(RevealTarget.DIAGNOSTICS),
     SUPPORT(null),
@@ -238,7 +238,38 @@ fun FlickApp(
         showQuality -> Overlay.QUALITY
         else -> null
     }
-    val routeSemantics = if (activeOverlay == null) {
+    // The overlay the shell is still HOSTING after the app has stopped asking for it: the
+    // frames a sheet spends travelling off the window. Written only from the sheets' own
+    // callbacks below, never from composition.
+    var outgoingOverlay by remember { mutableStateOf<Overlay?>(null) }
+    val hosted = hostedOverlay(
+        active = activeOverlay,
+        outgoing = outgoingOverlay,
+        supportAvailable = supportCatalog != null,
+    )
+    // The exit has begun, and clearing the controller flag HERE rather than at the end of
+    // it is the whole point: the flags are `StateFlow`s, which conflate, so a control
+    // pressed while the flag it sets is still true publishes nothing at all — the sheet
+    // does not come back and the press is simply spent. Cleared on this frame the control
+    // is live again for the whole exit, and [outgoingOverlay] is what holds the sheet in
+    // the composition across the gap that opens.
+    val overlayLeaving = remember<(Overlay) -> Unit>(controller) {
+        { overlay ->
+            outgoingOverlay = overlay
+            when (overlay) {
+                Overlay.QUALITY -> controller.toggleQualitySheet(false)
+                Overlay.DIAGNOSTICS -> controller.toggleDiagnostics(false)
+                Overlay.SUPPORT -> controller.toggleSupportSheet(false)
+            }
+        }
+    }
+    // The sheet is off the window: stop holding the layer for it. Guarded by identity
+    // because the layer may already have been claimed by another overlay, whose exit this
+    // one must not cancel.
+    val overlayGone = remember<(Overlay) -> Unit> {
+        { overlay -> if (outgoingOverlay == overlay) outgoingOverlay = null }
+    }
+    val routeSemantics = if (hosted == null) {
         Modifier.semantics { isTraversalGroup = true }
     } else {
         // The route remains visible behind a modal, but it must not remain reachable
@@ -268,7 +299,7 @@ fun FlickApp(
     // yet). When it was opened in-flow from Library (cast icon / flick with no TV),
     // back returns to Library instead of exiting the app.
     BackHandler(
-        enabled = activeOverlay == null &&
+        enabled = hosted == null &&
             SenderNavigationPolicy.backDisposition(route, connectFromLibrary) != BackDisposition.SYSTEM,
     ) {
         controller.back()
@@ -276,8 +307,15 @@ fun FlickApp(
 
     // Declared after route navigation so a modal is always dismissed before the
     // underlying cast/pairing route receives Back.
-    BackHandler(enabled = activeOverlay != null) {
-        when (activeOverlay) {
+    //
+    // Gated on what is HOSTED and not on what the app wants, because those now part for
+    // the length of an exit. A press landing in those frames belongs to the sheet that is
+    // still on the window and not to the route behind it — the same rule the sheet's own
+    // handler states, and the sheet's is registered later and therefore answers first. So
+    // in practice this arm runs only for a hosted overlay that raised no sheet of its own,
+    // and what it must not do is let the route take a press aimed at a modal still in view.
+    BackHandler(enabled = hosted != null) {
+        when (hosted) {
             Overlay.QUALITY -> controller.toggleQualitySheet(false)
             Overlay.DIAGNOSTICS -> controller.toggleDiagnostics(false)
             Overlay.SUPPORT -> controller.toggleSupportSheet(false)
@@ -526,7 +564,7 @@ fun FlickApp(
                 }
 
                 AnimatedContent(
-                    targetState = activeOverlay,
+                    targetState = hosted,
                     transitionSpec = {
                         // No enter fade: the radial mask below IS the entrance, and a
                         // simultaneous fade would only wash out the edge it travels on.
@@ -539,10 +577,11 @@ fun FlickApp(
                         ) {
                             fadeOut(motionScheme.fastEffectsSpec())
                         } else {
-                            // A sheet finishes its own travel before it clears the
-                            // controller flag. Retaining that already-gone full-screen
-                            // surface for another fade leaves its invisible scrim on top
-                            // of Settings/Devices, where it consumes the next rapid tap.
+                            // A sheet is hosted for the whole of its own travel and reports
+                            // itself gone only once it is off the window. Retaining that
+                            // already-spent full-screen surface for another fade leaves its
+                            // invisible scrim on top of Settings/Devices, where it consumes
+                            // the next rapid tap.
                             ExitTransition.None
                         }
                         val transform = EnterTransition.None togetherWith exit
@@ -561,6 +600,14 @@ fun FlickApp(
                     val bornAt = remember(overlay) {
                         overlay?.revealTarget?.let { qualityRevealOrigin.consume(it) }
                     }
+                    if (overlay != null) {
+                        // Whatever took this copy away — its own exit landing, or a second
+                        // overlay claiming the layer while this one was still travelling —
+                        // the shell no longer has it and must stop holding the layer for
+                        // it. Left held, the next close would find an overlay still
+                        // outgoing and put this sheet back on the window.
+                        DisposableEffect(overlay) { onDispose { overlayGone(overlay) } }
+                    }
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -570,18 +617,28 @@ fun FlickApp(
                         // chrome covers, so they take the detached counter: the shell's own
                         // is what a route's sheet uses to clear the bars out from under it.
                         CompositionLocalProvider(LocalSheetDepth provides overlaySheetDepth) {
+                            // [visible] is what the app still wants, which parts from what
+                            // is hosted for exactly one exit — and a sheet asked back
+                            // inside that window returns to its seat instead of being torn
+                            // down and played in again.
                             when (overlay) {
                                 Overlay.QUALITY -> QualitySheet(
                                     controller = controller,
-                                    onDismiss = { controller.toggleQualitySheet(false) },
+                                    visible = activeOverlay == Overlay.QUALITY,
+                                    onLeaving = { overlayLeaving(Overlay.QUALITY) },
+                                    onDismiss = { overlayGone(Overlay.QUALITY) },
                                 )
                                 Overlay.DIAGNOSTICS -> DiagnosticsSheet(
-                                    onDismiss = { controller.toggleDiagnostics(false) },
+                                    visible = activeOverlay == Overlay.DIAGNOSTICS,
+                                    onLeaving = { overlayLeaving(Overlay.DIAGNOSTICS) },
+                                    onDismiss = { overlayGone(Overlay.DIAGNOSTICS) },
                                 )
                                 Overlay.SUPPORT -> supportCatalog?.let { catalog ->
                                     SupportFlickSheet(
                                         catalog = catalog,
-                                        onDismiss = { controller.toggleSupportSheet(false) },
+                                        visible = activeOverlay == Overlay.SUPPORT,
+                                        onLeaving = { overlayLeaving(Overlay.SUPPORT) },
+                                        onDismiss = { overlayGone(Overlay.SUPPORT) },
                                         onOpenCheckout = { checkoutUrl ->
                                             controller.toggleSupportSheet(false)
                                             onOpenCheckout(checkoutUrl)
@@ -624,6 +681,26 @@ private const val HeroLandMs = 560L
  */
 internal fun shouldFadeOverlayExit(initialPresent: Boolean, targetPresent: Boolean): Boolean =
     initialPresent && targetPresent
+
+/**
+ * Which overlay the shell COMPOSES, which is not the same question as which one the app
+ * still wants on screen.
+ *
+ * [outgoing] is a sheet whose exit has begun. The flag that summoned it is cleared on that
+ * first frame — that is what leaves the control free to summon it again — so from then
+ * until the sheet reports itself off the window nothing the app wants names it, and only
+ * this keeps it composed for the frames it still needs. [active] outranks it, so asking
+ * for that same sheet back inside the window simply hosts it again, with no teardown and
+ * no second entrance: it returns to its seat from wherever the exit had carried it.
+ *
+ * [supportAvailable] gates BOTH arms and not the live one alone. Support is the overlay
+ * whose content is conditional, and hosted with no catalog it raises no sheet at all —
+ * so nothing would ever report it gone, and the empty full-screen layer left standing
+ * holds the route out of TalkBack for the rest of the session. The live arm is gated
+ * again where it is derived; this is the same invariant stated where the layer is decided.
+ */
+internal fun hostedOverlay(active: Overlay?, outgoing: Overlay?, supportAvailable: Boolean): Overlay? =
+    (active ?: outgoing)?.takeIf { it != Overlay.SUPPORT || supportAvailable }
 
 /**
  * Which arm a route pair takes. CONTAINER is the dock growing into the remote and back,

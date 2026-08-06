@@ -78,14 +78,24 @@ private val GaugeBarHeight = 8.dp
  * sheet must look the same whichever theme the library resolved to.
  */
 @Composable
-fun QualitySheet(controller: FlickController, onDismiss: () -> Unit) {
+fun QualitySheet(
+    controller: FlickController,
+    visible: Boolean,
+    onLeaving: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     FlickCinematicTheme {
-        QualityContent(controller, onDismiss)
+        QualityContent(controller, visible, onLeaving, onDismiss)
     }
 }
 
 @Composable
-private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
+private fun QualityContent(
+    controller: FlickController,
+    visible: Boolean,
+    onLeaving: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
     val signal = rememberSignalInfo()
@@ -135,6 +145,8 @@ private fun QualityContent(controller: FlickController, onDismiss: () -> Unit) {
     BottomSheet(
         onDismiss = onDismiss,
         contentPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 26.dp),
+        visible = visible,
+        onLeaving = onLeaving,
     ) {
         SheetGrabber()
         Spacer(Modifier.height(4.dp))

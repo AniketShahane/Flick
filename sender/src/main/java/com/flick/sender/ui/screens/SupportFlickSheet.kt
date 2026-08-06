@@ -46,13 +46,15 @@ import com.flick.sender.ui.theme.pressScale
 @Composable
 fun SupportFlickSheet(
     catalog: SupportCatalog,
+    visible: Boolean,
+    onLeaving: () -> Unit,
     onDismiss: () -> Unit,
     onOpenCheckout: (String) -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val title = stringResource(R.string.support_sheet_title)
     val checkoutLaunch = remember { SupportCheckoutLaunchGate() }
-    BottomSheet(onDismiss = onDismiss, paneLabel = title) {
+    BottomSheet(onDismiss = onDismiss, visible = visible, onLeaving = onLeaving, paneLabel = title) {
         SheetGrabber()
         Spacer(Modifier.height(4.dp))
         Text(
