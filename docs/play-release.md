@@ -227,8 +227,58 @@ over near-black they collapse to muddy brown. Only the store assets differ — n
 art was touched — but the same effect is visible in the on-device TV launcher banner,
 which is worth fixing separately.
 
-Still needed: **at least 2 phone screenshots**, and ideally two or three more TV
-screenshots showing playback. Both need the phone connected.
+### Screenshots — `docs/store/frame-screenshots.py`
+
+Put raw captures in `docs/store/raw/` under the names the script expects and run it;
+finished tiles land in `docs/store/screenshots/`. Missing captures are skipped and
+listed, so it can be run before the set is complete.
+
+```sh
+python3 docs/store/frame-screenshots.py
+```
+
+**Phone captures cannot be uploaded raw.** Play requires that "the maximum dimension
+of your screenshot can't be more than twice as long as the minimum dimension", and a
+modern tall phone fails that unaided — 1440×3120 is 2.167:1 and is rejected.
+Compositing onto a 1080×1920 canvas is what makes the asset valid, not just prettier.
+TV captures are already 1920×1080 and pass as they are.
+
+The order is the pitch. Play shows roughly the first three in search results before
+anyone taps through, so those three carry the whole proposition: what it is, what
+makes it different, what you get.
+
+| # | Screen to capture | Caption |
+| --- | --- | --- |
+| 1 | Library grid, thumbnails loaded | Your videos on the big screen |
+| 2 | Detail sheet, direct-play verdict and real 4K DV specs | Never transcoded. Never downscaled. |
+| 3 | Now Playing, mid-film, transport visible | 4K HDR and Dolby Vision |
+| 4 | Subtitles sheet with results | Subtitles that just work |
+| 5 | Pairing scanner or code entry | Pair once, in one scan |
+| 6 | Settings / privacy | Nothing leaves your Wi-Fi |
+
+TV tiles ship full-bleed with no caption. Captions were tried and dropped: the
+receiver puts controls along the bottom edge and titles along the top, so a caption
+band collides with real UI on one screen or the other. The strings in the script's
+`TV_SHOTS` remain as notes for what each screen must be showing, and as video copy.
+
+| # | Screen to capture |
+| --- | --- |
+| 1 | Idle screen, paired ✓ captured |
+| 2 | Playback, mid-film |
+| 3 | Playback with the metrics overlay on |
+| 4 | Settings ✓ captured |
+
+Two things need the phone connected: every phone tile, and the two TV playback tiles.
+
+One privacy call to make before uploading. The library grid shows real thumbnails and
+file names, and the TV idle screen shows the paired phone's model. None of it is a
+credential, but it is public once the listing is live — worth a look before upload.
+
+### Promo video (optional, one per listing)
+
+Play takes a single YouTube URL per listing. It must be public or unlisted, have ads
+disabled, carry no age restriction, and be embeddable. The same six captions above
+work as the beat sheet; the footage has to be the real app.
 
 ---
 
