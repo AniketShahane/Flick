@@ -203,6 +203,20 @@ internal class LibraryUiState(val grid: LazyGridState) {
      * this, so coming back from a detail sheet restores a grid rather than replaying one.
      */
     var entrancePlayed by mutableStateOf(false)
+
+    /**
+     * The folded search index, built once per library rather than once per visit.
+     *
+     * It lives here, above the route switch, for a measured reason. Building it folds every
+     * name twice through Unicode normalization and runs a filename parse behind each one, and
+     * a `remember` inside the screen is discarded the moment the tab changes — so returning
+     * to the library rebuilt the whole thing on the UI thread, inside the very frame the tap
+     * had already given to composing the route. On the verified phone that frame ran 48 ms
+     * against a 120 Hz panel's 8.3 ms, and the navigation pill — whose spring advances in the
+     * same Choreographer callback — stopped dead for five frames in the middle of its travel.
+     * Devices to Settings, the one pairing that never touches this, stayed at 7 ms.
+     */
+    val searchIndex = LibrarySearchIndexMemo<MediaItem> { it.name }
 }
 
 @Composable
@@ -317,7 +331,7 @@ internal fun LibraryScreen(
     // parse of the filename behind the title on the tile, and doing that to the whole
     // library on every keystroke is a phone dropping frames under the user's own typing.
     // Only the index depends on the library, and only the cheap half depends on the query.
-    val searchIndex = remember(scoped) { LibrarySearchPolicy.index(scoped) { it.name } }
+    val searchIndex = uiState.searchIndex.of(scoped)
     val searchResults = remember(searchIndex, uiState.searchQuery) {
         searchIndex.matching(uiState.searchQuery)
     }

@@ -24,6 +24,36 @@ import com.flick.sender.media.VideoNames
  * a very short word narrows less than it appears to: `man` also answers with `Woman`. Every
  * further word typed is an AND, so the query tightens again immediately.
  */
+/**
+ * One folded index, kept for as long as the list it was folded from is the same list.
+ *
+ * Held by whatever outlives the screen — see `LibraryUiState.searchIndex` — because the cost
+ * this avoids is not the second keystroke but the second VISIT: a `remember` inside a route
+ * dies with the route, and rebuilding an index for a library that has not changed is work
+ * done on the frame a tab change has already spent.
+ *
+ * Keyed on the list's IDENTITY, never its contents. The controller hands out the same
+ * instance until MediaStore answers again, so identity is exactly the question being asked,
+ * and an equals over the whole library would put back a smaller copy of the cost.
+ *
+ * Plain fields rather than snapshot state: this is a memo, it is read during composition, and
+ * publishing it would invalidate the composition that just filled it.
+ */
+internal class LibrarySearchIndexMemo<T>(private val name: (T) -> String) {
+
+    private var rows: List<T>? = null
+    private var index: LibrarySearchPolicy.Index<T>? = null
+
+    fun of(rows: List<T>): LibrarySearchPolicy.Index<T> {
+        val cached = index
+        if (cached != null && this.rows === rows) return cached
+        val built = LibrarySearchPolicy.index(rows, name)
+        this.rows = rows
+        this.index = built
+        return built
+    }
+}
+
 internal object LibrarySearchPolicy {
 
     /**
