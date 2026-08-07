@@ -513,6 +513,12 @@ internal fun showAttachedSubtitle(ownerKey: String?, itemKey: String): Boolean =
  * The direct-play promise: what happens when nothing has gone wrong. Carried on a solid
  * accent fill with its own inverting ink, which is the one shape the accent is allowed in
  * the dark palette — an area, never a hairline.
+ *
+ * Set as a verdict over a note rather than as one run of type, unlike [RefusalCard] beside
+ * it. That card's two halves are one sentence — every refusal body is written to continue
+ * "Your TV couldn't play this file." — and breaking them apart would break the grammar. The
+ * two sentences here are independent, and stacking them buys back the height that made this
+ * the loudest area on a sheet whose blue CTA has to be the thing the eye lands on.
  */
 @Composable
 private fun DirectPlayCard() {
@@ -521,25 +527,30 @@ private fun DirectPlayCard() {
         Modifier
             .clip(RoundedCornerShape(FlickCorners.qualityCard))
             .background(colors.spark)
-            .padding(15.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
+        // Against two lines, not the three this used to run to: top alignment left the
+        // check floating against a paragraph it was the verdict for.
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             imageVector = FlickIcons.CheckCircle,
             contentDescription = null,
             tint = colors.onSpark,
-            modifier = Modifier.size(21.dp),
+            modifier = Modifier.size(22.dp),
         )
-        Text(
-            text = buildAnnotatedString {
-                withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) {
-                    append(stringResource(R.string.detail_directplay_title))
-                }
-                append(" ")
-                append(stringResource(R.string.detail_directplay_body))
-            },
-            style = FlickText.bodySmall.copy(color = colors.onSpark),
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = stringResource(R.string.detail_directplay_title),
+                style = FlickText.labelLarge.copy(color = colors.onSpark),
+            )
+            Text(
+                text = stringResource(R.string.detail_directplay_body),
+                style = FlickText.bodySmall.copy(
+                    color = colors.onSpark.copy(alpha = VerdictNoteAlpha),
+                ),
+            )
+        }
     }
 }
 
@@ -579,7 +590,7 @@ private fun RefusalCard(code: String) {
             )
             Text(
                 text = stringResource(R.string.detail_unplayable_note),
-                style = FlickText.bodySmall.copy(color = colors.onCaution.copy(alpha = RefusalNoteAlpha)),
+                style = FlickText.bodySmall.copy(color = colors.onCaution.copy(alpha = VerdictNoteAlpha)),
                 modifier = Modifier.padding(top = 6.dp),
             )
         }
@@ -600,8 +611,11 @@ private fun refusalBody(code: String): Int = when (code) {
     else -> R.string.detail_unplayable_generic
 }
 
-/** The note is a second register, not a second paragraph of the same weight. */
-private const val RefusalNoteAlpha = 0.82f
+/**
+ * The second register on both verdict cards — the direct-play promise and the refusal that
+ * takes its seat. A note, not a second paragraph of the same weight.
+ */
+private const val VerdictNoteAlpha = 0.82f
 
 /**
  * The pre-cast link advisory. It is not a gate and there is none anywhere in this feature:

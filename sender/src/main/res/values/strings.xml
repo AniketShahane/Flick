@@ -143,7 +143,7 @@
     <!-- S4 · Detail. -->
     <string name="detail_back">Back</string>
     <string name="detail_directplay_title">Will direct-play at full quality.</string>
-    <string name="detail_directplay_body">Your TV decodes this file natively — no transcode, no downscale, nothing leaves your Wi-Fi.</string>
+    <string name="detail_directplay_body">No transcode, no downscale — nothing leaves your Wi-Fi.</string>
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
