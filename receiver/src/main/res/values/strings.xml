@@ -44,7 +44,7 @@
          that guessing ends needing someone in the room — and deliberately quotes no
          attempt count, which would be both an oracle and a number that drifts. -->
     <string name="pair_sealed_title">Pairing paused</string>
-    <string name="pair_sealed_body">Too many wrong codes were entered. Pairing stays closed until it is resumed here on the TV, so a phone that isn\'t in this room can\'t keep guessing.</string>
+    <string name="pair_sealed_body">Too many wrong codes. Pairing stays closed until you resume it here, so a phone outside this room can\'t keep guessing.</string>
     <string name="pair_sealed_resume">Resume pairing</string>
     <string name="pair_success">Phone paired</string>
     <!-- The on-TV confirmation. It exists because the QR carries the live code, so
@@ -56,7 +56,7 @@
          because a prompt that expires into an allow would be no gate at all. -->
     <string name="pair_confirm_title">Allow this phone?</string>
     <string name="pair_confirm_instructions">%1$s scanned the code on this screen and wants to cast here.</string>
-    <string name="pair_confirm_body">Allowing lets this phone start and control videos on this TV. It gets no access to anything else, and you can remove it later in Settings.</string>
+    <string name="pair_confirm_body">It can start and control videos here — nothing else. You can remove it any time in Settings.</string>
     <string name="pair_confirm_deadline">Declines automatically in %1$ds</string>
     <string name="pair_confirm_deadline_unknown">Declines automatically if nobody answers</string>
     <string name="pair_confirm_allow">Allow</string>
@@ -239,13 +239,13 @@
 
     <!-- T9a · Reachable, not serving (amber) -->
     <string name="error_not_serving_title">Your phone stopped serving</string>
-    <string name="error_not_serving_detail">%1$s is still on the network, but the stream ended — Flick may have been closed, or battery saver paused it. Your place is held.</string>
+    <string name="error_not_serving_detail">%1$s is on the network but stopped sending. Flick may be closed, or battery saver paused it. Your place is held.</string>
     <string name="error_try_again">Try again</string>
     <string name="error_back_to_standby">Back to standby</string>
 
     <!-- T9b · Unreachable (crimson) -->
     <string name="error_unreachable_title">Lost sight of your phone</string>
-    <string name="error_unreachable_detail">%1$s left the network mid-stream — it may have switched Wi-Fi or wandered out of range. Your place is safe; playback resumes the moment it\'s back.</string>
+    <string name="error_unreachable_detail">%1$s left the network mid-stream. Your place is safe — playback resumes the moment it\'s back.</string>
     <string name="error_keep_waiting">Keep waiting</string>
     <string name="error_end_session">End session</string>
     <string name="device_fallback">your phone</string>
@@ -279,7 +279,7 @@
     <string name="rename_name_label">Name</string>
     <string name="rename_cancel">Cancel</string>
     <string name="rename_save">Save</string>
-    <string name="rename_save_failed">Couldn’t save the name. Try again.</string>
+    <string name="rename_save_failed">Couldn\'t save the name. Try again.</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>

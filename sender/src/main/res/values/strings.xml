@@ -20,8 +20,8 @@
     <string name="notif_action_forward10">Forward 10 seconds</string>
 
     <!-- Server errors surfaced by the foreground service. -->
-    <string name="error_no_lan">No Wi-Fi or LAN connection found. Connect this phone to the same Wi-Fi network as your TV, then try again.</string>
-    <string name="error_server_start">Could not start the media server. Make sure port 8080 is free and try again.</string>
+    <string name="error_no_lan">No Wi-Fi connection. Put this phone on the same network as your TV, then try again.</string>
+    <string name="error_server_start">Couldn\'t start the media server. Make sure port 8080 is free, then try again.</string>
 
     <!-- Battery-optimization exemption prompt. -->
     <string name="battery_opt_title">Casting may be interrupted</string>
@@ -66,7 +66,7 @@
     <string name="pair_connect">Connect</string>
     <string name="manual_heading">Enter all three values shown on your TV</string>
     <string name="manual_heading_qr">Enter the code on your TV</string>
-    <string name="manual_from_qr">The address below came from the TV\'s QR code. Type the 4-digit code on screen to confirm it.</string>
+    <string name="manual_from_qr">This address came from your TV\'s QR code. Type the 4-digit code on screen to confirm.</string>
     <string name="manual_host_label">TV IP address</string>
     <!-- One word each: these two share a row, so a label has roughly half the sheet's
          width to fit in and "Control port" ran past it above a 1.6x font scale. What the
@@ -79,7 +79,7 @@
 
     <!-- S2 · Empty state. -->
     <string name="empty_title">Nothing to flick yet</string>
-    <string name="empty_body">Movies you shoot, rip or download live here — and play on your TV at full 4K quality, straight off this phone.</string>
+    <string name="empty_body">Movies you shoot, rip or download live here. They play on your TV in full 4K, straight off this phone.</string>
     <string name="empty_choose">Choose videos</string>
     <string name="empty_tv_ready">%1$s is ready when you are</string>
     <string name="empty_no_tv">Connect a TV to start casting</string>
@@ -112,7 +112,7 @@
     <string name="library_folder_action">Folder</string>
     <string name="library_folder_a11y">Showing %1$s. Choose a different folder.</string>
     <string name="library_folder_sheet_title">Show videos from</string>
-    <string name="library_folder_sheet_body">Flick lists only the folder you pick here. Casting, subtitles and the TV are unaffected.</string>
+    <string name="library_folder_sheet_body">Flick lists only the folder you pick. Nothing else changes.</string>
     <string name="library_folder_all_summary">Every video this phone has shared with Flick</string>
     <string name="library_folder_count">%1$d</string>
     <string name="library_folder_expand">Show the folders inside %1$s</string>
@@ -121,13 +121,13 @@
     <!-- The chosen folder is gone: the card names it and offers the only repair, rather
          than silently widening the library back to everything. -->
     <string name="library_folder_missing_title">%1$s isn\'t there any more</string>
-    <string name="library_folder_missing_body">Flick can\'t find that folder. It may have been deleted, renamed, or moved to storage this phone can\'t reach.</string>
+    <string name="library_folder_missing_body">It may have been deleted, renamed, or moved to storage this phone can\'t reach.</string>
     <string name="library_folder_missing_action">Show all videos</string>
     <!-- Under a partial grant the cause IS knowable, so the card names it instead of
          listing possibilities, and offers the repair that keeps the folder rather than
          the one that discards it. -->
     <string name="library_folder_hidden_title">Flick can\'t see %1$s</string>
-    <string name="library_folder_hidden_body">You\'ve given Flick access to selected videos only, and none of them are in that folder.</string>
+    <string name="library_folder_hidden_body">You\'ve allowed Flick only selected videos, and none are in that folder.</string>
     <string name="library_folder_hidden_action">Select more videos</string>
     <string name="library_folder_a11y_missing">%1$s is unavailable. Choose a different folder.</string>
     <string name="library_empty_folder">No videos in %1$s</string>
@@ -172,11 +172,11 @@
     <!-- Pairing outcome messages (mapped from a PairErrorKind, never raw exception text). -->
     <string name="pair_error_code">That code didn\'t match. Check the TV and try again.</string>
     <string name="pair_error_unreachable">Couldn\'t reach that TV.</string>
-    <string name="pair_error_invalid">Enter the current host, port, and four-digit code exactly as shown on your TV.</string>
+    <string name="pair_error_invalid">Enter the address, port and code exactly as they appear on your TV.</string>
     <string name="pair_error_update">Update Flick on your TV, then try again.</string>
-    <string name="pair_error_qr">This QR code cannot be used. Update Flick on both devices and scan the current TV code.</string>
-    <string name="pair_error_pair_required">This TV needs pairing first. Scan its QR, then enter the host, port, and code shown on screen.</string>
-    <string name="pair_error_storage">Flick couldn’t save this pairing on your phone. Check storage, then pair again with the current TV code.</string>
+    <string name="pair_error_qr">This QR code can\'t be used. Update Flick on both devices, then scan again.</string>
+    <string name="pair_error_pair_required">This TV needs pairing first. Scan its QR code, or enter the details shown on screen.</string>
+    <string name="pair_error_storage">Flick couldn\'t save this pairing. Check your phone\'s storage, then try again.</string>
     <string name="pair_error_timeout">The TV didn\'t answer in time. Check both devices are on the same Wi-Fi.</string>
     <string name="pair_error_rejected">The TV refused the connection. Make sure its pairing screen is showing, then try again.</string>
     <string name="pair_error_expired">That code expired — a new one is on the TV.</string>
@@ -187,8 +187,8 @@
          and points at the screen that can change it, instead of instructing the user to
          open something that is already open. -->
     <string name="pair_error_surface">The TV didn\'t accept this phone. Check its pairing screen, then try the code shown there.</string>
-    <string name="pair_error_locked">Too many attempts — the TV is waiting. Give it a moment, then try the new code.</string>
-    <string name="pair_error_tv_storage">The TV couldn\'t save this pairing. Restart Flick on the TV — retrying the code won\'t help.</string>
+    <string name="pair_error_locked">Too many attempts. Wait a moment, then use the new code on your TV.</string>
+    <string name="pair_error_tv_storage">The TV couldn\'t save this pairing. Restart Flick on the TV; another code won\'t help.</string>
     <string name="pair_error_repair">Pairing couldn\'t be completed. Start again from the TV\'s pairing screen.</string>
     <string name="pair_error_endpoint_changed">This TV\'s address just changed. Check it matches your TV, then enter the code again.</string>
     <string name="sender_device_generic">Phone</string>
@@ -228,7 +228,7 @@
     <string name="np_segment_subs">Subs</string>
     <string name="np_segment_audio">Audio</string>
     <string name="buffering_title">Topping up the buffer</string>
-    <string name="buffering_body">Your Wi-Fi took a breath — the reserve is absorbing it. Quality stays full; nothing is being downgraded.</string>
+    <string name="buffering_body">Your Wi-Fi took a breath. Quality stays full — nothing is being downgraded.</string>
     <string name="buffering_chip">%1$s · brief dip</string>
 
     <!-- S10 · Signal &amp; quality sheet. -->
@@ -252,7 +252,7 @@
     <string name="advisories_title">Two quick tune-ups</string>
     <string name="advisories_sub">Optional — but they make zero-buffer a guarantee.</string>
     <string name="advisory_band_title">You\'re on 2.4 GHz Wi-Fi.</string>
-    <string name="advisory_band_body">4K peaks may outrun this band. Switch this phone to your 5 GHz network for guaranteed zero-buffer.</string>
+    <string name="advisory_band_body">4K peaks can outrun this band. Switch this phone to 5 GHz for zero buffering.</string>
     <string name="advisory_band_primary">Switch network</string>
     <string name="advisory_band_secondary">Cast anyway</string>
     <string name="advisory_battery_title">Keep casting</string>
@@ -261,9 +261,9 @@
          restricts to alarms, VoIP and companion devices, and casting is on none of those
          lists. So the copy has to name the extra step — a card that says "Allow" and then
          hands over a list of every app on the phone reads as the button having failed. -->
-    <string name="advisory_battery_body">Find Flick in battery settings and choose Don\'t optimise so Android won\'t pause your stream.</string>
+    <string name="advisory_battery_body">Find Flick in battery settings and choose Don\'t optimise. Android won\'t pause your stream.</string>
     <string name="settings_video_names_title">Readable video names</string>
-    <string name="settings_video_names_summary">Show clean titles for recognised releases and hide the final video extension. Display only — Flick never renames your files.</string>
+    <string name="settings_video_names_summary">Tidy up release names and hide file extensions. Display only — your files are never renamed.</string>
     <string name="settings_video_names_a11y">%1$s. %2$s</string>
     <string name="settings_video_names_on">On</string>
     <string name="settings_video_names_off">Off</string>
@@ -273,7 +273,7 @@
     <string name="advisories_alltuned">You\'re all tuned up.</string>
     <!-- In-app diagnostics log (the phone-side channel; adb logcat is not available to users). -->
     <string name="diagnostics_title">Diagnostics</string>
-    <string name="diagnostics_sub">The last 200 lines Flick recorded on this phone. Nothing secret is written here.</string>
+    <string name="diagnostics_sub">The last 200 lines Flick recorded on this phone. Nothing secret is logged.</string>
     <string name="diagnostics_empty">Nothing recorded yet.</string>
     <string name="diagnostics_copy">Copy</string>
     <string name="diagnostics_copied">Copied to clipboard</string>
@@ -281,7 +281,7 @@
 
     <!-- S12 · Errors. -->
     <string name="error_reachable_title">Your TV is there — but not listening</string>
-    <string name="error_reachable_body">%1$s answers on the network, but the Flick receiver isn\'t running. It probably fell asleep or was closed.</string>
+    <string name="error_reachable_body">Flick isn\'t running on %1$s. It probably went to sleep, or was closed.</string>
     <string name="error_reachable_primary">Wake the TV app</string>
     <string name="error_reachable_secondary">Run a 10-second checkup</string>
     <string name="error_reachable_pill">Reachable · not serving</string>
@@ -291,7 +291,7 @@
     <string name="error_unreachable_secondary">Pair again</string>
     <string name="error_unreachable_pill">TV unreachable</string>
     <string name="error_nolan_title">No Wi-Fi connection</string>
-    <string name="error_nolan_body">Connect this phone to the same Wi-Fi network as your TV, then try again.</string>
+    <string name="error_nolan_body">Put this phone on the same Wi-Fi as your TV, then try again.</string>
     <string name="error_nolan_primary">Open Wi-Fi settings</string>
     <string name="error_generic_title">Something went wrong</string>
     <string name="error_generic_body">Flick couldn\'t start this cast. Try again.</string>
@@ -352,18 +352,18 @@
 
     <!-- S1 · Scanner sheet. -->
     <string name="scan_heading">Scan the QR on your TV</string>
-    <string name="scan_sub">Hold your phone up to the TV\'s pairing screen. You still type the 4-digit code afterwards — the scan only fills in the address.</string>
+    <string name="scan_sub">Hold your phone up to the TV\'s pairing screen. You\'ll still type the 4-digit code after.</string>
     <string name="scan_manual_instead">Enter address instead</string>
     <string name="scan_permission_title">Camera access</string>
-    <string name="scan_permission_body">Flick uses the camera only to read the QR code on your TV. Nothing is recorded, saved or uploaded.</string>
+    <string name="scan_permission_body">The camera only reads the QR code on your TV. Nothing is recorded, saved or uploaded.</string>
     <string name="scan_permission_allow">Allow camera</string>
     <string name="scan_permission_denied">Flick can\'t scan without the camera. Allow it, or enter the TV address manually.</string>
-    <string name="scan_permission_blocked">Camera access is turned off for Flick. Turn it on in Settings, or enter the TV address manually.</string>
+    <string name="scan_permission_blocked">Camera access is off. Turn it on in Settings, or enter the TV address instead.</string>
     <string name="scan_open_settings">Open settings</string>
     <string name="scan_unavailable">This phone\'s camera isn\'t available right now. Enter the TV address manually.</string>
 
     <!-- S1 · Scanner accessibility. -->
-    <string name="a11y_scan_viewfinder">Camera viewfinder. Point the back of the phone at the QR code on your TV. Entering its address manually works too.</string>
+    <string name="a11y_scan_viewfinder">Camera viewfinder. Point the phone at the QR code on your TV, or enter its address manually.</string>
     <string name="a11y_connect_pair_scan">Scan the QR code shown on your TV</string>
     <string name="a11y_connect_pair_manual">Enter a TV address manually</string>
 
@@ -374,7 +374,7 @@
     <string name="subs_for_nothing">Nothing is casting yet.</string>
     <string name="subs_none_attached">No subtitle attached</string>
     <string name="subs_remove">Remove</string>
-    <string name="subs_note">Attaching or removing a subtitle reloads the video on the TV. It resumes where it left off.</string>
+    <string name="subs_note">Changing subtitles reloads the video on your TV. It resumes where it left off.</string>
     <string name="subs_note_idle">It attaches to the next video you cast.</string>
     <string name="subs_done">Done</string>
 
@@ -400,7 +400,7 @@
     <string name="subs_tab_file">File</string>
     <string name="subs_tab_online">Online</string>
 
-    <string name="subs_pick_body">Pick the subtitle file yourself. Android never lets Flick read a .srt file you haven\'t chosen, so nothing is scanned in the background.</string>
+    <string name="subs_pick_body">Pick the subtitle file yourself. Flick reads only the file you choose.</string>
     <string name="subs_pick_action">Choose a subtitle file</string>
 
     <!-- Subtitles sheet · what a picked file can be rejected for. -->
@@ -419,9 +419,9 @@
     <string name="subs_online_season_invalid">Use a season from 1 to 99.</string>
     <string name="subs_online_episode_invalid">Use an episode from 1 to 999.</string>
     <string name="subs_online_query_too_short">Enter at least 3 characters, or search with a readable file fingerprint.</string>
-    <string name="subs_online_query_short_hash_only">That title is too short for OpenSubtitles. This search will use only the exact file fingerprint.</string>
+    <string name="subs_online_query_short_hash_only">That title is too short. This search will use the file fingerprint only.</string>
     <string name="subs_online_fingerprint_reading">Reading the file fingerprint for a more exact search…</string>
-    <string name="subs_online_query_or_fingerprint_unavailable">Enter a title. Flick can’t read a fingerprint for this file.</string>
+    <string name="subs_online_query_or_fingerprint_unavailable">Enter a title. Flick can\'t read a fingerprint for this file.</string>
     <string name="subs_online_search">Search</string>
     <string name="subs_online_searching">Searching…</string>
     <string name="subs_online_downloading">Downloading…</string>
@@ -439,14 +439,14 @@
     <string name="subs_online_result_year">%1$d</string>
 
     <!-- Subtitles sheet · online search, when this build carries no key at all. -->
-    <string name="subs_online_no_key">This build of Flick carries no OpenSubtitles key, so it can\'t search from here. You can still attach a subtitle file yourself on the File tab — or paste your own key below, if you have one.</string>
+    <string name="subs_online_no_key">This build has no OpenSubtitles key, so it can\'t search. Attach a file on the File tab, or paste your own key below.</string>
 
     <!-- Subtitles sheet · whose daily allowance a search and a download spend. -->
-    <string name="subs_online_shared">Searches without a sign-in draw on Flick\'s own small daily allowance, shared by everyone using the app. A free OpenSubtitles account gives you your own.</string>
+    <string name="subs_online_shared">Without a sign-in, searches share Flick\'s small daily allowance. A free OpenSubtitles account gives you your own.</string>
     <string name="subs_online_sign_in">Sign in to OpenSubtitles</string>
     <string name="subs_online_user_label">Username</string>
     <string name="subs_online_password_label">Password</string>
-    <string name="subs_online_password_note">Your password is sent to OpenSubtitles once, in exchange for a token. Flick stores the token and your username on this phone, and never the password.</string>
+    <string name="subs_online_password_note">Your password goes to OpenSubtitles once, in exchange for a token. Flick keeps the token on this phone, never the password.</string>
     <string name="subs_online_sign_in_action">Sign in</string>
     <string name="subs_online_signing_in">Signing in…</string>
     <string name="subs_online_signed_in">Signed in as %1$s. Downloads count against your own allowance.</string>
@@ -458,20 +458,20 @@
     <!-- Subtitles sheet · the user's own API key, a secondary path for power users. -->
     <string name="subs_online_key_show">Use my own OpenSubtitles key</string>
     <string name="subs_online_key_label">OpenSubtitles API key</string>
-    <string name="subs_online_key_hint">An API Consumer key from your own OpenSubtitles account. It is stored on this phone only, and is sent nowhere except opensubtitles.com.</string>
+    <string name="subs_online_key_hint">An API Consumer key from your OpenSubtitles account. Stored on this phone, sent only to opensubtitles.com.</string>
     <string name="subs_online_key_save">Save key</string>
     <string name="subs_online_key_forget">Forget my key</string>
     <string name="subs_online_key_mine">Searching with your own key.</string>
 
     <string name="subs_error_offline">No answer from OpenSubtitles. Check this phone\'s internet connection.</string>
     <string name="subs_error_key_mine">OpenSubtitles rejected your key. Check it and paste it again.</string>
-    <string name="subs_error_key_app">OpenSubtitles has rejected Flick\'s own key. Paste your own key below, or attach a subtitle file yourself on the File tab.</string>
+    <string name="subs_error_key_app">OpenSubtitles rejected Flick\'s key. Paste your own below, or attach a file on the File tab.</string>
     <string name="subs_error_rate">OpenSubtitles is rate-limiting these searches. Wait a minute, then try again.</string>
-    <string name="subs_error_quota">The daily download allowance is spent. Sign in with a free OpenSubtitles account for your own.</string>
+    <string name="subs_error_quota">The shared daily allowance is spent. A free OpenSubtitles account gives you your own.</string>
     <string name="subs_error_quota_signed">Your daily download allowance is spent. It resets within a day.</string>
     <string name="subs_error_sign_in">OpenSubtitles didn\'t accept that username and password.</string>
     <string name="subs_error_sign_in_expired">That sign-in has expired. Sign in again to use your own allowance.</string>
-    <string name="subs_error_link">OpenSubtitles answered with a download address outside its own site, so Flick didn\'t fetch it.</string>
+    <string name="subs_error_link">OpenSubtitles pointed to a download outside its own site, so Flick didn\'t fetch it.</string>
     <string name="subs_error_unavailable">OpenSubtitles couldn\'t answer that just now.</string>
 
     <!-- Subtitles sheet · accessibility. -->
@@ -621,7 +621,7 @@
 
     <!-- Optional one-time tips appear only when every hosted checkout URL is configured. -->
     <string name="support_sheet_title">Keep Flick moving.</string>
-    <string name="support_sheet_body">Flick is free, private, and built by one person. If it earned a place in your movie night, leave a one-time tip. Nothing unlocks—this is simply a thank-you.</string>
+    <string name="support_sheet_body">Flick is free, private, and built by one person. If it earned a place in your movie night, leave a one-time tip — nothing unlocks.</string>
     <string name="support_option_3_amount">$3</string>
     <string name="support_option_3_label">Send a spark</string>
     <string name="support_option_8_amount">$8</string>
@@ -634,7 +634,7 @@
     <string name="support_invitation_body">If Flick helped make movie night easy, you can leave a one-time tip.</string>
     <string name="support_invitation_open">See ways to support</string>
     <string name="support_invitation_dismiss">Not now</string>
-    <string name="support_checkout_unavailable">Couldn’t open checkout. Try again when a browser is available.</string>
+    <string name="support_checkout_unavailable">Couldn\'t open checkout. Try again when a browser is available.</string>
     <string name="settings_support_title">Support Flick</string>
     <string name="settings_support_summary">Leave a voluntary one-time tip</string>
 
@@ -649,12 +649,12 @@
     <!-- Now Playing, Connecting and the quality sheet are dark by design, not by
          preference — a light chrome around a film competes with the film. Said here so a
          viewer who picks Light and then opens the remote reads it as intent, not a bug. -->
-    <string name="settings_theme_note">The remote and the connecting screen stay dark either way, so nothing competes with what\'s playing.</string>
+    <string name="settings_theme_note">The remote and connecting screens stay dark either way, so nothing competes with your film.</string>
     <!-- Singular of advisories_footer, for the one-card state. -->
     <string name="advisories_footer_one">It\'s one-time. Flick never asks twice.</string>
     <!-- MediaAccess.NONE: the gallery is not empty, Flick has simply not been let into it. -->
     <string name="empty_locked_title">Flick can\'t see your videos yet</string>
-    <string name="empty_locked_body">Allow access and every video on this phone shows up here. Flick reads them on this device — nothing is uploaded, and nothing leaves your Wi-Fi.</string>
+    <string name="empty_locked_body">Allow access and your videos show up here. Nothing is uploaded — it all stays on your Wi-Fi.</string>
     <string name="empty_locked_choose">Allow access</string>
 
     <!-- ===== Devices — the live link ===== -->
@@ -705,7 +705,7 @@
     <string name="detail_resolution_unknown">RESOLUTION UNKNOWN</string>
     <string name="detail_hdr_checking">CHECKING…</string>
     <string name="detail_unplayable_title">Your TV couldn\'t play this file.</string>
-    <string name="detail_unplayable_container">It reached the file but couldn\'t read the container it\'s wrapped in — the video inside may be perfectly fine.</string>
+    <string name="detail_unplayable_container">It couldn\'t read the container — the video inside may be perfectly fine.</string>
     <string name="detail_unplayable_video">It read the file but its decoder doesn\'t handle this video track.</string>
     <string name="detail_unplayable_hdr">It read the file but doesn\'t support the dynamic-range profile it uses.</string>
     <string name="detail_unplayable_damaged">It couldn\'t read enough of the file to start — it may be incomplete or damaged.</string>
@@ -716,31 +716,31 @@
          is the file, the TV is not accused; where it is permanent, no copy invites a retry
          (the screen offers none). -->
     <string name="error_container_title">This TV can\'t open this file</string>
-    <string name="error_container_body">%1$s reached the video but couldn\'t read the container it\'s wrapped in. The film inside may be perfectly fine — a copy remuxed to MP4 usually plays.</string>
+    <string name="error_container_body">%1$s couldn\'t read the container this film is wrapped in. The film itself may be fine — an MP4 copy usually plays.</string>
     <string name="error_container_pill">Container unsupported</string>
     <string name="error_video_title">This TV can\'t decode this video</string>
-    <string name="error_video_body">%1$s read the file, but its decoder doesn\'t handle this video track. Nothing about the network will change that answer.</string>
+    <string name="error_video_body">%1$s has no decoder for this video track. Your network isn\'t the problem.</string>
     <string name="error_video_pill">Video unsupported</string>
     <string name="error_hdr_title">This TV can\'t decode this HDR profile</string>
-    <string name="error_hdr_body">%1$s read the file but doesn\'t support the dynamic-range profile it uses. An SDR or HDR10 copy of the same film will play.</string>
+    <string name="error_hdr_body">%1$s doesn\'t support this film\'s HDR profile. An SDR or HDR10 copy will play.</string>
     <string name="error_hdr_pill">HDR profile unsupported</string>
     <string name="error_damaged_title">This file looks damaged</string>
-    <string name="error_damaged_body">%1$s couldn\'t read enough of it to start. The file is probably incomplete or corrupted rather than unsupported.</string>
+    <string name="error_damaged_body">%1$s couldn\'t read enough of the file to start. It\'s probably incomplete or corrupted.</string>
     <string name="error_damaged_pill">File unreadable</string>
     <string name="error_source_title">Flick can\'t read this file</string>
-    <string name="error_source_body">This phone couldn\'t open the file to serve it. It may have moved, or your gallery may no longer be sharing it with Flick.</string>
+    <string name="error_source_body">This phone couldn\'t open the file. It may have moved, or your gallery may no longer share it with Flick.</string>
     <string name="error_source_pill">File unavailable</string>
     <string name="error_decoder_title">The TV couldn\'t start a decoder</string>
-    <string name="error_decoder_body">%1$s has a decoder for this video but couldn\'t start it — usually something else on the TV is still holding it.</string>
+    <string name="error_decoder_body">%1$s couldn\'t start its decoder — something else on the TV is probably still using it.</string>
     <string name="error_decoder_pill">Decoder unavailable</string>
     <string name="error_tvclosed_title">The TV app closed</string>
     <string name="error_tvclosed_body">Flick is no longer in front on %1$s. Open it there and this will work again.</string>
     <string name="error_tvclosed_pill">Receiver closed</string>
     <string name="error_busy_title">%1$s is already casting</string>
-    <string name="error_busy_body">Another Flick session owns this TV. Stop that one and this file is yours to send.</string>
+    <string name="error_busy_body">Another phone is casting to this TV. Stop that one, then try again.</string>
     <string name="error_busy_pill">TV busy</string>
     <string name="error_update_title">The TV app is out of date</string>
-    <string name="error_update_body">Update Flick on %1$s — this phone speaks a newer version of the control channel than that receiver understands.</string>
+    <string name="error_update_body">Update Flick on %1$s. This phone is running a newer version than the TV.</string>
     <string name="error_update_pill">Receiver out of date</string>
     <string name="error_timeout_title">The TV didn\'t start in time</string>
     <string name="error_timeout_body">%1$s accepted the cast but never reached its first frame.</string>
@@ -763,24 +763,24 @@
          whenever usable throughput is under the film's bitrate, which a 5 GHz phone at range
          with a collapsed MCS reaches too — "switch to 5 GHz" would then be advice it has
          already taken. %2$s already names the band it is actually on. -->
-    <string name="link_advisory_body">It streams at about %1$s and this phone\'s %2$s link realistically carries around %3$s. Moving the phone nearer the router, or onto 5 GHz, is what changes that.</string>
+    <string name="link_advisory_body">It streams at about %1$s; this phone\'s %2$s link carries around %3$s. Move nearer the router, or onto 5 GHz.</string>
     <string name="link_starting_title">Your Wi-Fi is delivering this slower than it plays.</string>
-    <string name="link_starting_body">%1$s needs about %2$s to play without stalling and this link is carrying %3$s. Flick keeps trying until it times out — moving the phone nearer the router, or onto 5 GHz, is what changes the answer.</string>
+    <string name="link_starting_body">%1$s needs about %2$s and this link is carrying %3$s. Move nearer the router, or onto 5 GHz.</string>
     <string name="link_starting_wait">Keep waiting</string>
     <string name="error_slowlink_title">Your Wi-Fi couldn\'t keep up</string>
-    <string name="error_slowlink_body">%1$s never reached its first frame. This film needs about %2$s and the link carried %3$s while Flick was serving it. Nothing is wrong with the file or the TV.</string>
+    <string name="error_slowlink_body">%1$s never reached its first frame. The film needs about %2$s and the link carried %3$s — nothing is wrong with the file or the TV.</string>
     <string name="error_slowlink_pill">Wi-Fi under capacity</string>
     <string name="buffering_title_starved">The reserve is draining</string>
-    <string name="buffering_body_starved">This link is carrying %1$s and the film needs about %2$s, so the buffer is emptying rather than topping up.</string>
+    <string name="buffering_body_starved">This link is carrying %1$s and the film needs about %2$s.</string>
     <string name="link_stalling_title">This Wi-Fi is under this film\'s bitrate.</string>
-    <string name="link_stalling_body">%1$s stalled three times in two minutes. It needs about %2$s and this link is carrying %3$s. Flick will not reduce the quality, because it never transcodes — moving the phone nearer the router, or onto 5 GHz, is the fix.</string>
+    <string name="link_stalling_body">%1$s stalled three times in two minutes. It needs about %2$s and this link carries %3$s. Move nearer the router, or onto 5 GHz.</string>
     <!-- The escalation trigger is the stall count alone, so the card is also owed on a file
          whose bitrate was never measurable and on a link that PROVED it carries the film and
          stalled anyway (a VBR peak the average cannot see). The title above is a bitrate
          verdict and would be flatly contradicted by that second case, so the unquoted card
          gets its own, which claims only the stalls the user just watched. -->
     <string name="link_stalling_title_unmeasured">This film keeps stopping to buffer.</string>
-    <string name="link_stalling_body_unmeasured">%1$s stalled three times in two minutes. Flick will not reduce the quality, because it never transcodes — moving the phone nearer the router, or onto 5 GHz, is what usually changes it.</string>
+    <string name="link_stalling_body_unmeasured">%1$s stalled three times in two minutes. Moving nearer the router, or onto 5 GHz, usually fixes it.</string>
     <string name="link_stalling_dismiss">Keep watching</string>
     <string name="a11y_link_advisory">Link capacity advisory: %1$s</string>
 
@@ -788,14 +788,13 @@
     <!-- The remote's middle segment. Positive is the sound heard LATER than the picture,
          which is VLC's and mpv's convention — but a sign alone reads either way round to
          most people, so nothing here states one without the direction in words beside it.
-         The body is the sheet's whole claim about cost: the TV applies the offset while
-         decoding, so no byte is re-encoded and no buffer is refilled. The settling clause
-         is the honest other half, and it names the cost rather than calling it a moment:
-         the range reaches five seconds either way, a move holds or skips the picture for
-         about as long as the move itself, and five seconds of held picture is not a
-         moment. Stated as a proportion, so it stays true whatever the bounds become. -->
+         The body claims no re-buffering because the TV applies the offset while decoding,
+         and then names the cost rather than calling it a moment: the range reaches five
+         seconds either way, a move holds or skips the picture for about as long as the
+         move itself, and five seconds of held picture is not a moment. Stated as a
+         proportion, so it stays true whatever the bounds become. -->
     <string name="audio_delay_title">Audio delay</string>
-    <string name="audio_delay_body">Shifts the sound against the picture on your TV. Nothing is re-encoded and nothing re-buffers, though a big shift holds the picture for about as long as the shift itself.</string>
+    <string name="audio_delay_body">Shifts the sound against the picture on your TV. Nothing re-buffers — a big shift just holds the picture for about as long.</string>
     <string name="audio_delay_in_sync">In sync</string>
     <!-- The signed figure is built in code (U+2212 for the minus, to match the app\'s
          other readouts); only the label around it is copy. -->
