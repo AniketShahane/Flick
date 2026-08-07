@@ -568,11 +568,10 @@ private fun ColumnScope.OnlinePane(
         return
     }
 
-    Text(
-        stringResource(R.string.subs_online_body),
-        style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-    )
-    Spacer(Modifier.height(14.dp))
+    // No explainer above the form: the tab is named Online, the first control is a
+    // language, and what a search does is the one thing on this sheet nobody has to be
+    // told. The paragraph that stood here pushed the Search button off a short window,
+    // which made the tab look like it had nothing to press.
     OnlineLanguageSelector(
         selected = language,
         enabled = !downloading,
@@ -603,25 +602,33 @@ private fun ColumnScope.OnlinePane(
     val seasonValid = season.isBlank() || seasonValue?.let(OpenSubtitlesSearchPolicy::validSeason) == true
     val episodeValid = episode.isBlank() || episodeValue?.let(OpenSubtitlesSearchPolicy::validEpisode) == true
     Spacer(Modifier.height(8.dp))
-    OutlinedTextField(
-        value = year,
-        onValueChange = { value ->
-            val filtered = value.filter(Char::isDigit).take(4)
-            if (filtered != year) invalidateSearch()
-            year = filtered
-        },
-        label = { Text(stringResource(R.string.subs_online_year_label)) },
-        isError = !yearValid,
-        supportingText = {
-            if (!yearValid) Text(stringResource(R.string.subs_online_year_invalid))
-        },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        shape = RoundedCornerShape(FlickCorners.tuneBtn),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    Spacer(Modifier.height(8.dp))
+    // All three narrowers on one line. They are the only fields here that take a number
+    // rather than a phrase, and a full-width row for four digits was the single largest
+    // piece of the height between the title field and the Search button.
+    //
+    // A third of the sheet leaves about 87 dp for a label on a 412 dp frame, which holds
+    // "Episode" — the longest of the three — to a 1.8x font scale, and roughly 1.45x on a
+    // 360 dp one. Past that the label clips while the field keeps working: the values are
+    // two to four digits and never run out of room, which is why the labels are the thing
+    // measured here and the only thing that gives.
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = year,
+            onValueChange = { value ->
+                val filtered = value.filter(Char::isDigit).take(4)
+                if (filtered != year) invalidateSearch()
+                year = filtered
+            },
+            label = { Text(stringResource(R.string.subs_online_year_label)) },
+            isError = !yearValid,
+            supportingText = {
+                if (!yearValid) Text(stringResource(R.string.subs_online_year_invalid))
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            shape = RoundedCornerShape(FlickCorners.tuneBtn),
+            modifier = Modifier.weight(1f),
+        )
         OutlinedTextField(
             value = season,
             onValueChange = { value ->

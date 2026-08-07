@@ -409,15 +409,14 @@
     <string name="subs_unreadable_pick">Flick couldn\'t read that file.</string>
 
     <!-- Subtitles sheet · online search. -->
-    <string name="subs_online_body">Search OpenSubtitles and attach the result. Flick sends the title below, and a fingerprint of the video file when it can read one — that is what finds a subtitle already in sync with this exact release.</string>
     <string name="subs_online_language_label">Subtitle language</string>
     <string name="subs_online_query_label">Title</string>
     <string name="subs_online_year_label">Year</string>
     <string name="subs_online_season_label">Season</string>
     <string name="subs_online_episode_label">Episode</string>
-    <string name="subs_online_year_invalid">Use a year from 1870 to 2099.</string>
-    <string name="subs_online_season_invalid">Use a season from 1 to 99.</string>
-    <string name="subs_online_episode_invalid">Use an episode from 1 to 999.</string>
+    <string name="subs_online_year_invalid">1870–2099</string>
+    <string name="subs_online_season_invalid">1–99</string>
+    <string name="subs_online_episode_invalid">1–999</string>
     <string name="subs_online_query_too_short">Enter at least 3 characters, or search with a readable file fingerprint.</string>
     <string name="subs_online_query_short_hash_only">That title is too short. This search will use the file fingerprint only.</string>
     <string name="subs_online_fingerprint_reading">Reading the file fingerprint for a more exact search…</string>
