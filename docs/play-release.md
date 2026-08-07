@@ -328,11 +328,19 @@ PCM stereo only, but the platform still advertises AC-3 direct playback from the
 EDID. media3 selects passthrough, AudioFlinger refuses the track, and the audio failure
 is reported as a decoder failure. The 4K video had already reached first frame.
 
-**Two things follow for the launch.** The blast radius is most film rips and broadcast
+**Both halves are now fixed.** The blast radius was most film rips and broadcast
 recordings — anything carrying AC-3 or E-AC-3 — for any user whose TV sends audio to a
-Bluetooth speaker. That is a shipping-grade defect, not an edge case, and it is fixable
-entirely inside the receiver because the TV has `c2.dolby.ac3.decoder` and media3 simply
-never falls back to it.
+Bluetooth speaker, which is a shipping-grade defect rather than an edge case. The
+receiver now answers the first output refusal by rebuilding its audio sink so the
+bitstream is decoded rather than passed through, keeping the film, position and subtitle;
+passthrough stays on for HDMI routes where it is correct.
+
+**Still to run before upload:** the eight-clip codec matrix, on hardware.
+
+```sh
+./docs/store/push-codec-clips.sh      # stage the clips, force a metadata scan
+./docs/store/codec-matrix-test.sh     # cast each, read the verdict from the TV's log
+```
 
 And the detail sheet said **"Will direct-play at full quality"** for a file that then did
 not play. The verdict is computed without knowing what the paired TV will accept, so the

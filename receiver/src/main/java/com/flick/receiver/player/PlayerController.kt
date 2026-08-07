@@ -313,6 +313,24 @@ class PlayerController(context: Context) : SessionPlayer {
     )
 
     /**
+     * Whether this cast's audio sink refuses compressed formats, so the renderer
+     * decodes instead of passing through. Latched per cast by [AudioOutputPolicy]
+     * and read by [createPlayer]; false for every ordinary cast.
+     */
+    private var decodeCompressedAudio = false
+
+    /**
+     * The one-shot rebuild onto a decoding audio sink, in its OWN slot for the
+     * reason [pendingTurnFallback] documents: this releases the player that raised
+     * the error, so it must not be collected by a canceller belonging to work
+     * queued against that same player.
+     */
+    private val pendingAudioSinkRebuild = PendingWork(
+        schedule = { work, delayMs -> recoveryHandler.postDelayed(work, delayMs) },
+        unschedule = { work -> recoveryHandler.removeCallbacks(work) },
+    )
+
+    /**
      * The turn's proof of life, and the only per-frame signal media3 offers.
      *
      * `onRenderedFirstFrame` is not usable for this: it fires once and is gated on
@@ -526,6 +544,12 @@ class PlayerController(context: Context) : SessionPlayer {
             // startup window, and the film without it is the one that was about
             // to play.
             if (recoverFromTurnFailure(error)) return
+            // The audio ROUTE must never cost the user the film. Checked before
+            // startup for the reason the turn is: this fires during the startup
+            // window — the picture had already reached first frame when it was
+            // found — and the film with its audio decoded is the one that was
+            // about to play.
+            if (recoverFromAudioOutputRefusal(error)) return
             // Startup is a separate, short transaction. It must not inherit the
             // long steady-state recovery policy or hide format/decoder failures.
             startupCallbacks?.let { callbacks ->
@@ -1141,6 +1165,76 @@ class PlayerController(context: Context) : SessionPlayer {
     }
 
     /**
+     * The audio output refused the track — hand the film back with its audio
+     * decoded instead of passed through.
+     *
+     * See [AudioOutputPolicy] for what is being refused and why. The lever is a
+     * property of the `AudioSink`, fixed when the sink is built, so unlike every
+     * other recovery here this one cannot re-prepare the player it is holding: it
+     * has to build a new one. That happens on the next main-thread turn, because
+     * releasing a player from inside its own listener callback is not a thing to
+     * do, and in its own [PendingWork] slot so no other canceller can collect it.
+     *
+     * Once per cast. A refusal that survives the rebuild is not about passthrough,
+     * and falls through to the ordinary diagnosis rather than looping.
+     */
+    private fun recoverFromAudioOutputRefusal(error: PlaybackException): Boolean {
+        if (pendingAudioSinkRebuild.isPending) {
+            FlickLog.w("player", "audio rebuild absorbed code=${error.errorCodeName}")
+            return true
+        }
+        if (!AudioOutputPolicy.shouldDecodeInstead(error.errorCode, decodeCompressedAudio)) {
+            return false
+        }
+        FlickLog.w(
+            "player",
+            "audioOutputRefused code=${error.errorCodeName}; rebuilding sink to decode",
+        )
+        instrumentation.audioSinkRebuildCount++
+        decodeCompressedAudio = true
+        pendingRecovery.cancel()
+        pendingAudioSinkRebuild.post { rebuildForDecodedAudio() }
+        return true
+    }
+
+    /**
+     * Swap in a player whose sink will not passthrough, keeping the film, the
+     * position, the subtitle and the play/pause state.
+     *
+     * Mirrors the startup adoption's ordering — bind the session to the new player
+     * before releasing the old one, so a physical media key cannot reach a released
+     * instance — and mirrors [rePrepareForRotation]'s position bookkeeping.
+     * [rotationOverride] is deliberately NOT reset: this is the same film
+     * continuing, and the viewer's turn survives the swap.
+     */
+    private fun rebuildForDecodedAudio() {
+        val previous = player ?: return
+        val url = currentUrl ?: return
+        cancelSubtitleReloadDeadline()
+        cancelTurnDeadline()
+        val resumeMs = previous.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+            ?: savedPositionMs.coerceAtLeast(0L)
+        val resumePlayWhenReady = previous.playWhenReady
+        savedPositionMs = resumeMs
+        pendingPlayWhenReady = resumePlayWhenReady
+        lastGoodPositionMs = resumeMs
+        stableReadySinceMs = 0L
+
+        val fresh = createPlayer()
+        bindMediaSession(fresh)
+        player = fresh
+        previous.removeListener(playerListener)
+        previous.removeAnalyticsListener(analyticsListener)
+        previous.release()
+
+        fresh.setMediaItem(mediaItemFor(url, currentMediaId, currentSubtitle))
+        if (resumeMs > 0L) fresh.seekTo(resumeMs)
+        fresh.prepare()
+        fresh.playWhenReady = resumePlayWhenReady
+        FlickLog.i("player", "audioSinkRebuilt decode=compressed resumeMs=$resumeMs")
+    }
+
+    /**
      * The turn failed on this film — give the viewer the film back.
      *
      * A decoder that will not configure against a `SurfaceTexture` raises a
@@ -1501,7 +1595,12 @@ class PlayerController(context: Context) : SessionPlayer {
         // shift of the render clock. [FlickRenderersFactory] carries both, at the
         // two different levels they hook. With no rotation asserted and a zero
         // delay it builds what DefaultRenderersFactory builds.
-        val renderersFactory = FlickRenderersFactory(appContext, rotationOverride, audioDelayShift)
+        val renderersFactory = FlickRenderersFactory(
+            appContext,
+            rotationOverride,
+            audioDelayShift,
+            decodeCompressedAudio,
+        )
             .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
                 val candidates = MediaCodecSelector.DEFAULT.getDecoderInfos(
                     mimeType,
@@ -1641,6 +1740,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // and there is nothing left for the fallback to take off.
         cancelTurnDeadline()
         pendingTurnFallback.cancel()
+        pendingAudioSinkRebuild.cancel()
         val exo = player ?: run {
             releaseMediaSession()
             return
@@ -1666,6 +1766,7 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelSubtitleReloadDeadline()
         cancelTurnDeadline()
         pendingTurnFallback.cancel()
+        pendingAudioSinkRebuild.cancel()
         pendingRecovery.cancel()
         releaseMediaSession()
         val exo = player ?: return
@@ -1694,6 +1795,13 @@ class PlayerController(context: Context) : SessionPlayer {
         stableReadySinceMs = 0L
         probeLatencyMs = 0L
         instrumentation.reset()
+        // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
+        // a property of this TV's current audio route, not of the film that found
+        // it: once the output has refused a bitstream, every later film would fail
+        // and rebuild the same way, so latching it for the process turns a hiccup on
+        // every AC-3 film into one on the first. A receiver restart is the amnesty,
+        // for the reason the sender's UnplayableMemory gives about persistence.
+        pendingAudioSinkRebuild.cancel()
         resetAudioFormat()
         resetVideoRotation()
         resetSubtitleState(subtitle = null, mediaId = null)
@@ -1729,6 +1837,13 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingRecovery.cancel()
         recoveryGateCount = 0
         instrumentation.reset()
+        // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
+        // a property of this TV's current audio route, not of the film that found
+        // it: once the output has refused a bitstream, every later film would fail
+        // and rebuild the same way, so latching it for the process turns a hiccup on
+        // every AC-3 film into one on the first. A receiver restart is the amnesty,
+        // for the reason the sender's UnplayableMemory gives about persistence.
+        pendingAudioSinkRebuild.cancel()
         resetAudioFormat()
         resetVideoRotation()
         resetSubtitleState(subtitle, mediaId)

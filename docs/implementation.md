@@ -529,7 +529,19 @@ AC-3 selected ⇔ failure, in both directions; resolution, level, container and 
 
 **Blast radius is wide**: most film rips and broadcast recordings carry AC-3 or E-AC-3, and the same files play normally when audio routes over HDMI. It survives a reboot because the speaker re-pairs, which is why it presents as a property of the file.
 
-**The TV can decode it.** `media_codecs_c2.xml` declares `c2.dolby.ac3.decoder`; media3 simply never falls back from a failed bypass to decode-to-PCM. Two receiver-side fixes are open, neither needing a wire change: build the audio sink with PCM-only `AudioCapabilities` when `AudioManager.getAudioDevicesForAttributes` reports a Bluetooth media route (prevent), and/or rebuild the player once with passthrough disabled on `ERROR_CODE_AUDIO_TRACK_INIT_FAILED` rather than going terminal (recover). Passthrough must stay for HDMI routes, where it is correct. Same class as ExoPlayer#10227 and jellyfin-androidtv#4705, the latter on this exact device.
+**The TV can decode it.** `media_codecs_c2.xml` declares `c2.dolby.ac3.decoder`; media3 simply never falls back from a failed bypass to decode-to-PCM. Same class as ExoPlayer#10227 and jellyfin-androidtv#4705, the latter on this exact device.
+
+**The fix reacts rather than predicts.** `AudioOutputPolicy` names the four codes that mean the output refused the track, and `PlayerController.recoverFromAudioOutputRefusal` answers the first of them by swapping in a player whose sink will not accept a compressed bitstream — `FlickRenderersFactory` builds it with `AudioCapabilities(intArrayOf(ENCODING_PCM_16BIT), 8)` — which sends `MediaCodecAudioRenderer` looking for a decoder instead. The film, position, subtitle and play state carry across; only the sink changes.
+
+Three decisions in that are load-bearing:
+
+- **No pre-emption.** Guessing "Bluetooth route ⇒ decode" would take surround passthrough away from every HDMI viewer it works for, and would still be a guess about a route that can change mid-film. Reacting to the actual refusal is never wrong.
+- **The channel ceiling is 8, not the 2 of `DEFAULT_AUDIO_CAPABILITIES`.** What has to be refused is the *encoding*, not the channel count: a decoded 5.1 track is six channels of PCM, and AudioFlinger downmixes PCM to whatever the route has. Capping at two would refuse the thing this exists to deliver.
+- **The latch is per process, not per cast.** The refusal is a property of the TV's current audio route, so resetting it per film would spend a failed cast and a rebuild on every AC-3 file in the library instead of the first one. A receiver restart is the amnesty.
+
+A rebuild costs one player swap and shows in the diagnostics overlay as `audioSinkRebuildCount`. It is bounded at one per cast: a refusal that survives it is not about passthrough and falls through to the ordinary diagnosis. The deprecated `AudioCapabilities(int[], int)` is used deliberately — every non-deprecated factory derives capabilities by asking the platform, and the platform's answer is the defect; what is needed is an assertion, not a query.
+
+`docs/store/push-codec-clips.sh` stages an eight-clip matrix (H.264/HEVC/VP9/AV1 against AAC/AC-3/E-AC-3/DTS/Opus, including 4K HEVC 10-bit) and `docs/store/codec-matrix-test.sh` casts each one and reads the verdict out of the TV's own log.
 
 ### A/V sync nudge (audio delay)
 

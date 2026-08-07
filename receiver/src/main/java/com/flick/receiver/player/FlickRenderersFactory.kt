@@ -1,11 +1,15 @@
 package com.flick.receiver.player
 
 import android.content.Context
+import android.media.AudioFormat
 import android.os.Handler
 import androidx.media3.common.C
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.metadata.MetadataOutput
 import androidx.media3.exoplayer.text.TextOutput
@@ -44,7 +48,56 @@ class FlickRenderersFactory(
     context: Context,
     private val rotation: VideoRotationOverride,
     private val shift: AudioDelayShift,
+    /**
+     * Build the audio sink so it will not accept a compressed bitstream, which
+     * makes the renderer decode to PCM instead of passing through. False for every
+     * ordinary cast; see [AudioOutputPolicy] for the one failure that turns it on.
+     */
+    private val decodeCompressedAudio: Boolean = false,
 ) : DefaultRenderersFactory(context) {
+
+    /**
+     * The sink media3 builds asks the platform what the output can take, and on a
+     * TV whose media audio is routed to Bluetooth the platform answers for the
+     * HDMI port instead. This one answers for itself: PCM only, so no compressed
+     * format is ever eligible for passthrough and `MediaCodecAudioRenderer` goes
+     * looking for a decoder — which the TV has.
+     *
+     * The channel ceiling is 8 rather than the 2 of
+     * `AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES`, and that difference is the
+     * point. What must be refused is the *encoding*, not the channel count: a
+     * decoded 5.1 track is six channels of PCM, and AudioFlinger downmixes PCM to
+     * whatever the route actually has. Capping at two here would refuse the very
+     * thing this exists to deliver.
+     *
+     * `enableFloatOutput` and `enableAudioTrackPlaybackParams` are forwarded so
+     * this differs from what `super` builds in exactly one respect.
+     *
+     * The deprecated `AudioCapabilities(int[], int)` and `setAudioCapabilities` are
+     * used deliberately, and their non-deprecated replacements cannot do this job:
+     * every surviving factory — `getCapabilities(Context)`,
+     * `getCapabilities(Context, AudioAttributes, AudioDeviceInfo)` — derives the
+     * answer by asking the platform, and the platform's answer is the defect. What
+     * is needed here is an assertion, not a query. `setEnableAudioTrackPlaybackParams`
+     * is deprecated too and is forwarded only because `super`'s signature supplies
+     * it; dropping it would silently change behaviour for every other cast.
+     */
+    @Suppress("DEPRECATION")
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean,
+    ): AudioSink? = if (!decodeCompressedAudio) {
+        super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+    } else {
+        DefaultAudioSink.Builder(context)
+            .setAudioCapabilities(
+                AudioCapabilities(intArrayOf(AudioFormat.ENCODING_PCM_16BIT), MAX_PCM_CHANNELS),
+            )
+            .setEnableFloatOutput(enableFloatOutput)
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .build()
+    }
 
     /**
      * The builder chain mirrors `DefaultRenderersFactory.buildVideoRenderers` in
@@ -168,5 +221,10 @@ class FlickRenderersFactory(
         } else {
             secondary
         }
+    }
+
+    private companion object {
+        /** 7.1, the widest layout a consumer file carries. */
+        const val MAX_PCM_CHANNELS = 8
     }
 }
