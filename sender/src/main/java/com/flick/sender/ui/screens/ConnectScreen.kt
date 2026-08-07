@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -83,6 +84,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.PillMorphShape
 import com.flick.sender.ui.theme.PressedPillShape
+import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
 
@@ -620,11 +622,34 @@ private fun PrivacyPill() {
     }
 }
 
+/** Matches the Settings support row, which is the other card in this app built to be found. */
+private val TvAppBadgeSize = 46.dp
+
+/**
+ * Set so the two badges stand the same height: this glyph occupies 16.3 of its 24 grid
+ * units against the heart's 17.2, which at 30 dp puts both marks a shade over 20 dp tall.
+ * It comes out wider than the heart, and is meant to — a television is a wide object, and
+ * a box sized to hold the same width would leave it standing shorter than everything it
+ * is being matched against. Solid fill does not buy it a smaller box either: the arrow is
+ * knocked out of the screen, which takes back most of what the slab put on.
+ */
+private val TvAppGlyphSize = 30.dp
+
 /**
  * The other half of the product, at the foot of the screen that would otherwise be the
- * whole of it. Built from the error card's recipe on calm tokens — the quiet card fill
- * and the ordinary inks — because this is guidance rather than an outcome: the caution
- * and trouble families are spoken for by things that went wrong.
+ * whole of it — and the one card here that has to survive being scrolled past. A phone
+ * whose TV has no receiver on it sees a screen reporting nothing wrong: the TV never
+ * advertises, so it is simply absent, and this note is the only thing that explains the
+ * silence. On the quiet card fill it read as a footnote to a list that looked complete.
+ *
+ * So it takes the Settings support row's treatment exactly — the spark fill, the dark
+ * disc, the same title weight — because those two are the only cards in this app whose
+ * job is to be found rather than to answer something the user just did.
+ *
+ * It stops short of that row in the one way that matters: no chevron, no ripple, nothing
+ * clickable. The install happens on the television, and there is no route from this phone
+ * to a particular TV's store that Flick could stand behind. A card wearing this much
+ * weight has to be honest about leading nowhere.
  */
 @Composable
 private fun TvAppNote() {
@@ -633,29 +658,42 @@ private fun TvAppNote() {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(FlickCorners.warning))
-            .background(colors.fillCard)
+            .background(colors.sparkPale)
             // One sentence across two lines. Read separately they arrive as a bare
             // requirement and an instruction with no subject.
             .semantics(mergeDescendants = true) {}
-            .padding(horizontal = 16.dp, vertical = 15.dp),
-        verticalAlignment = Alignment.Top,
+            .padding(horizontal = 17.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = FlickIcons.Tv,
-            contentDescription = null,
-            tint = colors.onSurfaceDim,
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Column {
+        Box(
+            modifier = Modifier
+                .size(TvAppBadgeSize)
+                .clip(CircleShape)
+                .background(colors.onSpark),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = FlickIcons.TvInstall,
+                contentDescription = null,
+                // Fixed, like the support badge's heart and for the same reason: `spark`
+                // is amber in Light and Dark and blue in the cinematic set, where
+                // `primary` holds the warm end. The disc under it is dark in every set.
+                tint = Spark,
+                modifier = Modifier.size(TvAppGlyphSize),
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
             Text(
                 text = stringResource(R.string.connect_tv_app_title),
-                style = FlickText.bodySmallEmphasized.copy(color = colors.onSurface),
+                style = FlickText.titleMediumEmphasized.copy(color = colors.onSpark),
             )
             Text(
                 text = stringResource(R.string.connect_tv_app_body),
-                style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
-                modifier = Modifier.padding(top = 3.dp),
+                style = FlickText.bodyMedium.copy(color = colors.onSpark.copy(alpha = 0.82f)),
             )
         }
     }

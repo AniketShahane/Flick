@@ -828,5 +828,5 @@
          the only one this phone can vouch for — no package name to type, and no deep
          link into a TV's store that could be verified from here. -->
     <string name="connect_tv_app_title">Your TV needs Flick too</string>
-    <string name="connect_tv_app_body">Install it from your TV\'s Play Store and open it — it appears in the list above.</string>
+    <string name="connect_tv_app_body">Install it from your TV\'s Play Store and open it. Your TV then appears above.</string>
 </resources>

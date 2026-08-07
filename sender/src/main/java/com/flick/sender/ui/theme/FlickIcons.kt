@@ -82,6 +82,27 @@ object FlickIcons {
         roundRect(8.6f, 19f, 15.4f, 20.9f, 0.95f)
     }
 
+    /**
+     * The only glyph in this set that carries an instruction rather than a thing. The
+     * Devices screen has to say that a SECOND app goes on the television, and [Tv] alone
+     * cannot: it names the screen and stops there, which is what let that card be read as
+     * a caption about TVs in general. The arrow is the mark every app store puts on an
+     * install, so the two together say "this goes onto that" before the title is read.
+     *
+     * Built on [Tv]'s exact body and stand, so the pair are one television drawn twice
+     * rather than two televisions. The arrow is knocked out of the fill instead of laid
+     * over it because an [ImageVector] carries one tint: an arrow drawn on top of the
+     * screen would be the screen's own colour and would not exist.
+     */
+    val TvInstall: ImageVector = fillIcon("TvInstall", evenOdd = true) {
+        roundRect(2.4f, 4.6f, 21.6f, 17.6f, 3f)
+        roundRect(8.6f, 19f, 15.4f, 20.9f, 0.95f)
+        // Symmetric about x = 12, and set 2.3 clear of the screen top and bottom alike so
+        // it sits on the screen rather than in the frame.
+        moveTo(10.6f, 6.9f); lineTo(13.4f, 6.9f); lineTo(13.4f, 11.1f); lineTo(16f, 11.1f)
+        lineTo(12f, 15.3f); lineTo(8f, 11.1f); lineTo(10.6f, 11.1f); close()
+    }
+
     val TvOff: ImageVector = strokeIcon("TvOff", width = 1.9f) {
         moveTo(5.4f, 4.9f); lineTo(18.6f, 4.9f)
         quadTo(21.3f, 4.9f, 21.3f, 7.6f); lineTo(21.3f, 14.9f)

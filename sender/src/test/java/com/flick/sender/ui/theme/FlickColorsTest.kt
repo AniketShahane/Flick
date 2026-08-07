@@ -274,23 +274,42 @@ class FlickColorsTest {
     }
 
     /**
-     * The Settings support badge draws a fixed [Spark] heart on each palette's own
-     * `onSpark` disc — the one mark in the app that steps outside the set it sits in, and
-     * deliberately, because `spark` itself turns blue in the cinematic assignment and a
-     * heart that is the card's single warm note cannot be warm on two screens out of three.
+     * Both badges in this app — Settings' support heart and the Devices screen's TV — draw
+     * a fixed [Spark] glyph on each palette's own `onSpark` disc. They are the only marks
+     * that step outside the set they sit in, and deliberately: `spark` itself turns blue in
+     * the cinematic assignment, and a glyph that is its card's single warm note cannot be
+     * warm on two screens out of three.
      *
      * What makes the constant safe is only that the disc is dark in every set. A palette
      * that ever lightened `onSpark` would leave a warm mark on a warm ground with nothing
      * to catch it, and that is a thing no palette listing shows.
      */
-    @Test fun theSupportHeartStillReadsOnItsOwnDiscInEverySet() {
+    @Test fun theBadgeGlyphsStillReadOnTheirOwnDiscInEverySet() {
         for ((name, c) in allPalettes) {
             val onDisc = contrast(Spark, c.onSpark)
             assertTrue(
-                "$name: the support badge's Spark ${Spark.hex()} on onSpark " +
+                "$name: a badge's Spark ${Spark.hex()} on onSpark " +
                     "${c.onSpark.hex()} is $onDisc, under the 3:1 a mark needs against its " +
                     "own background",
                 onDisc >= 3.0f,
+            )
+        }
+    }
+
+    /**
+     * The two badge cards carry their type on the pale spark fill rather than on a card
+     * fill, which is the trade they make for being found: `sparkPale` is a lighter ground
+     * than anything else either screen puts text on. Body copy runs at 82% `onSpark` there,
+     * so that is the ink the rule has to be measured against and not the full-strength token.
+     */
+    @Test fun badgeCardBodyCopyClearsFourAndAHalfOnTheSparkFill() {
+        for ((name, c) in allPalettes) {
+            val body = c.onSpark.copy(alpha = 0.82f).over(c.sparkPale)
+            val ratio = contrast(body, c.sparkPale)
+            assertTrue(
+                "$name: badge-card body ink ${body.hex()} on sparkPale " +
+                    "${c.sparkPale.hex()} is $ratio, under the 4.5:1 body text needs",
+                ratio >= 4.5f,
             )
         }
     }
