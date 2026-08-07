@@ -497,9 +497,39 @@ That is what finally emits `unsupported_video_codec` and `unsupported_hdr_profil
 
 Decoder fallback is **on**. It does not weaken the hardware-only claim: the selector has already removed every software decoder from the candidate list and fallback can only walk to the next entry of that list, so there is nothing software left to fall back to. What it buys is the retry to a second *hardware* decoder on a TV that ships more than one.
 
-**`decoder_init` twice running is a verdict on the file; once is not.** The sender's `FileFaultCodes` deliberately excludes `DECODER_INIT`, because the usual cause is another app still holding the codec and a file marked on that evidence would be libelled for something that was never about it. The cost of that exclusion was that nothing could ever change the sheet's mind: `DirectPlayCard` renders whenever there is no remembered refusal, so a file that had never once played kept being promised *"Will direct-play at full quality"* on every visit, for the life of the process and every process after. Found by casting a 4K H.264 file to the verified Google TV Streamer — it fails, the sheet promises again, it fails again. `DecoderFaultLedger` closes it with the cheapest evidence that separates the two causes: a codec another app was holding is released when that app lets go and does not survive a fresh attempt, while a decoder the TV cannot stand up for this file's format fails identically every time. So the **first** fault only makes the sheet stop promising — `decoderSuspects` drives a third verdict state that shows neither card, because there is nothing honest to say yet — and the **second consecutive** fault, with no first frame between them, marks the file through the existing `UnplayableMemory` and earns a refusal card that says so in as many words. A first frame clears both, since a file that just found a decoder proves whatever was holding one has let go.
+**`decoder_init` twice running is a verdict on the file; once is not.** The sender's `FileFaultCodes` deliberately excludes `DECODER_INIT`, because the usual cause is another app still holding the codec and a file marked on that evidence would be libelled for something that was never about it. The cost of that exclusion was that nothing could ever change the sheet's mind: `DirectPlayCard` renders whenever there is no remembered refusal, so a file that had never once played kept being promised *"Will direct-play at full quality"* on every visit, for the life of the process and every process after. `DecoderFaultLedger` closes it with the cheapest evidence available: whatever the cause, a fault that repeats identically on a fresh attempt is telling you something about this file on this TV, and one that does not repeat was a moment. So the **first** fault only makes the sheet stop promising — `decoderSuspects` drives a third verdict state that shows neither card, because there is nothing honest to say yet — and the **second consecutive** fault, with no first frame between them, marks the file through the existing `UnplayableMemory` and earns a refusal card that says so. A first frame clears both.
 
-No capability query would have caught this. That TV's own `media_codecs.xml` declares `c2.mtk.avc.decoder` at `max 4096x2304` with `performance-point-3840x2160 value="60"`, so a pre-flight built on declared capabilities would have agreed the file was fine and reproduced the same false promise; the failure appears only at `configure()`/`start()`, and the suspicion is the tunneled-playback path being narrower than the plain decoder. Trying it twice is the only oracle that works.
+### `DECODER_INIT` is usually not the decoder — it is AC-3 passthrough on a Bluetooth route
+
+The file that exposed the promise bug turned out not to be a video problem at all, and the investigation is worth recording because the failure is common and the error text points at the wrong subsystem.
+
+When the Streamer's media audio is routed to a **Bluetooth speaker**, that route accepts PCM 16-bit stereo only. The platform nevertheless keeps advertising AC-3 direct playback, because the advertisement is derived from the HDMI EDID rather than from the route actually in use — `AudioManager.getDirectProfilesForAttributes`, which media3 1.10.1 trusts exclusively on API 33+, is documented to reflect only the active route and does not on this device. media3 therefore selects **passthrough bypass** for an AC-3 track — no audio decoder is instantiated at all — and AudioFlinger refuses the track:
+
+```
+E AudioFlinger: createTrack_l() Bad parameter: format 0x9000000 for output ... with format 0x1
+E AudioTrack:   createTrack_l(0): AudioFlinger could not create track, status: -22
+E MediaCodecAudioRenderer: AudioSink$InitializationException: AudioTrack init failed 0
+                           Config(48000, 252, 5, 16416) Format(..., audio/ac3, ..., [6, 48000])
+```
+
+`0x9000000` is `AUDIO_FORMAT_AC3`; `0x1` is PCM. After three retries the renderer raises `ERROR_CODE_AUDIO_TRACK_INIT_FAILED`, which `PlaybackFailureClassifier` folds into `DECODER_INIT` — the fold is deliberate and documented there, but it means an **audio** route problem is reported to the viewer as *"The TV couldn't start a decoder"*.
+
+The video was never the problem, and the logs say so outright: the 4K H.264 file reached first frame before the audio killed the cast — `firstFrame decoder=c2.mtk.avc.decoder res=3840x2160 mime=video/avc`, `stage=active startupMs=718`. Six controlled casts pin it, each changing one thing:
+
+| Cast | Video | Audio | Result |
+| --- | --- | --- | --- |
+| Original | 4K H.264 High@L5.1 | MP3 + AC-3 5.1 | fail |
+| Video copied bit-for-bit, audio stripped | 4K, untouched | none | **pass** |
+| Video copied bit-for-bit | 4K, untouched | AAC-LC stereo | **pass** |
+| Re-encoded down | 1080p | MP3 + AC-3 5.1 | fail |
+| Known-good video remuxed | 1080p, untouched | AC-3 5.1 | fail |
+| Sintel | 1080p H.264 High@L4.1 | single AC-3 5.1 | fail |
+
+AC-3 selected ⇔ failure, in both directions; resolution, level, container and the dual-track layout are all exonerated. Tunneling was never engaged (`output.tunnel-start-render.value = 0`) — the receiver configures no `DefaultTrackSelector`, and media3 defaults tunneling off.
+
+**Blast radius is wide**: most film rips and broadcast recordings carry AC-3 or E-AC-3, and the same files play normally when audio routes over HDMI. It survives a reboot because the speaker re-pairs, which is why it presents as a property of the file.
+
+**The TV can decode it.** `media_codecs_c2.xml` declares `c2.dolby.ac3.decoder`; media3 simply never falls back from a failed bypass to decode-to-PCM. Two receiver-side fixes are open, neither needing a wire change: build the audio sink with PCM-only `AudioCapabilities` when `AudioManager.getAudioDevicesForAttributes` reports a Bluetooth media route (prevent), and/or rebuild the player once with passthrough disabled on `ERROR_CODE_AUDIO_TRACK_INIT_FAILED` rather than going terminal (recover). Passthrough must stay for HDMI routes, where it is correct. Same class as ExoPlayer#10227 and jellyfin-androidtv#4705, the latter on this exact device.
 
 ### A/V sync nudge (audio delay)
 

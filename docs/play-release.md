@@ -316,25 +316,28 @@ interface — transport, scrub position, the `1080p SDR / MP3 · STEREO / H.264`
 live throughput, `NOW PLAYING · DIRECT FILE` — instead of a video frame that could have
 come from any player. Summoned with `KEYCODE_MEDIA_PAUSE` followed by `KEYCODE_DPAD_UP`.
 
-### A real finding from capturing these: 4K H.264 will not play
+### A real finding from capturing these: AC-3 audio fails on a Bluetooth route
 
-Casting *Big Buck Bunny* — H.264 High @ L5.1, 3840×2160 — fails on the verified Google
-TV Streamer. The phone reports "The TV couldn't start a decoder"; the TV reports "Your
-phone stopped serving". Those are one failure seen from two ends: the receiver rejects
-the format at pre-flight, so the sender never binds :8080 and never serves a byte.
-Confirmed by watching the port — it stays unbound for the 4K AVC file and binds
-immediately for a 1080p one.
+Casting *Big Buck Bunny* failed with "The TV couldn't start a decoder". It looked like a
+4K H.264 limit and is not — see
+[implementation.md](implementation.md#decoder_init-is-usually-not-the-decoder--it-is-ac-3-passthrough-on-a-bluetooth-route)
+for the full investigation, six controlled casts and the verbatim platform logs.
 
-It is not a hardware limit. The TV's own codec table declares the AVC decoder at
-`max 4096x2304` with `performance-point-3840x2160 value="60"`, so the chip can decode
-4K H.264. The likely culprit is the tunneled-playback path the receiver uses, which can
-be narrower than the plain decoder. Worth chasing separately.
+Short version: the Streamer's media audio is routed to a Bluetooth speaker, which takes
+PCM stereo only, but the platform still advertises AC-3 direct playback from the HDMI
+EDID. media3 selects passthrough, AudioFlinger refuses the track, and the audio failure
+is reported as a decoder failure. The 4K video had already reached first frame.
 
-What matters for the listing: the detail sheet said **"Will direct-play at full
-quality"** for a file that then could not play at all. The verdict is computed without
-knowing what the paired TV can actually accept, so the app's most prominent promise can
-be wrong. That is the single most valuable thing this session turned up, and it is a
-product bug rather than a store one.
+**Two things follow for the launch.** The blast radius is most film rips and broadcast
+recordings — anything carrying AC-3 or E-AC-3 — for any user whose TV sends audio to a
+Bluetooth speaker. That is a shipping-grade defect, not an edge case, and it is fixable
+entirely inside the receiver because the TV has `c2.dolby.ac3.decoder` and media3 simply
+never falls back to it.
+
+And the detail sheet said **"Will direct-play at full quality"** for a file that then did
+not play. The verdict is computed without knowing what the paired TV will accept, so the
+app's most prominent promise could be wrong and never learn it was. That half is fixed —
+the sheet now stops promising after one failure and refuses after two.
 
 ### Promo video (optional, one per listing)
 
