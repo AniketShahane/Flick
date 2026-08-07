@@ -208,6 +208,25 @@ object FlickIcons {
         close()
     }
 
+    /**
+     * A picture, with a solid band along its foot — the orientation key's glyph, and the
+     * reason the band is there at all. The key is rotated to whatever the viewer has
+     * chosen, and a bare frame would leave 0° indistinguishable from 180° and 90° from
+     * 270°: the two pairs differ only in which way up the picture is, so the glyph has to
+     * carry a top and a bottom or it states half of what it is drawn to state.
+     *
+     * Landscape at rest, because that is the shape nearly every film arrives in and the
+     * shape the key returns to at 0°.
+     *
+     * Even-odd, in three passes: the outer rectangle, the inner one knocked out of it to
+     * leave a frame, and the band filled back into the bottom of that hole.
+     */
+    val PictureOrientation: ImageVector = fillIcon("PictureOrientation", evenOdd = true) {
+        roundRect(3.4f, 6.6f, 20.6f, 17.4f, 2.2f)
+        roundRect(5.2f, 8.4f, 18.8f, 15.6f, 1.1f)
+        roundRect(5.2f, 12.4f, 18.8f, 15.6f, 1.1f)
+    }
+
     val Tune: ImageVector = fillIcon("Tune") {
         roundRect(3f, 6.1f, 21f, 7.9f, 0.9f)
         circle(8.6f, 7f, 2.7f)

@@ -6,6 +6,7 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -39,6 +40,7 @@ import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
@@ -929,7 +931,19 @@ private fun OrientationKey(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Box(
+        val ink = if (commandable) colors.onInverseSurface else colors.onInverseSurfaceDim
+        // The glyph turns to the choice the label names, so the key shows what it DOES
+        // and not only what it is set to. Animated rather than snapped: the movement is
+        // the whole explanation, and a press that jumped would leave the viewer to infer
+        // from two stills that the thing rotates. Auto has no angle a phone could draw —
+        // the receiver reads the file for itself and no frame carries that verdict back —
+        // so it rests at 0 and the label under it is what distinguishes the two.
+        val glyphTurn by animateFloatAsState(
+            targetValue = (rotation.extraDegrees ?: 0).toFloat(),
+            animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+            label = "orientation glyph",
+        )
+        Column(
             Modifier
                 // Minimums rather than a fixed square: it is square at every choice
                 // because the label is mono and four advances wide at worst, and at a
@@ -938,18 +952,24 @@ private fun OrientationKey(
                 .heightIn(min = OrientationKeyPlate)
                 .clip(RoundedCornerShape(FlickCorners.backBtn))
                 .background(colors.inverseSurface)
-                .padding(horizontal = 7.dp),
-            contentAlignment = Alignment.Center,
+                .padding(horizontal = 7.dp, vertical = 5.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
+            Icon(
+                imageVector = FlickIcons.PictureOrientation,
+                // The key already carries a description naming the choice; the glyph is
+                // the same fact drawn, and a second stop for it says nothing new.
+                contentDescription = null,
+                tint = ink,
+                modifier = Modifier
+                    .size(OrientationGlyphSize)
+                    .graphicsLayer { rotationZ = glyphTurn },
+            )
+            Spacer(Modifier.height(1.dp))
             Text(
                 label,
-                style = FlickText.monoBadge.copy(
-                    color = if (commandable) {
-                        colors.onInverseSurface
-                    } else {
-                        colors.onInverseSurfaceDim
-                    },
-                ),
+                style = FlickText.monoBadge.copy(color = ink),
                 maxLines = 1,
             )
         }
@@ -1246,6 +1266,14 @@ private val ControlMinHeight = 48.dp
  * target around it is [ControlMinHeight], as everywhere else.
  */
 private val OrientationKeyPlate = 44.dp
+
+/**
+ * The turning glyph inside [OrientationKeyPlate]. Sized against the label below it rather
+ * than against the plate: the two share a 44 dp square with 5 dp of padding, and the mono
+ * badge takes about 12 of what is left, so this is what the picture can have without
+ * pushing the degrees out of the key at a raised type scale.
+ */
+private val OrientationGlyphSize = 19.dp
 
 /** How far that touch target overhangs the plate on each side. */
 private val OrientationKeyOverhang = (ControlMinHeight - OrientationKeyPlate) / 2
