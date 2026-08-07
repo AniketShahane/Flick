@@ -305,10 +305,16 @@ band collides with real UI on one screen or the other. The strings in the script
 
 | # | Screen | Status |
 | --- | --- | --- |
-| 1 | Idle screen, paired | captured |
-| 2 | Playback, mid-film | captured |
-| 3 | Playback, second frame | captured |
-| 4 | Settings | captured |
+| 1 | Paused, full transport overlay | captured |
+| 2 | Idle screen, paired | captured |
+| 3 | Playback, mid-film | captured |
+| 4 | Playback, second frame | captured |
+| 5 | Settings | captured |
+
+The paused tile leads deliberately. It is the only TV shot that shows the receiver's own
+interface — transport, scrub position, the `1080p SDR / MP3 · STEREO / H.264` chips,
+live throughput, `NOW PLAYING · DIRECT FILE` — instead of a video frame that could have
+come from any player. Summoned with `KEYCODE_MEDIA_PAUSE` followed by `KEYCODE_DPAD_UP`.
 
 ### A real finding from capturing these: 4K H.264 will not play
 

@@ -58,10 +58,14 @@ PHONE_SHOTS = [
     ("privacy.png", "Nothing leaves\nyour Wi-Fi"),
 ]
 
+# The paused tile leads because it is the only one that shows the receiver's own
+# interface — transport, codec chips, live throughput — rather than a video frame that
+# could have come from any player.
 TV_SHOTS = [
+    ("tv-paused.png", "Everything the TV knows, on the TV"),
     ("tv-idle.png", "Ready when your phone is"),
-    ("tv-playback.png", "Hardware-decoded 4K HDR"),
-    ("tv-diagnostics.png", "See exactly what your TV is doing"),
+    ("tv-playback.png", "Hardware-decoded, full quality"),
+    ("tv-diagnostics.png", "Your film, nothing else on screen"),
     ("tv-settings.png", "Pair once. Then forget it."),
 ]
 
