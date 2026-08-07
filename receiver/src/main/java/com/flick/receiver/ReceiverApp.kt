@@ -1407,16 +1407,20 @@ private fun PlayerSurface(
     val turn = controller.surfaceTurn
     // A turned film is the ONLY one that leaves the `SurfaceView`, and the swap is
     // keyed rather than updated because `PlayerView` fixes its surface type in its
-    // constructor: a different surface is a different view. Changing a turn already
-    // in force keys the same — [SurfaceTurn.isTurned] and not the degrees — so the
-    // view, its surface and the player's binding all survive it.
+    // constructor: a different surface is a different view.
+    //
+    // Keyed on [SurfaceTurn.onTexture] rather than on the turn, so this happens AT MOST
+    // ONCE per film and only ever in one direction. Changing a turn already in force
+    // keys the same, and so does going back to zero — the view, its surface and the
+    // player's binding all survive both. The return swap is not merely avoided as an
+    // expense; it is the one that could not be made to work. See [SurfaceTurn.onTexture].
     val binding = remember { PlayerViewBinding() }
-    key(turn.isTurned) {
+    key(turn.onTexture) {
         val turnedSurface = remember { TurnedVideoSurface() }
         AndroidView(
             modifier = modifier.semantics { contentDescription = surfaceDescription },
             factory = { ctx ->
-                val view = if (turn.isTurned) inflateTurnedPlayerView(ctx) else PlayerView(ctx)
+                val view = if (turn.onTexture) inflateTurnedPlayerView(ctx) else PlayerView(ctx)
                 view.apply {
                     useController = false
                     setKeepContentOnPlayerReset(true)
@@ -1442,7 +1446,7 @@ private fun PlayerSurface(
                     // frame is full-bleed, `PlayerView`'s own aspect-ratio updates
                     // are ignored rather than fought over, and the whole fit lives
                     // in the matrix instead; see [surfaceTurnTransform].
-                    resizeMode = if (turn.isTurned) {
+                    resizeMode = if (turn.onTexture) {
                         AspectRatioFrameLayout.RESIZE_MODE_FILL
                     } else {
                         AspectRatioFrameLayout.RESIZE_MODE_FIT

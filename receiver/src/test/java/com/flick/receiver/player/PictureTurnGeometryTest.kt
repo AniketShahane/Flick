@@ -210,23 +210,31 @@ class PictureTurnGeometryTest {
     // --- The turn that is not one --------------------------------------------
 
     /**
-     * The invariant the whole product rests on, at this level: a film nobody has
-     * turned asks for nothing. No rotation, no scale, no pivot — this transform is
-     * never even reached for such a film, because it stays on the `SurfaceView`,
-     * and if it ever is, it must do nothing.
+     * A film nobody has turned never reaches this transform at all — it stays on the
+     * `SurfaceView`, where the content frame does the fitting — so when it IS reached
+     * with zero the film is one that was turned and has been turned back. That film is
+     * still on its `TextureView`, and that view is RESIZE_MODE_FILL, so zero here has to
+     * mean "fit the picture", not "leave the texture stretched across the player".
+     *
+     * Panel-shaped picture, so the fit is the identity by arithmetic rather than by a
+     * short circuit: whatever else changes, a 16:9 film on a 16:9 panel fills it exactly.
      */
-    @Test fun aFilmNobodyHasTurnedGetsNoTransformAtAll() {
-        assertEquals(
-            SurfaceTurnTransform.IDENTITY,
-            surfaceTurnTransform(
-                viewWidthPx = panelWidth,
-                viewHeightPx = panelHeight,
-                pictureWidthPx = 3840,
-                pictureHeightPx = 2160,
-                pixelWidthHeightRatio = 1f,
-                turnDegrees = 0,
-            ),
-        )
+    @Test fun aPictureTurnedBackToZeroIsFittedRatherThanStretched() {
+        val rect = presented(pictureWidth = 3840, pictureHeight = 2160, turnDegrees = 0)
+        assertClose(panelWidth.toFloat(), rect.width, "width at zero")
+        assertClose(panelHeight.toFloat(), rect.height, "height at zero")
+    }
+
+    /**
+     * The case that would be silently wrong if zero returned the identity: a film whose
+     * shape is not the panel's, back at zero on the surface it was turned on. Stretched
+     * to fill, a 2.40:1 film would be presented at 1.78:1 — every face in it too tall.
+     */
+    @Test fun aScopeFilmTurnedBackToZeroKeepsItsOwnShape() {
+        val rect = presented(pictureWidth = 3840, pictureHeight = 1600, turnDegrees = 0)
+        assertClose(3840f / 1600f, rect.aspect, "aspect at zero")
+        assertClose(panelWidth.toFloat(), rect.width, "a scope film is bounded by the width")
+        assertClose(panelWidth / (3840f / 1600f), rect.height, "letterboxed height")
     }
 
     /**

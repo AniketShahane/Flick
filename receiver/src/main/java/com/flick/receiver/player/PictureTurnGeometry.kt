@@ -17,12 +17,35 @@ data class SurfaceTurn(
     val pictureHeightPx: Int,
     /** Sample aspect: it applies to the width, so 1440×1080 at 1.333 is 16:9. */
     val pixelWidthHeightRatio: Float,
+    /**
+     * Whether the picture is on the `TextureView` at all, which is a longer-lived
+     * fact than any one turn and is why it cannot be read off [degrees].
+     *
+     * A film that has been turned once stays on that surface for the rest of its
+     * cast, including all the way back at zero. Handing the picture back to a
+     * `SurfaceView` mid-film is what this exists to stop: on the verified TV it
+     * left the codec attached to a texture the new view does not own, behind a
+     * fresh `PlayerView`'s shutter, and the picture never came back — not at zero,
+     * not at Auto, and not at the next turn either.
+     *
+     * The cost is that a turned HDR film stays tone-mapped until the next cast,
+     * which is a cost the viewer already accepted when they turned it. Every film
+     * nobody turns is untouched: no `TextureView` is ever built for it, and it
+     * keeps the video layer, tunneling and Dolby Vision.
+     */
+    val onTexture: Boolean,
 ) {
     val isTurned: Boolean get() = degrees != 0
 
     companion object {
         /** Every ordinary cast. Nothing is turned and no `TextureView` exists. */
-        val NONE = SurfaceTurn(degrees = 0, pictureWidthPx = 0, pictureHeightPx = 0, pixelWidthHeightRatio = 1f)
+        val NONE = SurfaceTurn(
+            degrees = 0,
+            pictureWidthPx = 0,
+            pictureHeightPx = 0,
+            pixelWidthHeightRatio = 1f,
+            onTexture = false,
+        )
     }
 }
 
@@ -101,14 +124,12 @@ fun surfaceTurnTransform(
 ): SurfaceTurnTransform {
     if (viewWidthPx <= 0 || viewHeightPx <= 0) return SurfaceTurnTransform.IDENTITY
     val quarter = quarterTurn(turnDegrees) ?: return SurfaceTurnTransform.IDENTITY
-    // A film nobody has turned asks for nothing, and it has to be nothing STRUCTURALLY
-    // rather than by arithmetic that happens to cancel. The fall-through below fits the
-    // picture's aspect inside the view, which is identity only while those two aspects
-    // agree; for a film whose shape differs from the panel's it would return a scale, and
-    // that scale would land on top of the fit the content frame has already made. Such a
-    // film never reaches here — it stays on the `SurfaceView` — so this is the guard for
-    // the caller that one day does.
-    if (quarter == 0) return SurfaceTurnTransform.IDENTITY
+    // Zero is NOT identity here, and that is the whole reason this function is reached
+    // with it. A film turned back to zero stays on the `TextureView` it was turned on —
+    // see [SurfaceTurn.onTexture] — and that view is RESIZE_MODE_FILL, so the texture is
+    // stretched across the whole player unless something fits it. The fall-through does
+    // exactly that: at zero it is a fit with no rotation, and it reduces to identity on
+    // its own whenever the picture and the view already share an aspect.
     val pictureAspect = displayAspectRatio(pictureWidthPx, pictureHeightPx, pixelWidthHeightRatio)
         ?: return SurfaceTurnTransform.IDENTITY
     val sideways = quarter == 90 || quarter == 270

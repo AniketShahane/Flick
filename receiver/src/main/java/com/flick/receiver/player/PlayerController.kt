@@ -440,7 +440,11 @@ class PlayerController(context: Context) : SessionPlayer {
             // a new shape has to reach the surface transform. Guarded on the turn
             // rather than published always: this is Compose state, and an
             // untouched cast must not recompose the playback surface at all.
-            if (surfaceTurn.isTurned && videoSize.width > 0 && videoSize.height > 0) {
+            // Guarded on the SURFACE and not on the turn: a film back at zero on the
+            // texture it was turned on is still fitted by the matrix, so it still needs
+            // the picture's shape. An untouched cast publishes nothing here and does not
+            // recompose the playback surface at all.
+            if (surfaceTurn.onTexture && videoSize.width > 0 && videoSize.height > 0) {
                 surfaceTurn = surfaceTurn.copy(
                     pictureWidthPx = videoSize.width,
                     pictureHeightPx = videoSize.height,
@@ -1021,7 +1025,15 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelTurnDeadline()
         if (viewDegrees == 0) {
             if (surfaceTurn.isTurned) exo.clearVideoFrameMetadataListener(turnFrameListener)
-            surfaceTurn = SurfaceTurn.NONE
+            // The turn goes, the surface stays — see [SurfaceTurn.onTexture]. The
+            // picture's shape is kept with it, because the matrix still has to fit the
+            // texture into a player that is RESIZE_MODE_FILL. A film that never left the
+            // video layer has nothing to keep and goes back to NONE.
+            surfaceTurn = if (surfaceTurn.onTexture) {
+                surfaceTurn.copy(degrees = 0)
+            } else {
+                SurfaceTurn.NONE
+            }
             return
         }
         val size = exo.videoSize
@@ -1030,6 +1042,7 @@ class PlayerController(context: Context) : SessionPlayer {
             pictureWidthPx = size.width,
             pictureHeightPx = size.height,
             pixelWidthHeightRatio = size.pixelWidthHeightRatio,
+            onTexture = true,
         )
         exo.setVideoFrameMetadataListener(turnFrameListener)
         armTurnDeadline(exo)
