@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlin.math.abs
@@ -45,17 +46,30 @@ import kotlin.math.min
  * not. So every coin and the jar's mouth are [coinTint] and the vessel is [vesselTint]: the
  * only warm thing in the mark is the money.
  *
- * Every tint is a scheme token rather than a fixed value, because this sheet follows the
- * ambient theme and a caller may also wrap it cinematic. `primary` is deliberately not
- * among them: it is blue in the light and dark schemes and AMBER in the cinematic one, so a
- * mark that built its contrast on it would collapse to amber-on-amber on the one surface
- * where the vessel most needs an edge.
+ * The vessel and the backing are scheme tokens, because they are structure and structure
+ * follows the theme. The coin is NOT: it is a fixed [Spark], and it is the third mark in
+ * this app to step outside its palette deliberately, after the Settings support heart and
+ * the Devices badge. `spark` is amber in the light and dark schemes and BLUE in the
+ * cinematic one, where `primary` has taken the warm end — so a coin tinted from it was gold
+ * on two surfaces out of three and cold on the one the sheet most often opens over. Money
+ * is gold; a blue coin is a token for something else.
+ *
+ * `primary` was never a candidate for the same reason in reverse: it is blue in light and
+ * dark and amber in cinematic, so the vessel would collapse to amber-on-amber exactly where
+ * it most needs an edge.
+ *
+ * What the constant costs is measured rather than assumed. Against this mark's own backing
+ * the gold reads 8.7:1 on the cinematic sets, where the token it replaced read 5.3:1 — so
+ * the change buys contrast rather than spending it. On the light scheme nothing moves at
+ * all: `spark` IS [Spark] there, and the 1.5:1 the coins have always had against a near-white
+ * backing is carried by their shape and their motion, which is what a decorative mark is
+ * allowed to do and what a caption is not.
  */
 @Composable
 fun TipJarMark(
     modifier: Modifier,
     vesselTint: Color = LocalFlickColors.current.onSurfaceDim,
-    coinTint: Color = LocalFlickColors.current.spark,
+    coinTint: Color = Spark,
     backingTint: Color = LocalFlickColors.current.fillCard,
 ) {
     // Both gates, for the two reasons this app already keeps apart: a viewer who has turned
