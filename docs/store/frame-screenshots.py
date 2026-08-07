@@ -45,10 +45,14 @@ TV_W, TV_H = 1920, 1080
 # The order IS the pitch. Play shows roughly the first three in search results without
 # anyone tapping through, so those three have to carry the whole proposition: what it
 # is, what makes it different, and what you get.
+# Every caption has to be provable by the screenshot under it. "Dolby Vision" was
+# planned for shot 3 and dropped: the app supports it, but a caption sits above a
+# specific frame, and a frame showing an SDR file cannot carry that claim. It stays
+# in the store description, where it belongs.
 PHONE_SHOTS = [
     ("library.png", "Your videos\non the big screen"),
     ("detail.png", "Never transcoded.\nNever downscaled."),
-    ("nowplaying.png", "4K HDR and\nDolby Vision"),
+    ("nowplaying.png", "Your phone\nbecomes the remote"),
     ("subtitles.png", "Subtitles that\njust work"),
     ("pairing.png", "Pair once,\nin one scan"),
     ("privacy.png", "Nothing leaves\nyour Wi-Fi"),
@@ -93,6 +97,83 @@ def fit_font(lines, max_width, start):
     return ImageFont.truetype(str(DISPLAY_FONT), size)
 
 
+# The one thing in a capture that must never be published. The Devices screen prints
+# the paired TV's real LAN address; both this repository and a store listing are
+# public, so it is redrawn as the fixture address this project already reserves for
+# documentation. Nothing else in any capture is altered — the box and the replacement
+# text are written out here so the edit is auditable rather than invisible.
+REDACTIONS = {
+    "pairing.png": [((405, 1200, 1294, 1325),
+                     ["Google TV Streamer ·", "192.168.42.17:47654"])],
+}
+
+
+def redact(name, capture):
+    edits = REDACTIONS.get(name)
+    if not edits:
+        return capture
+    im = capture.convert("RGB").copy()
+    d = ImageDraw.Draw(im)
+    for (x0, y0, x1, y1), lines in edits:
+        ground = im.getpixel((x1 - 6, y0 + 4))          # card fill, clear of glyphs
+        d.rectangle((x0 - 4, y0 - 4, x1 + 4, y1 + 4), fill=ground)
+        size = round((y1 - y0) / len(lines) * 0.72)
+        font = ImageFont.truetype(str(ROOT / "sender/src/main/res/font/geist_semibold.ttf"), size)
+        y = y0
+        for line in lines:
+            d.text((x0, y), line, font=font, fill=(255, 255, 255))
+            y += round((y1 - y0) / len(lines))
+    return im
+
+
+def clean_status_bar(capture):
+    """Repaint the status bar with a neutral one.
+
+    One UI ignores SystemUI demo mode, so a raw capture carries the real clock, the
+    real battery percentage and whatever happened to be notifying — which dates the
+    screenshot and leaks the device's state. This covers the strip in the app's own
+    background colour and redraws time, signal, Wi-Fi and battery.
+
+    Only OS chrome is touched. Nothing belonging to the app is altered, and the
+    strip height stays well above the app's first content row.
+    """
+    im = capture.convert("RGB").copy()
+    w, h = im.size
+    bar = round(h * 0.048)
+    ground = im.getpixel((12, bar + 12))
+    light_ground = (0.299 * ground[0] + 0.587 * ground[1] + 0.114 * ground[2]) > 128
+    ink = (11, 16, 32) if light_ground else (242, 246, 255)
+
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 0, w, bar), fill=ground)
+
+    size = round(bar * 0.42)
+    font = ImageFont.truetype(str(ROOT / "sender/src/main/res/font/geist_semibold.ttf"), size)
+    mid = bar * 0.54
+    d.text((round(w * 0.055), mid), "9:41", font=font, fill=ink, anchor="lm")
+
+    x = w - round(w * 0.055)                     # laid out right to left
+    cap_h = round(bar * 0.30)
+    d.rounded_rectangle((x - cap_h * 2, mid - cap_h / 2, x, mid + cap_h / 2),
+                        cap_h * 0.28, fill=ink)  # battery
+    d.rectangle((x + 3, mid - cap_h * 0.18, x + 8, mid + cap_h * 0.18), fill=ink)
+
+    x -= cap_h * 2 + round(bar * 0.20)
+    for i in range(4):                            # signal, four rising bars
+        bw = round(bar * 0.07)
+        bh = cap_h * (0.36 + 0.21 * i)
+        d.rounded_rectangle((x - bw, mid + cap_h / 2 - bh, x, mid + cap_h / 2), bw * 0.4, fill=ink)
+        x -= bw + round(bar * 0.045)
+
+    x -= round(bar * 0.14)                        # Wi-Fi, three arcs and a dot
+    for i, r in enumerate((0.50, 0.34, 0.18)):
+        rr = cap_h * r
+        d.arc((x - rr, mid + cap_h * 0.34 - rr, x + rr, mid + cap_h * 0.34 + rr),
+              215, 325, fill=ink, width=max(2, round(bar * 0.055)))
+    d.ellipse((x - 4, mid + cap_h * 0.20, x + 4, mid + cap_h * 0.20 + 8), fill=ink)
+    return im
+
+
 def rounded_mask(size, radius):
     mask = Image.new("L", size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius, fill=255)
@@ -114,9 +195,14 @@ def phone_tile(capture, caption):
 
     # Device: wide enough to read, bleeding past the bottom so it feels generous
     # rather than like a small phone dropped onto a poster.
-    top = y + 90
+    #
+    # The width and the gap above are tuned together against the tallest thing any
+    # of these screens has to show: the detail sheet's cast button sits ~85% down
+    # the capture, and at a wider setting the bleed cut straight through its label,
+    # which reads as a mistake rather than as a crop. These values clear it.
+    top = y + 60
     bezel = 14
-    screen_w = 828
+    screen_w = 792
     screen_h = round(screen_w * capture.height / capture.width)
     frame_w, frame_h = screen_w + bezel * 2, screen_h + bezel * 2
     fx = (PHONE_W - frame_w) // 2
@@ -130,7 +216,7 @@ def phone_tile(capture, caption):
 
     draw.rounded_rectangle((fx, top, fx + frame_w, top + frame_h), 62,
                            fill=(10, 10, 12), outline=(42, 51, 80), width=2)
-    screen = capture.convert("RGB").resize((screen_w, screen_h), Image.LANCZOS)
+    screen = clean_status_bar(capture).resize((screen_w, screen_h), Image.LANCZOS)
     canvas.paste(screen, (fx + bezel, top + bezel), rounded_mask(screen.size, 50))
     return canvas
 
@@ -163,7 +249,7 @@ def main():
         if not src.is_file():
             missing.append(name)
             continue
-        tile = build(Image.open(src), caption)
+        tile = build(redact(name, Image.open(src)), caption)
         order = index if kind == "phone" else index - len(PHONE_SHOTS)
         dest = OUT / f"{kind}-{order:02d}-{src.stem}.png"
         tile.save(dest)

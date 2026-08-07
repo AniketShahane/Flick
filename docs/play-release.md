@@ -247,32 +247,88 @@ The order is the pitch. Play shows roughly the first three in search results bef
 anyone taps through, so those three carry the whole proposition: what it is, what
 makes it different, what you get.
 
-| # | Screen to capture | Caption |
+| # | Screen | Caption |
 | --- | --- | --- |
 | 1 | Library grid, thumbnails loaded | Your videos on the big screen |
-| 2 | Detail sheet, direct-play verdict and real 4K DV specs | Never transcoded. Never downscaled. |
-| 3 | Now Playing, mid-film, transport visible | 4K HDR and Dolby Vision |
-| 4 | Subtitles sheet with results | Subtitles that just work |
-| 5 | Pairing scanner or code entry | Pair once, in one scan |
-| 6 | Settings / privacy | Nothing leaves your Wi-Fi |
+| 2 | Detail sheet, direct-play verdict, real 4K specs | Never transcoded. Never downscaled. |
+| 3 | Now Playing, mid-film, transport visible | Your phone becomes the remote |
+| 4 | Subtitles sheet with a matched subtitle attached | Subtitles that just work |
+| 5 | Devices, paired TV and the pairing card | Pair once, in one scan |
+| 6 | Settings | Nothing leaves your Wi-Fi |
+
+All six are captured, plus a spare — `raw/metrics.png`, the Signal & quality sheet with
+live buffer health and RSSI. Play allows eight; that one is the strongest candidate if
+a seventh is ever wanted.
+
+Shot 3 was going to be captioned "4K HDR and Dolby Vision". It is not, because a
+caption sits above a specific frame and no file in the staged library is HDR. The app
+supports Dolby Vision and the store description says so; a screenshot cannot claim it
+while showing an SDR file.
+
+### The library in the screenshots is staged, deliberately
+
+The captures use `/sdcard/Movies/Films`, holding five Blender open movies — *Big Buck
+Bunny*, *Sintel*, *Tears of Steel*, *Caminandes: Gran Dillama*, *Elephants Dream*. They
+are CC-BY: free to redistribute and display with attribution, which a personal film
+library is not. Credit the Blender Foundation somewhere in the listing or the policy
+page if these ship.
+
+That folder exists only for screenshots and can be deleted:
+
+```sh
+adb shell rm -rf /sdcard/Movies/Films
+```
+
+`adb push` leaves MediaStore rows with `duration` NULL, and the app filters those out,
+so the folder will not appear until a full metadata scan runs:
+
+```sh
+adb shell "content call --uri content://media --method scan_file --arg '/sdcard/Movies/Films/<file>'"
+```
+
+### One value is redacted, on purpose
+
+The Devices screen prints the paired TV's real LAN address. Both this repository and a
+store listing are public, so `frame-screenshots.py` redraws it as `192.168.42.17`, the
+fixture address this project already reserves for documentation. The box and the
+replacement string are declared in `REDACTIONS` at the top of the script so the edit is
+auditable. Nothing else in any capture is altered except the status bar, which is
+repainted because One UI ignores SystemUI demo mode.
+
+The TV idle screenshot shows the paired phone's model string. That is a model, not a
+serial or an identifier, but it is worth a look before upload.
 
 TV tiles ship full-bleed with no caption. Captions were tried and dropped: the
 receiver puts controls along the bottom edge and titles along the top, so a caption
 band collides with real UI on one screen or the other. The strings in the script's
 `TV_SHOTS` remain as notes for what each screen must be showing, and as video copy.
 
-| # | Screen to capture |
-| --- | --- |
-| 1 | Idle screen, paired ✓ captured |
-| 2 | Playback, mid-film |
-| 3 | Playback with the metrics overlay on |
-| 4 | Settings ✓ captured |
+| # | Screen | Status |
+| --- | --- | --- |
+| 1 | Idle screen, paired | captured |
+| 2 | Playback, mid-film | captured |
+| 3 | Playback, second frame | captured |
+| 4 | Settings | captured |
 
-Two things need the phone connected: every phone tile, and the two TV playback tiles.
+### A real finding from capturing these: 4K H.264 will not play
 
-One privacy call to make before uploading. The library grid shows real thumbnails and
-file names, and the TV idle screen shows the paired phone's model. None of it is a
-credential, but it is public once the listing is live — worth a look before upload.
+Casting *Big Buck Bunny* — H.264 High @ L5.1, 3840×2160 — fails on the verified Google
+TV Streamer. The phone reports "The TV couldn't start a decoder"; the TV reports "Your
+phone stopped serving". Those are one failure seen from two ends: the receiver rejects
+the format at pre-flight, so the sender never binds :8080 and never serves a byte.
+Confirmed by watching the port — it stays unbound for the 4K AVC file and binds
+immediately for a 1080p one.
+
+It is not a hardware limit. The TV's own codec table declares the AVC decoder at
+`max 4096x2304` with `performance-point-3840x2160 value="60"`, so the chip can decode
+4K H.264. The likely culprit is the tunneled-playback path the receiver uses, which can
+be narrower than the plain decoder. Worth chasing separately.
+
+What matters for the listing: the detail sheet said **"Will direct-play at full
+quality"** for a file that then could not play at all. The verdict is computed without
+knowing what the paired TV can actually accept, so the app's most prominent promise can
+be wrong. That is the single most valuable thing this session turned up, and it is a
+product bug rather than a store one.
 
 ### Promo video (optional, one per listing)
 
