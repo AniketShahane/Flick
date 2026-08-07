@@ -76,6 +76,7 @@ import com.flick.sender.media.MediaProbe
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
+import com.flick.sender.net.DecoderFaultCode
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
@@ -124,6 +125,7 @@ fun DetailScreen(
     val castStart by controller.castStart.collectAsState()
     val playbackProgress by controller.playbackProgress.collectAsState()
     val unplayable by controller.unplayableFiles.collectAsState()
+    val decoderSuspects by controller.decoderSuspects.collectAsState()
     val selectedSubtitle by controller.selectedSubtitle.collectAsState()
     val subtitleOwnerKey by controller.subtitleOwnerKey.collectAsState()
     val imageLoader = rememberVideoImageLoader()
@@ -151,6 +153,10 @@ fun DetailScreen(
         value = MediaProbe.detectHdr(context, item.uri)
     }
     val refusal = unplayable[item.uriKey]
+    // One broken promise is not a verdict, but it is enough to stop repeating the promise.
+    // A file whose decoder failed to start once gets neither card: the sheet has no honest
+    // claim to make about it until the next attempt says which it was.
+    val decoderDoubt = refusal == null && item.uriKey in decoderSuspects
     val subtitle = selectedSubtitle?.takeIf { showAttachedSubtitle(subtitleOwnerKey, item.uriKey) }
 
     // What this file needs, against what this phone's link realistically carries. Polled
@@ -326,8 +332,15 @@ fun DetailScreen(
                 RefusalCard(refusal)
                 Spacer(Modifier.height(17.dp))
             } else {
-                DirectPlayCard()
-                Spacer(Modifier.height(17.dp))
+                // Silence is the third verdict. A file this TV has already failed to find
+                // a decoder for gets no promise — the sheet cannot honestly repeat one it
+                // has broken — and no refusal either, because a decoder another app was
+                // holding is not the file's fault. Everything below keeps its seat, so the
+                // sheet loses a card rather than gaining a gap.
+                if (!decoderDoubt) {
+                    DirectPlayCard()
+                    Spacer(Modifier.height(17.dp))
+                }
                 if (advisory != null) {
                     LinkAdvisory(
                         advisory = advisory,
@@ -589,7 +602,7 @@ private fun RefusalCard(code: String) {
                 style = FlickText.bodySmall.copy(color = colors.onCaution),
             )
             Text(
-                text = stringResource(R.string.detail_unplayable_note),
+                text = stringResource(refusalNote(code)),
                 style = FlickText.bodySmall.copy(color = colors.onCaution.copy(alpha = VerdictNoteAlpha)),
                 modifier = Modifier.padding(top = 6.dp),
             )
@@ -608,8 +621,17 @@ private fun refusalBody(code: String): Int = when (code) {
     "unsupported_video_codec", "unsupported_video_format" -> R.string.detail_unplayable_video
     "unsupported_hdr_profile" -> R.string.detail_unplayable_hdr
     "malformed_media" -> R.string.detail_unplayable_damaged
+    // Only ever reached on the second one running — a single decoder fault never marks a
+    // file — so the copy is allowed to say twice, and has to, because that repetition is
+    // the entire reason this code is being treated as a verdict at all.
+    DecoderFaultCode -> R.string.detail_unplayable_decoder
     else -> R.string.detail_unplayable_generic
 }
+
+/** The note under the body. Every other refusal is one attempt; this one is two. */
+private fun refusalNote(code: String): Int =
+    if (code == DecoderFaultCode) R.string.detail_unplayable_note_twice
+    else R.string.detail_unplayable_note
 
 /**
  * The second register on both verdict cards — the direct-play promise and the refusal that
