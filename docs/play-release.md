@@ -213,6 +213,19 @@ Requires the free Flick app on an Android phone.
 | `flick-tv-feature-1024x500.png` | TV listing feature graphic |
 | `flick-tv-banner-1280x720.png` | **TV banner** — required for the TV listing |
 | `flick-tv-screenshot-01-idle.png` | TV screenshot (at least 1 required) |
+| `*-flat.png` | Plain-lockup alternates, if the atmospheric ones ever need replacing |
+| `backdrops/*.jpg` | Source art, so a composite can be rebuilt without regenerating |
+
+Icons and the TV banner render from the apps' own vector drawables, so listing and
+device cannot drift. The two feature graphics put that same vector lockup over a
+generated backdrop — the lockup is never generated, because models mangle letterforms
+and the wordmark is the one thing that has to be exact.
+
+The mark's speed bars sit at 0.85/1.0 opacity in the feature graphics rather than the
+shipped 0.45/0.85. Over the light phone ground the shipped values read as pale amber;
+over near-black they collapse to muddy brown. Only the store assets differ — no app
+art was touched — but the same effect is visible in the on-device TV launcher banner,
+which is worth fixing separately.
 
 Still needed: **at least 2 phone screenshots**, and ideally two or three more TV
 screenshots showing playback. Both need the phone connected.
