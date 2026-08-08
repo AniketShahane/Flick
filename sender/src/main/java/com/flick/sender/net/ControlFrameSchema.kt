@@ -41,6 +41,9 @@ object ControlFrameSchema {
             "state" -> exact(frame, setOf("t", "v", "castId", "posMs", "durationMs", "playing", "bufferedMs", "phase", "volume", "seq")) &&
                 id(frame["castId"]) && millis(frame["posMs"], 604_800_000) && millis(frame["durationMs"], 604_800_000) && millis(frame["bufferedMs"], 604_800_000) &&
                 frame["playing"] is Boolean && (frame["phase"] as? String) in setOf("buffering", "playing", "paused", "ended") && finiteIn(frame["volume"], 0.0, 1.0) && integer(frame["seq"], 0, Long.MAX_VALUE)
+            // The receiver names a format it could not decode, never a value it read out
+            // of the file's own metadata, so the bound is a codec mime and not a label.
+            "audio_silent" -> exact(frame, setOf("t", "v", "castId", "mime")) && id(frame["castId"]) && ascii(frame["mime"], 64)
             "stopped" -> exact(frame, setOf("t", "v", "castId")) && id(frame["castId"])
             "commandRejected" -> exact(frame, setOf("t", "v", "castId", "command", "code")) && id(frame["castId"]) && ascii(frame["command"], 32) && ascii(frame["code"], 32)
             "pong" -> exact(frame, setOf("t", "v", "id")) && id(frame["id"])

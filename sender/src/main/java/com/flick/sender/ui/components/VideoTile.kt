@@ -485,6 +485,12 @@ private const val CornerHold = 0.25f
  * never scanned is a different thing entirely: the badge withholds the claim it cannot
  * make, and nothing about the tile says the file is broken.
  *
+ * [silentAudio] is the milder witness beside it: the TV played this film and had no
+ * decoder for its sound. The film is watchable, so the tile keeps its full colour and its
+ * full target and the chip takes the withheld register rather than the failure one. It is
+ * suppressed under [unplayable], which is not merely precedence — a file that will not
+ * play at all has nothing to say about its audio.
+ *
  * [resume] is the watched line under the still, and it is a resolved value rather than a
  * checkpoint map on purpose: the caller resolves it per tile through
  * [com.flick.sender.media.resumeProgress], which is the same rule the detail sheet's
@@ -498,6 +504,7 @@ fun VideoTile(
     imageLoader: ImageLoader,
     onClick: () -> Unit,
     unplayable: Boolean = false,
+    silentAudio: Boolean = false,
     compact: Boolean = false,
     resume: ResumeProgress? = null,
     modifier: Modifier = Modifier,
@@ -510,13 +517,21 @@ fun VideoTile(
     val interaction = remember { MutableInteractionSource() }
     val request = rememberLibraryThumbnailRequest(item)
     val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
+    val silentDescription = stringResource(R.string.a11y_tile_no_sound)
     val watchedDescription = resume?.let {
         stringResource(R.string.a11y_tile_watched, Format.timecode(it.positionMs))
     }
+    // Decided once and read by both the chip and the state line, so what TalkBack says
+    // and what the eye sees can never disagree about which of the two facts is showing.
+    val noSound = silentAudio && !unplayable
     // One node, one state line. A refused file may also carry a resume, and TalkBack
     // reads a single stateDescription — so the two facts are joined here rather than
     // raising a second focusable thing on a tile that is one button.
-    val tileState = listOfNotNull(refusedDescription.takeIf { unplayable }, watchedDescription)
+    val tileState = listOfNotNull(
+        refusedDescription.takeIf { unplayable },
+        silentDescription.takeIf { noSound },
+        watchedDescription,
+    )
         .joinToString(" · ")
         .takeIf { it.isNotEmpty() }
     // The still is held back rather than dimmed: a scrim on top would fight the one the
@@ -585,6 +600,7 @@ fun VideoTile(
             ) {
                 MetadataBadge(hdr = hdr, item = item)
                 if (unplayable) RefusedBadge()
+                if (noSound) NoSoundBadge()
             }
             // A zero duration means MediaStore had no value, not a zero-length film.
             if (item.knowsDuration) {
@@ -710,6 +726,30 @@ private fun RefusedBadge() {
             style = FlickText.monoBadge.copy(color = colors.onPrimary),
         )
     }
+}
+
+/**
+ * The remembered silence, in the register [MetadataBadge] withholds a claim in rather than
+ * the one [RefusedBadge] states a failure in.
+ *
+ * Nothing here is allowed to discourage casting, because the film plays: no crimson, no
+ * held-back still, no icon. A text-only pill in the dim ink is the whole treatment — the
+ * icon set carries a speaker with sound coming out of it and nothing that means the
+ * absence of one, and a drawn-on mute glyph would be a second thing to read at 12 dp when
+ * the two words already say it.
+ */
+@Composable
+private fun NoSoundBadge() {
+    val colors = LocalFlickColors.current
+    Text(
+        text = stringResource(R.string.library_badge_no_sound),
+        style = FlickText.monoBadge.copy(color = colors.onSurfaceDim),
+        modifier = Modifier
+            .clip(PillShape)
+            .background(colors.canvas.copy(alpha = WithheldFill))
+            .border(1.dp, colors.outline, PillShape)
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+    )
 }
 
 /** DV / HDR10 only once probed: null is "nobody has looked", never "no HDR". */

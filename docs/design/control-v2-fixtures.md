@@ -101,11 +101,13 @@ The twelfth field grew by `,audio-delay` (56 → 68 bytes, `0x38` → `0x44` in 
 {"t":"error","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","code":"http_rejected","retryable":true,"httpStatus":502}
 {"t":"stopped","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg"}
 {"t":"commandRejected","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","command":"seek","code":"stale_cast"}
+{"t":"audio_silent","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","mime":"audio/vnd.dts"}
+{"t":"audio_silent","v":2,"castId":"MDEyMzQ1Njc4OWFiY2RlZg","mime":"unknown"}
 {"t":"pong","v":2,"id":"cGluZ19maXh0dXJlX2lkIQ"}
 {"t":"busy","v":2,"reason":"active_cast"}
 ```
 
-`httpStatus` is forbidden in every other frame and in non-HTTP failures. `busy` is the only authenticated event without `castId`; it applies to the connection before it can own a cast. V2 has no positive `available` fixture: implementations currently wait 250 ms for immediate `busy` after `paired`/`resumed`, then interpret silence as available. `stopped` is the exact replayable terminal result for canonical `stop` of a current Checking/Preparing or Active cast. `state.phase` permits only `buffering`, `playing`, `paused`, and `ended`.
+`httpStatus` is forbidden in every other frame and in non-HTTP failures. `busy` is the only authenticated event without `castId`; it applies to the connection before it can own a cast. V2 has no positive `available` fixture: implementations currently wait 250 ms for immediate `busy` after `paired`/`resumed`, then interpret silence as available. `stopped` is the exact replayable terminal result for canonical `stop` of a current Checking/Preparing or Active cast. `state.phase` permits only `buffering`, `playing`, `paused`, and `ended`. `audio_silent` carries `mime` as a non-empty printable-ASCII string in every case — the receiver substitutes the literal `unknown` rather than sending null or omitting the key, so the phone reads one shape.
 
 ## Negative fixtures and limits
 

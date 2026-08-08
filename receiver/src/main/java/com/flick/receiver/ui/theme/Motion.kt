@@ -82,6 +82,24 @@ object FlickMotion {
     const val CHROME_FADE_OUT_MS = 500
     const val PRESS_CONFIRM_MS = 90
 
+    /**
+     * How long the band under the top pill row stays CLAIMED after the card in it
+     * is dismissed.
+     *
+     * The transient cards that share that band queue rather than stack, and a phase
+     * is not enough to sequence them: a dismissal flips the outgoing card's phase in
+     * the same recomposition that turns the next card on, so the one leaving is
+     * still drawing — legibly, for most of its fade — while the one arriving fades
+     * up at the identical coordinates. Two glass cards on top of each other is
+     * exactly what the queue exists to prevent.
+     *
+     * It is defined AS the exit rather than as a number beside it, because the two
+     * cannot be allowed to drift: a card is gone when its alpha reaches zero, and
+     * that is [CHROME_FADE_OUT_MS] by construction. A handover shorter than the exit
+     * re-opens the overlap; one longer is dead air on the film the viewer came for.
+     */
+    const val BAND_HANDOVER_MS = CHROME_FADE_OUT_MS
+
     /** Design `tvBurst` — the ±10 s seek flash. */
     const val TV_BURST_MS = 720
 

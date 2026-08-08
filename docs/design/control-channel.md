@@ -256,11 +256,20 @@ The delay is **per cast and is never reported back**. There is no field for it o
 {"t":"error","v":2,"castId":"<id>","code":"decoder_init","retryable":false}
 {"t":"stopped","v":2,"castId":"<id>"}
 {"t":"commandRejected","v":2,"castId":"<id>","command":"seek","code":"stale_cast"}
+{"t":"audio_silent","v":2,"castId":"<id>","mime":"audio/vnd.dts"}
 {"t":"pong","v":2,"id":"<echo>"}
 {"t":"busy","v":2,"reason":"active_cast"}
 ```
 
-`httpStatus` is optional and allowed only for HTTP-observed `loadFailed`/`error`; omit it otherwise. `phase` is exactly `buffering`, `playing`, `paused`, or `ended`. `loadAccepted` means command parsed, canonical URL passed, generation adopted, and probe started. The same attached player surface remains behind an opaque Preparing overlay until `loadReady`; `loadReady` is the sole success boundary because preflight succeeded and the current first rendered frame callback fired. `loadFailed` occurs exactly once before readiness; `error` is terminal after readiness; `state` is sent on transition and about 10 Hz while active; `stopped` is the cast-correlated response to canonical stop for a current pre-ready or active cast, is replayable for duplicate stop, and never blocks local cleanup.
+`httpStatus` is optional and allowed only for HTTP-observed `loadFailed`/`error`; omit it otherwise. `phase` is exactly `buffering`, `playing`, `paused`, or `ended`. `loadAccepted` means command parsed, canonical URL passed, generation adopted, and probe started. The same attached player surface remains behind an opaque Preparing overlay until `loadReady`; `loadReady` is the sole success boundary because preflight succeeded and the current first rendered frame callback fired. `loadFailed` occurs exactly once before readiness; `error` is terminal after readiness; `state` is sent on transition and about 10 Hz while active; `stopped` is the cast-correlated response to canonical stop for a current pre-ready or active cast, is replayable for duplicate stop, and never blocks local cleanup. `audio_silent` is sent at most once per cast, when the film carries audio and none of it could be selected; `mime` is printable ASCII bounded at 64 characters and is the literal `unknown` when the format could not be named. It resolves nothing and releases no ownership — the cast carries on unchanged — so it is the one TV → phone frame the phone never waits on.
+
+A frame the phone's schema does not know closes the control socket with `VIOLATED_POLICY` and drops the authenticated session. Every frame above therefore has to exist on both sides before either ships.
+
+This is not caught by the capability list: `capabilities` is frozen and compared by exact equality inside the pairing HMAC transcript, so growing it to advertise a new frame would stop an old phone pairing with a new TV **at all** — strictly worse than the thing it would be protecting against. The list is therefore deliberately not grown per frame, and the safety comes from release ordering instead:
+
+> **Never ship a TV update ahead of the matching phone update.**
+
+A new TV paired with an older phone pairs and resumes normally, then loses its control socket the first time it emits a frame the phone has never heard of. The cast itself survives on the TV and the phone reconnects on its own, so the cost is a drop and a reconnect per affected cast rather than a dead cast — but it is a real regression with no user-visible cause, and release ordering is the whole of the defence.
 
 ## 8. Media URL, preflight, and failure codes
 

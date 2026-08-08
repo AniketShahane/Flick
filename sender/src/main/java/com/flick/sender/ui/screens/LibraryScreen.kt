@@ -258,6 +258,9 @@ internal fun LibraryScreen(
     // Empty until a receiver actually refuses a file, and back to empty on the next
     // launch: this is a witness list, not a verdict the library carries around.
     val unplayable by controller.unplayableFiles.collectAsState()
+    // The same witness list one step milder: these films played, and the TV had no decoder
+    // for their sound. Also empty until it happens, and also empty again next launch.
+    val silentAudio by controller.silentAudioFiles.collectAsState()
     // Kept as State and deliberately never unwrapped at this scope. A live cast writes a
     // checkpoint every ~5 s, and reading the map here would put the whole visible grid
     // through a recomposition for a figure that moved on exactly one of its tiles. Each
@@ -519,6 +522,7 @@ internal fun LibraryScreen(
                         imageLoader = imageLoader,
                         compact = compactTiles,
                         unplayable = unplayable.containsKey(item.uriKey),
+                        silentAudio = silentAudio.containsKey(item.uriKey),
                         progress = playbackProgress,
                         onClick = { controller.openDetail(item) },
                         sharedScope = sharedScope,
@@ -1448,6 +1452,7 @@ private fun LibraryTile(
     imageLoader: ImageLoader,
     compact: Boolean,
     unplayable: Boolean,
+    silentAudio: Boolean,
     progress: State<PlaybackProgressState>,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1486,6 +1491,7 @@ private fun LibraryTile(
         imageLoader = imageLoader,
         compact = compact,
         unplayable = unplayable,
+        silentAudio = silentAudio,
         resume = resume,
         onClick = onClick,
         modifier = modifier,

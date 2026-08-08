@@ -56,6 +56,16 @@ import java.io.IOException
 interface SessionPlayer {
     fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?)
     fun setExternalSubtitleDroppedListener(listener: ((String, ExternalSubtitle) -> Unit)?)
+
+    /**
+     * The film carries audio that will not be heard, by media id and audio MIME.
+     *
+     * Reported for the same reason the subtitle drop above is: the player is where
+     * the fact exists and the cast transaction is where it can be correlated with
+     * a phone. It decides nothing — a listener that does anything but report this
+     * onward would be spending a cast on a film that is still perfectly watchable.
+     */
+    fun setSilentAudioListener(listener: ((String, String) -> Unit)?)
     fun recordProbeLatency(latencyMs: Long)
 
     /**
@@ -254,6 +264,14 @@ class PlayerController(context: Context) : SessionPlayer {
         private set
 
     /**
+     * The audio format of a film that will play silent, or null when there is
+     * nothing to say. A reading and not a verdict: see [reportSilentAudio], which
+     * is the only writer and never stops a cast over it.
+     */
+    var silentAudioMimeType by mutableStateOf<String?>(null)
+        private set
+
+    /**
      * The turn the VIDEO SURFACE is carrying, and the picture it has to fit.
      *
      * Compose state, because a turn is carried by a different view: a `TextureView`
@@ -385,6 +403,7 @@ class PlayerController(context: Context) : SessionPlayer {
     private val firstFrameGate = FirstFrameGate()
     private var playbackFailureListener: ((PlaybackException) -> Unit)? = null
     private var externalSubtitleDroppedListener: ((String, ExternalSubtitle) -> Unit)? = null
+    private var silentAudioListener: ((String, String) -> Unit)? = null
 
     // --- Listeners -----------------------------------------------------------
 
@@ -856,15 +875,18 @@ class PlayerController(context: Context) : SessionPlayer {
     /**
      * The film carries audio and none of it was selected, so it will play silent.
      *
-     * Deliberately a log line and nothing more. This is NOT routed like
+     * Said out loud, and nothing more than said. This is NOT routed like
      * [reportUnplayableVideoTrack]: a film with no picture is not worth watching and
-     * has to be said out loud, while a film with no sound is still the film, and
-     * ending the cast over it would take away something the viewer can see. The
-     * observed case is DTS on the verified TV, which has no DTS decoder and, on a
-     * Bluetooth route, no passthrough either — nothing this app can do restores it.
+     * has to end the cast, while a film with no sound is still the film, and ending
+     * it would take away something the viewer can see. So the reading is published
+     * for the screen and offered to the phone, and neither consumer may turn it
+     * into a playback decision. The observed case is DTS on the verified TV, which
+     * has no DTS decoder and, on a Bluetooth route, no passthrough either — nothing
+     * this app can do restores it.
      *
-     * It exists so the condition is diagnosable rather than mysterious: silence is
-     * the one failure the picture cannot reveal.
+     * The screen is given the reading and owns the words; the log keeps the format
+     * exactly as the container declared it, because a diagnostician reading it is
+     * the one reader who wants the raw value rather than the safe one.
      */
     private fun reportSilentAudio(tracks: Tracks) {
         if (silentAudioReported) return
@@ -883,8 +905,11 @@ class PlayerController(context: Context) : SessionPlayer {
         silentAudioReported = true
         FlickLog.w(
             "player",
-            "audioSilent mime=${mimeType ?: "unknown"} reason=noSupportedAudioTrack",
+            "audioSilent mime=${mimeType ?: SILENT_AUDIO_MIME_UNKNOWN} reason=noSupportedAudioTrack",
         )
+        val reading = silentAudioMimeReading(mimeType)
+        silentAudioMimeType = reading
+        currentMediaId?.let { silentAudioListener?.invoke(it, reading) }
     }
 
     /**
@@ -1715,6 +1740,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // gets to be judged on its own tracks. This is every load and reload path.
         videoShortfallReported = false
         silentAudioReported = false
+        silentAudioMimeType = null
     }
 
     // --- Lifecycle -----------------------------------------------------------
@@ -1987,6 +2013,10 @@ class PlayerController(context: Context) : SessionPlayer {
         listener: ((String, ExternalSubtitle) -> Unit)?,
     ) {
         externalSubtitleDroppedListener = listener
+    }
+
+    override fun setSilentAudioListener(listener: ((String, String) -> Unit)?) {
+        silentAudioListener = listener
     }
 
     override fun stop() {

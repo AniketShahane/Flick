@@ -61,6 +61,21 @@ class ControlFrameSchemaTest {
         assertFalse(ControlFrameSchema.preAuth(mapOf("t" to "denied", "v" to 3, "reason" to "code")))
     }
 
+    @Test fun silentAudioCarriesExactlyACastAndAMime() {
+        val silent = mapOf("t" to "audio_silent", "v" to 2, "castId" to castId, "mime" to "audio/vnd.dts")
+        assertTrue(ControlFrameSchema.event(silent))
+        // The receiver's own stand-in when it could not name the format.
+        assertTrue(ControlFrameSchema.event(silent + ("mime" to "unknown")))
+        assertFalse(ControlFrameSchema.event(silent + ("reason" to "noSupportedAudioTrack")))
+        assertFalse(ControlFrameSchema.event(silent - "mime"))
+        assertFalse(ControlFrameSchema.event(silent + ("mime" to "")))
+        assertFalse(ControlFrameSchema.event(silent + ("mime" to "audio/" + "x".repeat(59))))
+        assertFalse(ControlFrameSchema.event(silent + ("mime" to "audio/\u0001dts")))
+        assertFalse(ControlFrameSchema.event(silent + ("mime" to 3)))
+        assertFalse(ControlFrameSchema.event(silent + ("castId" to "not a cast id")))
+        assertFalse(ControlFrameSchema.event(silent + ("v" to 3)))
+    }
+
     @Test fun sessionBusyIsValidWithoutCastIdButCannotCarryOne() {
         assertTrue(ControlFrameSchema.event(mapOf("t" to "busy", "v" to 2, "reason" to "active_cast")))
         assertFalse(ControlFrameSchema.event(mapOf("t" to "busy", "v" to 2, "reason" to "active_cast", "castId" to castId)))

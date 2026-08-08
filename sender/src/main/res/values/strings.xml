@@ -437,39 +437,22 @@
     <string name="subs_online_result_episode">S%1$02dE%2$02d</string>
     <string name="subs_online_result_year">%1$d</string>
 
-    <!-- Subtitles sheet · online search, when this build carries no key at all. -->
-    <string name="subs_online_no_key">This build has no OpenSubtitles key, so it can\'t search. Attach a file on the File tab, or paste your own key below.</string>
+    <!-- Subtitles sheet · online search, when this build carries no key at all. Nothing
+         about this is repairable from the phone, so it points at the tab that works
+         rather than offering a fix. -->
+    <string name="subs_online_no_key">This build has no OpenSubtitles key, so it can\'t search. Attach a file on the File tab instead.</string>
 
-    <!-- Subtitles sheet · whose daily allowance a search and a download spend. -->
-    <string name="subs_online_shared">Without a sign-in, searches share Flick\'s small daily allowance. A free OpenSubtitles account gives you your own.</string>
-    <string name="subs_online_sign_in">Sign in to OpenSubtitles</string>
-    <string name="subs_online_user_label">Username</string>
-    <string name="subs_online_password_label">Password</string>
-    <string name="subs_online_password_note">Your password goes to OpenSubtitles once, in exchange for a token. Flick keeps the token on this phone, never the password.</string>
-    <string name="subs_online_sign_in_action">Sign in</string>
-    <string name="subs_online_signing_in">Signing in…</string>
-    <string name="subs_online_signed_in">Signed in as %1$s. Downloads count against your own allowance.</string>
-    <string name="subs_online_signed_in_anon">Signed in. Downloads count against your own allowance.</string>
-    <string name="subs_online_sign_out">Sign out</string>
+    <!-- Subtitles sheet · whose daily allowance a search and a download spend. Flick
+         carries one key for every install, so this is a fact about the day and not
+         something the viewer can act on. -->
+    <string name="subs_online_shared">Searches and downloads share Flick\'s small daily allowance across everyone using the app.</string>
     <string name="subs_online_remaining">%1$d downloads left today.</string>
     <string name="subs_online_remaining_reset">%1$d downloads left today · resets in %2$s.</string>
 
-    <!-- Subtitles sheet · the user's own API key, a secondary path for power users. -->
-    <string name="subs_online_key_show">Use my own OpenSubtitles key</string>
-    <string name="subs_online_key_label">OpenSubtitles API key</string>
-    <string name="subs_online_key_hint">An API Consumer key from your OpenSubtitles account. Stored on this phone, sent only to opensubtitles.com.</string>
-    <string name="subs_online_key_save">Save key</string>
-    <string name="subs_online_key_forget">Forget my key</string>
-    <string name="subs_online_key_mine">Searching with your own key.</string>
-
     <string name="subs_error_offline">No answer from OpenSubtitles. Check this phone\'s internet connection.</string>
-    <string name="subs_error_key_mine">OpenSubtitles rejected your key. Check it and paste it again.</string>
-    <string name="subs_error_key_app">OpenSubtitles rejected Flick\'s key. Paste your own below, or attach a file on the File tab.</string>
+    <string name="subs_error_key_app">OpenSubtitles rejected Flick\'s key. Attach a file on the File tab instead.</string>
     <string name="subs_error_rate">OpenSubtitles is rate-limiting these searches. Wait a minute, then try again.</string>
-    <string name="subs_error_quota">The shared daily allowance is spent. A free OpenSubtitles account gives you your own.</string>
-    <string name="subs_error_quota_signed">Your daily download allowance is spent. It resets within a day.</string>
-    <string name="subs_error_sign_in">OpenSubtitles didn\'t accept that username and password.</string>
-    <string name="subs_error_sign_in_expired">That sign-in has expired. Sign in again to use your own allowance.</string>
+    <string name="subs_error_quota">Flick\'s shared daily allowance is spent. It resets within a day.</string>
     <string name="subs_error_link">OpenSubtitles pointed to a download outside its own site, so Flick didn\'t fetch it.</string>
     <string name="subs_error_unavailable">OpenSubtitles couldn\'t answer that just now.</string>
 
@@ -686,14 +669,18 @@
     <string name="a11y_np_metrics">Stream metrics</string>
 
     <!-- ===== Unplayable files & honest failures ===== -->
-    <!-- ===== S3 · the tile's two honest states ===== -->
-    <!-- Both render in a mono badge style, which applies no transform and is tracked:
+    <!-- ===== S3 · the tile's honest states ===== -->
+    <!-- All three render in a mono badge style, which applies no transform and is tracked:
          the copy has to arrive uppercase. "UNKNOWN" is the withheld claim (MediaStore
          told us nothing); "DIDN'T PLAY" is the remembered fact (this TV refused it),
-         and it stays in the past tense because one refusal is all we ever witnessed. -->
+         and it stays in the past tense because one refusal is all we ever witnessed.
+         "NO SOUND" names what is missing rather than what failed: the film played, so
+         the present tense is the true one and no word here may read as a fault. -->
     <string name="library_badge_unknown">UNKNOWN</string>
     <string name="library_badge_unplayable">DIDN\'T PLAY</string>
     <string name="a11y_tile_unplayable">Your TV couldn\'t play this file</string>
+    <string name="library_badge_no_sound">NO SOUND</string>
+    <string name="a11y_tile_no_sound">Plays without sound on your TV</string>
     <!-- Spoken only when the tile is drawing its resume line, which is only when the
          detail sheet would actually offer that resume. -->
     <string name="a11y_tile_watched">Watched to %1$s</string>

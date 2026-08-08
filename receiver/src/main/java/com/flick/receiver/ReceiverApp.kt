@@ -92,14 +92,17 @@ import com.flick.receiver.player.OrientationHintPhase
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.player.PlaybackPhase
 import com.flick.receiver.player.PlayerController
+import com.flick.receiver.player.SILENT_AUDIO_NOTICE_MS
 import com.flick.receiver.player.SUBTITLE_GLYPH_BACKGROUND_ALPHA
 import com.flick.receiver.player.SUBTITLE_WINDOW_ALPHA
+import com.flick.receiver.player.SilentAudioNoticePhase
 import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.SurfaceTurn
 import com.flick.receiver.player.ThroughputHistory
 import com.flick.receiver.player.ThroughputSnapshot
 import com.flick.receiver.player.orientationHintPhase
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
+import com.flick.receiver.player.silentAudioNoticePhase
 import com.flick.receiver.player.surfaceTurnTransform
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
@@ -376,6 +379,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var showQuality by remember { mutableStateOf(false) }
     /** Whether this cast has already had its one orientation hint. */
     var orientationHintShown by remember { mutableStateOf(false) }
+    /** Whether this cast has already had its one silent-audio notice. */
+    var silentAudioNoticeShown by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
     // The scrub bar's focus is what promotes physical left/right from a focus move
@@ -564,7 +569,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
     // Let the session push TV→phone `error` frames through the live control
     // socket (preflight/backgrounded/fatal → phone S12 instead of a frozen UI).
-    LaunchedEffect(server, session) { session.attachTerminal(server::sendTerminal); session.attachReady(server::sendReady) }
+    LaunchedEffect(server, session) { session.attachTerminal(server::sendTerminal); session.attachReady(server::sendReady); session.attachAudioSilent(server::sendAudioSilent) }
 
     // Return to baseline between casts: drop the detached PlayerView (+ its
     // SurfaceView) once the session leaves Active rather than holding it for hours.
@@ -584,7 +589,68 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // reading. The controller clears the reading itself; this clears the
         // record of having already given it.
         orientationHintShown = false
+        // The notice is once per cast on exactly the same terms. It is cleared here
+        // as well as by the player because the player's own latch is dropped by
+        // every RELOAD too, and a subtitle attached mid-watch is the same film.
+        silentAudioNoticeShown = false
     }
+
+    // The silent-audio notice. Same split as the hint below: the reading is the
+    // controller's, this is the whole of when it may be seen, and the screen owns
+    // the words. It leads the band because it is the one of the two a viewer can
+    // do nothing about — the tile the hint points at can still be found later.
+    val silentAudioPhase = silentAudioNoticePhase(
+        mimeType = controller.silentAudioMimeType,
+        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        qualityShowing = showQuality,
+        panelOpen = openPanel != PlaybackPanel.None,
+        alreadyShown = silentAudioNoticeShown,
+    )
+    LaunchedEffect(silentAudioPhase) {
+        when (silentAudioPhase) {
+            SilentAudioNoticePhase.Waiting, SilentAudioNoticePhase.Spent -> Unit
+            SilentAudioNoticePhase.Showing -> {
+                delay(SILENT_AUDIO_NOTICE_MS)
+                silentAudioNoticeShown = true
+            }
+        }
+    }
+
+    // Whether the notice still OCCUPIES the band, which outlasts its phase by the
+    // length of its exit — and is therefore what the hint has to wait on, rather
+    // than the phase itself.
+    //
+    // The phase turns over in one recomposition: the notice's `visible` goes false
+    // and the hint's goes true in the same frame, so a 500 ms fade-out and a 200 ms
+    // fade-in run concurrently at identical coordinates and two glass cards draw on
+    // top of each other for most of a second. It is not a race — it is every film
+    // that is both silent and sideways. Holding the claim for the exit is what
+    // makes the queue a queue on screen and not only in the policy.
+    //
+    // The duration is [FlickMotion.BAND_HANDOVER_MS] and is never a literal here:
+    // it is defined as the exit, so the two cannot drift apart. Under reduced
+    // motion there is no exit to wait out — both transitions are instantaneous —
+    // and half a second of empty band would be a dead beat rather than a handover.
+    //
+    // The claim is DERIVED and only its tail is latched, which is not a style
+    // choice. An effect runs after the composition that triggered it, so a claim
+    // raised entirely from one would be a frame late at the notice's ARRIVAL: the
+    // hint would compute Showing against a stale false, start its fade-in, and be
+    // reversed on the next pass — the same two-cards-at-once fault at the other
+    // end of the notice's life. Reading the live phase here and latching only the
+    // part that has to outlive it leaves no frame where the band is unclaimed.
+    val silentAudioShowing = silentAudioPhase == SilentAudioNoticePhase.Showing
+    val bandHandoverMs = if (LocalReducedMotion.current) 0L else FlickMotion.BAND_HANDOVER_MS.toLong()
+    var silentAudioBandClaim by remember { mutableStateOf(false) }
+    LaunchedEffect(silentAudioShowing, bandHandoverMs) {
+        if (silentAudioShowing) {
+            silentAudioBandClaim = true
+        } else if (silentAudioBandClaim) {
+            delay(bandHandoverMs)
+            silentAudioBandClaim = false
+        }
+    }
+    val silentAudioHoldsBand = silentAudioShowing || silentAudioBandClaim
 
     // The picture-orientation hint. The reading is the controller's — it is the
     // only thing that knows what the decoder was configured with — and the phase
@@ -596,6 +662,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // and the clock may not run behind the connecting screen.
         filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
         qualityShowing = showQuality,
+        // The band's occupancy, not the notice's phase: a card that is still fading
+        // out is still on the glass, and this is the only surface where the two
+        // cards land on exactly the same coordinates.
+        silentAudioShowing = silentAudioHoldsBand,
         panelOpen = openPanel != PlaybackPanel.None,
         alreadyShown = orientationHintShown,
     )
@@ -927,6 +997,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         turnNote = controller.turnNote,
                         orientationHint = controller.orientationHint
                             .takeIf { hintPhase == OrientationHintPhase.Showing },
+                        silentAudioMimeType = controller.silentAudioMimeType
+                            .takeIf { silentAudioPhase == SilentAudioNoticePhase.Showing },
                         openPanel = openPanel,
                         onOpenPanel = { openPanel = it },
                         onScrubFocusChanged = { scrubFocused = it },

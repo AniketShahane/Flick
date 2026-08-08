@@ -200,6 +200,19 @@
     <string name="orientation_hint_as_filed_title">Showing this film as filed</string>
     <string name="orientation_hint_as_filed_where">TURN IT ON THE %1$s TILE</string>
 
+    <!--
+      The silent-audio notice: two lines over the film, once per cast. It names the
+      film's audio format and stops there, because there is nothing to send the
+      viewer to — no setting on this TV or that phone plays it. The second line is
+      about what they are hearing, never about what could not be started.
+    -->
+    <string name="audio_silent_title">Playing without sound</string>
+    <string name="audio_silent_reason">THIS TV CAN\'T PLAY %1$s AUDIO</string>
+    <string name="audio_silent_reason_unknown">THIS TV CAN\'T PLAY THIS FILM\'S AUDIO</string>
+    <!-- Spoken, not drawn: the card splits the same sentence over its two lines. -->
+    <string name="audio_silent_card_description">Playing without sound. This TV can\'t play %1$s audio.</string>
+    <string name="audio_silent_card_description_unknown">Playing without sound. This TV can\'t play this film\'s audio.</string>
+
     <!-- Stream metrics: transport card + panel -->
     <string name="metrics_card_title">Stream metrics</string>
     <string name="metrics_panel_title">Stream metrics</string>

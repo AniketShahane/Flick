@@ -276,6 +276,82 @@ class SessionReloadTest {
         assertEquals(0, player.autoRotations)
     }
 
+    // --- The film that plays silent ------------------------------------------
+
+    @Test fun theFilmThatPlaysSilentTellsThePhoneOnceWithItsFormat() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val told = session.recordAudioSilent()
+
+        player.reportSilentAudio(player.lastStartupMediaId!!, DTS)
+
+        assertEquals(listOf(CAST to DTS), told)
+    }
+
+    /**
+     * The case the session's own latch exists for. A subtitle attached mid-watch
+     * re-prepares the identical film, which clears the PLAYER's once-per-media
+     * latch and raises the identical reading a second time — same cast, same
+     * silence, nothing new to say.
+     */
+    @Test fun attachingASubtitleMidWatchDoesNotSayItAgain() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val told = session.recordAudioSilent()
+
+        player.reportSilentAudio(player.lastStartupMediaId!!, DTS)
+        session.onReloadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, RESUME_MS, SUBTITLE)
+        player.reportSilentAudio(player.lastReloadMediaId!!, DTS)
+
+        assertEquals(listOf(CAST to DTS), told)
+    }
+
+    /** A genuinely new cast is a new film, and gets its own one telling. */
+    @Test fun theNextCastIsJudgedOnItsOwnSound() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val told = session.recordAudioSilent()
+
+        player.reportSilentAudio(player.lastStartupMediaId!!, DTS)
+        session.onLoadMedia(LEASE + 1L, CAST_B, URL, TITLE, DURATION_MS, 0L, null)
+        runCurrent()
+        player.renderFirstFrame()
+        player.reportSilentAudio(player.lastStartupMediaId!!, DTS)
+
+        assertEquals(listOf(CAST to DTS, CAST_B to DTS), told)
+    }
+
+    /** The stale-callback guard every other player-originated report carries. */
+    @Test fun aReadingFiledAgainstAnOlderFilmIsNotSentAtAll() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val told = session.recordAudioSilent()
+        val staleMediaId = player.lastStartupMediaId!!
+
+        session.onLoadMedia(LEASE + 1L, CAST_B, URL, TITLE, DURATION_MS, 0L, null)
+        runCurrent()
+        player.renderFirstFrame()
+        player.reportSilentAudio(staleMediaId, DTS)
+
+        assertEquals(emptyList<Pair<String, String>>(), told)
+    }
+
+    /** Silence is never a cast failure: the picture is still worth watching. */
+    @Test fun sayingItChangesNothingAboutThePlaybackItDescribes() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val failures = session.recordTerminals()
+        session.recordAudioSilent()
+
+        player.reportSilentAudio(player.lastStartupMediaId!!, DTS)
+        advanceTimeBy(60_000L)
+        runCurrent()
+
+        assertEquals(emptyList<ControlCastResult.Failed>(), failures)
+        assertEquals(MediaStage.Active(CAST, LEASE), session.stage)
+        assertEquals(0, player.stops)
+    }
+
     // --- Fixtures ------------------------------------------------------------
 
     private fun TestScope.activeSession(
@@ -288,6 +364,13 @@ class SessionReloadTest {
         player.renderFirstFrame()
         check(session.stage is MediaStage.Active) { "fixture never reached Active" }
         return session
+    }
+
+    /** Every `audio_silent` the session would put on the wire, in order. */
+    private fun SessionController.recordAudioSilent(): List<Pair<String, String>> {
+        val told = mutableListOf<Pair<String, String>>()
+        attachAudioSilent { id, mime -> told += id to mime }
+        return told
     }
 
     private fun SessionController.recordTerminals(): List<ControlCastResult.Failed> {
@@ -308,6 +391,7 @@ class SessionReloadTest {
         const val RESUME_MS = 612_000L
         const val PROBE_MS = 7L
         const val STARTUP_DEADLINE_MS = 18_000L
+        const val DTS = "audio/vnd.dts"
         val SUBTITLE = ExternalSubtitle("http://192.168.42.10:8080/s/subtoken", "film.srt", "en")
     }
 }
@@ -338,6 +422,7 @@ internal class RecordingPlayer : SessionPlayer {
     private var rotationRePrepare: (() -> Unit)? = null
     private var playbackFailure: ((PlaybackException) -> Unit)? = null
     private var subtitleDropped: ((String, ExternalSubtitle) -> Unit)? = null
+    private var silentAudio: ((String, String) -> Unit)? = null
 
     override fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
         playbackFailure = listener
@@ -347,6 +432,10 @@ internal class RecordingPlayer : SessionPlayer {
         listener: ((String, ExternalSubtitle) -> Unit)?,
     ) {
         subtitleDropped = listener
+    }
+
+    override fun setSilentAudioListener(listener: ((String, String) -> Unit)?) {
+        silentAudio = listener
     }
 
     override fun recordProbeLatency(latencyMs: Long) = Unit
@@ -438,5 +527,15 @@ internal class RecordingPlayer : SessionPlayer {
 
     fun reportSubtitleDropped(mediaId: String, subtitle: ExternalSubtitle) {
         subtitleDropped?.invoke(mediaId, subtitle)
+    }
+
+    /**
+     * The film has audio nothing here can play. The real controller raises this
+     * from `onTracksChanged`, so it can arrive on any prepare — including the
+     * re-prepare a mid-watch subtitle attach causes, which is the case the
+     * session's own once-per-cast latch exists for.
+     */
+    fun reportSilentAudio(mediaId: String, mimeType: String) {
+        silentAudio?.invoke(mediaId, mimeType)
     }
 }

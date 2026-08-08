@@ -8,10 +8,7 @@ import org.junit.Test
 
 class OpenSubtitlesClientSearchTest {
     private class Credentials : OpenSubtitlesCredentials {
-        override fun resolved(): ResolvedApiKey = ResolvedApiKey("test-key", ApiKeySource.USER)
-        override fun session(): OpenSubtitlesSession? = null
-        override fun saveSession(session: OpenSubtitlesSession): Boolean = true
-        override fun clearSession(): Boolean = true
+        override fun resolved(): ResolvedApiKey = ResolvedApiKey("test-key", ApiKeySource.BUNDLED)
     }
 
     private class Recorder(
@@ -19,13 +16,8 @@ class OpenSubtitlesClientSearchTest {
     ) : OpenSubtitlesSearchTransport {
         val urls = mutableListOf<String>()
 
-        override suspend fun get(
-            url: String,
-            apiKey: String,
-            session: OpenSubtitlesSession?,
-        ): SubtitleSearchOutcome {
+        override suspend fun get(url: String, apiKey: String): SubtitleSearchOutcome {
             assertEquals("test-key", apiKey)
-            assertEquals(null, session)
             urls += url
             return outcomes.removeFirst()
         }

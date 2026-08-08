@@ -249,7 +249,7 @@ A persisted `ACTION_OPEN_DOCUMENT_TREE` folder grant, matched by filename, used 
 
 The other is an OpenSubtitles download (`net/OpenSubtitlesClient.kt`, wire rules in `net/OpenSubtitlesWire.kt`, surfaced by `ui/screens/SubtitlesSheet.kt`). A search runs two `/subtitles` queries and merges them: one on a hash of the video file itself (`media/MovieHash.kt`) where the file can be read, one on the title plus optional `season_number`/`episode_number`. Hash answers rank first, because the hash names *this* file and a hit is therefore already in sync with it; the hash half is also the one allowed to fail quietly, so a hash the server has never seen leaves the text results untouched. The video never leaves the phone — the hash is computed locally and the hash string is the only thing derived from the file that is sent.
 
-The API key identifies the *app*. An optional user sign-in is offered only so downloads count against that account's own daily allowance instead of the single app-wide quota; the returned session token is kept in this app's prefs and the raw account password is not stored. `download` resolves a link, requires it to be on OpenSubtitles' own domains (`downloadLinkIsAllowed` — an address anywhere else is a distinct refused outcome, never a fetch, so the API cannot bounce the download to an arbitrary host), and writes the bytes into this app's `cacheDir`. What it returns is an ordinary `file://` Uri, so a downloaded subtitle rejoins the picked-file path at exactly the point a picked file does and gets no privileged treatment: same `ServedSession` publish, same independent token, same 5 MiB `/s/{token}` ceiling, same extension-keyed content type, same `MediaUrlValidator` check on the receiver.
+The API key identifies the *app*, and it is the only credential this client holds: one bundled key from `BuildConfig.OPENSUBTITLES_API_KEY`, whose daily allowance is shared across everyone using Flick. Sign-in and user-supplied keys were removed before launch — they were the wrong first thing to ask of a viewer who only wants subtitles, and per-account quota is a problem worth having later rather than a screen worth shipping now. Nothing in the client can attach an `Authorization` header, and `OpenSubtitlesKeyStore` opens no preferences file at all; the `flick_subtitles_online` backup exclusions stay only because a phone that ran an older build still has that file. `download` resolves a link, requires it to be on OpenSubtitles' own domains (`downloadLinkIsAllowed` — an address anywhere else is a distinct refused outcome, never a fetch, so the API cannot bounce the download to an arbitrary host), and writes the bytes into this app's `cacheDir`. What it returns is an ordinary `file://` Uri, so a downloaded subtitle rejoins the picked-file path at exactly the point a picked file does and gets no privileged treatment: same `ServedSession` publish, same independent token, same 5 MiB `/s/{token}` ceiling, same extension-keyed content type, same `MediaUrlValidator` check on the receiver.
 
 The subtitle `(uri, token)` pair lives **inside** the same atomically published immutable `ServedSession` as the video's, so a retarget can never be observed half-applied and a subtitle can never be observed paired with a different video. `MediaHttpServer.setSubtitle` mutates that session under the same lock as `start`/`stop` and lands as one atomic publish, so attaching, swapping or revoking a subtitle never interrupts the video stream. The subtitle token is minted by the same `SecureRandom` 128-bit URL-safe generator as the video token; a new selection mints a new one and revoking or tearing down the socket retires it, so a leaked `/s/{token}` stops resolving.
 
@@ -295,7 +295,7 @@ Phone Settings has a default-on **Readable video names** preference. It changes 
 
 The library's own search box searches both of those spellings at once — the name on disk and the title the tile shows — because the user searches for what they were shown. A query is read as words rather than as a substring: `The.Wailing.2016.1080p.BluRay.x265-GRP.mkv` is a tile reading `The Wailing (2016)`, so typing that matched nothing while the dots the user replaced with spaces were still in the string being searched, and no contiguous run of characters reaches across the release junk between `Wailing` and `2016` either. Every word of the query must be found, in any order, anywhere inside the row's text: a half-typed `wail` narrows to `Wailing`, and with the row's word boundaries dropped and the query cut at them, a separator present on one side only cannot make two different videos — `spiderman` reaches `Spider.Man` and `spider man` reaches a file named `Spiderman`. The looser of the two rules is deliberate: in a filter box over one person's own library, failing to show a video they have is the expensive mistake and showing one extra is not, and every further word typed is an AND that tightens the query again. The cost is that a very short word narrows less than it appears to. Titles in scripts written without spaces, which nothing breaks into words at all, are searchable past their opening character for the same reason. The parsed title is indexed beside the raw name, so an `S1E2` on disk answers the `S01E02` on the tile and the release details the tile hides stay searchable. Words are folded by `media/FoldedText.kt` — case with `Locale.ROOT`, NFKD compatibility forms, Latin diacritics and the stroked letters, every non-Latin mark kept — which is one routine shared with the subtitle matcher rather than two that could answer differently about the same film. A query with no words in it returns the scoped list instance itself, and the fold of every name is computed once per library rather than once per keystroke, because Unicode normalization and a filename parse for every row on every character typed is a phone dropping frames under its own typing.
 
-OpenSubtitles search parses the original filename independently of the display toggle, while the subtitles-sheet header uses the current display preference. The complete online pane is keyed by the content URI: changing the cast item disposes its client and coroutine scope, cancels in-flight hash/search/download/sign-in work, and reconstructs query, numeric fields, English language selection, results, quota, errors and credentials UI for the new media identity. Editing any search field cancels the active search, clears its feedback, and increments a generation guard so even a late response cannot populate a newer set of inputs.
+OpenSubtitles search parses the original filename independently of the display toggle, while the subtitles-sheet header uses the current display preference. The complete online pane is keyed by the content URI: changing the cast item disposes its client and coroutine scope, cancels in-flight hash/search/download work, and reconstructs query, numeric fields, English language selection, results, quota and errors for the new media identity. Editing any search field cancels the active search, clears its feedback, and increments a generation guard so even a late response cannot populate a newer set of inputs.
 
 The title remains editable, and parsed year (1870–2099), season (1–99), and episode (1–999) are editable, bounded structured parameters. Search language is a non-persisted selector backed by the complete static catalog from OpenSubtitles' `/infos/languages` endpoint; English (`en`) is the default, current regional codes such as `pt-br`, `pt-pt`, `zh-cn`, and `zh-tw` are sent verbatim, and every hash or text request carries the selected language rather than silently broadening to all languages. Search text is NFC-normalized, whitespace-collapsed, and stripped of control/spoofing marks while preserving punctuation, diacritics, and meaningful script joiners. OpenSubtitles' three-code-point minimum is enforced before the wire; a shorter title can still run a hash-only search when a fingerprint exists. Invalid numeric fields disable Search and are never sent.
 
@@ -567,6 +567,66 @@ per-process latch doing its job.
 
 DTS logged `audioSilent mime=audio/vnd.dts reason=noSupportedAudioTrack` and kept the
 picture running, as designed.
+
+#### Silence is the one failure the picture cannot show
+
+A DTS film plays with a perfect picture and nothing to hear, and every reading a viewer
+can reach for says the cast is healthy — because it is. The transport, the metrics panel
+and the picture itself are all telling the truth; the fact simply exists nowhere they can
+see it. So the TV says it, and saying it is the whole of what can be done: **nothing here
+restores the sound, and nothing reads this state to make a playback decision.**
+`reportSilentAudio` never aborts, never pauses and never re-prepares. A film with no sound
+is still the film.
+
+The split is `TurnNote`'s. `PlayerController` publishes `silentAudioMimeType`, a MIME
+string carrying no user-facing text, and the screen owns the words through
+`audioSilentFormatLabel`. Only DTS and DTS-HD are named; anything else takes the sentence
+that names no format at all, because `audio/vnd.dts.uhd;profile=p2` is a true answer and
+not one anybody wants from ten feet.
+
+The notice lands in the band the orientation hint lives in, and the two are one queue
+rather than two cards: quality flourish (4.5 s) → notice (6 s) → hint (6 s).
+`SilentAudioPolicy.kt` mirrors `OrientationHintPolicy`, and `orientationHintPhase` gained
+one condition so the hint waits the notice out. The notice goes first because it is the
+one a viewer can do nothing about. One rule differs on purpose: an open side panel
+**spends** the hint, because the panel is the control it was pointing at, but only
+**delays** the notice, because nothing in any panel says a word about missing sound.
+
+#### The phone is told once per cast, and remembers it until relaunch
+
+The frame is `{"t":"audio_silent","v":2,"castId":"<id>","mime":"audio/vnd.dts"}` —
+specified in [control-channel.md](design/control-channel.md) — routed the way every other
+player-originated report is, and dropped silently when no control connection holds the
+cast. It is a courtesy and never a requirement.
+
+Two latches are needed rather than one. The player's is per **media item** and is cleared
+by every reload, so an external subtitle attached mid-watch re-raises the identical
+reading for the identical film; `SessionController` holds the per-**cast** half. The frame
+can arrive **before `loadReady`**, because `onTracksChanged` is delivered before the first
+frame — holding it back until Active would lose it entirely for a cast that never gets
+there.
+
+`silentAudioMimeReading` bounds what can reach the wire at all: a short plain ASCII token
+or the literal `unknown`, nothing else. This is strictly tighter than the phone's
+`ascii(mime, 64)` on purpose — the phone closes the control socket on any frame its schema
+refuses, and a crafted container must not be able to kill the control link of a film that
+is still playing.
+
+On the phone, `SilentAudioMemory` is a bounded (64, oldest evicted first) `uriKey` → mime
+map that is deliberately **not** persisted. `UnplayableMemory`'s argument applies
+unchanged, and one more on top of it: sound is the half of this verdict most easily
+changed by something outside the app — a soundbar plugged in, a Bluetooth speaker left
+behind, a different TV entirely. A file's mark is cleared when a fresh cast of it
+**starts**, which is the one thing this cannot borrow from the refusal path: `audio_silent`
+arrives before `loadReady`, so clearing at first frame would erase the mark that same cast
+had just earned.
+
+The library tile carries it as a `NO SOUND` pill in the **withheld** register —
+`MetadataBadge`'s treatment, not `RefusedBadge`'s. Dim ink, a hairline outline, no crimson,
+no icon, and none of the `RefusedSaturation` hold-back on the still, because the film is
+watchable and nothing about this may discourage casting. A remembered refusal suppresses it
+outright, on the chip and on the tile's single TalkBack state line alike: a file that will
+not play at all has nothing to say about its audio.
 
 `docs/store/push-codec-clips.sh` stages an eight-clip matrix (H.264/HEVC/VP9/AV1 against AAC/AC-3/E-AC-3/DTS/Opus, including 4K HEVC 10-bit) and `docs/store/codec-matrix-test.sh` casts each one and reads the verdict out of the TV's own log.
 

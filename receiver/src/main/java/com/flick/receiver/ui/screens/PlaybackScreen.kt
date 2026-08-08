@@ -326,6 +326,7 @@ fun PlaybackScreen(
     autoVideoRotationDegrees: Int = 0,
     turnNote: TurnNote? = null,
     orientationHint: OrientationHint? = null,
+    silentAudioMimeType: String? = null,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onScrubFocusChanged: (Boolean) -> Unit = {},
@@ -589,6 +590,47 @@ fun PlaybackScreen(
                 .padding(top = 42.dp),
         ) {
             retainedHint?.let { OrientationHintCard(hint = it, degrees = shownRotationLabel) }
+        }
+
+        // The silent-audio notice, in the same band and under the same two rules —
+        // it is not a state chip and it stays out of the bottom third. It is
+        // sequenced against the hint by `SilentAudioPolicy` rather than placed
+        // clear of it, because they are one queue and never two cards.
+        //
+        // Retained past its own dismissal so the exit has something to draw, exactly
+        // as [retainedHint] is.
+        var retainedSilentAudio by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(silentAudioMimeType) {
+            if (silentAudioMimeType != null) retainedSilentAudio = silentAudioMimeType
+        }
+        AnimatedVisibility(
+            visible = silentAudioMimeType != null,
+            // The hint's vocabulary exactly: the two cards share a band and a queue,
+            // so arriving differently would make them read as different kinds of thing.
+            enter = if (reducedMotion) {
+                fadeIn(tween(durationMillis = 0))
+            } else {
+                fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
+                    initialScale = 0.96f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            exit = if (reducedMotion) {
+                fadeOut(tween(durationMillis = 0))
+            } else {
+                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
+                    targetScale = 1.02f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            label = "silentAudioNotice",
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(safeArea)
+                // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
+                .padding(top = 42.dp),
+        ) {
+            retainedSilentAudio?.let { SilentAudioCard(mimeType = it) }
         }
 
         AnimatedVisibility(
@@ -1916,6 +1958,73 @@ private fun OrientationHintCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/**
+ * The audio format a silent film's notice names, or null for the unknown form.
+ *
+ * DTS is the whole of the known list because it is the whole of the observed
+ * problem: it is the one common format the verified TV declares no decoder for.
+ * Everything else falls to the unknown form rather than being spelled out —
+ * `audio/vnd.dts.uhd;profile=p2` is a true answer and not an answer anyone wants
+ * from ten feet, and the sentence it would land in is already complete without it.
+ */
+internal fun audioSilentFormatLabel(mimeType: String?): String? = when (mimeType?.lowercase()) {
+    "audio/vnd.dts" -> "DTS"
+    "audio/vnd.dts.hd" -> "DTS-HD"
+    else -> null
+}
+
+/**
+ * The silent-audio notice (§ Playing without sound).
+ *
+ * Deliberately without the mini tile [OrientationHintCard] leads with, and that
+ * absence is the design rather than a simplification. That card draws the control
+ * it is sending the viewer to find; this one has no control behind it — no setting
+ * on this TV and none on the phone plays a format the hardware has no decoder for
+ * — so a square beside these lines would be a picture of a way out that does not
+ * exist. Two lines and no affordance is the honest shape for a thing that can only
+ * be known.
+ *
+ * It is not a control and never becomes one: no focus target, no click, no
+ * `tvRevealSource`, and the chrome's own 4 s countdown never sees it.
+ */
+@Composable
+private fun SilentAudioCard(mimeType: String, modifier: Modifier = Modifier) {
+    val format = audioSilentFormatLabel(mimeType)
+    val spoken = if (format != null) {
+        stringResource(R.string.audio_silent_card_description, format)
+    } else {
+        stringResource(R.string.audio_silent_card_description_unknown)
+    }
+    Column(
+        modifier = modifier
+            .glassPanel(FlickShape.Md)
+            .padding(horizontal = 11.dp, vertical = 9.dp)
+            // The drawn detail line is set in caps for the ten-foot read, which is
+            // not how it should be heard. One spoken sentence replaces both lines.
+            .clearAndSetSemantics { contentDescription = spoken },
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.audio_silent_title),
+            style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = if (format != null) {
+                stringResource(R.string.audio_silent_reason, format)
+            } else {
+                stringResource(R.string.audio_silent_reason_unknown)
+            },
+            style = FlickType.monoEyebrow(trackingEm = 0.14f),
+            color = FlickColor.OnSurfaceDim,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

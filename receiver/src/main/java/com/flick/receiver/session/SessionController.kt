@@ -219,14 +219,19 @@ class SessionController(
     private var retainedResult: ControlCastResult? = null
     private var terminal: ((String, CastFailureCode, Boolean, Int?, Boolean) -> Unit)? = null
     private var ready: ((String, Long, Long) -> Unit)? = null
+    private var audioSilent: ((String, String) -> Unit)? = null
+    /** Whether this cast has already told the phone its film plays silent. */
+    private var audioSilentSent = false
 
     init {
         controller.setPlaybackFailureListener(::onPlaybackError)
         controller.setExternalSubtitleDroppedListener(::onExternalSubtitleDropped)
+        controller.setSilentAudioListener(::onSilentAudio)
     }
 
     fun attachTerminal(emit: (String, CastFailureCode, Boolean, Int?, Boolean) -> Unit) { terminal = emit }
     fun attachReady(emit: (String, Long, Long) -> Unit) { ready = emit }
+    fun attachAudioSilent(emit: (String, String) -> Unit) { audioSilent = emit }
     fun pokeChrome() { chromePoke++ }
     fun onPlay() { castId?.let(::onPlay) }
     fun onPause() { castId?.let(::onPause) }
@@ -256,6 +261,11 @@ class SessionController(
         // back to [beginLoad] before the first frame, a startup retry, and the
         // player rebuild a background/foreground cycle causes.
         controller.setAudioDelay(0)
+        // The same seam, for a reading rather than a setting: the notice is once per
+        // CAST, and the player's own latch is cleared by every RELOAD too — so an
+        // external subtitle attached mid-watch re-raises the identical reading for
+        // the identical film, and without this the phone would be told twice.
+        audioSilentSent = false
         return beginLoad(controlLeaseGeneration, castId, url, title, durationMs, startMs, subtitle)
     }
 
@@ -505,6 +515,26 @@ class SessionController(
         val id = castId ?: return
         if (stage !is MediaStage.Active) return
         fail(id, generation, PlaybackFailureClassifier.classify(error), retryable = true, beforeReady = false)
+    }
+
+    /**
+     * Tell the phone its film is playing silent, at most once per cast.
+     *
+     * A courtesy and never a requirement. It is deliberately not gated on [stage]:
+     * `onTracksChanged` arrives before the first frame, so this can be decided while
+     * the cast is still Preparing, and holding it back until Active would lose it
+     * entirely for a cast that never gets there. Nothing downstream may treat it as
+     * a failure — the film keeps playing either way.
+     *
+     * The media-id test is [onExternalSubtitleDropped]'s, for the same reason: a
+     * stale player callback must not be filed against a newer cast.
+     */
+    private fun onSilentAudio(mediaId: String, mimeType: String) {
+        val id = castId ?: return
+        if (mediaId != mediaIdFor(id, generation)) return
+        if (audioSilentSent) return
+        audioSilentSent = true
+        audioSilent?.invoke(id, mimeType)
     }
 
     /** A stale player callback must not rewrite a newer subtitle or cast generation. */
