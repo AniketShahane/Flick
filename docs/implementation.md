@@ -546,14 +546,27 @@ Four decisions in that are load-bearing:
 
 A rebuild costs one player swap and shows in the diagnostics overlay as `audioSinkRebuildCount`. It is bounded at one per cast: a refusal that survives it is not about passthrough and falls through to the ordinary diagnosis.
 
-Verified on hardware after the fix — the receiver's own log names the decoder that ran:
+The full eight-clip matrix, verified on the Google TV Streamer with media audio on a
+Bluetooth speaker — the route that exposed the defect. The receiver's own log names the
+decoder that actually ran, so none of this is inferred from "the picture appeared":
 
-| Clip | Result |
-| --- | --- |
-| H.264 + AC-3 5.1 | plays, `c2.dolby.ac3.decoder` (sink rebuilt) |
-| H.264 + E-AC-3 5.1 | plays, `c2.dolby.eac3.decoder` (sink rebuilt) |
-| HEVC 10-bit 4K + AC-3 5.1 | plays, `c2.dolby.ac3.decoder` |
-| HEVC + AAC stereo | plays, `c2.android.aac.decoder` |
+| Clip | Video decoder | Audio decoder |
+| --- | --- | --- |
+| H.264 + AC-3 5.1 | `c2.mtk.avc.decoder` @ 1920×1080 | `c2.dolby.ac3.decoder` |
+| H.264 + E-AC-3 5.1 | `c2.mtk.avc.decoder` @ 1920×1080 | `c2.dolby.eac3.decoder` (sink rebuilt) |
+| H.264 + AAC stereo | `c2.mtk.avc.decoder` @ 1920×1080 | `c2.android.aac.decoder` |
+| HEVC + AAC stereo | `c2.mtk.hevc.decoder` @ 1920×1080 | `c2.android.aac.decoder` |
+| HEVC 10-bit 4K + AC-3 5.1 | `c2.mtk.hevc.decoder` @ 3840×2160 | `c2.dolby.ac3.decoder` |
+| VP9 + Opus | `c2.mtk.vp9.decoder` @ 1920×1080 | `c2.android.opus.decoder` |
+| AV1 + Opus | `c2.mtk.av1.decoder` @ 1920×1080 | `c2.android.opus.decoder` |
+| H.264 + DTS 5.1 | `c2.mtk.avc.decoder` @ 1920×1080 | none — plays silent, see below |
+
+Exactly one sink rebuild across the whole run, on the first compressed-audio clip of the
+process. Every later AC-3 and E-AC-3 file decoded from the first frame, which is the
+per-process latch doing its job.
+
+DTS logged `audioSilent mime=audio/vnd.dts reason=noSupportedAudioTrack` and kept the
+picture running, as designed.
 
 `docs/store/push-codec-clips.sh` stages an eight-clip matrix (H.264/HEVC/VP9/AV1 against AAC/AC-3/E-AC-3/DTS/Opus, including 4K HEVC 10-bit) and `docs/store/codec-matrix-test.sh` casts each one and reads the verdict out of the TV's own log.
 
