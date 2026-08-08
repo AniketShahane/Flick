@@ -61,8 +61,17 @@ for m in re.finditer(r'content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+
     print(f"{label}\t{(int(m.group(2))+int(m.group(4)))//2}\t{(int(m.group(3))+int(m.group(5)))//2}")
 PY
 
-while IFS=$'\t' read -r label cx cy; do
-  [ -z "$label" ] && continue
+# Read the whole list up front rather than piping it into the loop: adb inherits the
+# loop's stdin and swallows the remaining lines, which silently tested one clip and
+# reported a clean pass.
+tiles=("${(@f)$(cat "$OUT/tiles.txt")}")
+
+for entry in $tiles; do
+  [ -z "$entry" ] && continue
+  label=${entry%%$'\t'*}
+  rest=${entry#*$'\t'}
+  cx=${rest%%$'\t'*}
+  cy=${rest#*$'\t'}
   $A -s $TV logcat -c 2>/dev/null
   guard || { printf '%-34s %-8s %s\n' "${label:0:33}" "SKIP" "app not focused"; continue }
   $A -s $PHONE shell input tap "$cx" "$cy"; $A -s $PHONE shell sleep 3
@@ -109,7 +118,7 @@ for m in re.finditer(r'(?:text|content-desc)=\"([^\"]*)\"[^>]*?bounds=\"\[(\d+),
 ")
   [ -n "$stop" ] && { guard && $A -s $PHONE shell input tap ${=stop}; }
   $A -s $PHONE shell sleep 4
-done < "$OUT/tiles.txt"
+done
 
 $A -s $PHONE shell 'rm -f /sdcard/_m.xml /sdcard/_s.xml /sdcard/_n.xml'
 printf '\nTV logs per clip: %s\n' "$OUT"
