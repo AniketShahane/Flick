@@ -335,12 +335,30 @@ receiver now answers the first output refusal by rebuilding its audio sink so th
 bitstream is decoded rather than passed through, keeping the film, position and subtitle;
 passthrough stays on for HDMI routes where it is correct.
 
-**Still to run before upload:** the eight-clip codec matrix, on hardware.
+The first attempt at that fix did not work, and the reason is worth knowing before
+anyone reaches for it again: a PCM-only `AudioCapabilities` handed to the sink builder
+is overwritten by media3's own `AudioCapabilitiesReceiver` as soon as it registers, so
+the rebuilt sink asked the platform a second time and got the same wrong answer. The
+refusal now lives in `PcmOnlyAudioSink`, wrapping the finished sink, where nothing
+downstream can overwrite it. Verified on hardware: AC-3 and E-AC-3 clips now reach
+`c2.dolby.ac3.decoder` and `c2.dolby.eac3.decoder`.
+
+**Still to run before upload:** the remaining half of the eight-clip codec matrix, on
+hardware. Four are confirmed passing — H.264+AC-3, H.264+E-AC-3, HEVC 10-bit 4K+AC-3,
+HEVC+AAC. The other four (VP9+Opus, AV1+Opus, H.264+AAC, H.264+DTS) were interrupted by
+a router-side phone-to-TV peer block, the failure mode in `research/03`; both devices
+were healthy on the same /24 and could not reach each other in either direction.
 
 ```sh
+export FLICK_PHONE=<adb serial>  FLICK_TV=<adb serial or host:port>
 ./docs/store/push-codec-clips.sh      # stage the clips, force a metadata scan
 ./docs/store/codec-matrix-test.sh     # cast each, read the verdict from the TV's log
 ```
+
+The verdict names the audio decoder that actually ran, and a clip that shows video with
+`audio=NONE` is reported as `SILENT` rather than `PASS` — silence is the one failure the
+picture cannot reveal. DTS is expected to land there: the verified TV declares no DTS
+decoder at all.
 
 And the detail sheet said **"Will direct-play at full quality"** for a file that then did
 not play. The verdict is computed without knowing what the paired TV will accept, so the
