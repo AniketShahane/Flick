@@ -500,6 +500,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
         override fun onTracksChanged(tracks: Tracks) {
             reportUnplayableVideoTrack(tracks)
+            reportSilentAudio(tracks)
             readAutoVideoRotation(tracks)
             var selected = false
             var selectedMimeType: String? = null
@@ -848,6 +849,43 @@ class PlayerController(context: Context) : SessionPlayer {
      * re-raised over a diagnosis screen the viewer is already reading.
      */
     private var videoShortfallReported = false
+
+    /** One report per media item, for the same reason as [videoShortfallReported]. */
+    private var silentAudioReported = false
+
+    /**
+     * The film carries audio and none of it was selected, so it will play silent.
+     *
+     * Deliberately a log line and nothing more. This is NOT routed like
+     * [reportUnplayableVideoTrack]: a film with no picture is not worth watching and
+     * has to be said out loud, while a film with no sound is still the film, and
+     * ending the cast over it would take away something the viewer can see. The
+     * observed case is DTS on the verified TV, which has no DTS decoder and, on a
+     * Bluetooth route, no passthrough either — nothing this app can do restores it.
+     *
+     * It exists so the condition is diagnosable rather than mysterious: silence is
+     * the one failure the picture cannot reveal.
+     */
+    private fun reportSilentAudio(tracks: Tracks) {
+        if (silentAudioReported) return
+        var present = false
+        var selected = false
+        var mimeType: String? = null
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (index in 0 until group.length) {
+                present = true
+                if (group.isTrackSelected(index)) selected = true
+                if (mimeType == null) mimeType = group.getTrackFormat(index).sampleMimeType
+            }
+        }
+        if (!present || selected) return
+        silentAudioReported = true
+        FlickLog.w(
+            "player",
+            "audioSilent mime=${mimeType ?: "unknown"} reason=noSupportedAudioTrack",
+        )
+    }
 
     /**
      * Turn "the video track was not selected" into the terminal failure Media3 never
@@ -1676,6 +1714,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // A capability verdict belongs to the file it was reached about: the next cast
         // gets to be judged on its own tracks. This is every load and reload path.
         videoShortfallReported = false
+        silentAudioReported = false
     }
 
     // --- Lifecycle -----------------------------------------------------------
