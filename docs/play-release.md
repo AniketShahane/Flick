@@ -343,11 +343,15 @@ refusal now lives in `PcmOnlyAudioSink`, wrapping the finished sink, where nothi
 downstream can overwrite it. Verified on hardware: AC-3 and E-AC-3 clips now reach
 `c2.dolby.ac3.decoder` and `c2.dolby.eac3.decoder`.
 
-**Still to run before upload:** the remaining half of the eight-clip codec matrix, on
-hardware. Four are confirmed passing — H.264+AC-3, H.264+E-AC-3, HEVC 10-bit 4K+AC-3,
-HEVC+AAC. The other four (VP9+Opus, AV1+Opus, H.264+AAC, H.264+DTS) were interrupted by
-a router-side phone-to-TV peer block, the failure mode in `research/03`; both devices
-were healthy on the same /24 and could not reach each other in either direction.
+**The eight-clip matrix is green on hardware.** Seven of eight play with both a video and
+an audio decoder named in the receiver's log; the eighth, H.264+DTS, plays silent because
+the verified TV declares no DTS decoder at all. The full decoder-by-decoder table is in
+[implementation.md](implementation.md#decoder_init-is-usually-not-the-decoder--it-is-ac-3-passthrough-on-a-bluetooth-route).
+
+One caution for anyone re-running it: a mid-run router-side peer block between phone and
+TV (the failure in `research/03`) reads as codec failures it is not. If clips start
+returning `SKIP` or no first frame, check `ping` between the two devices before believing
+the verdict — both can be healthy on the same /24 and still unable to reach each other.
 
 ```sh
 export FLICK_PHONE=<adb serial>  FLICK_TV=<adb serial or host:port>
