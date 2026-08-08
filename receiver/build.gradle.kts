@@ -1,7 +1,58 @@
+// Imported rather than written as `java.util.Properties`: inside a Kotlin build script
+// `java` resolves to Gradle's own java extension, not to the package root, so the
+// qualified name does not compile here.
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.androidx.baselineprofile)
+}
+
+/**
+ * The Play upload identity, read from gitignored `local.properties` or from the
+ * environment for CI. The keystore itself lives OUTSIDE this repository; only a
+ * path to it is configured here, and no value is ever printed — a build log is the
+ * wrong place for a signing password.
+ *
+ * Absent is the normal state of a clone and must stay buildable: `release` then
+ * falls back to the debug keystore exactly as it always did. That fallback is a
+ * local-testing identity so `installRelease` works on a developer machine; it is
+ * not a distribution identity, and an artifact signed with it cannot be uploaded.
+ *
+ * Kept in step with the sender's copy by hand. The two apps are separate Play
+ * listings but share one upload identity, so a divergence here would be a pair of
+ * bundles Play attributes to two different developers.
+ */
+val uploadSigning: Map<String, String>? = run {
+    val local = rootProject.file("local.properties")
+    val properties = if (local.isFile) {
+        Properties().apply { local.inputStream().use { load(it) } }
+    } else {
+        null
+    }
+    fun field(propertyName: String, environmentName: String): String =
+        (properties?.getProperty(propertyName) ?: System.getenv(environmentName)).orEmpty().trim()
+
+    val fields = mapOf(
+        "storeFile" to field("flick.upload.storeFile", "FLICK_UPLOAD_STORE_FILE"),
+        "storePassword" to field("flick.upload.storePassword", "FLICK_UPLOAD_STORE_PASSWORD"),
+        "keyAlias" to field("flick.upload.keyAlias", "FLICK_UPLOAD_KEY_ALIAS"),
+        "keyPassword" to field("flick.upload.keyPassword", "FLICK_UPLOAD_KEY_PASSWORD"),
+    )
+    val missing = fields.filterValues { it.isEmpty() }.keys
+    when {
+        missing.size == fields.size -> null
+        missing.isNotEmpty() -> throw GradleException(
+            "Upload signing is all-or-nothing: flick.upload.${missing.joinToString()} " +
+                "${if (missing.size == 1) "is" else "are"} unset while the others are set.",
+        )
+        !File(fields.getValue("storeFile")).isFile -> throw GradleException(
+            "flick.upload.storeFile does not point at a file. The upload keystore is " +
+                "deliberately kept outside this repository; restore it from your backup.",
+        )
+        else -> fields
+    }
 }
 
 android {
@@ -12,10 +63,21 @@ android {
         applicationId = "com.flick.receiver"
         minSdk = 26
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        uploadSigning?.let { identity ->
+            create("upload") {
+                storeFile = File(identity.getValue("storeFile"))
+                storePassword = identity.getValue("storePassword")
+                keyAlias = identity.getValue("keyAlias")
+                keyPassword = identity.getValue("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -26,11 +88,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Local-testing signing identity only: reusing the debug keystore is
-            // what makes `installRelease` possible on a developer machine. It is
-            // NOT a distribution identity and no keystore/credential is stored
-            // in this repository.
-            signingConfig = signingConfigs.getByName("debug")
+            // The Play upload identity when one is configured, and otherwise the
+            // debug keystore. That fallback is a local-testing identity — it is
+            // what makes `installRelease` possible on a machine with no upload
+            // key — and is NOT a distribution identity. No keystore or credential
+            // is stored in this repository either way; see [uploadSigning].
+            signingConfig = signingConfigs.findByName("upload")
+                ?: signingConfigs.getByName("debug")
         }
 
         // Macrobenchmark measurement target: release-shaped and non-debuggable

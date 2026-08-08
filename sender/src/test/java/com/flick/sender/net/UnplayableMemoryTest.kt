@@ -23,8 +23,10 @@ class UnplayableMemoryTest {
         }
     }
 
-    // The whole point of the split: a bad network minute must not libel a file, and a
+    // The whole point of the split: a bad network minute must not libel a file, and one
     // decoder the TV failed to start is the TV's state, not the container's contents.
+    // `decoder_init` is in this list on its FIRST arrival only — see the repeat tests
+    // below, which are the case that made the sheet promise forever.
     @Test
     fun `a link or session fault never marks the file`() {
         for (code in listOf(
@@ -48,6 +50,80 @@ class UnplayableMemoryTest {
         for (code in listOf("update_required", "control_unreachable", "source_unavailable")) {
             assertFalse(code, marksFileUnplayable(code))
         }
+    }
+
+    @Test
+    fun `a decoder fault marks the file only once it has happened twice`() {
+        assertFalse(marksFileUnplayable(DecoderFaultCode, repeatedDecoderFault = false))
+        assertTrue(marksFileUnplayable(DecoderFaultCode, repeatedDecoderFault = true))
+    }
+
+    /**
+     * The repeat flag is about `decoder_init` and nothing else. A second network failure
+     * is still a network failure, and promoting one to a verdict on the file would undo
+     * the whole split this class exists to keep.
+     */
+    @Test
+    fun `repetition promotes no other code`() {
+        for (code in listOf(
+            "media_unreachable", "sender_not_serving", "http_rejected", "startup_timeout",
+            "control_disconnected", "active_cast_busy", "unknown",
+        )) {
+            assertFalse(code, marksFileUnplayable(code, repeatedDecoderFault = true))
+        }
+    }
+
+    @Test
+    fun `the ledger calls the second fault on a file and not the first`() {
+        val ledger = DecoderFaultLedger()
+        assertFalse(ledger.record(film))
+        assertTrue(ledger.record(film))
+    }
+
+    @Test
+    fun `two films each get their own first chance`() {
+        val ledger = DecoderFaultLedger()
+        assertFalse(ledger.record(film))
+        assertFalse(ledger.record(other))
+        assertTrue(ledger.record(other))
+    }
+
+    /** A first frame proves the decoder is reachable, so the count starts over. */
+    @Test
+    fun `a film that finally played gets its first chance back`() {
+        val ledger = DecoderFaultLedger()
+        assertFalse(ledger.record(film))
+        ledger.forget(film)
+        assertFalse(ledger.record(film))
+    }
+
+    @Test
+    fun `a marked film staying marked survives further faults`() {
+        val ledger = DecoderFaultLedger()
+        ledger.record(film)
+        assertTrue(ledger.record(film))
+        assertTrue(ledger.record(film))
+    }
+
+    @Test
+    fun `the ledger forgets its oldest suspect rather than growing`() {
+        val ledger = DecoderFaultLedger(limit = 2)
+        ledger.record("a")
+        ledger.record("b")
+        ledger.record("c")
+        assertEquals(setOf("b", "c"), ledger.suspects())
+        // "a" was evicted, so its next fault is a first one again rather than a verdict.
+        assertFalse(ledger.record("a"))
+    }
+
+    @Test
+    fun `suspects names every film waiting on a second look`() {
+        val ledger = DecoderFaultLedger()
+        assertEquals(emptySet<String>(), ledger.suspects())
+        ledger.record(film)
+        assertEquals(setOf(film), ledger.suspects())
+        ledger.forget(film)
+        assertEquals(emptySet<String>(), ledger.suspects())
     }
 
     @Test

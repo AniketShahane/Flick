@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flick — Privacy Policy</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ground: #F2F6FF;
+    --ink: #0B1020;
+    --muted: #4A5570;
+    --rule: #D3DCF2;
+    --mark: #1240E8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #04070F;
+      --ink: #F2F6FF;
+      --muted: #97A3C0;
+      --rule: #1B2440;
+      --mark: #6E93FF;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 3rem 1.25rem 6rem;
+    background: var(--ground);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.15rem; margin: 2.75rem 0 .75rem; letter-spacing: -.01em;
+    padding-top: 1.25rem; border-top: 1px solid var(--rule);
+  }
+  .sub { color: var(--muted); margin: 0 0 .5rem; }
+  .date { color: var(--muted); font-size: .9rem; margin: 0 0 2rem; }
+  ul { padding-left: 1.15rem; }
+  li { margin: .4rem 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .875em; background: color-mix(in srgb, var(--mark) 12%, transparent);
+    padding: .1em .35em; border-radius: .25rem;
+  }
+  a { color: var(--mark); }
+  strong { font-weight: 650; }
+  .callout {
+    border-left: 3px solid var(--mark);
+    padding: .1rem 0 .1rem 1rem;
+    margin: 1.25rem 0;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Flick — Privacy Policy</h1>
+<p class="sub">Covers <strong>Flick</strong> (<code>com.flick.sender</code>, phone) and
+<strong>Flick TV</strong> (<code>com.flick.receiver</code>, Android TV).</p>
+<p class="date">Effective 7 August 2026</p>
+
+<div class="callout">
+Flick has no accounts, no analytics, no advertising, and no crash reporting. Your videos are
+sent from your phone to your TV over your own Wi-Fi and never travel through any server we run —
+because we do not run one.
+</div>
+
+<h2>What Flick does with your videos</h2>
+<p>
+Flick plays the video files already on your phone on a TV on the same Wi-Fi network. The phone
+runs a small web server that the TV reads the file from directly. The original file is sent, byte
+for byte, from your phone to your TV.
+</p>
+<p>
+That transfer stays on your local network. Nothing about it is uploaded, copied, relayed, or
+stored anywhere else. Neither app sends video, audio, thumbnails, or file names to us or to any
+third party.
+</p>
+
+<h2>Access to your videos on the phone</h2>
+<p>
+Flick asks for permission to read the videos on your device so it can show you a browsable
+library — folders, thumbnails, durations, search, and where you left off in each film. It reads
+that library only to display it and to serve a file you choose to your TV.
+</p>
+<p>
+Flick also reads subtitle files sitting next to a video, so a film you already have subtitles for
+plays with them. It reads no other files, and no photos.
+</p>
+
+<h2>Camera</h2>
+<p>
+The phone camera is used for one thing: reading the pairing code shown on the TV. Frames are
+analysed on the device by a barcode reader bundled inside the app, are never written to storage,
+and never leave the phone. The camera is only active while the scanner is open, and pairing codes
+can always be typed by hand instead — Flick installs and works on a phone with no camera.
+</p>
+
+<h2>Subtitle search (optional)</h2>
+<p>
+If you search for subtitles online, Flick sends a request to <strong>OpenSubtitles</strong>
+(<code>api.opensubtitles.com</code>). That request contains only what is needed to find a match:
+</p>
+<ul>
+  <li>a search term — the film title, taken from the file name or typed by you;</li>
+  <li>the year, season, and episode number when you supply them;</li>
+  <li>a short numeric fingerprint computed from the video file, which identifies a specific
+      release. It is not the file, and the file cannot be reconstructed from it.</li>
+</ul>
+<p>
+You may optionally sign in to your own OpenSubtitles account to raise your download quota. If you
+do, the username and password you type are sent to OpenSubtitles to obtain a session token. The
+password is not stored; the session token and username are kept on your device and are removed
+when you sign out. Flick never sees or stores your OpenSubtitles password anywhere else.
+</p>
+<p>
+OpenSubtitles is an independent service with its own privacy policy, which governs what it does
+with a request it receives. This step is entirely optional — Flick plays your videos, with
+subtitle files you already have, without it.
+</p>
+
+<h2>Supporting the developer (optional)</h2>
+<p>
+Flick is free and unlocks nothing for payment. If you choose to leave a tip, Flick opens a
+Stripe-hosted checkout page in your browser. Any name, email, or card details you enter there are
+given to Stripe, not to Flick — the app never sees them and receives nothing back but the fact
+that you closed the page.
+</p>
+
+<h2>What is stored on your devices</h2>
+<p>On the phone:</p>
+<ul>
+  <li>your settings;</li>
+  <li>which TV you have paired with, and the key that pairing is built on;</li>
+  <li>where you left off in videos you have played;</li>
+  <li>your OpenSubtitles session token and username, only if you signed in.</li>
+</ul>
+<p>On the TV:</p>
+<ul>
+  <li>which phones are paired with it, and their pairing keys;</li>
+  <li>the TV's display name and its playback settings.</li>
+</ul>
+<p>
+All of this stays on the device that holds it. Uninstalling the app deletes it. Pairings can be
+removed at any time from the TV's Settings screen without uninstalling anything.
+</p>
+
+<h2>What leaves your devices</h2>
+<p>
+<strong>Flick TV makes no connection to the internet at all.</strong> It talks only to a paired
+phone on your local network.
+</p>
+<p>
+<strong>Flick on the phone</strong> connects to exactly one internet host, and only when you ask
+it to search for subtitles: <code>api.opensubtitles.com</code>. Tapping a tip link hands you off
+to Stripe in your browser. There is no other outbound connection, no telemetry, and no
+third-party analytics, advertising, or crash-reporting library in either app.
+</p>
+
+<h2>Children</h2>
+<p>
+Flick is not directed at children and collects nothing that would identify anyone, of any age.
+</p>
+
+<h2>Changes</h2>
+<p>
+If this policy changes, the revised version will be posted at this address with a new effective
+date. Material changes will also be described in the app's release notes on Google Play.
+</p>
+
+<h2>Contact</h2>
+<p>
+Questions about this policy, or about privacy in Flick, can be raised as an issue at
+<a href="https://github.com/AniketShahane/Flick/issues">github.com/AniketShahane/Flick/issues</a>,
+or sent to the developer contact address published on the app's Google Play listing.
+</p>
+
+</main>
+</body>
+</html>

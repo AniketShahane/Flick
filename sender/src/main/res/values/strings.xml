@@ -709,7 +709,9 @@
     <string name="detail_unplayable_hdr">It read the file but doesn\'t support the dynamic-range profile it uses.</string>
     <string name="detail_unplayable_damaged">It couldn\'t read enough of the file to start — it may be incomplete or damaged.</string>
     <string name="detail_unplayable_generic">It stopped before the first frame.</string>
+    <string name="detail_unplayable_decoder">It has a decoder for this but couldn\'t start one — twice in a row.</string>
     <string name="detail_unplayable_note">That was one attempt, on one TV. Flick it again whenever you want.</string>
+    <string name="detail_unplayable_note_twice">That was two attempts, on one TV. Flick it again whenever you want.</string>
     <!-- ===== S12 · the faces a diagnosed failure earns ===== -->
     <!-- Every body names what was actually established and nothing more. Where the fault
          is the file, the TV is not accused; where it is permanent, no copy invites a retry

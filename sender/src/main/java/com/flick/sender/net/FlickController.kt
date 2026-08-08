@@ -219,7 +219,56 @@ private val FileFaultCodes = setOf(
     "malformed_media",
 )
 
-internal fun marksFileUnplayable(code: String): Boolean = code in FileFaultCodes
+/**
+ * The one code that indicts neither the file nor the TV on its own, and both together on
+ * the second try. Named because three places now have to agree on it.
+ */
+internal const val DecoderFaultCode = "decoder_init"
+
+/**
+ * [repeatedDecoderFault] is the second consecutive `decoder_init` for the same file with
+ * no first frame in between.
+ *
+ * One is not evidence about the file, for the reason [FileFaultCodes] gives. Two running
+ * is: a decoder another app was holding is released when that app lets go, so it does not
+ * survive a fresh attempt, while a decoder this TV cannot stand up for this file's format
+ * fails identically every time. Verified on the Google TV Streamer with a 4K H.264 file —
+ * it failed, the TV was rebooted so nothing could still be holding a codec, and it failed
+ * again the same way, while a 1080p file cast immediately afterwards. The TV's own codec
+ * table declares that file supported, so no capability query would have caught it; only
+ * trying it twice does.
+ */
+internal fun marksFileUnplayable(code: String, repeatedDecoderFault: Boolean = false): Boolean =
+    code in FileFaultCodes || (repeatedDecoderFault && code == DecoderFaultCode)
+
+/**
+ * Files that have failed to find a decoder once, waiting to see whether it happens again.
+ *
+ * This exists because the sheet used to promise "will direct-play at full quality" on
+ * every visit to a file that had never once played: `decoder_init` marks nothing, so
+ * there was no evidence for the sheet to change its mind with, and the promise repeated
+ * forever. A file in here has broken that promise once — enough to stop making it, not
+ * enough to call the file unplayable.
+ *
+ * Bounded and process-lived, for the reasons [UnplayableMemory] gives about persistence.
+ */
+internal class DecoderFaultLedger(private val limit: Int = 32) {
+    private val seen = LinkedHashSet<String>()
+
+    /** Records a fault and answers whether this file has now failed twice running. */
+    fun record(key: String): Boolean {
+        if (!seen.add(key)) return true
+        while (seen.size > limit) seen.remove(seen.first())
+        return false
+    }
+
+    /** A frame reached the screen, so whatever was holding the decoder is gone. */
+    fun forget(key: String) {
+        seen.remove(key)
+    }
+
+    fun suspects(): Set<String> = seen.toSet()
+}
 
 /** A completed first-frame cast may earn the one-time invitation only from an Active session. */
 internal fun supportInvitationEligibleForNormalCompletion(
@@ -323,6 +372,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // launch so the only way to reach them is to spend them. Cleared with the launch.
     private var pendingPairCode: String? = null
     private val unplayableMemory = UnplayableMemory()
+    private val decoderFaults = DecoderFaultLedger()
     private val linkMonitor = LinkCapacityMonitor { SystemClock.elapsedRealtime() }
 
     // The last moment this phone provably put bytes on the media socket, off the same
@@ -380,6 +430,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // face offers to play it here, and both the tile and the detail sheet remember it.
     private val _failureItem = MutableStateFlow<MediaItem?>(null); val failureItem = _failureItem.asStateFlow()
     private val _unplayableFiles = MutableStateFlow<Map<String, String>>(emptyMap()); val unplayableFiles = _unplayableFiles.asStateFlow()
+    /** Files that have failed to find a decoder once. The sheet stops promising for these. */
+    private val _decoderSuspects = MutableStateFlow<Set<String>>(emptySet()); val decoderSuspects = _decoderSuspects.asStateFlow()
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val simplifiedVideoNames = videoNamePreference.simplified
     val playback = session.state; val pulses = session.pulses
@@ -1400,7 +1452,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 )?.let(::enqueueProgress)
                 _route.value = Route.NowPlaying
                 // A first frame is the only thing that can outrank a previous refusal.
+                // It also clears the decoder suspicion: this file just found a decoder,
+                // so whatever was holding one before has let go.
                 _unplayableFiles.value = unplayableMemory.clear(item.uriKey)
+                decoderFaults.forget(item.uriKey)
+                _decoderSuspects.value = decoderFaults.suspects()
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
               catch (_: Exception) { terminal(castId, "unknown") }
             finally { if (!readyCommit) cleanup(castId) }
@@ -1524,8 +1580,16 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         _failureItem.value = item
         // Only ever the file's own fault, and only ever for the file that was on the
         // wire: a marked item stays castable, so this is a memory, not a gate.
-        if (item != null && marksFileUnplayable(code)) {
-            _unplayableFiles.value = unplayableMemory.mark(item.uriKey, code)
+        //
+        // `decoder_init` is recorded before it is judged. The first one only makes the
+        // sheet stop promising; the second marks the file, because by then the TV has
+        // failed the same way twice with nothing left to blame.
+        if (item != null) {
+            val repeatedDecoderFault = code == DecoderFaultCode && decoderFaults.record(item.uriKey)
+            if (code == DecoderFaultCode) _decoderSuspects.value = decoderFaults.suspects()
+            if (marksFileUnplayable(code, repeatedDecoderFault)) {
+                _unplayableFiles.value = unplayableMemory.mark(item.uriKey, code)
+            }
         }
         FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$offerRetry httpStatus=$httpStatus")
         _castFailure.value = CastFailure(code, offerRetry, httpStatus)

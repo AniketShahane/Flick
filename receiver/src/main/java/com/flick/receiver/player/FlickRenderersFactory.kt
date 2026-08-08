@@ -6,6 +6,7 @@ import androidx.media3.common.C
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.metadata.MetadataOutput
 import androidx.media3.exoplayer.text.TextOutput
@@ -44,7 +45,36 @@ class FlickRenderersFactory(
     context: Context,
     private val rotation: VideoRotationOverride,
     private val shift: AudioDelayShift,
+    /**
+     * Build the audio sink so it will not accept a compressed bitstream, which
+     * makes the renderer decode to PCM instead of passing through. False for every
+     * ordinary cast; see [AudioOutputPolicy] for the one failure that turns it on.
+     */
+    private val decodeCompressedAudio: Boolean = false,
 ) : DefaultRenderersFactory(context) {
+
+    /**
+     * The sink media3 builds asks the platform what the output can take, and on a
+     * TV whose media audio is routed to Bluetooth the platform answers for the HDMI
+     * port instead. [PcmOnlyAudioSink] wraps that sink and answers for itself: PCM
+     * only, so no compressed format is ever eligible for passthrough and
+     * `MediaCodecAudioRenderer` goes looking for a decoder — which the TV has.
+     *
+     * `super` still builds the sink, so every default media3 configures — buffer
+     * sizing, offload support, the audio-track provider, `enableFloatOutput`,
+     * `enableAudioTrackPlaybackParams` — is exactly what an ordinary cast gets.
+     * The wrapper changes the answer to two questions and nothing else. Rebuilding
+     * the sink from a fresh `DefaultAudioSink.Builder` instead would both restate
+     * those defaults and, as [PcmOnlyAudioSink] documents, fail to hold.
+     */
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean,
+    ): AudioSink? {
+        val sink = super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+        return if (!decodeCompressedAudio || sink == null) sink else PcmOnlyAudioSink(sink)
+    }
 
     /**
      * The builder chain mirrors `DefaultRenderersFactory.buildVideoRenderers` in

@@ -57,6 +57,13 @@ class InstrumentationState {
     /** Cumulative silent auto-recoveries performed this session (for the overlay). */
     var autoRecoveryCount: Int = 0
 
+    /**
+     * Times the audio sink was rebuilt to decode a bitstream the output refused —
+     * see [AudioOutputPolicy]. At most one per cast, and normally zero; a 1 here is
+     * the visible trace of an audio route that cannot carry passthrough.
+     */
+    var audioSinkRebuildCount: Int = 0
+
     /** User seeks performed after playback started. */
     var seekCount: Int = 0
 
@@ -88,6 +95,7 @@ class InstrumentationState {
         errorCode = 0
         errorCodeName = null
         autoRecoveryCount = 0
+        audioSinkRebuildCount = 0
         seekCount = 0
         seekFillStartMs = 0L
         lastSeekFillMs = 0L
