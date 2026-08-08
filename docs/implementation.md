@@ -531,15 +531,29 @@ AC-3 selected ⇔ failure, in both directions; resolution, level, container and 
 
 **The TV can decode it.** `media_codecs_c2.xml` declares `c2.dolby.ac3.decoder`; media3 simply never falls back from a failed bypass to decode-to-PCM. Same class as ExoPlayer#10227 and jellyfin-androidtv#4705, the latter on this exact device.
 
-**The fix reacts rather than predicts.** `AudioOutputPolicy` names the four codes that mean the output refused the track, and `PlayerController.recoverFromAudioOutputRefusal` answers the first of them by swapping in a player whose sink will not accept a compressed bitstream — `FlickRenderersFactory` builds it with `AudioCapabilities(intArrayOf(ENCODING_PCM_16BIT), 8)` — which sends `MediaCodecAudioRenderer` looking for a decoder instead. The film, position, subtitle and play state carry across; only the sink changes.
+**The fix reacts rather than predicts.** `AudioOutputPolicy` names the four codes that mean the output refused the track, and `PlayerController.recoverFromAudioOutputRefusal` answers the first of them by swapping in a player whose sink will not accept a compressed bitstream, which sends `MediaCodecAudioRenderer` looking for a decoder instead. The film, position, subtitle and play state carry across; only the sink changes.
 
-Three decisions in that are load-bearing:
+**Where the refusal has to live — `PcmOnlyAudioSink`, not `AudioCapabilities`.** Handing `DefaultAudioSink.Builder` a PCM-only `AudioCapabilities` does not hold, and this was proven on hardware before it was understood. In media3 1.10.1 the builder forwards those capabilities into an `AudioTrackAudioOutputProvider`, which registers an `AudioCapabilitiesReceiver` and overwrites the field with the receiver's answer the moment it starts — `audioCapabilitiesReceiver.register()` → `putfield audioCapabilities`, read off the 1.10.1 bytecode. The asserted value survives only until the provider asks the platform, and the platform's answer *is* the defect. A sink built that way still selected passthrough and still died: `Config(48000, 252, 5, 40000)`, encoding 5 being `ENCODING_AC3`, logged *after* the rebuild had supposedly disabled it.
+
+`FlickRenderersFactory` therefore wraps what `super.buildAudioSink` returns in `PcmOnlyAudioSink`, a `ForwardingAudioSink` that answers `getFormatSupport` and `supportsFormat` itself. Those are the two questions `MediaCodecAudioRenderer` actually asks before choosing passthrough — the first gates `getDecoderInfos`, the second gates the `FORMAT_HANDLED` fast path — and nothing downstream can overwrite them. Wrapping also keeps every media3 default (buffer sizing, offload support, the audio-track provider) rather than restating them.
+
+Four decisions in that are load-bearing:
 
 - **No pre-emption.** Guessing "Bluetooth route ⇒ decode" would take surround passthrough away from every HDMI viewer it works for, and would still be a guess about a route that can change mid-film. Reacting to the actual refusal is never wrong.
-- **The channel ceiling is 8, not the 2 of `DEFAULT_AUDIO_CAPABILITIES`.** What has to be refused is the *encoding*, not the channel count: a decoded 5.1 track is six channels of PCM, and AudioFlinger downmixes PCM to whatever the route has. Capping at two would refuse the thing this exists to deliver.
+- **Only the encoding is refused, never the channel count.** A decoded 5.1 track is six channels of linear PCM and is forwarded untouched; AudioFlinger downmixes it to whatever the route has. Refusing width would throw away the surround this exists to deliver. PCM is detected exactly as `DefaultAudioSink` detects it, `Util.isEncodingLinearPcm(pcmEncoding)`, so the two agree on the boundary.
 - **The latch is per process, not per cast.** The refusal is a property of the TV's current audio route, so resetting it per film would spend a failed cast and a rebuild on every AC-3 file in the library instead of the first one. A receiver restart is the amnesty.
+- **A format with no decoder is unplayable either way.** DTS on the verified TV has neither a decoder nor a usable passthrough route, so its audio track is disabled and the picture runs silent — the same outcome media3 reaches unaided.
 
-A rebuild costs one player swap and shows in the diagnostics overlay as `audioSinkRebuildCount`. It is bounded at one per cast: a refusal that survives it is not about passthrough and falls through to the ordinary diagnosis. The deprecated `AudioCapabilities(int[], int)` is used deliberately — every non-deprecated factory derives capabilities by asking the platform, and the platform's answer is the defect; what is needed is an assertion, not a query.
+A rebuild costs one player swap and shows in the diagnostics overlay as `audioSinkRebuildCount`. It is bounded at one per cast: a refusal that survives it is not about passthrough and falls through to the ordinary diagnosis.
+
+Verified on hardware after the fix — the receiver's own log names the decoder that ran:
+
+| Clip | Result |
+| --- | --- |
+| H.264 + AC-3 5.1 | plays, `c2.dolby.ac3.decoder` (sink rebuilt) |
+| H.264 + E-AC-3 5.1 | plays, `c2.dolby.eac3.decoder` (sink rebuilt) |
+| HEVC 10-bit 4K + AC-3 5.1 | plays, `c2.dolby.ac3.decoder` |
+| HEVC + AAC stereo | plays, `c2.android.aac.decoder` |
 
 `docs/store/push-codec-clips.sh` stages an eight-clip matrix (H.264/HEVC/VP9/AV1 against AAC/AC-3/E-AC-3/DTS/Opus, including 4K HEVC 10-bit) and `docs/store/codec-matrix-test.sh` casts each one and reads the verdict out of the TV's own log.
 

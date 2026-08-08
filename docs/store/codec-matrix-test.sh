@@ -36,6 +36,9 @@ serving() {  # is the phone's media server bound?
 }
 
 echo "phone: $PHONE   tv: $TV"
+# The TV's screensaver steals focus and the receiver then refuses the cast as
+# backgrounded, which reads as a codec failure it is not.
+$A -s $TV shell input keyevent KEYCODE_WAKEUP
 $A -s $PHONE shell am force-stop com.flick.sender
 $A -s $TV shell am force-stop com.flick.receiver
 $A -s $TV shell monkey -p com.flick.receiver -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
@@ -97,10 +100,16 @@ for m in re.finditer(r'(?:text|content-desc)=\"([^\"]*)\"[^>]*?bounds=\"\[(\d+),
   $A -s $TV logcat -d > "$OUT/${label}.log" 2>/dev/null
   first=$(grep -c "firstFrame" "$OUT/${label}.log")
   rebuilt=$(grep -c "audioSinkRebuilt" "$OUT/${label}.log")
+  # Which audio decoder actually ran. Silence is a failure the picture cannot
+  # reveal, so the verdict names the decoder rather than trusting first frame.
+  adec=$(grep -oE 'Created component \[c2\.[a-z0-9.-]+\]' "$OUT/${label}.log" \
+    | grep -viE 'avc|hevc|dvhe|vp9|av1|mpeg2|video' | head -1 \
+    | sed -E 's/Created component \[(.*)\]/\1/')
   if [ "$first" -gt 0 ] && serving; then
-    note="first frame"
-    [ "$rebuilt" -gt 0 ] && note="first frame (audio sink rebuilt)"
-    printf '%-34s %-8s %s\n' "${label:0:33}" "PASS" "$note"
+    note="video ok, audio=${adec:-NONE}"
+    [ "$rebuilt" -gt 0 ] && note="$note (sink rebuilt)"
+    [ -z "$adec" ] && printf '%-34s %-8s %s\n' "${label:0:33}" "SILENT" "$note" \
+      || printf '%-34s %-8s %s\n' "${label:0:33}" "PASS" "$note"
   else
     why=$(grep -oE "code=[A-Z_]+|AudioTrack init failed|Bad parameter[^\"]*" "$OUT/${label}.log" | head -1)
     printf '%-34s %-8s %s\n' "${label:0:33}" "FAIL" "${why:-see ${label}.log}"
