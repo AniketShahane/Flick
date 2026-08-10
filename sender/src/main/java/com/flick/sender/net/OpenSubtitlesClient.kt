@@ -10,7 +10,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.accept
 import io.ktor.client.request.HttpRequestBuilder
-import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -32,70 +31,26 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * The credentials the online subtitle tab runs on, all of them in this app's own private
- * preferences and none of them anywhere else.
+ * The one credential the online subtitle tab runs on.
  *
- * Two different things live here. An **API key** identifies the APP — OpenSubtitles calls
- * it an API Consumer key, it is reviewed and approved per app, and the one this build
- * shipped is in `BuildConfig` rather than in these preferences. A key the user pasted
- * themselves is kept here and outranks it. A **session** is the user's own: `/login`
- * returns a bearer token, and quota attaches to the account behind that token, not to the
- * key. Only the token, the name to display and the stated expiry are stored — never the
- * password, which is sent once and held in no field.
+ * An **API key** identifies the APP — OpenSubtitles calls it an API Consumer key, it is
+ * reviewed and approved per app, and the one this build shipped is in `BuildConfig`. It is
+ * the only credential this app holds: nothing is read from storage, nothing is written
+ * there, and no value from this file ever reaches a log, an exception or a notification.
  *
- * `flick_subtitles_online` is classified as a credential store in `BackupExclusionsTest`
- * and excluded from cloud backup and device transfer, so everything in here stays on this
- * phone. Nothing in this file is ever written to a log, an exception or a notification.
+ * The interface exists so a JVM test can hold the key still without a Context.
  */
 internal interface OpenSubtitlesCredentials {
     fun resolved(): ResolvedApiKey?
-    fun session(): OpenSubtitlesSession?
-    fun saveSession(session: OpenSubtitlesSession): Boolean
-    fun clearSession(): Boolean
 }
 
-internal class OpenSubtitlesKeyStore(context: Context) : OpenSubtitlesCredentials {
-    private val prefs = context.applicationContext
-        .getSharedPreferences("flick_subtitles_online", Context.MODE_PRIVATE)
-
-    /** The key the user pasted, or null. Kept for power users and builds from source. */
-    fun userKey(): String? = prefs.getString(API_KEY, null)?.trim()?.takeIf { it.isNotEmpty() }
-
-    fun saveUserKey(value: String): Boolean = prefs.edit().putString(API_KEY, value.trim()).commit()
-
-    fun clearUserKey(): Boolean = prefs.edit().remove(API_KEY).commit()
-
+internal class OpenSubtitlesKeyStore : OpenSubtitlesCredentials {
     /**
-     * The key a request will carry, or null when this build shipped none and the user has
-     * pasted none. A null is the honest, expected state of a clone of this repository.
+     * The key a request will carry, or null when this build shipped none. A null is the
+     * honest, expected state of a clone of this repository.
      */
     override fun resolved(): ResolvedApiKey? =
-        OpenSubtitlesWire.resolveKey(userKey(), BuildConfig.OPENSUBTITLES_API_KEY)
-
-    override fun session(): OpenSubtitlesSession? = OpenSubtitlesWire.restoredSession(
-        token = prefs.getString(SESSION_TOKEN, null),
-        username = prefs.getString(SESSION_USER, null),
-        expiresAtMillis = prefs.getLong(SESSION_EXPIRY, 0L),
-    )
-
-    override fun saveSession(session: OpenSubtitlesSession): Boolean = prefs.edit()
-        .putString(SESSION_TOKEN, session.token)
-        .putString(SESSION_USER, session.username)
-        .putLong(SESSION_EXPIRY, session.expiresAtMillis)
-        .commit()
-
-    override fun clearSession(): Boolean = prefs.edit()
-        .remove(SESSION_TOKEN)
-        .remove(SESSION_USER)
-        .remove(SESSION_EXPIRY)
-        .commit()
-
-    private companion object {
-        const val API_KEY = "api_key"
-        const val SESSION_TOKEN = "session_token"
-        const val SESSION_USER = "session_user"
-        const val SESSION_EXPIRY = "session_expiry"
-    }
+        OpenSubtitlesWire.resolveKey(userKey = null, bundledKey = BuildConfig.OPENSUBTITLES_API_KEY)
 }
 
 /**
@@ -139,9 +94,6 @@ sealed interface SubtitleSearchOutcome {
     data object NoKey : SubtitleSearchOutcome
     data object Offline : SubtitleSearchOutcome
     data object BadKey : SubtitleSearchOutcome
-
-    /** A stored token the API refused. It is dropped, not retried: the user signs in again. */
-    data object SignInExpired : SubtitleSearchOutcome
     data object RateLimited : SubtitleSearchOutcome
     data object Unavailable : SubtitleSearchOutcome
 }
@@ -159,10 +111,9 @@ sealed interface SubtitleFetchOutcome {
     data object NoKey : SubtitleFetchOutcome
     data object Offline : SubtitleFetchOutcome
     data object BadKey : SubtitleFetchOutcome
-    data object SignInExpired : SubtitleFetchOutcome
     data object RateLimited : SubtitleFetchOutcome
 
-    /** The account's daily download allowance is spent — not an error Flick can retry. */
+    /** The key's daily download allowance is spent — not an error Flick can retry. */
     data object QuotaSpent : SubtitleFetchOutcome
 
     /** The API answered with a download address outside OpenSubtitles' own domains. */
@@ -171,33 +122,17 @@ sealed interface SubtitleFetchOutcome {
     data object Unavailable : SubtitleFetchOutcome
 }
 
-/** Every way an optional sign-in can end. */
-sealed interface SubtitleLoginOutcome {
-    /** [username] is the name the user typed, normalized for display. */
-    data class Signed(val username: String) : SubtitleLoginOutcome
-    data object NoKey : SubtitleLoginOutcome
-    data object Offline : SubtitleLoginOutcome
-    data object BadKey : SubtitleLoginOutcome
-    data object BadCredentials : SubtitleLoginOutcome
-    data object RateLimited : SubtitleLoginOutcome
-    data object Unavailable : SubtitleLoginOutcome
-}
-
 /** Records the exact search request below orchestration without replacing its policy. */
 internal fun interface OpenSubtitlesSearchTransport {
-    suspend fun get(
-        url: String,
-        apiKey: String,
-        session: OpenSubtitlesSession?,
-    ): SubtitleSearchOutcome
+    suspend fun get(url: String, apiKey: String): SubtitleSearchOutcome
 }
 
 /**
  * Search and download against api.opensubtitles.com.
  *
- * The key is the app's (or one the user pasted); the allowance is the signed-in account's,
- * which is why sign-in is offered at all — one app key's daily downloads shared across
- * every install is not an allowance anybody can use. Nothing here runs without a key.
+ * Every request carries the key this build shipped and nothing else, so the daily
+ * allowance behind it is shared by every install of the same APK. Nothing here runs
+ * without a key.
  */
 class OpenSubtitlesClient private constructor(
     private val appContext: Context?,
@@ -206,7 +141,7 @@ class OpenSubtitlesClient private constructor(
 ) {
     constructor(context: Context) : this(
         context.applicationContext,
-        OpenSubtitlesKeyStore(context),
+        OpenSubtitlesKeyStore(),
         null,
     )
 
@@ -221,79 +156,18 @@ class OpenSubtitlesClient private constructor(
     /**
      * Redirects are refused for every call this client makes.
      *
-     * On the API calls that is what stops an `Api-Key` or a bearer token from being
-     * replayed to whatever host a `Location` header happens to name — Ktor copies headers
-     * across a redirect, so following one would send a credential to an address this code
-     * did not fix. On the CDN fetch it is what stops a hostile or compromised link from
-     * bouncing the download to an arbitrary host. The one legitimate hop — a CDN that
-     * answers 3xx — is taken by hand in [fetch], once, and only to another allow-listed
-     * OpenSubtitles address.
+     * On the API calls that is what stops the `Api-Key` from being replayed to whatever
+     * host a `Location` header happens to name — Ktor copies headers across a redirect, so
+     * following one would send a credential to an address this code did not fix. On the CDN
+     * fetch it is what stops a hostile or compromised link from bouncing the download to an
+     * arbitrary host. The one legitimate hop — a CDN that answers 3xx — is taken by hand in
+     * [fetch], once, and only to another allow-listed OpenSubtitles address.
      */
     private val lazyHttp = lazy { HttpClient(CIO) { followRedirects = false } }
     private val http: HttpClient get() = lazyHttp.value
 
-    /** The signed-in account, or null. Reading it drops a session whose life is over. */
-    fun session(): OpenSubtitlesSession? = liveSession()
-
     fun close() {
         if (lazyHttp.isInitialized()) runCatching { http.close() }
-    }
-
-    /**
-     * Signs in so downloads count against the user's own daily allowance instead of the
-     * allowance this build's key shares with every other install.
-     *
-     * [password] is written straight into the request body and is held nowhere else: not
-     * in a field that outlives this call, not in the preferences, not in a log line.
-     */
-    suspend fun signIn(username: String, password: String): SubtitleLoginOutcome =
-        withContext(Dispatchers.IO) {
-            val key = keys.resolved() ?: return@withContext SubtitleLoginOutcome.NoKey
-            val name = username.trim()
-            if (name.isEmpty() || password.isEmpty()) {
-                return@withContext SubtitleLoginOutcome.BadCredentials
-            }
-            val response = attempt {
-                http.post("$API/login") {
-                    apiHeaders(key.value)
-                    contentType(ContentType.Application.Json)
-                    setBody(JSONObject().put("username", name).put("password", password).toString())
-                }
-            } ?: return@withContext SubtitleLoginOutcome.Offline
-            FlickLog.i("http", "opensubtitles login status=${response.status.value}")
-            when (response.status.value) {
-                200 -> Unit
-                401 -> return@withContext SubtitleLoginOutcome.BadCredentials
-                403 -> return@withContext SubtitleLoginOutcome.BadKey
-                429 -> return@withContext SubtitleLoginOutcome.RateLimited
-                else -> return@withContext SubtitleLoginOutcome.Unavailable
-            }
-            val body = response.readBody(MAX_JSON_BYTES) ?: return@withContext SubtitleLoginOutcome.Offline
-            val text = body.bytes?.toString(Charsets.UTF_8)
-                ?: return@withContext SubtitleLoginOutcome.Unavailable
-            // The answer also carries `base_url`, a host for VIP accounts. It is
-            // deliberately ignored: a host the server chooses is a host this code did not
-            // fix, and every request here stays on the one address above.
-            val token = runCatching { JSONObject(text).optString("token") }.getOrNull()
-            val session = OpenSubtitlesWire.sessionOf(token, name, System.currentTimeMillis())
-                ?: return@withContext SubtitleLoginOutcome.Unavailable
-            keys.saveSession(session)
-            SubtitleLoginOutcome.Signed(session.username)
-        }
-
-    /** Best effort on the wire, certain locally: the token is gone either way. */
-    suspend fun signOut() {
-        withContext(Dispatchers.IO) {
-            val key = keys.resolved()
-            val session = keys.session()
-            if (key != null && session != null) {
-                val response = attempt {
-                    http.delete("$API/logout") { apiHeaders(key.value, session) }
-                }
-                response?.let { FlickLog.i("http", "opensubtitles logout status=${it.status.value}") }
-            }
-            keys.clearSession()
-        }
     }
 
     /**
@@ -329,8 +203,8 @@ class OpenSubtitlesClient private constructor(
         }
 
         val hashOutcome = hashParameters.takeIf { it.isNotEmpty() }?.let { subtitles(key.value, it) }
-        // A refused key or a spent session is the same fault for both halves; answering it
-        // once is better than running the text query with a credential just refused.
+        // A refused key is the same fault for both halves; answering it once is better
+        // than running the text query with a credential just refused.
         if (hashOutcome != null && hashOutcome.isCredentialFault()) return@withContext hashOutcome
         val hashResults = (hashOutcome as? SubtitleSearchOutcome.Found)?.results.orEmpty()
         fun found(textResults: List<OnlineSubtitle>) = SubtitleSearchOutcome.Found(
@@ -371,10 +245,9 @@ class OpenSubtitlesClient private constructor(
      */
     suspend fun download(subtitle: OnlineSubtitle): SubtitleFetchOutcome = withContext(Dispatchers.IO) {
         val key = keys.resolved() ?: return@withContext SubtitleFetchOutcome.NoKey
-        val session = liveSession()
         val response = attempt {
             http.post("$API/download") {
-                apiHeaders(key.value, session)
+                apiHeaders(key.value)
                 contentType(ContentType.Application.Json)
                 setBody(JSONObject().put("file_id", subtitle.fileId).toString())
             }
@@ -382,13 +255,7 @@ class OpenSubtitlesClient private constructor(
         FlickLog.i("http", "opensubtitles download status=${response.status.value}")
         when (response.status.value) {
             200 -> Unit
-            401 -> return@withContext if (session != null) {
-                keys.clearSession()
-                SubtitleFetchOutcome.SignInExpired
-            } else {
-                SubtitleFetchOutcome.BadKey
-            }
-            403 -> return@withContext SubtitleFetchOutcome.BadKey
+            401, 403 -> return@withContext SubtitleFetchOutcome.BadKey
             406 -> return@withContext SubtitleFetchOutcome.QuotaSpent
             429 -> return@withContext SubtitleFetchOutcome.RateLimited
             else -> return@withContext SubtitleFetchOutcome.Unavailable
@@ -421,7 +288,6 @@ class OpenSubtitlesClient private constructor(
 
     /** One `/subtitles` request. [query] is the only thing the two searches differ in. */
     private suspend fun subtitles(key: String, query: List<Pair<String, Any>>): SubtitleSearchOutcome {
-        val session = liveSession()
         // Built before the transport boundary so production CIO and the JVM request
         // recorder exercise the exact same canonical spelling.
         val target = buildString {
@@ -435,40 +301,31 @@ class OpenSubtitlesClient private constructor(
         }
         val injected = searchTransport
         if (injected != null) {
-            return injected.get(target, key, session)
+            return injected.get(target, key)
         }
         val response = attempt {
-            http.get(target) { apiHeaders(key, session) }
+            http.get(target) { apiHeaders(key) }
         } ?: return SubtitleSearchOutcome.Offline
         FlickLog.i("http", "opensubtitles search status=${response.status.value}")
-        searchStatusFailure(response.status.value, session)?.let { return it }
+        searchStatusFailure(response.status.value)?.let { return it }
         val body = response.readBody(MAX_JSON_BYTES) ?: return SubtitleSearchOutcome.Offline
         val text = body.bytes?.toString(Charsets.UTF_8) ?: return SubtitleSearchOutcome.Unavailable
         return runCatching { parseSearch(text) }
             .fold({ SubtitleSearchOutcome.Found(it) }, { SubtitleSearchOutcome.Unavailable })
     }
 
-    private fun searchStatusFailure(
-        status: Int,
-        session: OpenSubtitlesSession?,
-    ): SubtitleSearchOutcome? = when (status) {
+    private fun searchStatusFailure(status: Int): SubtitleSearchOutcome? = when (status) {
         200 -> null
-        401 -> if (session != null) {
-                keys.clearSession()
-                SubtitleSearchOutcome.SignInExpired
-            } else {
-                SubtitleSearchOutcome.BadKey
-            }
-        403 -> SubtitleSearchOutcome.BadKey
+        401, 403 -> SubtitleSearchOutcome.BadKey
         429 -> SubtitleSearchOutcome.RateLimited
         else -> SubtitleSearchOutcome.Unavailable
     }
 
     /**
-     * The signed CDN link. No credential travels with it — not the `Api-Key`, not the
-     * bearer token — because a secret must never be sent to an address this code did not
-     * fix. A 3xx is inspected rather than followed: at most [MAX_LINK_HOPS] hop, and only
-     * to a target that passes the same allow-list the original link passed.
+     * The signed CDN link. No credential travels with it — not even the `Api-Key` — because
+     * a secret must never be sent to an address this code did not fix. A 3xx is inspected
+     * rather than followed: at most [MAX_LINK_HOPS] hop, and only to a target that passes
+     * the same allow-list the original link passed.
      */
     private suspend fun fetch(link: String, hopsLeft: Int): Fetched {
         val response = attempt {
@@ -497,26 +354,11 @@ class OpenSubtitlesClient private constructor(
         class Failed(val outcome: SubtitleFetchOutcome) : Fetched
     }
 
-    /**
-     * The stored session, after dropping one whose stated life is over. The 24-hour life
-     * OpenSubtitles documents is not restated in any answer, so this is a hint and not the
-     * authority: a 401 drops the token the same way, and neither path ever retries with it.
-     */
-    private fun liveSession(): OpenSubtitlesSession? {
-        val session = keys.session() ?: return null
-        if (OpenSubtitlesWire.sessionIsLive(session, System.currentTimeMillis())) return session
-        keys.clearSession()
-        return null
-    }
-
     private fun SubtitleSearchOutcome.isCredentialFault(): Boolean =
-        this is SubtitleSearchOutcome.NoKey ||
-            this is SubtitleSearchOutcome.BadKey ||
-            this is SubtitleSearchOutcome.SignInExpired
+        this is SubtitleSearchOutcome.NoKey || this is SubtitleSearchOutcome.BadKey
 
-    private fun HttpRequestBuilder.apiHeaders(key: String, session: OpenSubtitlesSession? = null) {
+    private fun HttpRequestBuilder.apiHeaders(key: String) {
         header("Api-Key", key)
-        session?.let { header(HttpHeaders.Authorization, "Bearer ${it.token}") }
         header(HttpHeaders.UserAgent, USER_AGENT)
         accept(ContentType.Application.Json)
     }

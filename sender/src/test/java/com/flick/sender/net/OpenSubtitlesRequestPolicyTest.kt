@@ -50,7 +50,7 @@ class OpenSubtitlesRequestPolicyTest {
     }
 
     @Test fun onlyOnePlaceInTheFileNamesACredentialHeader() {
-        // Both headers live in `apiHeaders` and nowhere else, so there is exactly one
+        // The one header lives in `apiHeaders` and nowhere else, so there is exactly one
         // place to read to know where a secret can go.
         assertEquals(
             "\"Api-Key\" appears more than once in $FILE; keep every credential header in " +
@@ -58,9 +58,13 @@ class OpenSubtitlesRequestPolicyTest {
             1,
             Regex("\"Api-Key\"").findAll(source).count(),
         )
+        // Zero, not one. Sign-in is gone, so this client holds no bearer token and has
+        // nothing to put in an Authorization header — the strongest form of the same
+        // guarantee, and the thing to re-derive rather than relax if sign-in returns.
         assertEquals(
-            "HttpHeaders.Authorization appears more than once in $FILE; same reason.",
-            1,
+            "HttpHeaders.Authorization appears in $FILE. This client sends no bearer " +
+                "token at all; a credential here would be one it has no way to have earned.",
+            0,
             Regex("""HttpHeaders\.Authorization""").findAll(source).count(),
         )
     }

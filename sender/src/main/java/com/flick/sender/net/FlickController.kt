@@ -305,6 +305,36 @@ internal class UnplayableMemory(private val limit: Int = 64) {
     fun snapshot(): Map<String, String> = LinkedHashMap(marks)
 }
 
+/**
+ * Files a receiver played without sound, against the audio format it could not decode.
+ *
+ * Held for the life of the process and no longer, for the reason [UnplayableMemory] gives
+ * and one more of its own: this is one file on one TV in one moment, and the sound is the
+ * half of it most easily changed by something outside the app — a soundbar plugged in, a
+ * Bluetooth speaker left behind, a different TV entirely. A relaunch is the cheapest
+ * amnesty there is, and this fact deserves it sooner than a refusal does.
+ *
+ * The value is the mime the receiver named, which is `unknown` when it could not name one.
+ */
+internal class SilentAudioMemory(private val limit: Int = 64) {
+    private val marks = LinkedHashMap<String, String>()
+
+    fun mark(key: String, mime: String): Map<String, String> {
+        marks.remove(key)
+        marks[key] = mime
+        while (marks.size > limit) marks.remove(marks.keys.first())
+        return snapshot()
+    }
+
+    /** A fresh cast of this file, which will say so again if it is still silent. */
+    fun clear(key: String): Map<String, String> {
+        marks.remove(key)
+        return snapshot()
+    }
+
+    fun snapshot(): Map<String, String> = LinkedHashMap(marks)
+}
+
 /** Application-scoped owner of pairing, control, service state and cast generations. */
 class CastCoordinator(private val appContext: Context, private val scope: CoroutineScope) {
     val nsd = NsdDiscovery(appContext)
@@ -372,6 +402,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // launch so the only way to reach them is to spend them. Cleared with the launch.
     private var pendingPairCode: String? = null
     private val unplayableMemory = UnplayableMemory()
+    private val silentAudioMemory = SilentAudioMemory()
     private val decoderFaults = DecoderFaultLedger()
     private val linkMonitor = LinkCapacityMonitor { SystemClock.elapsedRealtime() }
 
@@ -430,6 +461,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // face offers to play it here, and both the tile and the detail sheet remember it.
     private val _failureItem = MutableStateFlow<MediaItem?>(null); val failureItem = _failureItem.asStateFlow()
     private val _unplayableFiles = MutableStateFlow<Map<String, String>>(emptyMap()); val unplayableFiles = _unplayableFiles.asStateFlow()
+    /** Files the TV played silently, each against the audio mime it could not decode. */
+    private val _silentAudioFiles = MutableStateFlow<Map<String, String>>(emptyMap()); val silentAudioFiles = _silentAudioFiles.asStateFlow()
     /** Files that have failed to find a decoder once. The sheet stops promising for these. */
     private val _decoderSuspects = MutableStateFlow<Set<String>>(emptySet()); val decoderSuspects = _decoderSuspects.asStateFlow()
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
@@ -1377,6 +1410,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val owned = _selectedSubtitle.value?.takeIf { subtitleOwner?.uri == item.uri }
         if (owned == null) _selectedSubtitle.value = null
         subtitleOwner = item
+        // Cleared as the cast starts and not when a first frame proves it, which is the
+        // one thing this cannot borrow from the refusal above: the receiver decides
+        // silence from the track selection, so its frame arrives BEFORE `loadReady` and a
+        // clear at readiness would erase the mark this same cast had just earned. Ahead of
+        // the load it is only an amnesty — a TV that is still silent says so again in
+        // seconds, and a TV that has since found a decoder never does.
+        _silentAudioFiles.value = silentAudioMemory.clear(item.uriKey)
         _castingItem.value = item; _route.value = Route.Connecting; publishCastStart(CastStartState.ConnectingControl(castId))
         castJob = scope.launch {
             var readyCommit = false
@@ -1620,6 +1660,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             "loadAccepted" -> accepted?.complete(frame)
             "loadReady" -> ready?.complete(frame)
             "loadFailed", "error" -> terminal(id, frame.getString("code"), frame.getBoolean("retryable"), if (frame.has("httpStatus")) frame.getInt("httpStatus") else null)
+            // The film is playing and stays playing: this ends no cast and fails nothing.
+            // It is filed against the item the cast is serving, which the id check above
+            // has already proven is this one.
+            "audio_silent" -> _castingItem.value?.let { item ->
+                _silentAudioFiles.value = silentAudioMemory.mark(item.uriKey, frame.getString("mime"))
+            }
             "stopped" -> completeCastToLibrary(id)
         }
     }

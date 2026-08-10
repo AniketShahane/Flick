@@ -28,14 +28,14 @@ class BackupExclusionsTest {
 
     @Test fun everySecretBearingPrefsFileIsExcludedFromCloudBackup() {
         val excluded = sharedPrefExcludes(fullBackupSection(xml("backup_rules.xml")))
-        assertExcluded(SECRET_BEARING, excluded, "backup_rules.xml (cloud backup)")
+        assertExcluded(SECRET_BEARING + LEGACY_SECRET_BEARING, excluded, "backup_rules.xml (cloud backup)")
     }
 
     @Test fun everySecretBearingPrefsFileIsExcludedFromBothTransferPaths() {
         val root = xml("data_extraction_rules.xml")
         for (section in listOf("cloud-backup", "device-transfer")) {
             val excluded = sharedPrefExcludes(childSection(root, section))
-            assertExcluded(SECRET_BEARING, excluded, "data_extraction_rules.xml <$section>")
+            assertExcluded(SECRET_BEARING + LEGACY_SECRET_BEARING, excluded, "data_extraction_rules.xml <$section>")
         }
     }
 
@@ -191,11 +191,26 @@ class BackupExclusionsTest {
          * from cloud backup AND device transfer.
          *
          * `flick_pairings` holds the 256-bit key each paired TV admits this phone
-         * on. `flick_subtitles_online` holds the user's own OpenSubtitles API key.
-         * Both are bearer secrets: a restore onto a second device hands that device
-         * the first one's authority, which is exactly what neither is meant to do.
+         * on. It is a bearer secret: a restore onto a second device hands that
+         * device the first one's authority, which is exactly what it is not meant
+         * to do.
          */
-        val SECRET_BEARING = setOf("flick_pairings", "flick_subtitles_online")
+        val SECRET_BEARING = setOf("flick_pairings")
+
+        /**
+         * Credential stores no code opens any more, whose exclusions stay anyway.
+         *
+         * `flick_subtitles_online` held the user's own OpenSubtitles API key and
+         * bearer token, back when the app offered sign-in and a key of your own.
+         * Nothing reads or writes it now, but a phone that ran one of those builds
+         * still has the file, and dropping the exclusion would let exactly those
+         * leftover secrets ride a backup onto a second device. The exclusion costs
+         * nothing and the file it protects is real until that phone is wiped.
+         *
+         * Excluded like [SECRET_BEARING], but deliberately absent from the
+         * every-name-is-still-opened check below — being unopened is the point.
+         */
+        val LEGACY_SECRET_BEARING = setOf("flick_subtitles_online")
 
         /**
          * All three stores are keyed by the same hash of a content URI and a MediaStore

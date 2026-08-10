@@ -174,6 +174,7 @@ class OrientationHintPolicyTest {
                 null,
                 filmVisible = true,
                 qualityShowing = false,
+                silentAudioShowing = false,
                 panelOpen = false,
                 alreadyShown = false,
             ),
@@ -187,6 +188,7 @@ class OrientationHintPolicyTest {
                 OrientationHint.TurnedUpright,
                 filmVisible = false,
                 qualityShowing = false,
+                silentAudioShowing = false,
                 panelOpen = false,
                 alreadyShown = false,
             ),
@@ -197,6 +199,7 @@ class OrientationHintPolicyTest {
                 OrientationHint.TurnedUpright,
                 filmVisible = true,
                 qualityShowing = false,
+                silentAudioShowing = false,
                 panelOpen = false,
                 alreadyShown = false,
             ),
@@ -211,6 +214,7 @@ class OrientationHintPolicyTest {
                 OrientationHint.ShownAsFiled,
                 filmVisible = true,
                 qualityShowing = true,
+                silentAudioShowing = false,
                 panelOpen = false,
                 alreadyShown = false,
             ),
@@ -221,7 +225,53 @@ class OrientationHintPolicyTest {
                 OrientationHint.ShownAsFiled,
                 filmVisible = true,
                 qualityShowing = false,
+                silentAudioShowing = false,
                 panelOpen = false,
+                alreadyShown = false,
+            ),
+        )
+    }
+
+    /**
+     * The third card the band carries. A viewer can find the orientation tile later
+     * and turn the picture themselves; nothing restores the sound, so the notice
+     * about it goes first and this waits rather than stacking on it.
+     */
+    @Test fun theSilentAudioNoticeGetsTheBandBeforeTheHint() {
+        assertEquals(
+            OrientationHintPhase.Waiting,
+            orientationHintPhase(
+                OrientationHint.TurnedUpright,
+                filmVisible = true,
+                qualityShowing = false,
+                silentAudioShowing = true,
+                panelOpen = false,
+                alreadyShown = false,
+            ),
+        )
+        assertEquals(
+            OrientationHintPhase.Showing,
+            orientationHintPhase(
+                OrientationHint.TurnedUpright,
+                filmVisible = true,
+                qualityShowing = false,
+                silentAudioShowing = false,
+                panelOpen = false,
+                alreadyShown = false,
+            ),
+        )
+    }
+
+    /** Queueing behind the notice must not outrank reaching the panel either. */
+    @Test fun thePanelStillSpendsItWhileTheNoticeHoldsTheBand() {
+        assertEquals(
+            OrientationHintPhase.Spent,
+            orientationHintPhase(
+                OrientationHint.ShownAsFiled,
+                filmVisible = true,
+                qualityShowing = false,
+                silentAudioShowing = true,
+                panelOpen = true,
                 alreadyShown = false,
             ),
         )
@@ -235,6 +285,7 @@ class OrientationHintPolicyTest {
                 OrientationHint.ShownAsFiled,
                 filmVisible = true,
                 qualityShowing = true,
+                silentAudioShowing = false,
                 panelOpen = true,
                 alreadyShown = false,
             ),
@@ -249,6 +300,7 @@ class OrientationHintPolicyTest {
                     OrientationHint.ShownAsFiled,
                     filmVisible = filmVisible,
                     qualityShowing = false,
+                    silentAudioShowing = false,
                     panelOpen = true,
                     alreadyShown = false,
                 ),
@@ -263,6 +315,7 @@ class OrientationHintPolicyTest {
                 null,
                 filmVisible = true,
                 qualityShowing = false,
+                silentAudioShowing = false,
                 panelOpen = true,
                 alreadyShown = false,
             ),
@@ -277,6 +330,7 @@ class OrientationHintPolicyTest {
                     hint,
                     filmVisible = true,
                     qualityShowing = false,
+                    silentAudioShowing = false,
                     panelOpen = false,
                     alreadyShown = true,
                 ),

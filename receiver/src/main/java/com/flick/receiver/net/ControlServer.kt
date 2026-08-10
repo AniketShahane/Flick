@@ -250,6 +250,23 @@ class ControlServer(
         sendResult(ControlCastResult.Ready(castId, probeLatencyMs, startupMs))
     }
 
+    /**
+     * The film is playing silent, told once to the phone that asked for it.
+     *
+     * Not a [ControlCastResult]: every member of that type is a cast OUTCOME the
+     * phone waits on, and three of them release ownership. This releases nothing
+     * and resolves nothing — the cast carries on exactly as it was — so it takes
+     * the guarded [emit] the `state` feed uses rather than the result path.
+     *
+     * With no live lease it is dropped and nothing is retained. The reading belongs
+     * to a cast, and a cast with no owner has nobody to correlate it against.
+     */
+    fun sendAudioSilent(castId: String, mime: String) {
+        val connection = active ?: return
+        if (!ownership.isCurrent(connection.token, connection.generation, castId)) return
+        emit(connection, json(audioSilentFrameFields(castId, mime)))
+    }
+
     /** Main-thread local TV exit uses the same cast-correlated terminal path as WS stop. */
     fun stopLocalCast(): Boolean {
         val connection = active ?: return false
@@ -1331,4 +1348,19 @@ internal fun stoppedFrameFields(castId: String): LinkedHashMap<String, Any?> = l
     "t" to "stopped",
     "v" to 2,
     "castId" to castId,
+)
+
+/**
+ * The film is playing silent. Four keys and never a fifth: the phone validates
+ * this frame against an exact-key allowlist, so a field added here without a
+ * coordinated release is a refused frame and a closed control socket.
+ *
+ * [mime] is always a string — the receiver sends its own unknown literal rather
+ * than a null or an absent key, so the phone has one shape to read.
+ */
+internal fun audioSilentFrameFields(castId: String, mime: String): LinkedHashMap<String, Any?> = linkedMapOf(
+    "t" to "audio_silent",
+    "v" to 2,
+    "castId" to castId,
+    "mime" to mime,
 )

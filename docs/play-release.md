@@ -637,6 +637,7 @@ Every later upload needs a higher `versionCode`. Bump it in both modules' `build
 | Foreground service demo video rejected | Low | Must show the screen going off and playback continuing |
 | Tips read as in-app purchase | Low | Policy quoted above; keep the copy free of any perk |
 | Losing the upload keystore | Low | Back it up today |
+| A TV update reaching users ahead of the phone update | Medium, from v1.1 on | Roll the phone out first and let it reach users before the TV. An older phone drops its control socket on any frame it does not know — see [control-channel.md](design/control-channel.md). Not a risk at 1.0.0, where both ship together. |
 
 ---
 
