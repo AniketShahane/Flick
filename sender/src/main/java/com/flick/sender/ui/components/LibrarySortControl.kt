@@ -90,6 +90,14 @@ fun LibrarySortChip(
     // while it is up. Search opening is the one thing that can still pull the row out from
     // under it, and a menu left anchored to a control that has faded out is a card floating
     // over the results with nothing under it.
+    //
+    // Read in composition AND latched by the effect, which is two mechanisms for one job on
+    // purpose. The effect alone runs a frame late, and a popup is its own window that the
+    // chip's fade cannot reach — so for that one frame a fully opaque menu paints over the
+    // search field arriving underneath it. Reading it here closes the window in the same
+    // composition; the effect then clears the latch, so a control that becomes tappable
+    // again does not spring its menu back open unasked.
+    val menuOpen = open && enabled
     LaunchedEffect(enabled) { if (!enabled) open = false }
 
     Box(modifier) {
@@ -137,7 +145,7 @@ fun LibrarySortChip(
         }
 
         DropdownMenu(
-            expanded = open,
+            expanded = menuOpen,
             onDismissRequest = { open = false },
             shape = RoundedCornerShape(FlickCorners.statCard),
             containerColor = colors.surfaceRaised,

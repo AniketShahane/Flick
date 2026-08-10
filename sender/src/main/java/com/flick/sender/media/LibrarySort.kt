@@ -64,14 +64,40 @@ internal object LibrarySortPolicy {
         addedSeconds: (T) -> Long,
         durationMs: (T) -> Long,
         sizeBytes: (T) -> Long,
-    ): List<T> = items.sortedWith(
-        when (order) {
+    ): List<T> {
+        val comparator = when (order) {
             LibrarySort.RECENT -> compareByDescending<T> { addedSeconds(it) }
             LibrarySort.NAME -> Comparator<T> { a, b -> LibraryNameOrder.compare(title(a), title(b)) }
             LibrarySort.LONGEST -> compareByDescending<T> { durationMs(it) }
             LibrarySort.LARGEST -> compareByDescending<T> { sizeBytes(it) }
-        },
-    )
+        }
+        return if (items.alreadyInOrder(comparator)) items else items.sortedWith(comparator)
+    }
+
+    /**
+     * Whether [this] is already the answer, so that it can be handed back as the SAME
+     * instance rather than copied into an identical one.
+     *
+     * This is what keeps `LibrarySearchIndexMemo`'s promise reaching the grid. A blank query
+     * returns the scoped list itself, so clearing search is meant to be a repaint of the
+     * list that is already there — and a sort that allocated unconditionally would quietly
+     * have turned every one of those into a new list of the same items, on the default order
+     * that never reorders anything, on every keystroke.
+     *
+     * Checked rather than assumed, which is the difference between this and simply returning
+     * [items] for [LibrarySort.RECENT]. The library does arrive newest-first, but that is a
+     * fact about MediaLibrary's cursor that this policy cannot see: short-circuiting on the
+     * cell name would make RECENT mean "however the provider happened to answer" the day
+     * that query changed, and the test for it would still pass because it feeds a list that
+     * is already sorted. Verifying costs one pass, and a list that is NOT in order bails at
+     * the first pair rather than walking it.
+     */
+    private fun <T> List<T>.alreadyInOrder(comparator: Comparator<T>): Boolean {
+        for (index in 1 until size) {
+            if (comparator.compare(this[index - 1], this[index]) > 0) return false
+        }
+        return true
+    }
 }
 
 /**

@@ -1,6 +1,7 @@
 package com.flick.sender.media
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -37,6 +38,37 @@ class LibrarySortPolicyTest {
             Row(id = 3, added = 100),
         )
         assertEquals(newestFirst, sort(newestFirst, LibrarySort.RECENT))
+    }
+
+    /**
+     * The search index returns the scoped list ITSELF for a blank query, so that clearing
+     * search repaints the list already on screen rather than replacing it with an identical
+     * one. That promise is only kept if the sort hands the same instance back, and the
+     * default order re-deals nothing — so on the ordinary path, typing and clearing must
+     * allocate no list at all.
+     */
+    @Test fun aListAlreadyInTheOrderAskedForIsHandedBackUntouched() {
+        val newestFirst = listOf(Row(id = 1, added = 900), Row(id = 2, added = 500))
+        assertSame(newestFirst, sort(newestFirst, LibrarySort.RECENT))
+
+        val longestFirst = listOf(Row(id = 1, duration = 90), Row(id = 2, duration = 10))
+        assertSame(longestFirst, sort(longestFirst, LibrarySort.LONGEST))
+
+        val alphabetical = listOf(Row(id = 1, title = "amelie"), Row(id = 2, title = "parasite"))
+        assertSame(alphabetical, sort(alphabetical, LibrarySort.NAME))
+    }
+
+    @Test fun aListOutOfOrderIsReDealtIntoANewOne() {
+        val rows = listOf(Row(id = 1, added = 100), Row(id = 2, added = 900))
+        val sorted = sort(rows, LibrarySort.RECENT)
+        assertNotSame(rows, sorted)
+        assertEquals(listOf(2L, 1L), sorted.map(Row::id))
+    }
+
+    /** Ties are already in order — a tie is not a row out of place. */
+    @Test fun aRunOfTiesDoesNotCountAsOutOfOrder() {
+        val rows = listOf(Row(id = 7, added = 500), Row(id = 4, added = 500), Row(id = 9, added = 500))
+        assertSame(rows, sort(rows, LibrarySort.RECENT))
     }
 
     @Test fun recentPutsTheNewestArrivalFirst() {
