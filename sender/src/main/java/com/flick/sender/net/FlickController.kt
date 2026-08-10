@@ -24,6 +24,9 @@ import com.flick.sender.media.LibraryFolderId
 import com.flick.sender.media.LibraryFolderStore
 import com.flick.sender.media.LibraryFolders
 import com.flick.sender.media.LibraryScope
+import com.flick.sender.media.LibrarySort
+import com.flick.sender.media.LibrarySortController
+import com.flick.sender.media.LibrarySortStore
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibrary
 import com.flick.sender.media.MediaLibraryLoadGate
@@ -349,6 +352,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val audioDelayRecorder = AudioDelayRecorder()
     private val subtitleMemoryStore = SubtitleMemoryStore(appContext, scope)
     private val libraryFolderStore = LibraryFolderStore(appContext)
+    private val librarySortStore = LibrarySortStore(appContext)
+    private val librarySortPreference =
+        LibrarySortController(librarySortStore.order(), librarySortStore::save)
     private val videoNameStore = VideoNamePreferenceStore(appContext)
     private val videoNamePreference =
         VideoNamePreferenceController(videoNameStore.simplified(), videoNameStore::save)
@@ -431,6 +437,17 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         LibraryView(scope = LibraryFolders.scope(libraryFolder, emptyList(), resolved = false)),
     )
     val library = _library.asStateFlow()
+    /**
+     * The order the grid deals its tiles in. Read at construction like the folder above, so
+     * the first grid a launch paints is already in the order this phone's owner chose — a
+     * library that opened newest-first and then visibly re-dealt itself would be a worse
+     * answer than not remembering at all.
+     *
+     * The list itself is NOT sorted here: applying it is the grid's, because the scoped list
+     * this publishes is what the library's search index is keyed on, and re-dealing it would
+     * refold every name in the library on the tap that changed the order.
+     */
+    val librarySort = librarySortPreference.order
     private val _libraryLoading = MutableStateFlow(false); val libraryLoading = _libraryLoading.asStateFlow()
     private val _mediaAccess = MutableStateFlow(MediaAccess.NONE); val mediaAccess = _mediaAccess.asStateFlow()
     val connection = control.connection
@@ -744,6 +761,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (choice == null) libraryFolderStore.clear() else libraryFolderStore.save(choice)
         publishLibrary(_library.value.items)
     }
+
+    /**
+     * Re-deal the grid. A view concern like the folder scope, and a smaller one: nothing is
+     * re-read, nothing is re-derived, and no cast, served file or resume is keyed on it.
+     */
+    fun chooseLibrarySort(order: LibrarySort) = librarySortPreference.select(order)
 
     private fun publishLibrary(items: List<MediaItem>) {
         val folders = LibraryFolders.derive(items, MediaItem::relativePath, MediaItem::bucketId)

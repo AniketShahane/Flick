@@ -48,6 +48,10 @@ object MediaLibrary {
             add(MediaStore.Video.Media.DURATION)
             add(MediaStore.Video.Media.SIZE)
             add(MediaStore.Video.Media.DATE_MODIFIED)
+            // Read as well as sorted on: the grid can be re-dealt into other orders and
+            // back, and the column the cursor was ordered by is the only honest source
+            // for the one that says "recently added".
+            add(MediaStore.Video.Media.DATE_ADDED)
             if (hasGeneration) add(MediaStore.MediaColumns.GENERATION_MODIFIED)
             add(MediaStore.Video.Media.WIDTH)
             add(MediaStore.Video.Media.HEIGHT)
@@ -67,6 +71,7 @@ object MediaLibrary {
                 val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
                 val sizeCol = c.getColumnIndex(MediaStore.Video.Media.SIZE)
                 val modifiedCol = c.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                val addedCol = c.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
                 val generationCol = if (hasGeneration) {
                     c.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
                 } else {
@@ -102,6 +107,7 @@ object MediaLibrary {
                         durationMs = unsignedColumn(c, durCol),
                         sizeBytes = if (sizeCol >= 0 && !c.isNull(sizeCol)) c.getLong(sizeCol) else -1L,
                         dateModifiedSeconds = unsignedColumn(c, modifiedCol),
+                        dateAddedSeconds = unsignedColumn(c, addedCol),
                         generationModified = generationColumn(c, generationCol),
                         mediaStoreVersion = mediaStoreVersion,
                         width = pixelColumn(c, wCol),

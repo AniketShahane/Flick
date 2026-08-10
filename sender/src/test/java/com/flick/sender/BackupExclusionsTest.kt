@@ -83,6 +83,23 @@ class BackupExclusionsTest {
             emptySet<String>(),
             vanished,
         )
+        // The same question asked of the other list, and it is not symmetry for its own
+        // sake. A classification is a written decision about how one file should travel, and
+        // an entry naming a file nothing opens does not merely go stale: it reads as cover
+        // for whichever file the code opened instead, and the check above cannot see that,
+        // because that other file is classified too. This is exactly how the sort
+        // preference was first written into `flick_library` — which is excluded from every
+        // transfer path — under an entry describing a `flick_library_sort` that did not yet
+        // exist, with the suite green.
+        val unopened = CARRIED_DELIBERATELY.keys - found
+        assertEquals(
+            "CARRIED_DELIBERATELY names $unopened, which no getSharedPreferences call in " +
+                "$MODULE opens. Either the store moved — in which case the reasoning here " +
+                "now describes nothing and the file the code DID open is travelling on " +
+                "somebody else's rationale — or it is gone and this entry is stale.",
+            emptySet<String>(),
+            unopened,
+        )
     }
 
     // --- Assertions ---------------------------------------------------------
@@ -242,6 +259,11 @@ class BackupExclusionsTest {
                 "excluded, but for a non-security reason: the scope names a folder of one " +
                     "phone's storage — now a RELATIVE_PATH, which on another phone either " +
                     "matches nothing or matches a same-named folder holding different films",
+            "flick_library_sort" to
+                "one enum name saying how the grid is ordered. Kept OUT of flick_library on " +
+                    "purpose: that file is excluded because a folder scope names one phone's " +
+                    "storage, and an order is about the person the way the appearance choice " +
+                    "is, so it travels rather than being dropped for somebody else's reason",
             "flick_video_names" to
                 "a display-only readability choice is about the person and deliberately " +
                     "travels with them; it contains no filename, path, or credential",

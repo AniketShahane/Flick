@@ -122,6 +122,9 @@ import com.flick.sender.NetworkUtils
 import com.flick.sender.R
 import com.flick.sender.media.LibraryFolders
 import com.flick.sender.media.LibraryScope
+import com.flick.sender.media.LibrarySort
+import com.flick.sender.media.LibrarySortPolicy
+import com.flick.sender.media.LibrarySortTitles
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibraryAction
 import com.flick.sender.media.MediaLibraryActionPolicy
@@ -142,6 +145,8 @@ import com.flick.sender.ui.components.FlickMark
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.LibraryFolderChip
 import com.flick.sender.ui.components.LibraryFolderSheet
+import com.flick.sender.ui.components.LibrarySortChip
+import com.flick.sender.ui.components.LibrarySortControlWidth
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.VideoTile
@@ -217,6 +222,13 @@ internal class LibraryUiState(val grid: LazyGridState) {
      * Devices to Settings, the one pairing that never touches this, stayed at 7 ms.
      */
     val searchIndex = LibrarySearchIndexMemo<MediaItem> { it.name }
+
+    /**
+     * The titles an alphabetical grid is ordered by, folded once per library and only for a
+     * phone that actually asks for that order — held here for the same reason the index
+     * above is, and empty for as long as nobody sorts by name.
+     */
+    val sortTitles = LibrarySortTitles<MediaItem>(id = { it.id }, name = { it.name })
 }
 
 @Composable
@@ -249,6 +261,7 @@ internal fun LibraryScreen(
     val library by controller.library.collectAsState()
     val folderScope = library.scope
     val scoped = library.scoped
+    val sortOrder by controller.librarySort.collectAsState()
     val loading by controller.libraryLoading.collectAsState()
     val mediaAccess by controller.mediaAccess.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
@@ -337,6 +350,43 @@ internal fun LibraryScreen(
     val searchIndex = uiState.searchIndex.of(scoped)
     val searchResults = remember(searchIndex, uiState.searchQuery) {
         searchIndex.matching(uiState.searchQuery)
+    }
+
+    // Ordered AFTER the search and never before it. Filtering preserves the order it was
+    // handed, so the two compose either way round — but sorting the scoped list first would
+    // give the search index a new list on every change of order, and rebuilding that index
+    // refolds every name in the library on the frame a menu is dismissing over it. Sorting
+    // the results instead re-deals only what is on screen and leaves the index alone.
+    //
+    // Only the alphabetical order needs a folded title, and only it asks for one.
+    val sortTitles = if (sortOrder == LibrarySort.NAME) uiState.sortTitles.of(scoped) else null
+    val ordered = remember(searchResults, sortOrder, sortTitles) {
+        LibrarySortPolicy.sorted(
+            items = searchResults,
+            order = sortOrder,
+            title = { sortTitles?.get(it.id).orEmpty() },
+            addedSeconds = { it.dateAddedSeconds },
+            durationMs = { it.durationMs },
+            sizeBytes = { it.sizeBytes },
+        )
+    }
+
+    // A re-deal is asked for in order to see what is now at the head of the grid — the
+    // newest download, the film beginning with the letter being looked for, the big remux —
+    // and none of that is reachable from wherever the user happened to be scrolled to. The
+    // position they had is not preserved because it no longer describes anything: the tiles
+    // under it are not the tiles that were under it.
+    //
+    // Jumped rather than animated: a fling through two hundred tiles would ask the phone to
+    // decode every still on the way past. Keyed on the order alone, and skipped when it has
+    // not changed, so ARRIVING on the library never throws away a position — the latch is
+    // remembered by the screen rather than by the shell, so coming back from a detail sheet
+    // reads the order as unchanged and leaves the grid exactly where it was left.
+    var lastOrder by remember { mutableStateOf(sortOrder) }
+    LaunchedEffect(sortOrder) {
+        if (sortOrder == lastOrder) return@LaunchedEffect
+        lastOrder = sortOrder
+        uiState.grid.scrollToItem(0)
     }
 
     val closeSearch = {
@@ -455,10 +505,12 @@ internal fun LibraryScreen(
                             library.items.size,
                         ),
                         scope = folderScope,
+                        sortOrder = sortOrder,
                         searchOpen = uiState.searchOpen,
                         query = uiState.searchQuery,
                         focusPending = uiState.searchFocusPending,
                         onChooseFolder = { choosingFolder = true },
+                        onChooseSort = controller::chooseLibrarySort,
                         onOpenSearch = {
                             uiState.searchOpen = true
                             uiState.searchFocusPending = true
@@ -510,7 +562,7 @@ internal fun LibraryScreen(
                         fullWidth { SearchEmpty() }
                 }
                 itemsIndexed(
-                    searchResults,
+                    ordered,
                     key = { _, item -> item.id },
                     // Stated: handed a scrolled-away section's slot, a tile is rebuilt from
                     // nothing — a fresh HDR probe and a fresh image request — on a frame
@@ -1023,10 +1075,12 @@ private fun Pill(
 private fun LibraryControls(
     chooserOffered: Boolean,
     scope: LibraryScope,
+    sortOrder: LibrarySort,
     searchOpen: Boolean,
     query: String,
     focusPending: Boolean,
     onChooseFolder: () -> Unit,
+    onChooseSort: (LibrarySort) -> Unit,
     onOpenSearch: () -> Unit,
     onQueryChange: (String) -> Unit,
     onFocusHandled: () -> Unit,
@@ -1127,6 +1181,30 @@ private fun LibraryControls(
                     .slideOutToStart { progress.value },
             )
         }
+
+        // Pinned to the search target rather than to the row, so the two stay one cluster
+        // however wide the window is and however long the folder name beside them runs.
+        LibrarySortChip(
+            order = sortOrder,
+            enabled = !searchOpen,
+            onChoose = onChooseSort,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .size(width = LibrarySortControlWidth, height = SearchControlSize)
+                .offset { IntOffset(x = librarySortSeat(maxWidth).roundToPx(), y = 0) }
+                // Draw phase only, and no travel: the seat is left where it is and the
+                // control simply stops being there. The field arriving over it is opaque, so
+                // a control sliding out under a card would be movement nobody could follow —
+                // and this row already spends its one flourish on the search target changing
+                // seats.
+                .graphicsLayer {
+                    val p = progress.value.coerceIn(0f, 1f)
+                    alpha = 1f - p
+                    val shrink = 1f - SortExitShrink * p
+                    scaleX = shrink
+                    scaleY = shrink
+                },
+        )
 
         Box(
             modifier = Modifier
@@ -1295,11 +1373,26 @@ private fun LibraryControls(
     }
 }
 
-/** Maximum folder width, leaving the fixed search target and its gap intact on tiny rows. */
+/**
+ * Maximum folder width, leaving the sort control, the search target and the gap on each
+ * side of them intact on tiny rows. The chip hugs its own name and only ever meets this cap
+ * on a long folder name — but when it does, the cap is the one thing keeping that name from
+ * being drawn straight over the two controls it shares the row with.
+ */
 internal fun libraryFolderWidthCap(rowWidth: Dp): Dp = minOf(
     rowWidth * FolderClosedWidthFraction,
-    (rowWidth - SearchControlSize - SearchControlGap).coerceAtLeast(0.dp),
+    (rowWidth - SearchControlSize - LibrarySortControlWidth - SearchControlGap * 2)
+        .coerceAtLeast(0.dp),
 )
+
+/**
+ * Where the sort control sits with search closed: hard against the search target's gap, at
+ * the end of the row. Clamped so a row too narrow to hold both controls stacks them at the
+ * start rather than placing this one off the leading edge.
+ */
+internal fun librarySortSeat(rowWidth: Dp): Dp =
+    (rowWidth - SearchControlSize - SearchControlGap - LibrarySortControlWidth)
+        .coerceAtLeast(0.dp)
 
 /** The old quality-chip deformation: wide and short at the strike, springing through rest. */
 internal fun searchKickScaleX(amount: Float): Float = 1f + amount * SearchKickStretch
@@ -1704,6 +1797,11 @@ private const val StaggerWindowMs = 1_200L
 private val SearchControlSize = 48.dp
 private val SearchControlGap = 8.dp
 private const val FolderClosedWidthFraction = 0.75f
+
+// How far the sort control draws down toward its own centre while it leaves. Small enough
+// to read as receding rather than as a second thing moving: the search target changing
+// seats is the movement in this row, and nothing else in it may compete with that.
+private const val SortExitShrink = 0.12f
 
 // The same deformation the removed quality chips used. The small lift and the icon's
 // zero-at-rest travel arc make the seat change legible without turning it into a flourish.

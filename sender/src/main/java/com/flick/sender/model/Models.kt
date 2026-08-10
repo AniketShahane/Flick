@@ -15,6 +15,15 @@ data class MediaItem(
     val sizeBytes: Long,
     /** MediaStore's seconds-since-epoch source revision for thumbnail invalidation. */
     val dateModifiedSeconds: Long,
+    /**
+     * When MediaStore first indexed this file, in seconds since the epoch — which for a
+     * downloaded or copied-in film is when it landed on the phone. Distinct from
+     * [dateModifiedSeconds], which any later touch of the bytes moves: the library's
+     * "recently added" order is a claim about arrival, not about edits.
+     *
+     * Zero is MediaStore's silence here as everywhere else, never the epoch.
+     */
+    val dateAddedSeconds: Long,
     /** Row generation paired with [mediaStoreVersion], or null below API 30. */
     val generationModified: Long?,
     /** Opaque database generation namespace, or null below API 30/provider failure. */
