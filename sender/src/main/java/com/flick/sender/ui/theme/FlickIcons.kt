@@ -322,9 +322,10 @@ object FlickIcons {
     }
 
     /**
-     * A clock face reading ten past two — hands set well apart so the pair survives being
-     * drawn at the 15 dp the sort control shows them at, where hands at a narrow angle
-     * merge into one stroke.
+     * A clock face reading four o'clock: the long hand straight up at 12, the short one at
+     * 4. The 120° between them is the point rather than the hour — at the 15 dp the sort
+     * control draws this, two hands at a narrow angle merge into a single stroke and the
+     * face stops reading as a clock at all.
      */
     val Clock: ImageVector = strokeIcon("Clock", width = 1.9f) {
         circle(12f, 12f, 8.6f)

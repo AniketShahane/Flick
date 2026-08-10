@@ -83,6 +83,23 @@ class BackupExclusionsTest {
             emptySet<String>(),
             vanished,
         )
+        // The same question asked of the other list, and it is not symmetry for its own
+        // sake. A classification is a written decision about how one file should travel, and
+        // an entry naming a file nothing opens does not merely go stale: it reads as cover
+        // for whichever file the code opened instead, and the check above cannot see that,
+        // because that other file is classified too. This is exactly how the sort
+        // preference was first written into `flick_library` — which is excluded from every
+        // transfer path — under an entry describing a `flick_library_sort` that did not yet
+        // exist, with the suite green.
+        val unopened = CARRIED_DELIBERATELY.keys - found
+        assertEquals(
+            "CARRIED_DELIBERATELY names $unopened, which no getSharedPreferences call in " +
+                "$MODULE opens. Either the store moved — in which case the reasoning here " +
+                "now describes nothing and the file the code DID open is travelling on " +
+                "somebody else's rationale — or it is gone and this entry is stale.",
+            emptySet<String>(),
+            unopened,
+        )
     }
 
     // --- Assertions ---------------------------------------------------------
