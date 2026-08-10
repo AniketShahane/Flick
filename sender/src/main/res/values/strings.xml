@@ -105,6 +105,17 @@
     <string name="library_empty_search_body">Try another title, or clear your search.</string>
     <string name="library_tile_badge">%1$s %2$s</string>
 
+    <!-- Sort order. The control carries two glyphs and no words, so every one of these has
+         to do the naming the button does not: the menu spells the orders out, and the
+         spoken label states the one in force before it offers to change it. Each order
+         names its own direction, because only one direction of each is ever asked for. -->
+    <string name="library_sort_title">SORT BY</string>
+    <string name="library_sort_recent">Recently added</string>
+    <string name="library_sort_name">Name (A–Z)</string>
+    <string name="library_sort_longest">Longest first</string>
+    <string name="library_sort_largest">Largest first</string>
+    <string name="library_sort_a11y">Sorted by %1$s. Change the order.</string>
+
     <!-- Folder scope. Flick lists one folder at a time so a gallery full of clips and
          screen recordings never buries the films. The chooser only ever offers folders
          that already contain video, so picking one can never produce an empty library. -->

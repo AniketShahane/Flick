@@ -1,0 +1,172 @@
+package com.flick.sender.media
+
+/**
+ * The orders the library grid can be dealt in.
+ *
+ * Each cell fixes its own direction instead of offering to reverse, because only one
+ * direction of each is a question anybody asks of their own films: the download that just
+ * landed, the title being looked for, the feature rather than the clip it sits beside, the
+ * remux rather than the trailer. A second arrow on every row would double the menu to say
+ * nothing, and this control has one row of the library to live in.
+ *
+ * [RECENT] is the order MediaStore already hands the library over in, so it is both the
+ * default and the one cell that cannot re-deal a freshly read library.
+ */
+enum class LibrarySort { RECENT, NAME, LONGEST, LARGEST }
+
+val DefaultLibrarySort = LibrarySort.RECENT
+
+/**
+ * A stored order, or the default. Anything else — a record from a build that offered a cell
+ * this one does not, a preference file edited by hand — reads as the default rather than as
+ * a refusal: the library has to open on something.
+ */
+fun librarySortOf(stored: String?): LibrarySort =
+    LibrarySort.entries.firstOrNull { it.name == stored } ?: DefaultLibrarySort
+
+/**
+ * What a row sorts under when the order is alphabetical: the title the tile shows, folded.
+ *
+ * The name on disk is not what the user is reading. `The.Wailing.2016.1080p.BluRay.mkv` is
+ * a tile that says `The Wailing (2016)`, and `[Group] The Wailing.mkv` is another one that
+ * says the same thing — sorting the raw names files the second under G, in an A–Z list
+ * where nothing on screen says G. Folding then removes the case and the accents, so
+ * `amélie` and `Amelie` land together rather than in two different parts of the grid.
+ *
+ * The raw name is the fallback and only the fallback: a parse that leaves nothing at all is
+ * still a file the user owns and has to appear somewhere findable.
+ */
+fun librarySortTitle(name: String): String {
+    val parsed = FoldedText.fold(VideoNames.parse(name).displayName)
+    return parsed.ifBlank { FoldedText.fold(name) }
+}
+
+internal object LibrarySortPolicy {
+
+    /**
+     * [items] re-dealt, keeping the library's own order wherever [order] cannot separate two
+     * rows. `sortedWith` is stable, and what it is stable ABOUT is MediaStore's newest-first
+     * cursor — so two files added in the same second, and the zero-duration rows MediaStore
+     * never managed to scan, hold the places the grid already had them in rather than
+     * swapping every time the library is read again.
+     *
+     * The fields arrive as accessors rather than being read off a type, because `MediaItem`
+     * carries an Android `Uri` and none of this is worth being unable to prove on a JVM.
+     *
+     * A withheld measurement sorts last under every order that reads it: MediaStore reports
+     * a 0 duration and a -1 size for a file it could not scan, and the bottom of the grid is
+     * where a row nothing is known about belongs — never the top, which would be a claim.
+     */
+    fun <T> sorted(
+        items: List<T>,
+        order: LibrarySort,
+        title: (T) -> String,
+        addedSeconds: (T) -> Long,
+        durationMs: (T) -> Long,
+        sizeBytes: (T) -> Long,
+    ): List<T> = items.sortedWith(
+        when (order) {
+            LibrarySort.RECENT -> compareByDescending<T> { addedSeconds(it) }
+            LibrarySort.NAME -> Comparator<T> { a, b -> LibraryNameOrder.compare(title(a), title(b)) }
+            LibrarySort.LONGEST -> compareByDescending<T> { durationMs(it) }
+            LibrarySort.LARGEST -> compareByDescending<T> { sizeBytes(it) }
+        },
+    )
+}
+
+/**
+ * A–Z over names people gave their own files, which means the digits inside them count as
+ * numbers.
+ *
+ * Plain string order puts `Episode 10` between `Episode 1` and `Episode 2`, and a video
+ * library is mostly names of exactly that shape. Runs of ASCII digits are therefore weighed
+ * as magnitudes: with leading zeros dropped the longer run is the larger number, and runs of
+ * equal length fall back to the digits themselves. Nothing is parsed into a number, so a
+ * forty-digit hash in a filename is compared rather than overflowed.
+ *
+ * Everything else compares by code point, which is enough because every key reaching here
+ * has been through [FoldedText.fold] — one case, no accents, punctuation already gone. A
+ * digit outside ASCII is left to that same code-point comparison rather than being weighed:
+ * it is a letter of its own script's number, and nothing here can tell which.
+ */
+internal object LibraryNameOrder {
+
+    fun compare(a: String, b: String): Int {
+        var i = 0
+        var j = 0
+        while (i < a.length && j < b.length) {
+            if (a[i].isAsciiDigit() && b[j].isAsciiDigit()) {
+                val startA = a.skipZeros(i)
+                val startB = b.skipZeros(j)
+                val endA = a.endOfDigits(startA)
+                val endB = b.endOfDigits(startB)
+                val lengthA = endA - startA
+                val lengthB = endB - startB
+                if (lengthA != lengthB) return lengthA - lengthB
+                for (offset in 0 until lengthA) {
+                    val step = a[startA + offset].compareTo(b[startB + offset])
+                    if (step != 0) return step
+                }
+                i = endA
+                j = endB
+            } else {
+                if (a[i] != b[j]) return a[i].compareTo(b[j])
+                i++
+                j++
+            }
+        }
+        // Whatever is left over: the shorter name is a prefix of the longer one and comes
+        // first. Measured from the cursors rather than from zero, because a digit run the
+        // loop consumed may have been spelled with a different number of characters on
+        // each side.
+        return (a.length - i) - (b.length - j)
+    }
+
+    private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
+
+    private fun String.skipZeros(from: Int): Int {
+        var at = from
+        while (at < length && this[at] == '0') at++
+        return at
+    }
+
+    private fun String.endOfDigits(from: Int): Int {
+        var at = from
+        while (at < length && this[at].isAsciiDigit()) at++
+        return at
+    }
+}
+
+/**
+ * One folded title per row, kept for as long as the list it was folded from is the same list.
+ *
+ * Built only when a name order actually asks for it. Folding a title runs a filename parse
+ * and two Unicode normalizations, and a phone that never sorts alphabetically must not pay
+ * for a single one of them; a phone that does pays once per library rather than once per
+ * keystroke and once per visit.
+ *
+ * Keyed on the list's IDENTITY, never its contents, exactly as `LibrarySearchIndexMemo` is:
+ * the controller hands out the same instance until MediaStore answers again. Held by
+ * whatever outlives the screen for the same measured reason — a `remember` inside the
+ * library route dies with the route, and refolding a library that has not changed is work
+ * done on the frame a tab change has already spent.
+ *
+ * Plain fields rather than snapshot state: this is a memo, it is filled during composition,
+ * and publishing it would invalidate the composition that just filled it.
+ */
+class LibrarySortTitles<T>(
+    private val id: (T) -> Long,
+    private val name: (T) -> String,
+) {
+    private var rows: List<T>? = null
+    private var titles: Map<Long, String>? = null
+
+    fun of(rows: List<T>): Map<Long, String> {
+        val cached = titles
+        if (cached != null && this.rows === rows) return cached
+        val built = rows.associate { id(it) to librarySortTitle(name(it)) }
+        this.rows = rows
+        this.titles = built
+        return built
+    }
+}

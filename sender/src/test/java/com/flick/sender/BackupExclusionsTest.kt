@@ -242,6 +242,11 @@ class BackupExclusionsTest {
                 "excluded, but for a non-security reason: the scope names a folder of one " +
                     "phone's storage — now a RELATIVE_PATH, which on another phone either " +
                     "matches nothing or matches a same-named folder holding different films",
+            "flick_library_sort" to
+                "one enum name saying how the grid is ordered. Kept OUT of flick_library on " +
+                    "purpose: that file is excluded because a folder scope names one phone's " +
+                    "storage, and an order is about the person the way the appearance choice " +
+                    "is, so it travels rather than being dropped for somebody else's reason",
             "flick_video_names" to
                 "a display-only readability choice is about the person and deliberately " +
                     "travels with them; it contains no filename, path, or credential",

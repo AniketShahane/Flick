@@ -308,6 +308,75 @@ object FlickIcons {
         moveTo(6.5f, 6.5f); lineTo(17.5f, 17.5f)
         moveTo(17.5f, 6.5f); lineTo(6.5f, 17.5f)
     }
+
+    /**
+     * Bars in descending length — the mark for ORDER itself, and the only glyph the
+     * library's sort control wears at full size. It never says which order is in force;
+     * the smaller glyph beside it does that, and letting this one carry a direction too
+     * would state the same fact twice and disagree with itself the moment the two drift.
+     */
+    val Sort: ImageVector = strokeIcon("Sort", width = 2f) {
+        moveTo(4.5f, 7f); lineTo(19.5f, 7f)
+        moveTo(4.5f, 12f); lineTo(14.5f, 12f)
+        moveTo(4.5f, 17f); lineTo(9.5f, 17f)
+    }
+
+    /**
+     * A clock face reading ten past two — hands set well apart so the pair survives being
+     * drawn at the 15 dp the sort control shows them at, where hands at a narrow angle
+     * merge into one stroke.
+     */
+    val Clock: ImageVector = strokeIcon("Clock", width = 1.9f) {
+        circle(12f, 12f, 8.6f)
+        moveTo(12f, 6.6f); lineTo(12f, 12f); lineTo(16.2f, 14.4f)
+    }
+
+    /**
+     * A capital A. The one letterform in this set, and it earns the exception: alphabetical
+     * order is the single sort that is about text rather than about a quantity, and no
+     * abstract mark says "by name" at 15 dp the way the first letter of the alphabet does.
+     *
+     * The crossbar's ends sit ON the flanks rather than beyond them — at y = 13.4 the legs
+     * have reached x = 8.06 and 15.94, so a bar drawn between 8.1 and 15.9 closes the
+     * counter without growing whiskers outside the letter.
+     */
+    val Alphabetical: ImageVector = strokeIcon("Alphabetical", width = 2f) {
+        moveTo(5.4f, 19.2f); lineTo(12f, 4.8f); lineTo(18.6f, 19.2f)
+        moveTo(8.1f, 13.4f); lineTo(15.9f, 13.4f)
+    }
+
+    /**
+     * Duration, and deliberately not a second clock: an hourglass is a length of time
+     * rather than a moment on a dial, which is exactly the difference between "longest
+     * first" and "recently added". The two bulbs meet at a point rather than through a
+     * neck, because a neck one grid unit wide is a smudge at 15 dp.
+     *
+     * All four subpaths wind clockwise on the y-down grid, so NonZero unions them.
+     */
+    val Hourglass: ImageVector = fillIcon("Hourglass") {
+        roundRect(6.2f, 3f, 17.8f, 4.9f, 0.95f)
+        roundRect(6.2f, 19.1f, 17.8f, 21f, 0.95f)
+        moveTo(8.2f, 4.9f); lineTo(15.8f, 4.9f); lineTo(12f, 12f); close()
+        moveTo(12f, 12f); lineTo(15.8f, 19.1f); lineTo(8.2f, 19.1f); close()
+    }
+
+    /**
+     * A large disc and a small one — how big a thing is, and which end of that the grid
+     * starts from. Solid and only two shapes, because this is the glyph in the set with the
+     * least to say and the least room to say it in: drawn at 15 dp on the sort control, the
+     * expand-arrow mark it replaced thinned into a bare diagonal and a square nested inside
+     * another square filled in solid, while two discs of visibly different size survive
+     * being that small with the whole of their meaning intact.
+     *
+     * It shares no construction with [Sort], [Clock], [Alphabetical] or [Hourglass], which
+     * is the requirement rather than a bonus: these five are read at a glance, in pairs, at
+     * two sizes, and a size mark built from bars would be a second sort mark standing next
+     * to the first.
+     */
+    val FileSize: ImageVector = fillIcon("FileSize") {
+        circle(8.2f, 12f, 5.4f)
+        circle(18.1f, 12f, 2.9f)
+    }
 }
 
 // --- builders ---------------------------------------------------------------
