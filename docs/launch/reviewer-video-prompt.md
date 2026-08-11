@@ -1,5 +1,22 @@
 # Reviewer video — generation prompts
 
+## Model constraints, learned the expensive way
+
+| Model | Max resolution | Duration | Silent | Multi-shot |
+| --- | --- | --- | --- | --- |
+| `seedance_2_5` | **720p** (480p/720p only) | 4–30 s | no — `generate_audio` defaults **true** | no |
+| `kling3_0` | **4K** (`mode: std\|pro\|4k`) | 3–15 s | yes — `sound: "off"`, and cheaper | yes |
+
+The first three shots below were rendered on `seedance_2_5` and came back 720p with audio,
+because that model cannot do better and its audio is on by default. Anything that needs
+resolution, silence, or a continuous multi-beat sequence belongs on `kling3_0` in `4k` mode.
+
+Higgsfield may answer a generation with a **preset recommendation** instead of a job — it
+offered "IN THE DARK" for the shots below and "Face Punch" for the hero sequence. A preset
+replaces the prompt's own direction with a canned effect, so decline it with
+`declined_preset_id` unless the preset genuinely is the shot.
+
+
 ## What this video is, and what it must not be
 
 Google Play's **App access instructions** is read by a reviewer deciding whether the app
@@ -64,6 +81,56 @@ colour field, a moving band — and never as UI.
 > equipment visible in frame.
 
 ---
+
+---
+
+## The hero sequence — explicit casting, high energy (15 s, one generation)
+
+The three shots above explain the *shape* of the system quietly. This one shows a person
+actually doing it, and is the piece with enough energy to survive a social feed or hold a
+reviewer's attention past the first second.
+
+Generated as **one** `kling3_0` job rather than four, because the model does genuine
+multi-shot and a single generation keeps one person, one wardrobe and one room across all
+four beats. Four separate jobs would recast the person between every cut.
+
+Settings: `model: kling3_0`, `aspect_ratio: 16:9`, `duration: 15`, `mode: "4k"`,
+`sound: "off"`. Reframe to 9:16 afterwards with the `reframe` tool rather than regenerating —
+16:9 is what the Play listing and a YouTube promo slot both want.
+
+> High-energy multi-shot sequence in a dark modern apartment at night, lit by bold neon
+> practicals — electric cyan and hot magenta LED strips along the walls, deep black shadows,
+> richly saturated contemporary colour grade.
+>
+> **SHOT 1:** Extreme low-angle close-up as a young person's hand snatches a smartphone off a
+> low table. Snap zoom out as they lift it, then a fast whip pan upward to their face, lit
+> from below by the phone's glow, hot magenta rim light behind their head. Handheld, kinetic,
+> slight motion blur.
+>
+> **SHOT 2:** Tight over-the-shoulder macro on the phone held in one hand. The phone screen is
+> a bright grid of warm glowing rectangles — pure abstract colour blocks and light, no writing
+> of any kind. Their thumb flicks the grid upward then taps one block decisively. Speed ramp:
+> fast on the flick, slow on the tap, fast out. Cyan light spills across their knuckles.
+>
+> **SHOT 3:** Hard whip pan away from the phone, across the room, landing on a huge
+> wall-mounted television. On arrival its black screen bursts into a bright warm softly
+> out-of-focus moving image, throwing coloured light across the entire room and across the
+> person's face. Punchy contrast, a single clean lens flare.
+>
+> **SHOT 4:** Wide low-angle hero shot. The person drops back onto a sofa, phone loose in one
+> hand, the enormous glowing television filling the upper frame behind them, the room drenched
+> in colour from the screen. Slow confident push in. Fine film grain.
+>
+> Style: contemporary social-video energy, bold saturated colour, deep blacks, neon practical
+> lighting, handheld camera with snap zooms and whip pans, speed ramping between shots.
+> Photorealistic people and environment.
+
+Note what shot 2 asks for and what it refuses. The **gesture** is explicit — a flick, then a
+deliberate tap — so the sequence unmistakably reads as choosing a film and sending it. The
+**screen** is a grid of colour blocks, because a model asked for an app interface invents one,
+and an invented interface shown to a reviewer is fabricated evidence of how the product
+behaves. Composite the real library grid in from an `adb screenrecord` capture over those
+abstract blocks; the plate is already framed for it.
 
 ## Negative prompt (apply to every shot)
 
