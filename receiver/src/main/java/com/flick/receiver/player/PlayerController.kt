@@ -784,8 +784,7 @@ class PlayerController(context: Context) : SessionPlayer {
             wasCanceled: Boolean,
         ) {
             if (wasCanceled) return
-            val attemptToken = subtitleReloadAttemptToken(eventTime)
-            if (isCurrentExternalSubtitleLoad(loadEventInfo, attemptToken)) {
+            if (isCurrentExternalSubtitleLoad(loadEventInfo)) {
                 subtitleFailureState.recordLoadFailure()
             }
         }
@@ -797,9 +796,12 @@ class PlayerController(context: Context) : SessionPlayer {
         ) {
             // The one short text retry may succeed; don't let its earlier error
             // make a later, unrelated media error drop a now-healthy subtitle.
-            val attemptToken = subtitleReloadAttemptToken(eventTime)
-            if (isCurrentExternalSubtitleLoad(loadEventInfo, attemptToken)) {
+            if (isCurrentExternalSubtitleLoad(loadEventInfo)) {
                 subtitleFailureState.recordLoadSuccess()
+                // The watchdog still asks which ATTEMPT this was, because that is the one
+                // question a generation gate exists to answer. Attribution above no longer
+                // does, and the two are not the same question.
+                val attemptToken = subtitleReloadAttemptToken(eventTime)
                 if (subtitleReloadWatchdog.onSubtitleLoaded(attemptToken, currentMediaId)) {
                     cancelSubtitleReloadDeadline(clearState = false)
                 }
@@ -816,16 +818,13 @@ class PlayerController(context: Context) : SessionPlayer {
         }
     }
 
-    private fun isCurrentExternalSubtitleLoad(
-        loadEventInfo: LoadEventInfo,
-        attemptToken: Long?,
-    ): Boolean {
-        val subtitleUrl = currentSubtitle?.url ?: return false
-        val uriMatches = loadEventInfo.dataSpec.uri.toString() == subtitleUrl ||
-            loadEventInfo.uri.toString() == subtitleUrl
-        if (!uriMatches) return false
-        return attemptToken == pendingSubtitleReloadAttemptToken
-    }
+    /** Media3's two spellings of the same load, put to [isExternalSubtitleLoad]. */
+    private fun isCurrentExternalSubtitleLoad(loadEventInfo: LoadEventInfo): Boolean =
+        isExternalSubtitleLoad(
+            currentSubtitleUrl = currentSubtitle?.url,
+            dataSpecUri = loadEventInfo.dataSpec.uri.toString(),
+            eventUri = loadEventInfo.uri.toString(),
+        )
 
     private fun subtitleReloadAttemptToken(eventTime: AnalyticsListener.EventTime): Long? {
         val mediaPeriodId = eventTime.mediaPeriodId ?: return null
