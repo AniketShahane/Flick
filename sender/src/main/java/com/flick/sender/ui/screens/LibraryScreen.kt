@@ -358,8 +358,11 @@ internal fun LibraryScreen(
     // refolds every name in the library on the frame a menu is dismissing over it. Sorting
     // the results instead re-deals only what is on screen and leaves the index alone.
     //
-    // Only the alphabetical order needs a folded title, and only it asks for one.
-    val sortTitles = if (sortOrder == LibrarySort.NAME) uiState.sortTitles.of(scoped) else null
+    // Only the name orders need a folded title, and only they ask for one. Asked of the
+    // order itself rather than compared against one of them: there are two now, and a
+    // comparison naming a single order would hand the other an empty map, tie every row,
+    // and deal the grid in library order without failing anywhere.
+    val sortTitles = if (sortOrder.readsTitle) uiState.sortTitles.of(scoped) else null
     val ordered = remember(searchResults, sortOrder, sortTitles) {
         LibrarySortPolicy.sorted(
             items = searchResults,
@@ -367,15 +370,14 @@ internal fun LibraryScreen(
             title = { sortTitles?.get(it.id).orEmpty() },
             addedSeconds = { it.dateAddedSeconds },
             durationMs = { it.durationMs },
-            sizeBytes = { it.sizeBytes },
         )
     }
 
     // A re-deal is asked for in order to see what is now at the head of the grid — the
-    // newest download, the film beginning with the letter being looked for, the big remux —
-    // and none of that is reachable from wherever the user happened to be scrolled to. The
-    // position they had is not preserved because it no longer describes anything: the tiles
-    // under it are not the tiles that were under it.
+    // newest download, the film beginning with the letter being looked for, the clip rather
+    // than the feature — and none of that is reachable from wherever the user happened to be
+    // scrolled to. The position they had is not preserved because it no longer describes
+    // anything: the tiles under it are not the tiles that were under it.
     //
     // Jumped rather than animated: a fling through two hundred tiles would ask the phone to
     // decode every still on the way past. Keyed on the order alone, and skipped when it has

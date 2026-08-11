@@ -16,7 +16,6 @@ private data class Row(
     val title: String = "",
     val added: Long = 0L,
     val duration: Long = 0L,
-    val size: Long = 0L,
 )
 
 private fun sort(rows: List<Row>, order: LibrarySort): List<Row> = LibrarySortPolicy.sorted(
@@ -25,7 +24,6 @@ private fun sort(rows: List<Row>, order: LibrarySort): List<Row> = LibrarySortPo
     title = Row::title,
     addedSeconds = Row::added,
     durationMs = Row::duration,
-    sizeBytes = Row::size,
 )
 
 class LibrarySortPolicyTest {
@@ -56,6 +54,17 @@ class LibrarySortPolicyTest {
 
         val alphabetical = listOf(Row(id = 1, title = "amelie"), Row(id = 2, title = "parasite"))
         assertSame(alphabetical, sort(alphabetical, LibrarySort.NAME))
+
+        val reversed = listOf(Row(id = 1, title = "parasite"), Row(id = 2, title = "amelie"))
+        assertSame(reversed, sort(reversed, LibrarySort.NAME_REVERSED))
+
+        val shortestFirst = listOf(Row(id = 1, duration = 10), Row(id = 2, duration = 90))
+        assertSame(shortestFirst, sort(shortestFirst, LibrarySort.SHORTEST))
+
+        // And a row SHORTEST has to hold back is at the bottom already, not out of place —
+        // the check has to read the same key the sort does or it re-deals the list every time.
+        val shortestPastASilence = listOf(Row(id = 1, duration = 10), Row(id = 2, duration = 0))
+        assertSame(shortestPastASilence, sort(shortestPastASilence, LibrarySort.SHORTEST))
     }
 
     @Test fun aListOutOfOrderIsReDealtIntoANewOne() {
@@ -95,6 +104,20 @@ class LibrarySortPolicyTest {
         assertEquals(listOf(2L, 3L, 1L), sort(rows, LibrarySort.NAME).map(Row::id))
     }
 
+    @Test fun nameReversedIsTheSameOrderReadFromTheOtherEnd() {
+        val rows = listOf(
+            Row(id = 1, title = "the wailing 2016"),
+            Row(id = 2, title = "amelie"),
+            Row(id = 3, title = "parasite 2019"),
+        )
+        assertEquals(listOf(1L, 3L, 2L), sort(rows, LibrarySort.NAME_REVERSED).map(Row::id))
+        // No two of these tie, so Z–A is exactly A–Z backwards and can be checked against it.
+        assertEquals(
+            sort(rows, LibrarySort.NAME).map(Row::id).reversed(),
+            sort(rows, LibrarySort.NAME_REVERSED).map(Row::id),
+        )
+    }
+
     @Test fun longestReadsDurationAndLeavesUnscannedFilesAtTheBottom() {
         val rows = listOf(
             Row(id = 1, duration = 0L),
@@ -104,20 +127,93 @@ class LibrarySortPolicyTest {
         assertEquals(listOf(2L, 3L, 1L), sort(rows, LibrarySort.LONGEST).map(Row::id))
     }
 
-    @Test fun largestReadsSizeAndLeavesAWithheldSizeAtTheBottom() {
-        // -1 is MediaStore's silence about size, and it must not read as the smallest file.
+    /**
+     * The order this whole policy is most able to lie in. `0` is what MediaStore reports for
+     * a file it could not scan, and ascending order reads that as the smallest number there
+     * is — so a naive SHORTEST opens the grid on the rows Flick knows nothing about and calls
+     * them the briefest films the user owns.
+     */
+    @Test fun shortestReadsDurationAndStillLeavesUnscannedFilesAtTheBottom() {
         val rows = listOf(
-            Row(id = 1, size = -1L),
-            Row(id = 2, size = 700_000_000L),
-            Row(id = 3, size = 12_000_000_000L),
+            Row(id = 1, duration = 0L),
+            Row(id = 2, duration = 5_400_000L),
+            Row(id = 3, duration = 90_000L),
         )
-        assertEquals(listOf(3L, 2L, 1L), sort(rows, LibrarySort.LARGEST).map(Row::id))
+        assertEquals(listOf(3L, 2L, 1L), sort(rows, LibrarySort.SHORTEST).map(Row::id))
+    }
+
+    @Test fun shortestDoesNotOrderOneSilenceAgainstAnother() {
+        // Nothing separates rows that were never scanned, so they hold the places the library
+        // gave them — including a negative, which is no more a length than a zero is.
+        val rows = listOf(
+            Row(id = 1, duration = 0L),
+            Row(id = 2, duration = 60_000L),
+            Row(id = 3, duration = -1L),
+            Row(id = 4, duration = 0L),
+        )
+        assertEquals(listOf(2L, 1L, 3L, 4L), sort(rows, LibrarySort.SHORTEST).map(Row::id))
     }
 
     @Test fun everyOrderKeepsEveryRow() {
-        val rows = (1L..20L).map { Row(id = it, title = "film $it", added = it, duration = it, size = it) }
+        val rows = (1L..20L).map { Row(id = it, title = "film $it", added = it, duration = it) }
         LibrarySort.entries.forEach { order ->
             assertEquals(order.name, rows.map(Row::id).sorted(), sort(rows, order).map(Row::id).sorted())
+        }
+    }
+
+    /**
+     * `sortedWith` is TimSort, which THROWS mid-merge on a self-contradicting comparator once
+     * a list reaches 32 — an ordinary number of films. SHORTEST is the one order here whose
+     * comparator is composed rather than a single field read, so every order is put through
+     * the real sort on a library long enough for TimSort to police it, over the values that
+     * could break the composition: both silences, ordinary lengths, and the sentinel a
+     * withheld row is weighed as.
+     */
+    @Test fun everyOrderSortsALibraryLongEnoughForTimSortToPoliceIt() {
+        val durations = listOf(0L, -1L, 1L, 90_000L, Long.MAX_VALUE, 5_400_000L, 42L, 0L)
+        val rows = (0 until 96).map { index ->
+            Row(
+                id = index.toLong(),
+                title = "film ${index % 7}",
+                added = (index % 5).toLong(),
+                duration = durations[index % durations.size],
+            )
+        }
+        LibrarySort.entries.forEach { order ->
+            val sorted = sort(rows, order)
+            assertEquals(order.name, rows.map(Row::id).sorted(), sorted.map(Row::id).sorted())
+        }
+    }
+
+    /**
+     * The pill draws an up or a down arrow straight off [LibrarySort.ascending], and nothing
+     * a user can see would report it drawing the wrong one. These three rows rank the same
+     * way under every order, so the sort's own answer is what the direction is checked
+     * against rather than the declaration being taken at its word.
+     */
+    @Test fun everyOrderRunsTheDirectionItsControlClaims() {
+        val rows = listOf(
+            Row(id = 1, title = "a", added = 1, duration = 1),
+            Row(id = 2, title = "b", added = 2, duration = 2),
+            Row(id = 3, title = "c", added = 3, duration = 3),
+        )
+        LibrarySort.entries.forEach { order ->
+            val expected = if (order.ascending) listOf(1L, 2L, 3L) else listOf(3L, 2L, 1L)
+            assertEquals(order.name, expected, sort(rows, order).map(Row::id))
+        }
+    }
+
+    /**
+     * [LibrarySort.readsTitle] is what the screen folds titles on, and an order that reads a
+     * title without declaring it gets an empty map and a grid dealt on blank strings. Proved
+     * by taking the titles away and seeing which orders notice.
+     */
+    @Test fun exactlyTheOrdersThatCompareTitlesDeclareThatTheyDo() {
+        val titled = listOf(Row(id = 1, title = "b"), Row(id = 2, title = "a"), Row(id = 3, title = "c"))
+        val untitled = titled.map { it.copy(title = "") }
+        LibrarySort.entries.forEach { order ->
+            val noticed = sort(titled, order).map(Row::id) != sort(untitled, order).map(Row::id)
+            assertEquals(order.name, order.readsTitle, noticed)
         }
     }
 
@@ -127,7 +223,20 @@ class LibrarySortPolicyTest {
         assertEquals(LibrarySort.RECENT, librarySortOf("SMALLEST"))
         assertEquals(LibrarySort.RECENT, librarySortOf("name"))
         assertEquals(LibrarySort.NAME, librarySortOf("NAME"))
-        assertEquals(LibrarySort.LARGEST, librarySortOf("LARGEST"))
+        assertEquals(LibrarySort.NAME_REVERSED, librarySortOf("NAME_REVERSED"))
+        assertEquals(LibrarySort.SHORTEST, librarySortOf("SHORTEST"))
+    }
+
+    /**
+     * A phone that had "Largest first" chosen still has `LARGEST` written in
+     * `flick_library_sort` after the update, naming an order this build does not offer. It
+     * opens on the default rather than on nothing, which is the same fallback a hand-edited
+     * preference gets — but this one is a real record on a real phone rather than a
+     * hypothetical, so it is checked rather than assumed.
+     */
+    @Test fun theOrderThisBuildDroppedOpensOnTheDefault() {
+        assertTrue(LibrarySort.entries.none { it.name == "LARGEST" })
+        assertEquals(LibrarySort.RECENT, librarySortOf("LARGEST"))
     }
 }
 
@@ -222,20 +331,36 @@ class LibraryNameOrderTest {
         }
     }
 
-    /** And the same set put through the real sort, which is what TimSort actually polices. */
+    /**
+     * And the same set put through the real sort, which is what TimSort actually polices —
+     * in both directions, because Z–A is this comparator with its arguments swapped and a
+     * reversed total order is only total if the order it reverses was.
+     */
     @Test fun aLibraryOfThoseNamesSortsWithoutThrowing() {
         val rows = everyShortName.mapIndexed { index, name -> Row(id = index.toLong(), title = name) }
-        val sorted = LibrarySortPolicy.sorted(
+
+        val forwards = LibrarySortPolicy.sorted(
             items = rows,
             order = LibrarySort.NAME,
             title = Row::title,
             addedSeconds = Row::added,
             durationMs = Row::duration,
-            sizeBytes = Row::size,
         )
-        assertEquals(rows.size, sorted.size)
-        sorted.zipWithNext { a, b ->
+        assertEquals(rows.size, forwards.size)
+        forwards.zipWithNext { a, b ->
             if (LibraryNameOrder.compare(a.title, b.title) > 0) fail("'${a.title}' was placed before '${b.title}'")
+        }
+
+        val backwards = LibrarySortPolicy.sorted(
+            items = rows,
+            order = LibrarySort.NAME_REVERSED,
+            title = Row::title,
+            addedSeconds = Row::added,
+            durationMs = Row::duration,
+        )
+        assertEquals(rows.size, backwards.size)
+        backwards.zipWithNext { a, b ->
+            if (LibraryNameOrder.compare(b.title, a.title) > 0) fail("'${a.title}' was placed before '${b.title}'")
         }
     }
 }
@@ -294,7 +419,7 @@ class LibrarySortControllerTest {
     }
 
     @Test fun aStoredOrderIsWhatTheFirstGridIsDealtIn() {
-        val controller = LibrarySortController(LibrarySort.LARGEST) { }
-        assertEquals(LibrarySort.LARGEST, controller.order.value)
+        val controller = LibrarySortController(LibrarySort.SHORTEST) { }
+        assertEquals(LibrarySort.SHORTEST, controller.order.value)
     }
 }

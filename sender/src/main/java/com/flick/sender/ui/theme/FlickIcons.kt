@@ -310,15 +310,36 @@ object FlickIcons {
     }
 
     /**
-     * Bars in descending length — the mark for ORDER itself, and the only glyph the
-     * library's sort control wears at full size. It never says which order is in force;
-     * the smaller glyph beside it does that, and letting this one carry a direction too
-     * would state the same fact twice and disagree with itself the moment the two drift.
+     * Three bars and a down arrow — the library's list, and the direction it is dealt in.
+     *
+     * The bars used to descend in length and to be the whole mark, because the glyph beside
+     * them named the order and nothing needed to say which way it ran. Two name orders and
+     * two duration orders ended that: A–Z and Z–A wear the same letter, longest and shortest
+     * the same hourglass, and the pill would have shown one drawing for two different grids.
+     *
+     * Direction is still stated exactly once, which was the point of the old rule. The bars
+     * are equal length precisely so they cannot make a second claim about it and disagree
+     * with the arrow — a staircase whose steps ran one way under an arrow pointing the other
+     * is the failure that rule was written against. Rendered at 20 dp on the pill against the
+     * staircase it replaces, the arrow is also the only one of the two that survives being
+     * glanced at rather than read: mirrored staircases differ by where their mass sits, and
+     * that difference is the first thing to go.
      */
-    val Sort: ImageVector = strokeIcon("Sort", width = 2f) {
-        moveTo(4.5f, 7f); lineTo(19.5f, 7f)
-        moveTo(4.5f, 12f); lineTo(14.5f, 12f)
-        moveTo(4.5f, 17f); lineTo(9.5f, 17f)
+    val SortDescending: ImageVector = strokeIcon("SortDescending", width = 2f) {
+        sortBars()
+        moveTo(16.9f, 7f); lineTo(16.9f, 17f)
+        moveTo(14.1f, 14.2f); lineTo(16.9f, 17f); lineTo(19.7f, 14.2f)
+    }
+
+    /**
+     * [SortDescending] reflected about y = 12 — every point below is its twin's 24 − y, so
+     * the two marks are the same drawing and can only ever differ in the one thing they are
+     * drawn to differ in.
+     */
+    val SortAscending: ImageVector = strokeIcon("SortAscending", width = 2f) {
+        sortBars()
+        moveTo(16.9f, 17f); lineTo(16.9f, 7f)
+        moveTo(14.1f, 9.8f); lineTo(16.9f, 7f); lineTo(19.7f, 9.8f)
     }
 
     /**
@@ -361,23 +382,6 @@ object FlickIcons {
         moveTo(12f, 12f); lineTo(15.8f, 19.1f); lineTo(8.2f, 19.1f); close()
     }
 
-    /**
-     * A large disc and a small one — how big a thing is, and which end of that the grid
-     * starts from. Solid and only two shapes, because this is the glyph in the set with the
-     * least to say and the least room to say it in: drawn at 15 dp on the sort control, the
-     * expand-arrow mark it replaced thinned into a bare diagonal and a square nested inside
-     * another square filled in solid, while two discs of visibly different size survive
-     * being that small with the whole of their meaning intact.
-     *
-     * It shares no construction with [Sort], [Clock], [Alphabetical] or [Hourglass], which
-     * is the requirement rather than a bonus: these five are read at a glance, in pairs, at
-     * two sizes, and a size mark built from bars would be a second sort mark standing next
-     * to the first.
-     */
-    val FileSize: ImageVector = fillIcon("FileSize") {
-        circle(8.2f, 12f, 5.4f)
-        circle(18.1f, 12f, 2.9f)
-    }
 }
 
 // --- builders ---------------------------------------------------------------
@@ -451,6 +455,17 @@ private fun PathBuilder.circle(cx: Float, cy: Float, radius: Float) {
     curveTo(cx - k, cy + radius, cx - radius, cy + k, cx - radius, cy)
     curveTo(cx - radius, cy - k, cx - k, cy - radius, cx, cy - radius)
     close()
+}
+
+/**
+ * The list the two sort marks are drawn on: three bars of equal length, filling the same
+ * 6–18 band the arrow beside them spans. Shared so the pair cannot drift in the half of the
+ * drawing that is supposed to be identical.
+ */
+private fun PathBuilder.sortBars() {
+    moveTo(4.5f, 7f); lineTo(11.8f, 7f)
+    moveTo(4.5f, 12f); lineTo(11.8f, 12f)
+    moveTo(4.5f, 17f); lineTo(11.8f, 17f)
 }
 
 /**

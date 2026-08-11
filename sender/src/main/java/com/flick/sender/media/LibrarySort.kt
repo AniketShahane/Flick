@@ -3,16 +3,40 @@ package com.flick.sender.media
 /**
  * The orders the library grid can be dealt in.
  *
- * Each cell fixes its own direction instead of offering to reverse, because only one
- * direction of each is a question anybody asks of their own films: the download that just
- * landed, the title being looked for, the feature rather than the clip it sits beside, the
- * remux rather than the trailer. A second arrow on every row would double the menu to say
- * nothing, and this control has one row of the library to live in.
+ * A direction is offered where both of them are a question somebody asks of their own films:
+ * the title being looked for sits at the end of the alphabet as often as the start, and the
+ * clip is found by being brief exactly as the feature is found by being long. Newest-first
+ * is the one cell with no reverse, because nobody opens their library looking for the thing
+ * they have had the longest. How large the file is has no cell at all — it is a fact about
+ * storage rather than about films, and it was the one order nobody was asking of a gallery.
  *
  * [RECENT] is the order MediaStore already hands the library over in, so it is both the
  * default and the one cell that cannot re-deal a freshly read library.
  */
-enum class LibrarySort { RECENT, NAME, LONGEST, LARGEST }
+enum class LibrarySort(
+    /**
+     * Which way the grid runs under this order, which is the direction the control's mark
+     * draws. Declared here, beside the comparator that implements it, rather than worked out
+     * a second time in the UI: a pill claiming one direction while the grid is dealt in the
+     * other is then a failing test rather than something a user has to notice.
+     */
+    internal val ascending: Boolean,
+    /**
+     * Whether this order compares folded titles, so the screen knows to build them.
+     *
+     * A property rather than a check against [NAME] where the titles are folded. The moment
+     * a second name order existed that check went silently wrong: [NAME_REVERSED] would have
+     * been handed an empty title map, every row would have tied, and the grid would have
+     * shown library order with nothing anywhere reporting a fault.
+     */
+    internal val readsTitle: Boolean,
+) {
+    RECENT(ascending = false, readsTitle = false),
+    NAME(ascending = true, readsTitle = true),
+    NAME_REVERSED(ascending = false, readsTitle = true),
+    LONGEST(ascending = false, readsTitle = false),
+    SHORTEST(ascending = true, readsTitle = false),
+}
 
 val DefaultLibrarySort = LibrarySort.RECENT
 
@@ -53,9 +77,11 @@ internal object LibrarySortPolicy {
      * The fields arrive as accessors rather than being read off a type, because `MediaItem`
      * carries an Android `Uri` and none of this is worth being unable to prove on a JVM.
      *
-     * A withheld measurement sorts last under every order that reads it: MediaStore reports
-     * a 0 duration and a -1 size for a file it could not scan, and the bottom of the grid is
-     * where a row nothing is known about belongs — never the top, which would be a claim.
+     * A withheld measurement sorts last under every order that reads it, and the bottom of
+     * the grid is where a row nothing is known about belongs — never the top, which would be
+     * a claim. Under the descending orders that costs nothing, since MediaStore's 0 for a
+     * file it could not scan is already the smallest number there is. Ascending, it costs
+     * [shortestKey].
      */
     fun <T> sorted(
         items: List<T>,
@@ -63,16 +89,29 @@ internal object LibrarySortPolicy {
         title: (T) -> String,
         addedSeconds: (T) -> Long,
         durationMs: (T) -> Long,
-        sizeBytes: (T) -> Long,
     ): List<T> {
         val comparator = when (order) {
             LibrarySort.RECENT -> compareByDescending<T> { addedSeconds(it) }
             LibrarySort.NAME -> Comparator<T> { a, b -> LibraryNameOrder.compare(title(a), title(b)) }
+            LibrarySort.NAME_REVERSED -> Comparator<T> { a, b -> LibraryNameOrder.compare(title(b), title(a)) }
             LibrarySort.LONGEST -> compareByDescending<T> { durationMs(it) }
-            LibrarySort.LARGEST -> compareByDescending<T> { sizeBytes(it) }
+            LibrarySort.SHORTEST -> compareBy<T> { shortestKey(durationMs(it)) }
         }
         return if (items.alreadyInOrder(comparator)) items else items.sortedWith(comparator)
     }
+
+    /**
+     * A duration as [LibrarySort.SHORTEST] weighs it: an unscanned one is the longest thing
+     * in the library rather than the shortest.
+     *
+     * MediaStore's 0 is a silence, not a measurement. Read ascending it is the smallest
+     * number there is, which would open the grid on the rows Flick knows least about while
+     * calling them the briefest films the user owns — the one claim every other order here
+     * is built to avoid making. Every silence takes the same key, so the stable sort leaves
+     * those rows in the order the library arrived in rather than inventing one among rows it
+     * has nothing to tell apart.
+     */
+    private fun shortestKey(durationMs: Long): Long = if (durationMs > 0L) durationMs else Long.MAX_VALUE
 
     /**
      * Whether [this] is already the answer, so that it can be handed back as the SAME
