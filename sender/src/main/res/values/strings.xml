@@ -112,8 +112,9 @@
     <string name="library_sort_title">SORT BY</string>
     <string name="library_sort_recent">Recently added</string>
     <string name="library_sort_name">Name (A–Z)</string>
+    <string name="library_sort_name_reversed">Name (Z–A)</string>
     <string name="library_sort_longest">Longest first</string>
-    <string name="library_sort_largest">Largest first</string>
+    <string name="library_sort_shortest">Shortest first</string>
     <string name="library_sort_a11y">Sorted by %1$s. Change the order.</string>
 
     <!-- Folder scope. Flick lists one folder at a time so a gallery full of clips and

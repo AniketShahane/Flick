@@ -58,12 +58,14 @@ val LibrarySortControlWidth = 64.dp
  * The library's order control — two glyphs, no words, sitting immediately left of the
  * search target.
  *
- * It says WHAT it is with [FlickIcons.Sort] and WHICH order is in force with a smaller
- * glyph in front of it, and it says both without a word, because the row it lives in
- * already spends most of its width on a folder name and has to keep a 48 dp search target
- * at the far end. What the glyphs cannot carry, the menu and the spoken label do: every
- * order is named in words the moment the control is opened, and TalkBack is told the
- * current one before it is offered the change.
+ * It reads [what][which way]: a small glyph for the thing being ordered — a clock, a letter,
+ * an hourglass — in front of a sort mark whose arrow points the way the grid runs. Neither
+ * half says enough alone now that A–Z and Z–A share a letter and longest and shortest share
+ * an hourglass. It says both without a word, because the row it lives in already spends most
+ * of its width on a folder name and has to keep a 48 dp search target at the far end. What
+ * the glyphs cannot carry, the menu and the spoken label do: every order is named in words
+ * the moment the control is opened, and TalkBack is told the current one before it is
+ * offered the change.
  *
  * No chevron. The folder chip beside this carries one because a name alone does not say it
  * opens anything; the sort mark is itself the affordance, and a third glyph in 64 dp would
@@ -137,7 +139,7 @@ fun LibrarySortChip(
                 modifier = Modifier.size(SortKindGlyphSize),
             )
             Icon(
-                imageVector = FlickIcons.Sort,
+                imageVector = librarySortDirection(order),
                 contentDescription = null,
                 tint = colors.onPrimaryContainer,
                 modifier = Modifier.size(SortGlyphSize),
@@ -212,24 +214,41 @@ fun LibrarySortChip(
 internal fun librarySortLabel(order: LibrarySort): Int = when (order) {
     LibrarySort.RECENT -> R.string.library_sort_recent
     LibrarySort.NAME -> R.string.library_sort_name
+    LibrarySort.NAME_REVERSED -> R.string.library_sort_name_reversed
     LibrarySort.LONGEST -> R.string.library_sort_longest
-    LibrarySort.LARGEST -> R.string.library_sort_largest
+    LibrarySort.SHORTEST -> R.string.library_sort_shortest
 }
 
 /**
- * The mark for an order. Drawn twice at two sizes — small in front of [FlickIcons.Sort] on
- * the button, and at reading size in the menu — so the glyph the user chose from is the
- * same one that then stands on the control.
+ * The mark for WHAT an order is about — the quantity it reads, not the end it starts from.
+ * Drawn twice at two sizes: small in front of the direction mark on the button, and at
+ * reading size in the menu, so the glyph the user chose from is the one that then stands on
+ * the control.
+ *
+ * Two pairs of orders therefore share a glyph, and the menu is where that is harmless: it
+ * has the words, and a repeated mark down the leading column is what shows at a glance that
+ * two of its rows are the same question asked from opposite ends.
  */
 internal fun librarySortGlyph(order: LibrarySort): ImageVector = when (order) {
     LibrarySort.RECENT -> FlickIcons.Clock
-    LibrarySort.NAME -> FlickIcons.Alphabetical
-    LibrarySort.LONGEST -> FlickIcons.Hourglass
-    LibrarySort.LARGEST -> FlickIcons.FileSize
+    LibrarySort.NAME, LibrarySort.NAME_REVERSED -> FlickIcons.Alphabetical
+    LibrarySort.LONGEST, LibrarySort.SHORTEST -> FlickIcons.Hourglass
 }
+
+/**
+ * The mark for WHICH WAY the grid runs, worn only by the button — the menu says it in words.
+ *
+ * Read off the order rather than decided here, so the arrow on the pill and the comparator
+ * dealing the grid cannot disagree; `LibrarySortPolicyTest` sorts under every order and
+ * checks the direction each one claims is the direction it ran in.
+ */
+internal fun librarySortDirection(order: LibrarySort): ImageVector =
+    if (order.ascending) FlickIcons.SortAscending else FlickIcons.SortDescending
 
 // The pair on the button: the order's mark kept deliberately smaller than the sort mark, so
 // the two read as one adjective and one noun rather than as two buttons crammed together.
+// Held at 15/20 through the sort mark gaining an arrow: rendered side by side against 16/19
+// and 16/20, the extra ink is not visible at the size the pill is actually drawn.
 private val SortKindGlyphSize = 15.dp
 private val SortGlyphSize = 20.dp
 private val SortGlyphGap = 5.dp
