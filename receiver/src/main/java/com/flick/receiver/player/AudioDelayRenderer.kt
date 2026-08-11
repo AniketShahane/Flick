@@ -20,6 +20,27 @@ class AudioDelayShift {
 }
 
 /**
+ * Whether a shift that has held its value since [heldSinceUs] has stopped moving, judged
+ * against the clock [nowUs] the renderer was handed for this tick.
+ *
+ * Pure, and taking the clock rather than reading one, because the playback thread already
+ * has the only clock that matters here and a settle decision that samples its own is
+ * untestable without a decoder.
+ */
+internal fun audioShiftSettled(nowUs: Long, heldSinceUs: Long): Boolean =
+    nowUs - heldSinceUs >= AUDIO_SHIFT_SETTLE_US
+
+/**
+ * How long a shift must hold before it is reported.
+ *
+ * The phone walks a drag one hop every 40 ms, so this has to outlast a hop by enough that
+ * ordinary scheduling jitter between two renderer ticks cannot look like the end of a
+ * walk. It also has to stay short enough that the line lands while the viewer still has
+ * the nudge in mind — a quarter second is both.
+ */
+internal const val AUDIO_SHIFT_SETTLE_US = 250_000L
+
+/**
  * A video renderer that sees the playback clock shifted by [shift], and nothing
  * else changed.
  *
@@ -76,10 +97,13 @@ internal class AudioDelayVideoRenderer(
 ) : ForwardingRenderer(delegate) {
 
     /**
-     * The last shift this renderer reported. Playback-thread only — [render] is
-     * the only reader and the only writer — so a plain field, not a volatile.
+     * The last shift this renderer reported, and the value it is currently watching
+     * settle. Playback-thread only — [render] is the only reader and the only
+     * writer — so plain fields, not volatiles.
      */
     private var loggedShiftUs: Long = 0L
+    private var heldShiftUs: Long = 0L
+    private var heldSinceUs: Long = 0L
 
     override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
         val shiftUs = shift.videoShiftUs
@@ -87,10 +111,21 @@ internal class AudioDelayVideoRenderer(
         // so it says a frame arrived and nothing more. This one is the other half:
         // it is written from the thread that releases frames, by the renderer that
         // is actually in the array, so the two together separate "the TV accepted
-        // the nudge" from "the nudge reached the picture". A user step changes the
-        // value at most a few times a second; every other tick compares and
-        // returns.
-        if (shiftUs != loggedShiftUs) {
+        // the nudge" from "the nudge reached the picture".
+        //
+        // Reported once the value has STOPPED moving, not once it differs. The
+        // original wording of this comment assumed a user step changes the shift a
+        // few times a second, and a stepper press does — but the phone walks a drag
+        // to the target 25 times a second for as long as 1.6 s precisely so the
+        // picture is not skipped, and one line per hop turns one gesture into forty
+        // and evicts the cast from a 200-entry ring. Where the nudge ENDED is the
+        // answer a reader wants; every tick before that compares and returns.
+        if (shiftUs != heldShiftUs) {
+            heldShiftUs = shiftUs
+            heldSinceUs = elapsedRealtimeUs
+        } else if (shiftUs != loggedShiftUs &&
+            audioShiftSettled(nowUs = elapsedRealtimeUs, heldSinceUs = heldSinceUs)
+        ) {
             loggedShiftUs = shiftUs
             FlickLog.i("player", "audioDelayShift us=$shiftUs")
         }

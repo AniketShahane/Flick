@@ -2,9 +2,9 @@ package com.flick.sender.media
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
@@ -71,15 +71,24 @@ object MovieHash {
     suspend fun of(context: Context, uri: Uri, sizeHint: Long = -1L): Fingerprint? =
         withContext(Dispatchers.IO) {
             runCatching {
-                context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
-                    val size = authoritativeSize(descriptor.statSize, sizeHint) ?: return@use null
-                    if (size < MinBytes) return@use null
-                    // Built from a descriptor Android does not let this stream own, so the
-                    // ParcelFileDescriptor stays the single thing that closes the fd.
-                    val channel = FileInputStream(descriptor.fileDescriptor).channel
-                    val head = channel.window(0L)
-                    val tail = channel.window(size - WindowBytes)
-                    if (head == null || tail == null) null else of(size, head, tail)
+                context.contentResolver.openFileDescriptor(uri, "r")?.let { descriptor ->
+                    // AutoCloseInputStream owns the descriptor, so closing the stream
+                    // closes the fd exactly once and `let` must not close it a second
+                    // time. The previous shape took a bare FileInputStream over a
+                    // descriptor it was not allowed to own, which left it with no legal
+                    // way to be closed at all: closing it would have closed the fd under
+                    // the ParcelFileDescriptor, and leaving it open is what Android's
+                    // CloseGuard reports as "A resource failed to call close" once the
+                    // stream is finalised.
+                    ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+                        val size = authoritativeSize(descriptor.statSize, sizeHint)
+                            ?: return@use null
+                        if (size < MinBytes) return@use null
+                        val channel = input.channel
+                        val head = channel.window(0L)
+                        val tail = channel.window(size - WindowBytes)
+                        if (head == null || tail == null) null else of(size, head, tail)
+                    }
                 }
             }.getOrNull()
         }

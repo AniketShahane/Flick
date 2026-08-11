@@ -513,13 +513,16 @@ class ControlServer(
                     // BuildConfig.DEBUG, and the builds a stall like this is reproduced on
                     // are release ones. A line that exists only in the build nobody hits
                     // the bug on is not instrumentation.
-                    FlickLog.i("ws", "frame in cmd=$command atMs=$rxAtMs")
+                    if (logsFrameArrival(command)) FlickLog.i("ws", "frame in cmd=$command atMs=$rxAtMs")
                     val handled = authenticatedCommand(objectValue, connection, peer, pings)
                     // Paired with the line above by atMs, and the pair is the point: a
                     // frame that arrived on time and took thirty seconds to handle is a
                     // different defect from one the socket delivered thirty seconds
                     // late, and neither line alone tells the two apart.
-                    FlickLog.i("ws", "frame done cmd=$command tookMs=${SystemClock.elapsedRealtime() - rxAtMs} atMs=$rxAtMs")
+                    val tookMs = SystemClock.elapsedRealtime() - rxAtMs
+                    if (logsFrameCompletion(command, tookMs)) {
+                        FlickLog.i("ws", "frame done cmd=$command tookMs=$tookMs atMs=$rxAtMs")
+                    }
                     if (!handled) { rejectMalformed(connection, type, objectValue.string("castId")?.value); return }
                 }
             } finally {
@@ -1115,6 +1118,50 @@ internal fun controlCommandLabel(type: String?): String =
     if (type != null && type.isNotEmpty() && type.length <= MAX_COMMAND_NAME && type.all { it.code in 0x20..0x7e }) type else "unnamed"
 
 private const val MAX_COMMAND_NAME = 32
+
+/**
+ * Commands one gesture puts on the wire at up to ~25 frames a second, and therefore the
+ * ones whose ARRIVAL is not worth a line each.
+ *
+ * A scrub throttles to one `seek` every 50 ms and a walked audio nudge emits one
+ * `setAudioDelay` every 40 ms; a volume drag is not throttled at all. [FlickLog]'s ring
+ * holds 200 entries, so a single walked nudge — 92 frames were observed on the verified TV
+ * for one gesture — evicts the whole of the cast it was made during, including the load
+ * and the first frame a diagnostician opened the buffer to read.
+ *
+ * The phone reached this conclusion first and stopped logging the same three verbs'
+ * handoffs (`logsSendHandoff`). This is the receiving half of it, and the two sets are
+ * deliberately identical: a verb whose send is too frequent to log is too frequent to log
+ * on arrival, and a reader correlating the two logs should not have to know which end
+ * dropped what.
+ */
+private val RateDrivenCommands = setOf("seek", "setVolume", "setAudioDelay")
+
+/** Whether a frame of [command] is rare enough that its arrival is worth a line. */
+internal fun logsFrameArrival(command: String): Boolean = command !in RateDrivenCommands
+
+/**
+ * Whether handling [command] is worth a line, having taken [tookMs].
+ *
+ * Dropping the completion line wholesale for the rate-driven verbs would throw away the
+ * very thing the pair was written for — a frame that arrived on time and took thirty
+ * seconds to HANDLE. So their completion is still logged; only once it has provably grown
+ * past [CONTROL_SLOW_FRAME_MS], rather than for every frame that kept up.
+ */
+internal fun logsFrameCompletion(command: String, tookMs: Long): Boolean =
+    logsFrameArrival(command) || tookMs >= CONTROL_SLOW_FRAME_MS
+
+/**
+ * How long handling a rate-driven frame may take before it is worth saying so.
+ *
+ * Mirrors the phone's `CONTROL_SLOW_SEND_MS` and for its reason: those verbs produce a
+ * frame every 40-50 ms, so anything handled inside that interval is keeping up by
+ * definition, and a threshold near it would fire on a single GC pause and bury the ring
+ * exactly as a per-frame line would. Five of those intervals is a queue that has provably
+ * grown rather than one that wobbled, and it stays two orders of magnitude below the tens
+ * of seconds a stalled peer costs, so nothing this exists to catch can hide under it.
+ */
+internal const val CONTROL_SLOW_FRAME_MS = 250L
 
 /**
  * How often a control socket carrying a live cast checks that it is still being

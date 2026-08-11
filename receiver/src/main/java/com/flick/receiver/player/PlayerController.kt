@@ -209,6 +209,9 @@ class PlayerController(context: Context) : SessionPlayer {
     private val subtitleReloadWatchdog = SubtitleReloadWatchdog()
     private var nextSubtitleReloadAttemptToken = 0L
     private var pendingSubtitleReloadDeadline: Runnable? = null
+
+    /** The settled-value line a walked audio nudge has not finished walking yet. */
+    private var pendingAudioDelayLine: Runnable? = null
     private var pendingSubtitleReloadAttemptToken: Long? = null
 
     // --- Bounded auto-recovery state (all touched on the main thread only) ------
@@ -422,6 +425,14 @@ class PlayerController(context: Context) : SessionPlayer {
                     ) {
                         instrumentation.rebufferCount++
                         instrumentation.currentRebufferStartMs = SystemClock.elapsedRealtime()
+                        // A stall is the one event this whole app exists to prevent, and
+                        // until now it was the one event the log could not confirm or
+                        // deny: the count and the elapsed total are kept for the
+                        // on-screen overlay and never written anywhere a `logcat` can
+                        // reach. Reading a clean log therefore proved nothing. At W so
+                        // `-s FlickTV:W` is a stall filter, and it costs nothing in the
+                        // zero-stall case this is supposed to be.
+                        FlickLog.w("player", "rebuffer start n=${instrumentation.rebufferCount}")
                     }
                 }
                 Player.STATE_READY -> {
@@ -853,9 +864,16 @@ class PlayerController(context: Context) : SessionPlayer {
 
     private fun closeRebufferWindow() {
         if (instrumentation.currentRebufferStartMs != 0L) {
-            instrumentation.cumulativeRebufferMs +=
-                SystemClock.elapsedRealtime() - instrumentation.currentRebufferStartMs
+            val heldMs = SystemClock.elapsedRealtime() - instrumentation.currentRebufferStartMs
+            instrumentation.cumulativeRebufferMs += heldMs
             instrumentation.currentRebufferStartMs = 0L
+            // How long it held is the number that decides whether a stall was a blip or
+            // the failure this app is a thesis against, and it is knowable only here.
+            FlickLog.w(
+                "player",
+                "rebuffer end heldMs=$heldMs n=${instrumentation.rebufferCount} " +
+                    "cumulativeMs=${instrumentation.cumulativeRebufferMs}",
+            )
         }
     }
 
@@ -1829,6 +1847,7 @@ class PlayerController(context: Context) : SessionPlayer {
     fun release() {
         cancelSubtitleReloadDeadline()
         cancelTurnDeadline()
+        cancelPendingAudioDelayLine()
         pendingTurnFallback.cancel()
         pendingAudioSinkRebuild.cancel()
         pendingRecovery.cancel()
@@ -2117,7 +2136,28 @@ class PlayerController(context: Context) : SessionPlayer {
         val commanded = AudioDelayPolicy.clamp(delayMs)
         val applied = commanded.coerceIn(-audioDelayCapMs, audioDelayCapMs)
         audioDelayShift.videoShiftUs = AudioDelayPolicy.videoShiftUs(applied)
-        FlickLog.i("player", "audioDelay ms=$applied commandedMs=$commanded capMs=$audioDelayCapMs")
+        // The shift above is applied on the frame it arrived on, unchanged. Only the LINE
+        // waits: the phone walks a drag to its target 25 times a second for as long as
+        // 1.6 s, and the ring holds 200 entries, so a line per frame says one gesture
+        // forty times and evicts the cast it was made during. Each frame cancels the one
+        // before it, so what survives is where the nudge came to rest — which is the only
+        // value a reader can act on anyway.
+        cancelPendingAudioDelayLine()
+        // The cap is captured with the values it clamped, not read again when the line
+        // finally runs: a line whose three numbers came from two different instants
+        // would be the one thing this log is read to rule out.
+        val cap = audioDelayCapMs
+        val line = Runnable {
+            pendingAudioDelayLine = null
+            FlickLog.i("player", "audioDelay ms=$applied commandedMs=$commanded capMs=$cap")
+        }
+        pendingAudioDelayLine = line
+        recoveryHandler.postDelayed(line, AUDIO_DELAY_LINE_QUIET_MS)
+    }
+
+    private fun cancelPendingAudioDelayLine() {
+        pendingAudioDelayLine?.let { recoveryHandler.removeCallbacks(it) }
+        pendingAudioDelayLine = null
     }
 
     // --- Subtitle track surface ----------------------------------------------
@@ -2301,6 +2341,12 @@ class PlayerController(context: Context) : SessionPlayer {
         // Well below the phone's control-lease loss floor, but long enough for a
         // fresh 4K decoder prepare on the verified Google TV Streamer.
         const val SUBTITLE_RELOAD_DEADLINE_MS = 12_000L
+
+        // How long the audio-delay line waits for a walked nudge to stop moving. The
+        // phone walks one hop every 40 ms, so this must outlast a hop by enough that
+        // scheduling jitter cannot look like the end of a walk; it matches the
+        // renderer's own settle window so the pair of lines describes one gesture.
+        const val AUDIO_DELAY_LINE_QUIET_MS = 250L
 
         // How long a turned picture may go without a frame before it is treated as
         // dead. Deliberately generous, because the two errors are not symmetric:
