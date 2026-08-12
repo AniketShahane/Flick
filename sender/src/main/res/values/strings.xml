@@ -297,8 +297,8 @@
     <string name="error_reachable_primary">Wake the TV app</string>
     <string name="error_reachable_secondary">Run a 10-second checkup</string>
     <string name="error_reachable_pill">Reachable · not serving</string>
-    <string name="error_unreachable_title">Can\'t find %1$s</string>
-    <string name="error_unreachable_body">Put both devices on the same Wi-Fi and Flick will find it instantly.</string>
+    <string name="error_unreachable_title">Can\'t reach %1$s</string>
+    <string name="error_unreachable_body">Flick knows its address but nothing is getting through. Check the TV is awake — and if it is, your router may be set to keep devices apart (look for AP or client isolation).</string>
     <string name="error_unreachable_primary">Rescan network</string>
     <string name="error_unreachable_secondary">Pair again</string>
     <string name="error_unreachable_pill">TV unreachable</string>
