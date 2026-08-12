@@ -877,6 +877,19 @@ class PlayerController(context: Context) : SessionPlayer {
         }
     }
 
+    /**
+     * Frames released to the surface, or 0 before a video renderer exists.
+     *
+     * `ensureUpdated` is required because the counters are written on the playback thread
+     * and read here on the main one; without it this reads a value the writer has not
+     * flushed, which for a counter watched for MOVEMENT is the one error that matters.
+     */
+    private fun renderedFrames(exo: ExoPlayer?): Long {
+        val counters = exo?.videoDecoderCounters ?: return 0L
+        counters.ensureUpdated()
+        return counters.renderedOutputBufferCount.toLong()
+    }
+
     // --- Unplayable video -----------------------------------------------------
 
     /**
@@ -2282,6 +2295,7 @@ class PlayerController(context: Context) : SessionPlayer {
             currentlyRebuffering = instrumentation.currentRebufferStartMs != 0L,
             bufferedAheadMs = bufferedAhead,
             droppedFrames = instrumentation.droppedFrames,
+            renderedFrames = renderedFrames(exo),
             bitrateEstimateBps = bandwidthMeter.bitrateEstimate,
             decoderName = instrumentation.decoderName,
             videoMimeType = instrumentation.videoMimeType,

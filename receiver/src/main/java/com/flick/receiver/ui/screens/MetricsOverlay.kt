@@ -101,6 +101,16 @@ fun MetricsOverlay(
             stringResource(R.string.metrics_dropped_value, snapshot.droppedFrames, clock(snapshot.positionMs)),
             if (snapshot.droppedFrames == 0L) FlickColor.Live else FlickColor.Caution,
         )
+        // Sits here for one reason: this row is legible while the picture is not. The
+        // overlay is ordinary window content and survives a video layer that has gone
+        // missing beneath it, so a viewer looking at a black screen can read whether
+        // frames are still being released — climbing means the picture is being made and
+        // lost below this app, frozen means it is not being made.
+        MetricRow(
+            stringResource(R.string.metrics_rendered),
+            stringResource(R.string.metrics_rendered_value, snapshot.renderedFrames),
+            if (snapshot.renderedFrames > 0L) FlickColor.Live else FlickColor.OnChrome,
+        )
         Box(
             modifier = Modifier
                 .padding(top = 3.dp)

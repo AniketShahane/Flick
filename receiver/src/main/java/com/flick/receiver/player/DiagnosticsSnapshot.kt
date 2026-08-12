@@ -31,6 +31,20 @@ data class DiagnosticsSnapshot(
     val currentlyRebuffering: Boolean,
     val bufferedAheadMs: Long,
     val droppedFrames: Long,
+    /**
+     * Frames Media3 has actually RELEASED to the output surface.
+     *
+     * The one number that separates a picture this app never painted from a picture it
+     * painted and something beneath it discarded. On a black screen: climbing indicts the
+     * compositor or the panel, because frames are leaving the renderer; frozen indicts the
+     * renderer or the decoder. Nothing else on this overlay can tell those two apart, and
+     * the app itself cannot observe the first case at all — a surface that accepts frames
+     * and composites none of them looks perfectly healthy from in here.
+     *
+     * Readable during the failure precisely because the overlay is ordinary window
+     * content: it survives on top of a video layer that has gone missing.
+     */
+    val renderedFrames: Long = 0L,
     val bitrateEstimateBps: Long,
     val decoderName: String?,
     /** Sample MIME of the decoded video (e.g. "video/dolby-vision"); null until known. */

@@ -313,10 +313,12 @@
     <string name="metrics_sub">SUB</string>
     <string name="metrics_bitrate">BITRATE</string>
     <string name="metrics_dropped">DROPPED</string>
+    <string name="metrics_rendered">RENDERED</string>
     <string name="metrics_footer">metrics overlay · settings › playback</string>
     <string name="metrics_unavailable">—</string>
     <string name="metrics_buffer_value">%1$s · %2$d stalls</string>
     <string name="metrics_dropped_value">%1$d · %2$s</string>
+    <string name="metrics_rendered_value">%1$d frames to surface</string>
     <string name="metrics_decoder_value">%1$s · hardware decoder</string>
     <string name="metrics_subtitle_none">none selected</string>
     <string name="metrics_subtitle_value">%1$s · %2$s</string>
