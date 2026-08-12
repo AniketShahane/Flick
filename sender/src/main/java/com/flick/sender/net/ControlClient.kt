@@ -37,10 +37,22 @@ class ControlClient(private val scope: CoroutineScope) {
         /** [reason] is the receiver's denied-frame enum when it sent one, else null. */
         data class Denied(val reason: String? = null) : Result
         data object UpdateRequired : Result
-        /** Nothing answered at all: the throwable arrived before or at the WS upgrade. */
-        data class Unreachable(val pairCodeSent: Boolean = false) : Result
+        /**
+         * Nothing answered at all: the throwable arrived before or at the WS upgrade.
+         *
+         * [fault] is what that throwable proved. It defaults to [DialFault.NO_ANSWER]
+         * because the arms that never dialed — a bad host, a socket closed mid-handshake
+         * — witnessed no kernel answer to classify, and silence is the honest floor.
+         */
+        data class Unreachable(
+            val pairCodeSent: Boolean = false,
+            val fault: DialFault = DialFault.NO_ANSWER,
+        ) : Result
         /** The dial neither completed nor failed inside the attempt window. */
-        data class TimedOut(val pairCodeSent: Boolean = false) : Result
+        data class TimedOut(
+            val pairCodeSent: Boolean = false,
+            val fault: DialFault = DialFault.NO_ANSWER,
+        ) : Result
         /**
          * The upgrade succeeded and the receiver then closed the socket. This is an
          * ACTIVE rejection (peer-identity / policy gate), not "nothing is listening".
@@ -405,7 +417,11 @@ class ControlClient(private val scope: CoroutineScope) {
             closeInternal()
             // Past the upgrade, "nothing is listening" is provably wrong: a
             // ClosedReceiveChannelException here is the receiver's pre-auth policy close.
-            if (upgraded) Result.RejectedByTv() else Result.Unreachable()
+            if (upgraded) {
+                Result.RejectedByTv()
+            } else {
+                Result.Unreachable(fault = dialDiagnosis(e, upgraded = false))
+            }
         }
     }
 

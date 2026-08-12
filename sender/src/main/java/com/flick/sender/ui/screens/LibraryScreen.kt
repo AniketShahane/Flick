@@ -120,6 +120,7 @@ import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.flick.sender.NetworkUtils
 import com.flick.sender.R
+import com.flick.sender.media.LibraryEmptyFace
 import com.flick.sender.media.LibraryFolders
 import com.flick.sender.media.LibraryScope
 import com.flick.sender.media.LibrarySort
@@ -128,9 +129,11 @@ import com.flick.sender.media.LibrarySortTitles
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaLibraryAction
 import com.flick.sender.media.MediaLibraryActionPolicy
+import com.flick.sender.media.MediaPermissionState
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.media.PlaybackMediaFingerprint
 import com.flick.sender.media.PlaybackProgressState
+import com.flick.sender.media.libraryEmptyFace
 import com.flick.sender.media.resumeProgress
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
@@ -249,6 +252,8 @@ internal fun LibraryScreen(
     supportAvailable: Boolean,
     onOpenSupport: () -> Unit,
     onRequestVideoPermission: () -> Unit,
+    mediaPermission: MediaPermissionState,
+    onOpenAppSettings: () -> Unit,
     uiState: LibraryUiState,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
@@ -264,6 +269,7 @@ internal fun LibraryScreen(
     val sortOrder by controller.librarySort.collectAsState()
     val loading by controller.libraryLoading.collectAsState()
     val mediaAccess by controller.mediaAccess.collectAsState()
+    val libraryComplete by controller.libraryComplete.collectAsState()
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
     val showSupportInvitation by controller.showSupportInvitation.collectAsState()
@@ -329,9 +335,11 @@ internal fun LibraryScreen(
             castingItem = castingItem,
             signal = signal,
             wifiLinkUp = wifiLinkUp,
-            mediaAccess = mediaAccess,
+            face = libraryEmptyFace(mediaAccess, library.items.size, libraryComplete),
+            mediaPermission = mediaPermission,
             bottomClearance = bottomClearance,
             onChoose = onRequestVideoPermission,
+            onOpenAppSettings = onOpenAppSettings,
             onRefresh = { controller.refreshMediaLibrary() },
             showSupportInvitation = supportInvitationVisible,
             onOpenSupport = onOpenSupport,
@@ -527,6 +535,23 @@ internal fun LibraryScreen(
                         // The advisory and its fix live on the same surface now: the banner is a
                         // shortcut to the Settings seat rather than a sheet of its own.
                         BandAdvisory(onClick = { controller.openSettings() })
+                    }
+                }
+                // A read that stopped partway with rows already in hand. Never a
+                // full-screen face — the rows it did get are real and the user is looking
+                // at them — and it sits above the folder notices because it is the reason
+                // a folder could look empty in the first place.
+                if (libraryComplete == false && !loading && library.items.isNotEmpty()) {
+                    fullWidth {
+                        AdvisoryCard(
+                            icon = FlickIcons.Warning,
+                            title = stringResource(R.string.library_partial_title),
+                            body = stringResource(R.string.library_partial_body),
+                            tone = AdvisoryTone.INFO,
+                            primaryLabel = stringResource(R.string.library_refresh_videos),
+                            onPrimary = { controller.refreshMediaLibrary() },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 when {
@@ -1621,11 +1646,15 @@ internal fun libraryEmptyShown(
 }
 
 /**
- * The first screen a new user ever sees, and it stands in for two different situations:
- * a gallery Flick has not been let into ([MediaAccess.NONE]) and a gallery that is
- * genuinely empty. Neither may claim the other's copy — "nothing to flick yet" is a lie
- * about a phone full of films Flick simply cannot read — so the hero, the body and the
- * action are all chosen off the access level.
+ * The first screen a new user ever sees, and it stands in for four different situations:
+ * a gallery Flick has not been let into, a gallery Android would not finish reading, a
+ * partial grant with nothing selected, and a phone that genuinely has no films. None may
+ * claim another's copy — "nothing to flick yet" is a lie about a phone full of films
+ * Flick simply cannot read — so the hero, the body and the action all come off the face.
+ *
+ * [MediaPermissionState.BLOCKED] splits the locked face again, and it is the one that
+ * mattered most: after a permanent denial the only control this screen offers opens no
+ * system UI at all, so the whole app reads as broken.
  *
  * The wordmark is the populated header's, in the populated header's seat: this screen is
  * the whole window while it is up, and without it the brand would be missing from the
@@ -1639,25 +1668,49 @@ private fun EmptyState(
     castingItem: MediaItem?,
     signal: State<SignalInfo>,
     wifiLinkUp: State<Boolean>,
-    mediaAccess: MediaAccess,
+    face: LibraryEmptyFace,
+    mediaPermission: MediaPermissionState,
     bottomClearance: Dp,
     onChoose: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     onRefresh: () -> Unit,
     showSupportInvitation: Boolean,
     onOpenSupport: () -> Unit,
     onDismissSupportInvitation: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
-    val locked = mediaAccess == MediaAccess.NONE
-    // Mirrors MediaLibraryActionPolicy: full access already sees every video, so the only
-    // honest action left there is to look again — re-asking for a granted permission
-    // opens no system UI at all and would read as a dead button.
-    val actionLabel = when (mediaAccess) {
-        MediaAccess.NONE -> R.string.empty_locked_choose
-        MediaAccess.PARTIAL -> R.string.empty_choose
-        MediaAccess.FULL -> R.string.library_refresh_videos
+    val blocked = face == LibraryEmptyFace.NO_ACCESS && mediaPermission == MediaPermissionState.BLOCKED
+    // The Private glyph wherever the gallery is withheld from Flick rather than empty:
+    // a partial grant with nothing selected is the same fact one step milder.
+    val withheld = face == LibraryEmptyFace.NO_ACCESS || face == LibraryEmptyFace.NOTHING_SELECTED
+    val titleRes = when {
+        blocked -> R.string.empty_blocked_title
+        face == LibraryEmptyFace.NO_ACCESS -> R.string.empty_locked_title
+        face == LibraryEmptyFace.UNREADABLE -> R.string.empty_unreadable_title
+        face == LibraryEmptyFace.NOTHING_SELECTED -> R.string.empty_partial_title
+        else -> R.string.empty_title
     }
-    val action = if (mediaAccess == MediaAccess.FULL) onRefresh else onChoose
+    val bodyRes = when {
+        blocked -> R.string.empty_blocked_body
+        face == LibraryEmptyFace.NO_ACCESS -> R.string.empty_locked_body
+        face == LibraryEmptyFace.UNREADABLE -> R.string.empty_unreadable_body
+        face == LibraryEmptyFace.NOTHING_SELECTED -> R.string.empty_partial_body
+        else -> R.string.empty_body
+    }
+    // Mirrors MediaLibraryActionPolicy: a granted permission already sees every video, so
+    // the only honest action left is to look again — re-asking for it opens no system UI
+    // at all, which is exactly the dead button the BLOCKED arm exists to replace.
+    val actionLabel = when {
+        blocked -> R.string.empty_blocked_action
+        face == LibraryEmptyFace.NO_ACCESS -> R.string.empty_locked_choose
+        face == LibraryEmptyFace.NOTHING_SELECTED -> R.string.empty_choose
+        else -> R.string.library_refresh_videos
+    }
+    val action = when {
+        blocked -> onOpenAppSettings
+        face == LibraryEmptyFace.NO_ACCESS || face == LibraryEmptyFace.NOTHING_SELECTED -> onChoose
+        else -> onRefresh
+    }
 
     Column(
         Modifier
@@ -1712,7 +1765,7 @@ private fun EmptyState(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = if (locked) FlickIcons.Private else FlickIcons.GridView,
+                    imageVector = if (withheld) FlickIcons.Private else FlickIcons.GridView,
                     contentDescription = null,
                     tint = colors.onPrimaryContainer,
                     modifier = Modifier.size(46.dp),
@@ -1720,13 +1773,13 @@ private fun EmptyState(
             }
             Spacer(Modifier.height(22.dp))
             Text(
-                text = stringResource(if (locked) R.string.empty_locked_title else R.string.empty_title),
+                text = stringResource(titleRes),
                 style = FlickText.headlineMedium.copy(color = colors.onSurface),
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = stringResource(if (locked) R.string.empty_locked_body else R.string.empty_body),
+                text = stringResource(bodyRes),
                 style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
                 textAlign = TextAlign.Center,
             )

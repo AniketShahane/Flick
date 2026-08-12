@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import com.flick.receiver.net.PairNetworkFace
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.PairScreen
 import com.flick.receiver.ui.theme.FlickTvTheme
@@ -49,7 +50,7 @@ class PairAndIdleFocusTest {
                     qrPayload = null,
                     host = "192.0.2.12",
                     port = 8472,
-                    networkReady = true,
+                    networkFace = PairNetworkFace.READY,
                     onRename = {},
                     onOpenSettings = {},
                 )
@@ -83,7 +84,7 @@ class PairAndIdleFocusTest {
                     qrPayload = null,
                     host = "192.0.2.12",
                     port = 8472,
-                    networkReady = true,
+                    networkFace = PairNetworkFace.READY,
                     onRename = { renames++ },
                     onOpenSettings = { settingsOpens++ },
                 )

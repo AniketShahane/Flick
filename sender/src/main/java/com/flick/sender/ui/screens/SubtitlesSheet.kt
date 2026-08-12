@@ -77,9 +77,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.media.MovieHash
+import com.flick.sender.media.PickRejection
 import com.flick.sender.media.SubtitleDocument
 import com.flick.sender.media.SubtitleFiles
 import com.flick.sender.media.VideoNames
+import com.flick.sender.media.subtitlePickRejection
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.OnlineSubtitle
 import com.flick.sender.net.OpenSubtitlesClient
@@ -413,7 +415,8 @@ private fun ColumnScope.FilePane(
     val scope = rememberCoroutineScope()
     val notASubtitle = stringResource(R.string.subs_not_a_subtitle)
     val tooLarge = stringResource(R.string.subs_too_large)
-    val unreadable = stringResource(R.string.subs_unreadable_pick)
+    val unnamed = stringResource(R.string.subs_unnamed_file)
+    val sizeUnknown = stringResource(R.string.subs_size_unknown)
 
     val picker = rememberLauncherForActivityResult(remember { PickSubtitleDocument() }) { picked ->
         val uri = picked ?: return@rememberLauncherForActivityResult
@@ -427,15 +430,20 @@ private fun ColumnScope.FilePane(
         }
         scope.launch {
             val name = SubtitleDocument.displayNameOf(context, uri)
-            when {
-                name == null -> onRejected(unreadable)
-                !SubtitleFiles.isSubtitleName(name) -> onRejected(notASubtitle)
-                SubtitleDocument.sizeOf(context, uri) > SubtitleFiles.MaxSubtitleBytes ->
-                    onRejected(tooLarge)
-                else -> onAttach(
+            // The size is read whatever the name says, so the pick path and the serving
+            // path judge the same file on the same two answers: MediaHttpServer refuses an
+            // unmeasurable subtitle with a 404, and accepting one here would attach a
+            // track the TV is never allowed to fetch.
+            val size = SubtitleDocument.sizeOf(context, uri)
+            when (subtitlePickRejection(name, size)) {
+                PickRejection.UNNAMED -> onRejected(unnamed)
+                PickRejection.WRONG_KIND -> onRejected(notASubtitle)
+                PickRejection.UNMEASURABLE -> onRejected(sizeUnknown)
+                PickRejection.TOO_LARGE -> onRejected(tooLarge)
+                null -> onAttach(
                     uri,
-                    name,
-                    SubtitleFiles.languageTagOf(videoName.orEmpty(), name),
+                    name.orEmpty(),
+                    SubtitleFiles.languageTagOf(videoName.orEmpty(), name.orEmpty()),
                 )
             }
         }
@@ -521,6 +529,7 @@ private fun ColumnScope.OnlinePane(
     val quotaShared = stringResource(R.string.subs_error_quota)
     val linkRejected = stringResource(R.string.subs_error_link)
     val unavailable = stringResource(R.string.subs_error_unavailable)
+    val notSaved = stringResource(R.string.subs_error_not_saved)
     val tooLarge = stringResource(R.string.subs_too_large)
 
     // No key at all — the state of this build until OpenSubtitles approves Flick's own
@@ -719,8 +728,17 @@ private fun ColumnScope.OnlinePane(
     results?.let { list ->
         Spacer(Modifier.height(12.dp))
         if (list.isEmpty()) {
+            // The language is the highest-value fact an empty result can carry: it is a
+            // filter the user set, may not remember setting, and can change in one tap.
+            // Which sentence is true depends on what was actually searched — a title, or
+            // this exact file's fingerprint.
+            val languageName = stringArrayResource(R.array.subs_online_language_names)[language.ordinal]
             Text(
-                stringResource(R.string.subs_online_empty),
+                if (normalizedQuery.state == OpenSubtitlesTextState.READY) {
+                    stringResource(R.string.subs_online_empty_language, languageName)
+                } else {
+                    stringResource(R.string.subs_online_empty_hash, languageName)
+                },
                 style = FlickText.bodySmall.copy(color = colors.onSurfaceDim),
             )
         }
@@ -778,6 +796,7 @@ private fun ColumnScope.OnlinePane(
                                 SubtitleFetchOutcome.QuotaSpent -> error = quotaShared
                                 SubtitleFetchOutcome.LinkRejected -> error = linkRejected
                                 SubtitleFetchOutcome.TooLarge -> error = tooLarge
+                                SubtitleFetchOutcome.NotSaved -> error = notSaved
                                 SubtitleFetchOutcome.Unavailable -> error = unavailable
                             }
                         }

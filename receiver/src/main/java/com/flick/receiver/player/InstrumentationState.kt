@@ -64,6 +64,15 @@ class InstrumentationState {
      */
     var audioSinkRebuildCount: Int = 0
 
+    /**
+     * Media load errors Media3 retried through, excluding the sideloaded subtitle's.
+     *
+     * Recorded rather than acted on: the retry policy already rides these out, and this
+     * is how far into that ~100 s budget a stall got before it either recovered or
+     * became a diagnosis.
+     */
+    var mediaLoadErrorCount: Int = 0
+
     /** User seeks performed after playback started. */
     var seekCount: Int = 0
 
@@ -96,6 +105,7 @@ class InstrumentationState {
         errorCodeName = null
         autoRecoveryCount = 0
         audioSinkRebuildCount = 0
+        mediaLoadErrorCount = 0
         seekCount = 0
         seekFillStartMs = 0L
         lastSeekFillMs = 0L

@@ -107,7 +107,12 @@ class PlaybackSession(
         lastSeq = -1L
     }
 
-    fun loadMedia(castId: String, url: String, title: String, durationMs: Long, startMs: Long) {
+    /**
+     * False means the load provably never left this phone — see [ControlClient.send]. It
+     * is the difference between a TV that stayed silent and a command that was never
+     * asked of it, and the startup path is the one caller that must not wait to find out.
+     */
+    fun loadMedia(castId: String, url: String, title: String, durationMs: Long, startMs: Long): Boolean {
         val safeTitle = ControlProtocolV2.normalizedLabel(title, 200) ?: fallbackTitle
         // Per cast, and only per cast. A subtitle swap re-loads the SAME castId, and the
         // nudge the user dialled in belongs to the film they are still watching — so a
@@ -140,7 +145,7 @@ class PlaybackSession(
             // selection agree with the receiver, which resets to Auto per cast.
             rotation = VideoRotation.Auto,
         )
-        control.send(
+        return control.send(
             cmd("loadMedia", castId)
                 .put("url", url)
                 .put("title", safeTitle)

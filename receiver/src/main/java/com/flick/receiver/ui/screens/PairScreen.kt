@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
+import com.flick.receiver.net.PairNetworkFace
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickWordmark
 import com.flick.receiver.ui.components.FocusBeaconHost
@@ -216,7 +217,18 @@ fun PairScreen(
     onRename: () -> Unit,
     /** Settings is otherwise unreachable while no phone is paired: this is the only route. */
     onOpenSettings: () -> Unit,
-    networkReady: Boolean,
+    /**
+     * Which of the four network states this TV is in — see [pairNetworkFace]. Only
+     * [PairNetworkFace.READY] draws a code, a QR or an endpoint; the other three name
+     * what is actually missing rather than sharing one card that guesses.
+     */
+    networkFace: PairNetworkFace,
+    /**
+     * Whether this TV is still announcing itself over mDNS. False degrades ONE route:
+     * the code, the address and the port on this screen are all still real, so the
+     * line this draws promises them and never says the TV is offline.
+     */
+    discoverable: Boolean = true,
     bindUptimeSec: Long = 0L,
     rebindCount: Int = 0,
     lastTeardown: String? = null,
@@ -226,6 +238,19 @@ fun PairScreen(
      * the card then states only that one sender pairs at a time.
      */
     codeExpiresAtElapsedMs: Long? = null,
+    /**
+     * `PairingSurface.Locked.retryAtElapsedMs` — when a fresh code appears. Same
+     * timebase and the same rule as the rotation line: a countdown renders only
+     * against a real deadline. Null keeps the flat locked notice.
+     */
+    lockedRetryAtElapsedMs: Long? = null,
+    /**
+     * The last Allow this TV could not write to its own storage. The phone was told
+     * `denied reason=storage`; the device that actually failed said nothing at all.
+     */
+    saveFailedLabel: String? = null,
+    /** The last Resume press this TV could not write to its own storage. */
+    resumeFailed: Boolean = false,
     /**
      * `PairingSurface.Sealed` — the cumulative-failure ceiling has been reached, so
      * no code exists and none will until someone here presses Resume. It is a
@@ -374,11 +399,11 @@ fun PairScreen(
                     )).togetherWith(fadeOut(FlickMotion.chromeFadeOut()))
                 }
                 AnimatedContent(
-                    targetState = networkReady,
+                    targetState = networkFace,
                     transitionSpec = { networkTransform },
                     label = "pairNetworkState",
-                ) { ready ->
-                    if (ready) {
+                ) { face ->
+                    if (face == PairNetworkFace.READY) {
                         Column(verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm)) {
                             if (confirmDeviceLabel != null) {
                                 // The manual-entry card and the listening line are
@@ -396,6 +421,7 @@ fun PairScreen(
                                 // there is no code to type into a card that shows
                                 // one, and nothing is listening for one either.
                                 PairingSealedCard(
+                                    resumeFailed = resumeFailed,
                                     modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
                                 )
                             } else {
@@ -405,6 +431,8 @@ fun PairScreen(
                                     spacedCode = spacedCode,
                                     locked = locked,
                                     codeExpiresAtElapsedMs = codeExpiresAtElapsedMs,
+                                    lockedRetryAtElapsedMs = lockedRetryAtElapsedMs,
+                                    saveFailedLabel = saveFailedLabel,
                                     modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
                                 )
                                 Row(
@@ -422,7 +450,10 @@ fun PairScreen(
                             }
                         }
                     } else {
-                        WaitingForNetworkCard(modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled))
+                        PairNetworkCard(
+                            face = face,
+                            modifier = Modifier.pairStage(stage, index = 2, settled = entranceSettled),
+                        )
                     }
                 }
 
@@ -510,11 +541,12 @@ fun PairScreen(
                 }
             }
 
-            if (networkReady && qrPayload != null) {
+            if (networkFace == PairNetworkFace.READY && qrPayload != null) {
                 QrColumn(
                     payload = qrPayload,
                     host = host,
                     port = port,
+                    discoverable = discoverable,
                     bindUptimeSec = bindUptimeSec,
                     rebindCount = rebindCount,
                     lastTeardown = lastTeardown,
@@ -536,6 +568,8 @@ private fun ManualEntryCard(
     spacedCode: String,
     locked: Boolean,
     codeExpiresAtElapsedMs: Long?,
+    lockedRetryAtElapsedMs: Long?,
+    saveFailedLabel: String?,
     modifier: Modifier = Modifier,
 ) {
     GlassPanel(
@@ -556,6 +590,24 @@ private fun ManualEntryCard(
             style = FlickType.monoEyebrow(trackingEm = 0.2f),
             color = FlickColor.OnSurfaceFaint,
         )
+        // Above the fields, because the fresh code below it is the resolution: the
+        // press succeeded, the write did not, and a new code is already on screen.
+        if (saveFailedLabel != null) {
+            Text(
+                text = stringResource(R.string.pair_save_failed_title),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                color = FlickColor.Caution,
+            )
+            Text(
+                // Someone else's device name, so it is bounded here rather than
+                // trusted to be short.
+                text = stringResource(R.string.pair_save_failed_detail, saveFailedLabel),
+                style = FlickType.body(sizeSp = 14),
+                color = FlickColor.OnSurfaceDim,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         // Sized so a 15-character host, the port and the spaced code all clear the
         // 542 dp the content column leaves beside the 272 dp QR column.
         Row(
@@ -589,8 +641,17 @@ private fun ManualEntryCard(
             )
         }
         if (locked) {
+            // The countdown renders against the lockout's own real deadline, on the
+            // same timebase [rotationLine] already uses — so this obeys the screen's
+            // rule rather than bending it. The flat line stands in only when there is
+            // no deadline to render, because the lockouts it used to cover run from
+            // 30 s to eight minutes and "shortly" was true of neither end.
             Text(
-                text = stringResource(R.string.pair_locked),
+                text = if (lockedRetryAtElapsedMs == null) {
+                    stringResource(R.string.pair_locked)
+                } else {
+                    stringResource(R.string.pair_locked_countdown, countdown(lockedRetryAtElapsedMs))
+                },
                 style = FlickType.body(sizeSp = 16),
                 color = FlickColor.Caution,
             )
@@ -712,7 +773,7 @@ private fun FieldDivider() {
  * below. It draws no endpoint and no code because there is no longer either.
  */
 @Composable
-private fun PairingSealedCard(modifier: Modifier = Modifier) {
+private fun PairingSealedCard(resumeFailed: Boolean, modifier: Modifier = Modifier) {
     GlassPanel(
         modifier = modifier.fillMaxWidth(),
         shape = FlickShape.Xl,
@@ -745,6 +806,22 @@ private fun PairingSealedCard(modifier: Modifier = Modifier) {
             style = FlickType.body(sizeSp = 16),
             color = FlickColor.OnSurfaceDim,
         )
+        // The Resume key below is inert until a restart clears the write, and the seal
+        // above promises "pairing stays closed until you resume it here" — so silence
+        // here leaves a viewer pressing a button that has already failed. `!surfaceSealed`
+        // is unreachable from that key, which is what makes the storage claim provable.
+        if (resumeFailed) {
+            Text(
+                text = stringResource(R.string.pair_resume_failed_title),
+                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+                color = FlickColor.Caution,
+            )
+            Text(
+                text = stringResource(R.string.pair_resume_failed_detail),
+                style = FlickType.body(sizeSp = 14),
+                color = FlickColor.OnSurfaceDim,
+            )
+        }
     }
 }
 
@@ -821,11 +898,16 @@ private fun PairConfirmCard(
 }
 
 /**
- * No LAN address yet (Wi-Fi not associated / DHCP lease changing), so the QR host
- * and port are not reachable — say so instead of showing a dead endpoint.
+ * Why this screen is not offering a code: no address at all, an address Flick cannot
+ * use, or an address with no port behind it.
+ *
+ * Three cards rather than one, because they had one and it guessed. A TV that had just
+ * returned a site-local address and then failed every bind was told to "Connect this TV
+ * to your home network" — the one thing it had provably already done, in the state
+ * where restarting Flick is what actually helps.
  */
 @Composable
-private fun WaitingForNetworkCard(modifier: Modifier = Modifier) {
+private fun PairNetworkCard(face: PairNetworkFace, modifier: Modifier = Modifier) {
     GlassPanel(
         modifier = modifier.fillMaxWidth(),
         shape = FlickShape.Xl,
@@ -834,7 +916,7 @@ private fun WaitingForNetworkCard(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
         // Same as the manual-entry card: `Modifier.pairStage` at the call site is
         // already the entrance, and the `pairNetworkState` AnimatedContent owns the
-        // swap between the two states.
+        // swap between the states.
         animateEntrance = false,
     ) {
         Row(
@@ -848,13 +930,25 @@ private fun WaitingForNetworkCard(modifier: Modifier = Modifier) {
                 modifier = Modifier.size(FlickDimens.GlyphMedium),
             )
             Text(
-                text = stringResource(R.string.pair_waiting_network_title),
+                text = stringResource(
+                    when (face) {
+                        PairNetworkFace.NO_BIND -> R.string.pair_bind_failed_title
+                        PairNetworkFace.NOT_SITE_LOCAL -> R.string.pair_not_site_local_title
+                        else -> R.string.pair_waiting_network_title
+                    },
+                ),
                 style = FlickType.display(sizeSp = 22),
                 color = FlickColor.OnSurface,
             )
         }
         Text(
-            text = stringResource(R.string.pair_waiting_network_detail),
+            text = stringResource(
+                when (face) {
+                    PairNetworkFace.NO_BIND -> R.string.pair_bind_failed_detail
+                    PairNetworkFace.NOT_SITE_LOCAL -> R.string.pair_not_site_local_detail
+                    else -> R.string.pair_waiting_network_detail
+                },
+            ),
             style = FlickType.body(sizeSp = 16),
             color = FlickColor.OnSurfaceDim,
         )
@@ -867,6 +961,7 @@ private fun QrColumn(
     payload: String,
     host: String,
     port: Int,
+    discoverable: Boolean,
     bindUptimeSec: Long,
     rebindCount: Int,
     lastTeardown: String?,
@@ -925,6 +1020,16 @@ private fun QrColumn(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        // A line beside the bind readout rather than a card: discovery is ONE route to
+        // this TV and the two on this screen — the symbol above and the code beside it —
+        // are both still real, so this degrades nothing and blocks nothing.
+        if (!discoverable) {
+            Text(
+                text = stringResource(R.string.pair_not_discoverable),
+                style = FlickType.body(sizeSp = 14),
+                color = FlickColor.OnSurfaceFaint,
+            )
+        }
     }
 }
 
@@ -976,6 +1081,26 @@ private fun rotationLine(expiresAtElapsedMs: Long?): String {
 
 private fun remainingSeconds(expiresAtElapsedMs: Long): Long =
     ((expiresAtElapsedMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L) + 999L) / 1000L
+
+/**
+ * An m:ss countdown to a real `elapsedRealtime` deadline, ticking once a second.
+ *
+ * m:ss and never a spoken duration: the lockout it renders runs from 30 s to eight
+ * minutes, and one phrase covering both ends is what "try again shortly" already was.
+ */
+@Composable
+private fun countdown(deadlineElapsedMs: Long): String {
+    var remainingSec by remember(deadlineElapsedMs) {
+        mutableStateOf(remainingSeconds(deadlineElapsedMs))
+    }
+    LaunchedEffect(deadlineElapsedMs) {
+        while (true) {
+            remainingSec = remainingSeconds(deadlineElapsedMs)
+            delay(1_000L)
+        }
+    }
+    return String.format(Locale.US, "%d:%02d", remainingSec / 60L, remainingSec % 60L)
+}
 
 /**
  * The confirmation deadline, in whole seconds. Same one-second tick as

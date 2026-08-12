@@ -477,12 +477,27 @@ class MediaHttpServer(context: Context) {
             // A client disconnect cancels the call's coroutine: propagate it so the
             // engine tears the exchange down cleanly (don't mistake it for an error).
             throw e
+        } catch (e: FileNotFoundException) {
+            // BEFORE the IOException arm, which it would otherwise be swallowed by: a
+            // FileNotFoundException can only come out of the open above — the explicit
+            // throw for a null descriptor, or the resolver's own for a row that is gone —
+            // so unlike every other IOException here it can never be the TV closing the
+            // socket. It is the file that went away, and this is the commonest way one
+            // does: deleted or unshared under a live cast.
+            FlickLog.w("http", "stream failed ${e.javaClass.simpleName}")
+            ServerStateHolder.publishSourceFault(SourceFault.midStream(e))
         } catch (e: IOException) {
             // Typically the TV closed the connection mid-transfer (seek/stop).
             FlickLog.d("http", "stream stopped ${e.javaClass.simpleName}")
         } catch (e: Exception) {
             // Revoked URI grant, etc. Never let it take down the server.
             FlickLog.w("http", "stream failed ${e.javaClass.simpleName}")
+            // Raised here and NOT in the IOException arm above: that one is the TV
+            // closing the socket on a seek, and it is correctly silent. This one is a
+            // revoked grant, the other half of the file going away under a live cast —
+            // and this and the arm above it are the only places in the system that know
+            // so, because the TV can only report a body that stopped.
+            ServerStateHolder.publishSourceFault(SourceFault.midStream(e))
         } finally {
             TransferTelemetry.exitTransfer()
         }

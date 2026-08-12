@@ -44,6 +44,19 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
+    <!-- The one thing this app asks the package manager about, and the narrowest form
+         that can answer it. From API 30 an implicit ACTION_VIEW resolve returns null
+         unless the intent it will actually send is declared here — so without this the
+         error screen's "Play on this phone" would resolve to nothing on every modern
+         phone and withdraw a button that works. Deliberately NOT QUERY_ALL_PACKAGES:
+         Flick needs to know whether ONE intent has a handler, never what is installed. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
+    </queries>
+
     <application
         android:name=".FlickApplication"
         android:allowBackup="true"

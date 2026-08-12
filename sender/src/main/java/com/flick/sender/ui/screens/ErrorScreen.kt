@@ -1,6 +1,7 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.flick.sender.R
 import com.flick.sender.model.CastErrorKind
 import com.flick.sender.model.CastFailure
+import com.flick.sender.model.TerminalOrigin
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
@@ -63,6 +65,19 @@ internal enum class CastErrorFace {
     UNSUPPORTED_CONTAINER, UNSUPPORTED_VIDEO, UNSUPPORTED_HDR, DAMAGED_FILE, UNREADABLE_SOURCE,
     DECODER_UNAVAILABLE, TV_APP_CLOSED, TV_BUSY, UPDATE_REQUIRED, SLOW_START, SLOW_LINK,
     NOT_SERVING, UNREACHABLE, NO_LAN, GENERIC,
+    // Faults this phone raised about itself. Each one used to wear a face that named the
+    // TV: an RST from this phone's own 8080, a bind that failed here, a server here that
+    // answered with a refusal, and a file that stopped being readable here.
+    PHONE_NOT_SERVING, SERVER_NOT_STARTED, PHONE_REFUSED, SERVER_BUSY, SOURCE_LOST,
+    PHONE_SLOW_START, COMMAND_NOT_SENT,
+    // What a failed dial actually proved, where it used to prove only "unreachable".
+    RECEIVER_NOT_OPEN, ROUTER_BLOCKING, NO_ANSWER, LINK_DROPPED, TV_LOST_NETWORK,
+    // Three more the residual "unreachable" was standing in for: a TV that answered and
+    // closed the session, a TV that could not fetch from THIS phone over a link that is
+    // provably alive, and a phone that left the network under its own cast.
+    RECEIVER_TURNED_AWAY, MEDIA_PATH_BLOCKED, PHONE_LEFT_NETWORK,
+    // A dial that fully succeeded and a write to this phone's storage that did not.
+    PAIRING_NOT_SAVED,
 }
 
 /** The moves a face may offer. Each one is a thing this phone can actually do. */
@@ -101,7 +116,7 @@ internal fun castErrorPresentation(
     canPlayOnPhone: Boolean,
     linkStarved: Boolean,
 ): CastErrorPresentation {
-    val face = castErrorFace(failure.code, kind, linkStarved)
+    val face = castErrorFace(failure.code, kind, linkStarved, failure.origin, failure.httpStatus)
     val (offered, alternative) = face.moves()
     val primary = offered.available(canPlayOnPhone)
     val secondary = alternative?.available(canPlayOnPhone)?.takeIf { it != primary }
@@ -124,11 +139,21 @@ internal fun castErrorPresentation(
  * which served the bytes, is the only side that measured the path. This is the technique
  * `unsupported_video_codec` already uses in the other direction: one code, resolved to
  * the face the evidence supports. Nothing here is a capability, so no release is coupled.
+ *
+ * [origin] separates the codes that mean opposite things depending on who raised them.
+ * The inbound vocabulary is an allow-list, so `no_compatible_lan` and `unknown` reach
+ * this function from this phone's own startup body AND from the receiver, and there is
+ * nothing in the code itself to tell them apart.
+ *
+ * [httpStatus] reaches exactly one arm. A 503 from this phone's server is its transfer
+ * cap doing its job, which is a different sentence from a request it refused outright.
  */
 internal fun castErrorFace(
     code: String,
     kind: CastErrorKind,
     linkStarved: Boolean,
+    origin: TerminalOrigin,
+    httpStatus: Int?,
 ): CastErrorFace = when (code) {
     "unsupported_container" -> CastErrorFace.UNSUPPORTED_CONTAINER
     "unsupported_video_codec", "unsupported_video_format" -> CastErrorFace.UNSUPPORTED_VIDEO
@@ -140,6 +165,32 @@ internal fun castErrorFace(
     "active_cast_busy" -> CastErrorFace.TV_BUSY
     "update_required" -> CastErrorFace.UPDATE_REQUIRED
     "startup_timeout" -> if (linkStarved) CastErrorFace.SLOW_LINK else CastErrorFace.SLOW_START
+    "sender_not_serving" -> CastErrorFace.PHONE_NOT_SERVING
+    "media_bind_failed" -> CastErrorFace.SERVER_NOT_STARTED
+    "http_rejected" -> if (httpStatus == 503) CastErrorFace.SERVER_BUSY else CastErrorFace.PHONE_REFUSED
+    "source_lost" -> CastErrorFace.SOURCE_LOST
+    "source_start_timeout" -> CastErrorFace.PHONE_SLOW_START
+    "load_not_sent" -> CastErrorFace.COMMAND_NOT_SENT
+    "control_refused" -> CastErrorFace.RECEIVER_NOT_OPEN
+    "control_no_route" -> CastErrorFace.ROUTER_BLOCKING
+    "control_no_answer" -> CastErrorFace.NO_ANSWER
+    "control_rejected" -> CastErrorFace.RECEIVER_TURNED_AWAY
+    "pairing_store_failed" -> CastErrorFace.PAIRING_NOT_SAVED
+    "no_lan_address", "control_no_network" -> CastErrorFace.NO_LAN
+    // The TV could not fetch the film from THIS phone, and it said so over the control
+    // socket — which is the proof that "can't reach the TV" is the wrong direction and
+    // "rescan for it" the wrong move.
+    "media_unreachable" -> CastErrorFace.MEDIA_PATH_BLOCKED
+    // The receiver raises this only when the TV's own address went away mid-cast; this
+    // phone raises the same code about itself before a byte leaves.
+    "no_compatible_lan" ->
+        if (origin == TerminalOrigin.RECEIVER) CastErrorFace.TV_LOST_NETWORK else CastErrorFace.NO_LAN
+    // A link that carried tens of megabits a second a minute ago is not client isolation:
+    // that fault cannot appear mid-stream, so this must not wear the unreachable face.
+    // The second code is the same drop with one thing proved about it — this phone held
+    // no LAN address when the terminal was raised, so it is the side that left.
+    "control_disconnected" -> CastErrorFace.LINK_DROPPED
+    "control_disconnected_no_lan" -> CastErrorFace.PHONE_LEFT_NETWORK
     else -> when (kind) {
         CastErrorKind.REACHABLE_NOT_SERVING -> CastErrorFace.NOT_SERVING
         CastErrorKind.UNREACHABLE -> CastErrorFace.UNREACHABLE
@@ -177,11 +228,48 @@ private fun CastErrorFace.moves(): Pair<CastErrorAction, CastErrorAction?> = whe
     CastErrorFace.UPDATE_REQUIRED,
     CastErrorFace.GENERIC,
     -> CastErrorAction.BACK_TO_LIBRARY to null
-    CastErrorFace.TV_APP_CLOSED,
+    // Every one of these is a fault on this phone, and none of them has a control that
+    // fixes it. `castErrorPresentation` promotes RETRY into the top slot wherever the
+    // failure is retryable, so they get "Try again" where it is honest and never a
+    // button the copy would have to apologise for.
+    //
+    // SOURCE_LOST does not offer the phone: the same bytes are unreadable here too.
+    CastErrorFace.PHONE_NOT_SERVING,
+    CastErrorFace.SERVER_NOT_STARTED,
+    CastErrorFace.PHONE_REFUSED,
+    CastErrorFace.SERVER_BUSY,
+    CastErrorFace.SOURCE_LOST,
+    CastErrorFace.PHONE_SLOW_START,
+    CastErrorFace.COMMAND_NOT_SENT,
+    CastErrorFace.LINK_DROPPED,
+    CastErrorFace.TV_LOST_NETWORK,
+    // Its copy indicts this phone, so it may not lead with a button about the TV. That
+    // pairing — "This phone stopped sending the film" over "Wake the TV app" — is the
+    // contradiction the phone-side faces above were split out to end.
     CastErrorFace.NOT_SERVING,
+    CastErrorFace.PAIRING_NOT_SAVED,
+    -> CastErrorAction.BACK_TO_LIBRARY to null
+    CastErrorFace.TV_APP_CLOSED,
     CastErrorFace.UNREACHABLE,
+    // Both of these end at a receiver that is not accepting connections, which is what
+    // Connect is for — rescanning, or pairing the TV again.
+    CastErrorFace.RECEIVER_NOT_OPEN,
+    CastErrorFace.NO_ANSWER,
+    // Flick is up on the TV and turned this session away, so the move is to pair it
+    // again rather than to look for it.
+    CastErrorFace.RECEIVER_TURNED_AWAY,
     -> CastErrorAction.OPEN_CONNECT to CastErrorAction.BACK_TO_LIBRARY
-    CastErrorFace.NO_LAN -> CastErrorAction.OPEN_WIFI_SETTINGS to CastErrorAction.BACK_TO_LIBRARY
+    // No Wi-Fi action. The fix is not on this phone, and sending the user to rejoin a
+    // network they are provably already on is the shipped mistake this face exists to end.
+    // The blocked media path is the same fault in the other direction, and the same rule.
+    CastErrorFace.ROUTER_BLOCKING,
+    CastErrorFace.MEDIA_PATH_BLOCKED,
+    -> CastErrorAction.BACK_TO_LIBRARY to null
+    CastErrorFace.NO_LAN,
+    // The one lost link with a control behind it: this phone holds no LAN address, so
+    // Wi-Fi settings acts on something the terminal actually observed.
+    CastErrorFace.PHONE_LEFT_NETWORK,
+    -> CastErrorAction.OPEN_WIFI_SETTINGS to CastErrorAction.BACK_TO_LIBRARY
 }
 
 private fun CastErrorAction.available(canPlayOnPhone: Boolean): CastErrorAction =
@@ -211,31 +299,51 @@ fun ErrorScreen(
     // and every slow link would arrive here wearing the startup-timeout face.
     val failureVerdict by controller.failureLinkVerdict.collectAsState()
     val starved = failureVerdict as? LinkVerdict.Starved
+    // Also frozen at the terminal: both addresses are gone by the time this composes.
+    val sameSubnet by controller.failureSameSubnet.collectAsState()
+
+    // Resolved once, before anything is drawn. `available` already collapses the offer to
+    // the library when there is nothing to hand over; this is the other half of the same
+    // truth — a phone with no app claiming video/* has nothing to hand it TO, and the
+    // shipped screen drew the button anyway and did nothing when it was pressed.
+    val playIntent = remember(failedItem) {
+        failedItem?.uri?.let { uri ->
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "video/*")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+    val canPlayOnPhone = remember(playIntent) {
+        playIntent != null && playIntent.resolveActivity(context.packageManager) != null
+    }
 
     val presentation = castErrorPresentation(
         kind,
         failure,
-        canPlayOnPhone = failedItem != null,
+        canPlayOnPhone = canPlayOnPhone,
         linkStarved = starved != null,
     )
     val face = presentation.face
     val amber = face.tone() == StatusKind.CAUTION
     val dotColor = if (amber) colors.caution else colors.trouble
 
+    // The resolve above is a snapshot: a player uninstalled between it and the tap, or a
+    // grant the target refuses, still lands here. The toast follows launchSupportCheckout's
+    // shipped precedent — say what happened rather than leave a control that did nothing.
     val playHere: () -> Unit = {
-        val uri = failedItem?.uri
-        if (uri != null) {
-            runCatching {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW)
-                        .setDataAndType(uri, "video/*")
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                )
-            }.onSuccess {
-                // Handing the film to another player ends this cast attempt; coming back
-                // to a stale error face would be the app still arguing about it.
-                controller.back()
-            }
+        val intent = playIntent
+        if (intent == null) {
+            Toast.makeText(context, R.string.error_no_player_toast, Toast.LENGTH_SHORT).show()
+        } else {
+            runCatching { context.startActivity(intent) }
+                .onSuccess {
+                    // Handing the film to another player ends this cast attempt; coming
+                    // back to a stale error face would be the app still arguing about it.
+                    controller.back()
+                }
+                .onFailure {
+                    Toast.makeText(context, R.string.error_no_player_toast, Toast.LENGTH_SHORT).show()
+                }
         }
     }
     val perform: (CastErrorAction) -> Unit = { action ->
@@ -251,9 +359,16 @@ fun ErrorScreen(
     val linkFacts = starved?.let {
         LinkFacts(required = Format.bitrate(it.requiredBps), measured = Format.bitrate(it.measuredBps))
     }
-    val title = face.title(tvName)
-    val body = face.body(tvName, retryable = failure.retryable, link = linkFacts)
-    val pillText = face.pill()
+    val title = face.title(tvName, beforeStart = failure.beforeStart, sameSubnet = sameSubnet)
+    val body = face.body(
+        tvName,
+        retryable = failure.retryable,
+        link = linkFacts,
+        origin = failure.origin,
+        sameSubnet = sameSubnet,
+        beforeStart = failure.beforeStart,
+    )
+    val pillText = face.pill(sameSubnet)
     val primary = presentation.primary
     val secondary = presentation.secondary
     val primaryLabel = actionLabel(primary, face)
@@ -377,17 +492,42 @@ private fun CastErrorFace.tone(): StatusKind = when (this) {
     CastErrorFace.SLOW_START,
     CastErrorFace.SLOW_LINK,
     CastErrorFace.NOT_SERVING,
+    CastErrorFace.PHONE_NOT_SERVING,
+    CastErrorFace.SERVER_NOT_STARTED,
+    CastErrorFace.PHONE_REFUSED,
+    CastErrorFace.SERVER_BUSY,
+    CastErrorFace.SOURCE_LOST,
+    CastErrorFace.PHONE_SLOW_START,
+    CastErrorFace.COMMAND_NOT_SENT,
+    CastErrorFace.PAIRING_NOT_SAVED,
     -> StatusKind.CAUTION
     CastErrorFace.TV_APP_CLOSED,
     CastErrorFace.UPDATE_REQUIRED,
     CastErrorFace.UNREACHABLE,
     CastErrorFace.NO_LAN,
     CastErrorFace.GENERIC,
+    CastErrorFace.RECEIVER_NOT_OPEN,
+    CastErrorFace.ROUTER_BLOCKING,
+    CastErrorFace.NO_ANSWER,
+    CastErrorFace.LINK_DROPPED,
+    CastErrorFace.TV_LOST_NETWORK,
+    CastErrorFace.RECEIVER_TURNED_AWAY,
+    CastErrorFace.MEDIA_PATH_BLOCKED,
+    CastErrorFace.PHONE_LEFT_NETWORK,
     -> StatusKind.TROUBLE
 }
 
+/**
+ * [beforeStart] and [sameSubnet] reach the two titles that would otherwise contradict the
+ * body under them: one claims a film was mid-play, the other convicts the router the body
+ * deliberately refuses to name.
+ */
 @Composable
-private fun CastErrorFace.title(tvName: String): String = when (this) {
+private fun CastErrorFace.title(
+    tvName: String,
+    beforeStart: Boolean,
+    sameSubnet: Boolean?,
+): String = when (this) {
     CastErrorFace.UNSUPPORTED_CONTAINER -> stringResource(R.string.error_container_title)
     CastErrorFace.UNSUPPORTED_VIDEO -> stringResource(R.string.error_video_title)
     CastErrorFace.UNSUPPORTED_HDR -> stringResource(R.string.error_hdr_title)
@@ -399,10 +539,34 @@ private fun CastErrorFace.title(tvName: String): String = when (this) {
     CastErrorFace.UPDATE_REQUIRED -> stringResource(R.string.error_update_title)
     CastErrorFace.SLOW_START -> stringResource(R.string.error_timeout_title)
     CastErrorFace.SLOW_LINK -> stringResource(R.string.error_slowlink_title)
-    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_title)
+    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_notserving_title)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_title, tvName)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_title)
     CastErrorFace.GENERIC -> stringResource(R.string.error_generic_title)
+    CastErrorFace.PHONE_NOT_SERVING -> stringResource(R.string.error_phoneserving_title)
+    CastErrorFace.SERVER_NOT_STARTED -> stringResource(R.string.error_serverstart_title)
+    CastErrorFace.PHONE_REFUSED -> stringResource(R.string.error_refused_title)
+    CastErrorFace.SERVER_BUSY -> stringResource(R.string.error_serverbusy_title)
+    CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_title)
+    CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_title)
+    CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_title)
+    CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_title)
+    CastErrorFace.ROUTER_BLOCKING -> if (sameSubnet == null) {
+        stringResource(R.string.error_noroute_title_unproven)
+    } else {
+        stringResource(R.string.error_noroute_title)
+    }
+    CastErrorFace.NO_ANSWER -> stringResource(R.string.error_noanswer_title, tvName)
+    CastErrorFace.LINK_DROPPED -> if (beforeStart) {
+        stringResource(R.string.error_linkdropped_title_beforestart, tvName)
+    } else {
+        stringResource(R.string.error_linkdropped_title, tvName)
+    }
+    CastErrorFace.TV_LOST_NETWORK -> stringResource(R.string.error_tvnetwork_title)
+    CastErrorFace.RECEIVER_TURNED_AWAY -> stringResource(R.string.error_turnedaway_title, tvName)
+    CastErrorFace.MEDIA_PATH_BLOCKED -> stringResource(R.string.error_mediablocked_title, tvName)
+    CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_title)
+    CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_title)
 }
 
 /**
@@ -414,9 +578,27 @@ private fun CastErrorFace.title(tvName: String): String = when (this) {
  * A null there cannot arrive through [castErrorFace] — the same `Starved` verdict decides
  * the face and carries both numbers — but the two are separate arguments, so the branch
  * falls back to the sentence that is true either way rather than to a formatted blank.
+ *
+ * [origin] and [sameSubnet] each reach the faces whose honest sentence depends on them. A
+ * null [sameSubnet] is the phone having been unable to place itself next to the TV — no
+ * address of its own, or no Wi-Fi link to make the claim about — which is the one state in
+ * which neither "you are on the same network" nor its opposite may be claimed, so those
+ * faces fall back to the copy that asserts neither.
+ *
+ * [beforeStart] is the phase, and it is evidence rather than a guess: the receiver encodes
+ * it as the frame type, this phone cross-checks it against its own Active record, and
+ * three bodies here would otherwise describe a film that never showed a frame as one that
+ * "played fine up to that point".
  */
 @Composable
-private fun CastErrorFace.body(tvName: String, retryable: Boolean, link: LinkFacts?): String = when (this) {
+private fun CastErrorFace.body(
+    tvName: String,
+    retryable: Boolean,
+    link: LinkFacts?,
+    origin: TerminalOrigin,
+    sameSubnet: Boolean?,
+    beforeStart: Boolean,
+): String = when (this) {
     CastErrorFace.UNSUPPORTED_CONTAINER -> stringResource(R.string.error_container_body, tvName)
     CastErrorFace.UNSUPPORTED_VIDEO -> stringResource(R.string.error_video_body, tvName)
     CastErrorFace.UNSUPPORTED_HDR -> stringResource(R.string.error_hdr_body, tvName)
@@ -432,18 +614,66 @@ private fun CastErrorFace.body(tvName: String, retryable: Boolean, link: LinkFac
     } else {
         stringResource(R.string.error_timeout_body, tvName)
     }
-    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_body, tvName)
+    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_notserving_body, tvName)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_body)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_body)
-    CastErrorFace.GENERIC -> if (retryable) {
-        stringResource(R.string.error_generic_body)
-    } else {
-        stringResource(R.string.error_generic_body_permanent)
+    CastErrorFace.GENERIC -> when {
+        // Every sentence below claims the cast never started, so a failure that landed
+        // after the first frame has to be answered before any of them are consulted.
+        !beforeStart -> stringResource(R.string.error_generic_body_afterstart, tvName)
+        retryable -> stringResource(R.string.error_generic_body)
+        // "The TV didn't say why" implies the TV was consulted, on a path where this
+        // phone stopped the cast before it was ever asked.
+        origin == TerminalOrigin.LOCAL -> stringResource(R.string.error_generic_body_local, tvName)
+        else -> stringResource(R.string.error_generic_body_permanent)
     }
+    CastErrorFace.PHONE_NOT_SERVING -> stringResource(R.string.error_phoneserving_body, tvName)
+    CastErrorFace.SERVER_NOT_STARTED -> stringResource(R.string.error_serverstart_body, tvName)
+    CastErrorFace.PHONE_REFUSED -> stringResource(R.string.error_refused_body, tvName)
+    CastErrorFace.SERVER_BUSY -> stringResource(R.string.error_serverbusy_body, tvName)
+    CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_body, tvName)
+    CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_body, tvName)
+    CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_body, tvName)
+    CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_body, tvName)
+    CastErrorFace.ROUTER_BLOCKING -> when (sameSubnet) {
+        true -> stringResource(R.string.error_noroute_body_samesubnet, tvName)
+        false -> stringResource(R.string.error_noroute_body_offsubnet, tvName)
+        // The phone could not place itself next to the TV — no address of its own, or no
+        // Wi-Fi link to make the claim about — so it may state only the half the kernel
+        // proved: something between the two refused to forward.
+        null -> stringResource(R.string.error_noroute_body, tvName)
+    }
+    CastErrorFace.NO_ANSWER -> if (sameSubnet == true) {
+        stringResource(R.string.error_noanswer_body_samesubnet, tvName)
+    } else {
+        stringResource(R.string.error_noanswer_body)
+    }
+    CastErrorFace.LINK_DROPPED -> when {
+        beforeStart -> stringResource(R.string.error_linkdropped_body_beforestart, tvName)
+        // A link the monitor had already measured under the film's bitrate did not
+        // "play fine up to that point", whatever the last frame looked like.
+        link != null ->
+            stringResource(R.string.error_linkdropped_body_starved, tvName, link.required, link.measured)
+        else -> stringResource(R.string.error_linkdropped_body, tvName)
+    }
+    CastErrorFace.TV_LOST_NETWORK -> if (beforeStart) {
+        stringResource(R.string.error_tvnetwork_body_beforestart, tvName)
+    } else {
+        stringResource(R.string.error_tvnetwork_body, tvName)
+    }
+    CastErrorFace.RECEIVER_TURNED_AWAY -> stringResource(R.string.error_turnedaway_body, tvName)
+    CastErrorFace.MEDIA_PATH_BLOCKED -> when (sameSubnet) {
+        true -> stringResource(R.string.error_mediablocked_body_samesubnet, tvName)
+        false -> stringResource(R.string.error_mediablocked_body_offsubnet, tvName)
+        null -> stringResource(R.string.error_mediablocked_body, tvName)
+    }
+    CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_body, tvName)
+    CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_body, tvName)
 }
 
+/** [sameSubnet] reaches the one pill that would otherwise name a culprit its body will not. */
 @Composable
-private fun CastErrorFace.pill(): String = when (this) {
+private fun CastErrorFace.pill(sameSubnet: Boolean?): String = when (this) {
     CastErrorFace.UNSUPPORTED_CONTAINER -> stringResource(R.string.error_container_pill)
     CastErrorFace.UNSUPPORTED_VIDEO -> stringResource(R.string.error_video_pill)
     CastErrorFace.UNSUPPORTED_HDR -> stringResource(R.string.error_hdr_pill)
@@ -455,10 +685,30 @@ private fun CastErrorFace.pill(): String = when (this) {
     CastErrorFace.UPDATE_REQUIRED -> stringResource(R.string.error_update_pill)
     CastErrorFace.SLOW_START -> stringResource(R.string.error_timeout_pill)
     CastErrorFace.SLOW_LINK -> stringResource(R.string.error_slowlink_pill)
-    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_reachable_pill)
+    CastErrorFace.NOT_SERVING -> stringResource(R.string.error_notserving_pill)
     CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_pill)
     CastErrorFace.NO_LAN -> stringResource(R.string.error_nolan_pill)
     CastErrorFace.GENERIC -> stringResource(R.string.error_generic_pill)
+    CastErrorFace.PHONE_NOT_SERVING -> stringResource(R.string.error_phoneserving_pill)
+    CastErrorFace.SERVER_NOT_STARTED -> stringResource(R.string.error_serverstart_pill)
+    CastErrorFace.PHONE_REFUSED -> stringResource(R.string.error_refused_pill)
+    CastErrorFace.SERVER_BUSY -> stringResource(R.string.error_serverbusy_pill)
+    CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_pill)
+    CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_pill)
+    CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_pill)
+    CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_pill)
+    CastErrorFace.ROUTER_BLOCKING -> if (sameSubnet == null) {
+        stringResource(R.string.error_noroute_pill_unproven)
+    } else {
+        stringResource(R.string.error_noroute_pill)
+    }
+    CastErrorFace.NO_ANSWER -> stringResource(R.string.error_noanswer_pill)
+    CastErrorFace.LINK_DROPPED -> stringResource(R.string.error_linkdropped_pill)
+    CastErrorFace.TV_LOST_NETWORK -> stringResource(R.string.error_tvnetwork_pill)
+    CastErrorFace.RECEIVER_TURNED_AWAY -> stringResource(R.string.error_turnedaway_pill)
+    CastErrorFace.MEDIA_PATH_BLOCKED -> stringResource(R.string.error_mediablocked_pill)
+    CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_pill)
+    CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_pill)
 }
 
 /**
@@ -470,7 +720,12 @@ private fun CastErrorFace.pill(): String = when (this) {
 private fun actionLabel(action: CastErrorAction, face: CastErrorFace): String = when (action) {
     CastErrorAction.RETRY -> stringResource(R.string.error_generic_primary)
     CastErrorAction.OPEN_CONNECT -> when (face) {
-        CastErrorFace.UNREACHABLE -> stringResource(R.string.error_unreachable_primary)
+        // Nothing answered, so there is nothing to wake — the honest offer is to look again.
+        CastErrorFace.UNREACHABLE, CastErrorFace.NO_ANSWER ->
+            stringResource(R.string.error_unreachable_primary)
+        // Flick answered and closed the session, so waking it names something already
+        // awake and rescanning looks for something already found.
+        CastErrorFace.RECEIVER_TURNED_AWAY -> stringResource(R.string.error_unreachable_secondary)
         else -> stringResource(R.string.error_reachable_primary)
     }
     CastErrorAction.OPEN_WIFI_SETTINGS -> stringResource(R.string.error_nolan_primary)

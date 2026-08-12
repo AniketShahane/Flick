@@ -53,6 +53,21 @@
     <string name="connect_wifi_note">On your Wi-Fi · no account, ever</string>
     <string name="connect_nearby_label">NEARBY · %1$d FOUND</string>
     <string name="connect_searching">Looking for TVs on your network…</string>
+    <!-- The three faces an empty device list can honestly wear. The shipped line above is
+         now only ever shown while a search is genuinely running. -->
+    <string name="connect_no_network_title">This phone isn\'t on a Wi-Fi network</string>
+    <string name="connect_no_network_body">Flick finds TVs over your local network and this phone has no address on one, so there\'s nothing to search. Join the Wi-Fi your TV is on.</string>
+    <string name="connect_no_network_action">Open Wi-Fi settings</string>
+    <!-- The evidence is only that the platform refused the request. It must NOT claim the
+         router is blocking mDNS — this error code cannot distinguish that. -->
+    <string name="connect_search_unavailable_title">This phone can\'t search the network</string>
+    <string name="connect_search_unavailable_body">Android turned Flick\'s TV search down, so no TVs can be listed here. Enter the address from your TV\'s pairing screen instead.</string>
+    <string name="connect_search_unavailable_action">Enter it by hand</string>
+    <string name="connect_nothing_found_title">No TV answered on this network</string>
+    <string name="connect_nothing_found_body">This phone is on the network and no TV answered. Open Flick on your TV — or, if your router blocks device discovery, enter the address from the TV\'s pairing screen.</string>
+    <!-- Shown only when the device list is empty, so one flaky resolve never clutters a
+         working list. A found-but-unresolved name is proof a _flick._tcp service exists. -->
+    <string name="connect_unresolved_note">A TV running Flick answered but didn\'t finish identifying itself. Try again in a moment, or enter its address by hand.</string>
     <string name="connect_device_ready">Ready</string>
     <string name="connect_device_asleep">Asleep · wake it with the remote</string>
     <string name="connect_device_found">Found</string>
@@ -183,13 +198,27 @@
 
     <!-- Pairing outcome messages (mapped from a PairErrorKind, never raw exception text). -->
     <string name="pair_error_code">That code didn\'t match. Check the TV and try again.</string>
-    <string name="pair_error_unreachable">Couldn\'t reach that TV.</string>
+    <string name="pair_error_unreachable">Nothing answered at that address. Check the TV is on with Flick open, and that the address matches the one on its pairing screen.</string>
     <string name="pair_error_invalid">Enter the address, port and code exactly as they appear on your TV.</string>
     <string name="pair_error_update">Update Flick on your TV, then try again.</string>
     <string name="pair_error_qr">This QR code can\'t be used. Update Flick on both devices, then scan again.</string>
     <string name="pair_error_pair_required">This TV needs pairing first. Scan its QR code, or enter the details shown on screen.</string>
     <string name="pair_error_storage">Flick couldn\'t save this pairing. Check your phone\'s storage, then try again.</string>
-    <string name="pair_error_timeout">The TV didn\'t answer in time. Check both devices are on the same Wi-Fi.</string>
+    <!-- Reached only when the code provably left this phone, so the TV WAS reached and a
+         person did not answer. A dial that never landed gets one of the four faces below
+         instead — telling that user to check the Wi-Fi both devices are demonstrably on
+         is the sentence this whole block exists to end. -->
+    <string name="pair_error_timeout">The TV didn\'t answer in time. Check its screen — the code has to be confirmed there.</string>
+    <!-- The four kernel answers a failed dial can carry, each with its own fix. -->
+    <!-- An RST proves the TV\'s stack is alive and nothing is listening at that port. It
+         does NOT prove which of the two reasons for that is true, and the receiver has a
+         face of its own for the second — a TV whose Flick is open with its port unclaimed
+         would otherwise be contradicted by the phone in the same room. -->
+    <string name="pair_error_refused">That TV answered straight away and nothing was listening at that port. Flick isn\'t open on it, or it couldn\'t open its port — check the TV\'s screen and the port shown there.</string>
+    <string name="pair_error_no_route">Your router refused to pass anything between this phone and that TV. Look for AP isolation, client isolation, or a guest network in its settings.</string>
+    <string name="pair_error_no_answer">This phone and that TV are on the same network, so the Wi-Fi isn\'t what\'s wrong. Check the TV is on with Flick open — if it is, your router may be set to keep devices apart.</string>
+    <string name="pair_error_no_network">This phone isn\'t on a Wi-Fi network, so nothing was sent. Join the Wi-Fi your TV is on, then try again.</string>
+    <string name="pair_error_address_unsupported">Flick only casts over private home networks, and that TV\'s address isn\'t one. Put both devices on your home Wi-Fi rather than a guest or work network — a normal home router hands out the right kind of address.</string>
     <string name="pair_error_rejected">The TV refused the connection. Make sure its pairing screen is showing, then try again.</string>
     <string name="pair_error_expired">That code expired — a new one is on the TV.</string>
     <!-- The receiver's `surface` denial covers three things: a pairing screen that
@@ -279,9 +308,17 @@
     <string name="settings_video_names_a11y">%1$s. %2$s</string>
     <string name="settings_video_names_on">On</string>
     <string name="settings_video_names_off">Off</string>
+    <!-- INFO, not CAUTION, and the second sentence is why: nothing about the cast changes.
+         Only the lock-screen and shade controls are lost, which is a fact worth stating
+         and not an error. -->
+    <string name="advisory_notifications_title">Casting controls are hidden</string>
+    <string name="advisory_notifications_body">Notifications are off for Flick, so a cast has no controls on your lock screen or in your notifications. Casting itself works exactly the same.</string>
+    <string name="advisory_notifications_action">Open notification settings</string>
     <string name="advisory_battery_primary">Open battery settings</string>
     <string name="advisory_battery_secondary">Later</string>
-    <string name="advisories_footer">Both are one-time. Flick never asks twice.</string>
+    <!-- Plural rather than "Both": a third card can now stand here, and a footer that
+         counts wrong is the one line on this screen nobody would forgive. -->
+    <string name="advisories_footer">They\'re one-time. Flick never asks twice.</string>
     <string name="advisories_alltuned">You\'re all tuned up.</string>
     <!-- In-app diagnostics log (the phone-side channel; adb logcat is not available to users). -->
     <string name="diagnostics_title">Diagnostics</string>
@@ -292,11 +329,7 @@
     <string name="diagnostics_clear">Clear</string>
 
     <!-- S12 · Errors. -->
-    <string name="error_reachable_title">Your TV is there — but not listening</string>
-    <string name="error_reachable_body">Flick isn\'t running on %1$s. It probably went to sleep, or was closed.</string>
     <string name="error_reachable_primary">Wake the TV app</string>
-    <string name="error_reachable_secondary">Run a 10-second checkup</string>
-    <string name="error_reachable_pill">Reachable · not serving</string>
     <string name="error_unreachable_title">Can\'t reach %1$s</string>
     <string name="error_unreachable_body">Flick knows its address but nothing is getting through. Check the TV is awake — and if it is, your router may be set to keep devices apart (look for AP or client isolation).</string>
     <string name="error_unreachable_primary">Rescan network</string>
@@ -416,9 +449,16 @@
     <string name="subs_pick_action">Choose a subtitle file</string>
 
     <!-- Subtitles sheet · what a picked file can be rejected for. -->
+    <!-- Four outcomes, not two. Naming the accepted extensions IS the instruction where
+         the file has one Flick does not take; where it has none at all, that list answers
+         a question the user cannot act on. -->
     <string name="subs_not_a_subtitle">That isn\'t a subtitle file. Pick an .srt, .vtt, .ass or .ssa.</string>
     <string name="subs_too_large">That file is far too large to be a subtitle.</string>
-    <string name="subs_unreadable_pick">Flick couldn\'t read that file.</string>
+    <string name="subs_unnamed_file">Flick couldn\'t tell what that file is — the app it came from didn\'t give it a name Flick can read. Try picking it from this phone\'s own storage.</string>
+    <!-- Refused rather than attempted: the serving route enforces the same ceiling on the
+         same value and answers a 404, so accepting it here would attach a subtitle the TV
+         is then never allowed to fetch. -->
+    <string name="subs_size_unknown">The app that file came from won\'t say how big it is, and Flick only sends a subtitle it can measure. Save it to this phone, then pick it again.</string>
 
     <!-- Subtitles sheet · online search. -->
     <string name="subs_online_language_label">Subtitle language</string>
@@ -436,7 +476,10 @@
     <string name="subs_online_search">Search</string>
     <string name="subs_online_searching">Searching…</string>
     <string name="subs_online_downloading">Downloading…</string>
-    <string name="subs_online_empty">OpenSubtitles has nothing for that title.</string>
+    <!-- Split on what was actually searched. The language is named in both because it is
+         a filter the user set, may not remember setting, and can change in one tap. -->
+    <string name="subs_online_empty_language">OpenSubtitles has nothing in %1$s for that title. Try another language, or a different spelling.</string>
+    <string name="subs_online_empty_hash">Nothing in OpenSubtitles matches this exact file in %1$s. Type the title above to search by name as well.</string>
     <string name="subs_online_downloads">%1$d downloads</string>
     <string name="subs_online_hash_match">Matches this exact file</string>
     <string name="subs_online_trusted">Trusted source</string>
@@ -467,6 +510,9 @@
     <string name="subs_error_quota">Flick\'s shared daily allowance is spent. It resets within a day.</string>
     <string name="subs_error_link">OpenSubtitles pointed to a download outside its own site, so Flick didn\'t fetch it.</string>
     <string name="subs_error_unavailable">OpenSubtitles couldn\'t answer that just now.</string>
+    <!-- Split from the line above, which names OpenSubtitles for a failure that happened
+         on this phone AFTER the download had already come out of the shared allowance. -->
+    <string name="subs_error_not_saved">It downloaded, but this phone had nowhere to put it — storage may be full. That download still came out of today\'s shared allowance.</string>
 
     <!-- Subtitles sheet · accessibility. -->
     <string name="a11y_subs_attach">Attach %1$s</string>
@@ -650,6 +696,26 @@
     <string name="empty_locked_title">Flick can\'t see your videos yet</string>
     <string name="empty_locked_body">Allow access and your videos show up here. Nothing is uploaded — it all stays on your Wi-Fi.</string>
     <string name="empty_locked_choose">Allow access</string>
+    <!-- The same fact after a permanent denial. "Allow access" above opens no system UI
+         at all from here — the launcher returns instantly — so on a locked install it is
+         the only control on screen and it does nothing. -->
+    <string name="empty_blocked_title">Flick\'s video access is switched off</string>
+    <string name="empty_blocked_body">Android won\'t ask again from here. Turn videos on for Flick in Settings and your library fills itself in.</string>
+    <string name="empty_blocked_action">Open settings</string>
+    <!-- A read that stopped partway is missing exactly the rows it never reached, so it
+         may not support any claim about what this phone does not have. -->
+    <string name="empty_unreadable_title">Flick couldn\'t read your gallery</string>
+    <string name="empty_unreadable_body">Android didn\'t answer when Flick asked for your videos. That doesn\'t mean this phone has no videos — try again in a moment.</string>
+    <!-- PARTIAL with an empty selection. It must not say the phone has no films: under a
+         partial grant the app has no evidence either way. The register matches
+         library_folder_hidden_body, which already draws this same line for a folder. -->
+    <string name="empty_partial_title">You haven\'t chosen any videos yet</string>
+    <string name="empty_partial_body">Flick can only see the videos you select, and none are selected. Pick the films you want to cast and they show up here.</string>
+    <!-- A read that stopped partway with rows already in hand. Never a full-screen face —
+         the rows it did get are real — and never a count: the walk did not reach the end,
+         so how many are missing is exactly what is not known. -->
+    <string name="library_partial_title">Flick didn\'t get your whole library</string>
+    <string name="library_partial_body">Android stopped part way through listing your videos, so some are missing from this grid. Nothing has been deleted — refresh to read it again.</string>
 
     <!-- ===== Devices — the live link ===== -->
     <!-- S1 · the device row that is the live link, not a place to go. -->
@@ -708,7 +774,10 @@
     <string name="detail_unplayable_hdr">It read the file but doesn\'t support the dynamic-range profile it uses.</string>
     <string name="detail_unplayable_damaged">It couldn\'t read enough of the file to start — it may be incomplete or damaged.</string>
     <string name="detail_unplayable_generic">It stopped before the first frame.</string>
-    <string name="detail_unplayable_decoder">It has a decoder for this but couldn\'t start one — twice in a row.</string>
+    <!-- Same constraint as error_decoder_body: `decoder_init` is the wire code for every
+         AudioTrack failure too, so this may not claim a decoder exists or that video was
+         what failed. -->
+    <string name="detail_unplayable_decoder">It couldn\'t start playing this film\'s tracks — twice in a row.</string>
     <string name="detail_unplayable_note">That was one attempt, on one TV. Flick it again whenever you want.</string>
     <string name="detail_unplayable_note_twice">That was two attempts, on one TV. Flick it again whenever you want.</string>
     <!-- ===== S12 · the faces a diagnosed failure earns ===== -->
@@ -730,9 +799,13 @@
     <string name="error_source_title">Flick can\'t read this file</string>
     <string name="error_source_body">This phone couldn\'t open the file. It may have moved, or your gallery may no longer share it with Flick.</string>
     <string name="error_source_pill">File unavailable</string>
-    <string name="error_decoder_title">The TV couldn\'t start a decoder</string>
-    <string name="error_decoder_body">%1$s couldn\'t start its decoder — something else on the TV is probably still using it.</string>
-    <string name="error_decoder_pill">Decoder unavailable</string>
+    <!-- `decoder_init` is also what the receiver sends for every AudioTrack failure — the
+         wire vocabulary has no audio code and `cap` is exact-match — so nothing here may
+         name the video track or a decoder specifically. The TV draws the precise face; this
+         side knows only that the render path refused one of the tracks. -->
+    <string name="error_decoder_title">The TV couldn\'t start playing this film</string>
+    <string name="error_decoder_body">%1$s couldn\'t start playing this film\'s tracks — its screen or its speakers refused one of them. Your network isn\'t the problem.</string>
+    <string name="error_decoder_pill">Playback didn\'t start</string>
     <string name="error_tvclosed_title">The TV app closed</string>
     <string name="error_tvclosed_body">Flick is no longer in front on %1$s. Open it there and this will work again.</string>
     <string name="error_tvclosed_pill">Receiver closed</string>
@@ -748,9 +821,152 @@
     <!-- The generic face, split: the shipped body ends in "Try again", which is a lie on
          a failure that offers no retry. -->
     <string name="error_generic_body_permanent">Flick couldn\'t start this cast, and the TV didn\'t say why.</string>
+    <!-- Split again from the line above, which says "the TV didn't say why" — an
+         implication that the TV was consulted, on a path where it was never asked. -->
+    <string name="error_generic_body_local">Something on this phone stopped the cast before %1$s was asked to play. The TV didn\'t refuse it.</string>
+    <!-- Split a third time on the phase the wire already carries: the receiver encodes it
+         as the frame type, and every sentence above claims the cast never started. A film
+         that ran for forty minutes and then stopped may not be described as one that
+         couldn\'t start. -->
+    <string name="error_generic_body_afterstart">The film stopped playing on %1$s and the TV didn\'t say why.</string>
     <string name="error_generic_pill">Cast failed</string>
     <string name="error_nolan_pill">No Wi-Fi</string>
     <string name="error_action_play_here">Play on this phone</string>
+
+    <!-- Every one of these names THIS PHONE. They exist because the shipped
+         "Your TV is there — but not listening / Wake the TV app" was raised by three
+         phone-side server faults: an RST from this phone's own 8080, this phone's bind
+         failing, and this phone's server answering with a refusal. -->
+    <string name="error_phoneserving_title">This phone stopped serving the film</string>
+    <string name="error_phoneserving_body">%1$s reached this phone and found nothing answering, so Flick\'s own server is what went down. Nothing is wrong with the TV.</string>
+    <string name="error_phoneserving_pill">Phone not serving</string>
+
+    <string name="error_serverstart_title">This phone couldn\'t start serving</string>
+    <string name="error_serverstart_body">Flick couldn\'t open the port it streams from on this phone, so %1$s was never sent anything. Another app may be holding it.</string>
+    <string name="error_serverstart_pill">Server didn\'t start</string>
+
+    <string name="error_refused_title">This phone turned the TV away</string>
+    <!-- "Link" is what every other face on this screen calls the CONNECTION. What went
+         stale here is the film\'s address, so this one says address. -->
+    <string name="error_refused_body">%1$s reached this phone\'s server and was turned away — the address it was given for the film no longer matches what this phone is serving.</string>
+    <string name="error_refused_pill">Request refused</string>
+
+    <string name="error_serverbusy_title">This phone is sending too much at once</string>
+    <string name="error_serverbusy_body">Flick\'s server on this phone was at its transfer limit when %1$s asked for the film. The film and the TV are both fine.</string>
+    <string name="error_serverbusy_pill">Server at capacity</string>
+
+    <string name="error_sourcelost_title">This phone lost the film mid-play</string>
+    <string name="error_sourcelost_body">The file stopped being readable while %1$s was playing it. It may have been moved, deleted, or had its permission withdrawn.</string>
+    <string name="error_sourcelost_pill">File became unreadable</string>
+
+    <string name="error_phonestart_title">This phone took too long to start</string>
+    <string name="error_phonestart_body">Flick\'s server on this phone didn\'t come up in time, so %1$s was never asked to play anything.</string>
+    <string name="error_phonestart_pill">Server slow to start</string>
+
+    <string name="error_notsent_title">The play command never left this phone</string>
+    <string name="error_notsent_body">Flick couldn\'t put the play command on the link to %1$s, so the TV was never asked to start anything.</string>
+    <string name="error_notsent_pill">Command not sent</string>
+
+    <!-- The floor for a reachable-not-serving terminal with no more specific code. It may
+         name neither party, because at this point the phone knows only that its own server
+         was implicated and not which of its four refusals fired. -->
+    <string name="error_notserving_title">This phone stopped sending the film</string>
+    <string name="error_notserving_body">The film stopped leaving this phone while %1$s was waiting for it.</string>
+    <string name="error_notserving_pill">Not serving</string>
+
+    <!-- The receiver raises `no_compatible_lan` only when the TV's own LAN address went
+         away mid-cast; this phone raises the same code about itself. Only the origin
+         separates them. -->
+    <string name="error_tvnetwork_title">Your TV\'s network address changed</string>
+    <!-- No "then cast again": this face is raised non-retryable, so its only control is
+         the one that goes back to the library. The invitation had no button under it. -->
+    <string name="error_tvnetwork_body">%1$s stopped the film because the address it was reachable on went away. Give it a moment to settle.</string>
+    <!-- The receiver computes the phase at the teardown and carries it on the wire, so
+         neither side has to guess whether a film was ever on screen. -->
+    <string name="error_tvnetwork_body_beforestart">The cast couldn\'t start: the address %1$s was reachable on went away. Give it a moment to settle.</string>
+    <string name="error_tvnetwork_pill">TV address changed</string>
+
+    <!-- A link that carried tens of megabits a second a minute ago is not AP isolation:
+         that fault cannot appear mid-stream. Split three ways because the raising line
+         proves three different things: the recovery gate refuses to re-cast a link that
+         dropped BEFORE the cast reached Active, which is exactly the case that lands here
+         wearing "mid-film" — and a starved link had already been measured carrying less
+         than the film needs, so "played fine up to that point" is the wrong sentence for
+         the incident this whole face was written for. -->
+    <string name="error_linkdropped_title">The link to %1$s dropped mid-film</string>
+    <string name="error_linkdropped_body">The film was playing on %1$s and then the connection to it went quiet. The film played fine up to that point, so the film itself isn\'t the problem.</string>
+    <string name="error_linkdropped_body_starved">The film was playing on %1$s and then the connection to it went quiet. The film needs about %2$s and this link was carrying %3$s.</string>
+    <string name="error_linkdropped_title_beforestart">Lost the link to %1$s</string>
+    <string name="error_linkdropped_body_beforestart">The connection to %1$s went quiet before the film started, so nothing was playing when it dropped.</string>
+    <string name="error_linkdropped_pill">Link dropped</string>
+
+    <!-- The same disconnect, where this phone can prove it is the side that left: it holds
+         no site-local address at the moment the terminal is raised. Nothing here claims
+         which end went quiet first, because nothing proves that. -->
+    <string name="error_phonewifi_title">This phone dropped off the Wi-Fi</string>
+    <string name="error_phonewifi_body">The connection to %1$s went quiet, and this phone has no Wi-Fi connection now. Rejoin the network your TV is on.</string>
+    <string name="error_phonewifi_pill">Phone off Wi-Fi</string>
+
+    <!-- The four dial faces. Each is a different kernel answer with a different fix, and
+         all four used to arrive wearing "Can't reach %1$s". -->
+    <string name="error_refuseddial_title">Your TV is there — but not listening</string>
+    <string name="error_refuseddial_body">%1$s answered this phone straight away and nothing was listening at that port. Flick isn\'t open on it, or it couldn\'t open its port — check the TV\'s screen and the port shown there.</string>
+    <string name="error_refuseddial_pill">Nothing listening</string>
+
+    <!-- The fifth dial answer, and the only one that proves Flick IS running over there:
+         the WebSocket upgrade completed and the receiver then closed it. Also where a
+         resume that met nothing but transient denials lands — a TV that answered with a
+         reason is not a TV that stayed silent. -->
+    <string name="error_turnedaway_title">%1$s turned this phone away</string>
+    <string name="error_turnedaway_body">Flick is running on %1$s and it ended the connection instead of taking it. Its pairing screen may be open, or it may be busy — check the TV\'s screen.</string>
+    <string name="error_turnedaway_pill">Turned away</string>
+
+    <!-- The TV says it could not fetch the film from this phone, and it says so over a
+         control link that is provably alive — so the one thing this face may not do is
+         call the TV unreachable. The same-/24 split the router faces use applies: what is
+         blocked is the reverse path, TV to this phone\'s film server. -->
+    <string name="error_mediablocked_title">%1$s can\'t reach this phone</string>
+    <string name="error_mediablocked_body">%1$s is still talking to this phone, but nothing got through to the film server on it. Your router may be keeping the two apart — look for AP isolation, client isolation, or a guest network in its settings.</string>
+    <string name="error_mediablocked_body_samesubnet">This phone and %1$s are on the same network and still talking, but nothing got through to the film server on this phone. Look for AP isolation, client isolation, or a guest network in your router\'s settings.</string>
+    <string name="error_mediablocked_body_offsubnet">%1$s is still talking to this phone, but it couldn\'t reach the film server here — the two are on different parts of your network. Put both on the same Wi-Fi network, not a guest one.</string>
+    <string name="error_mediablocked_pill">Film path blocked</string>
+
+    <!-- A dial that fully succeeded and a write to this phone\'s own storage that did not.
+         The pairing form has said this for years (pair_error_storage); the cast path used
+         to report it as a TV that could not be reached. -->
+    <string name="error_pairstore_title">This phone couldn\'t save the connection</string>
+    <string name="error_pairstore_body">%1$s answered and the connection was ready, but Flick couldn\'t write the pairing to this phone\'s storage. Check the phone\'s free space.</string>
+    <string name="error_pairstore_pill">Pairing not saved</string>
+
+    <!-- EHOSTUNREACH is the router's or the local stack's own answer, not a timeout and not
+         a guess. Paired with the same-/24 test the phone can state both halves as fact; the
+         third body is for a phone that could not read its own address and may claim
+         neither. No Wi-Fi action is offered on any of them: the fix is not on the phone. -->
+    <string name="error_noroute_title">Your router is keeping these two apart</string>
+    <string name="error_noroute_body">Nothing was allowed through between this phone and %1$s. Look for AP isolation, client isolation, or a guest network in your router\'s settings.</string>
+    <string name="error_noroute_body_samesubnet">This phone and %1$s are on the same network, but the router refused to pass anything between them. Look for AP isolation, client isolation, or a guest network in your router\'s settings.</string>
+    <string name="error_noroute_body_offsubnet">This phone and %1$s are on different parts of your network, and nothing was allowed through between them. Put both on the same Wi-Fi network — not a guest one.</string>
+    <string name="error_noroute_pill">Router blocking devices</string>
+    <!-- EHOSTUNREACH can come from this phone\'s own stack, and the phone that could not
+         read its own address is exactly the phone whose interface may have gone. The body
+         for that case deliberately names nobody, so the title and the pill over and under
+         it may not convict the router either. -->
+    <string name="error_noroute_title_unproven">Nothing was allowed through</string>
+    <string name="error_noroute_pill_unproven">Path blocked</string>
+
+    <!-- Silence is the one outcome the phone genuinely cannot resolve: a sleeping TV and a
+         router silently dropping peer traffic are byte-identical from here. Both are named
+         rather than one being picked. -->
+    <string name="error_noanswer_title">Nothing came back from %1$s</string>
+    <string name="error_noanswer_body">This phone sent to that address and got no answer at all. The TV is either asleep or its Flick is closed — and if it\'s already awake, your router may be dropping traffic between the two.</string>
+    <string name="error_noanswer_body_samesubnet">This phone and %1$s are on the same network, so the Wi-Fi isn\'t what\'s wrong. The TV is either asleep or its Flick is closed — and if it\'s already awake, your router may be dropping traffic between the two.</string>
+    <string name="error_noanswer_pill">No answer</string>
+
+    <!-- The race between resolving a player and pressing the button, and between reading
+         a Wi-Fi settings screen and opening it. Follows launchSupportCheckout's shipped
+         precedent: say what happened rather than leave a control that did nothing. -->
+    <string name="error_no_player_toast">No app on this phone offered to open this film.</string>
+    <string name="error_no_wifi_settings_toast">This phone has no Wi-Fi settings screen to open.</string>
     <!-- Not every face on this screen is a network fault, and the pill under a container
          rejection is not a network reading. -->
     <string name="a11y_cast_status">Cast status: %1$s</string>

@@ -38,14 +38,17 @@ import com.flick.sender.ui.theme.LocalFlickColors
 @Composable
 internal fun Advisories(
     batteryExempt: Boolean,
+    notificationsGranted: Boolean,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val signal = rememberSignalInfo()
     // `on24GHz` and not `!healthy`: an unknown band must not raise a band advisory.
     val showBand = signal.on24GHz
     val showBattery = !batteryExempt
+    val showNotifications = !notificationsGranted
 
     Column {
         if (showBand) {
@@ -71,7 +74,24 @@ internal fun Advisories(
             )
             Spacer(Modifier.height(11.dp))
         }
-        if (!showBand && !showBattery) {
+        // INFO and not CAUTION, and on this destination rather than in the library: the
+        // band and battery cards set the precedent that only a cast-threatening fact
+        // earns a banner, and a denied notification costs the lock-screen controls and
+        // nothing else. The second sentence of the body exists to say exactly that.
+        if (showNotifications) {
+            AdvisoryCard(
+                icon = FlickIcons.Warning,
+                title = stringResource(R.string.advisory_notifications_title),
+                titleStyle = FlickText.titleSmall,
+                body = stringResource(R.string.advisory_notifications_body),
+                tone = AdvisoryTone.INFO,
+                primaryLabel = stringResource(R.string.advisory_notifications_action),
+                onPrimary = onOpenNotificationSettings,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(11.dp))
+        }
+        if (!showBand && !showBattery && !showNotifications) {
             Text(
                 stringResource(R.string.advisories_alltuned),
                 style = FlickText.titleSmall.copy(color = colors.onSurface),
@@ -89,10 +109,10 @@ internal fun Advisories(
         // user can walk onto at any time rather than a sheet raised the once: "Both"
         // names a card that is not there when only one advisory shows, and names nothing
         // at all on a phone that is already tuned up.
-        if (showBand || showBattery) {
+        if (showBand || showBattery || showNotifications) {
             Text(
                 stringResource(
-                    if (showBand && showBattery) {
+                    if (listOf(showBand, showBattery, showNotifications).count { it } > 1) {
                         R.string.advisories_footer
                     } else {
                         R.string.advisories_footer_one

@@ -73,6 +73,8 @@ import androidx.compose.ui.zIndex
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
+import com.flick.receiver.player.BandNotice
+import com.flick.receiver.player.BufferingPlate
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.OrientationHint
@@ -327,6 +329,8 @@ fun PlaybackScreen(
     turnNote: TurnNote? = null,
     orientationHint: OrientationHint? = null,
     silentAudioMimeType: String? = null,
+    /** The band's third card — see [BandNotice]. Null while the slot has nothing to say. */
+    bandNotice: BandNotice? = null,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onScrubFocusChanged: (Boolean) -> Unit = {},
@@ -469,7 +473,11 @@ fun PlaybackScreen(
 
         // T7 buffering
         if (phase == PlaybackPhase.Buffering) {
-            BufferingOverlay(Modifier.align(Alignment.Center))
+            BufferingOverlay(
+                plate = diagnostics.bufferingPlate,
+                deviceLabel = deviceLabel,
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
         // T5. Only FINISHED still announces itself in the middle of the frame.
@@ -631,6 +639,39 @@ fun PlaybackScreen(
                 .padding(top = 42.dp),
         ) {
             retainedSilentAudio?.let { SilentAudioCard(mimeType = it) }
+        }
+
+        // The band's event slot, in the same place and the same vocabulary as the two
+        // cards above, and sequenced against them by `BandNoticePolicy` — never placed
+        // clear of them, because all three are one queue and never two cards.
+        var retainedBandNotice by remember { mutableStateOf<BandNotice?>(null) }
+        LaunchedEffect(bandNotice) { if (bandNotice != null) retainedBandNotice = bandNotice }
+        AnimatedVisibility(
+            visible = bandNotice != null,
+            enter = if (reducedMotion) {
+                fadeIn(tween(durationMillis = 0))
+            } else {
+                fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
+                    initialScale = 0.96f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            exit = if (reducedMotion) {
+                fadeOut(tween(durationMillis = 0))
+            } else {
+                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
+                    targetScale = 1.02f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                )
+            },
+            label = "bandNotice",
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(safeArea)
+                // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
+                .padding(top = 42.dp),
+        ) {
+            retainedBandNotice?.let { BandNoticeCard(notice = it) }
         }
 
         AnimatedVisibility(
@@ -2029,15 +2070,88 @@ private fun SilentAudioCard(mimeType: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * The band's event card: what just happened to this film, in two lines and with no
+ * affordance.
+ *
+ * It carries [SilentAudioCard]'s shape rather than [OrientationHintCard]'s, and for
+ * [SilentAudioCard]'s reason: there is no control behind any of these three, so a mini
+ * tile beside them would be a picture of a way out that does not exist.
+ *
+ * [BandNotice.TurnUnavailable] deliberately borrows the orientation panel's own two
+ * lines rather than getting copy of its own. Both are already film-scoped, which is the
+ * only honest scope: the latch proves the turn failed for THIS film, not that this TV
+ * can never turn anything.
+ *
+ * It is not a control and never becomes one: no focus target, no click, no
+ * `tvRevealSource`, and the chrome's own 4 s countdown never sees it.
+ */
+@Composable
+private fun BandNoticeCard(notice: BandNotice, modifier: Modifier = Modifier) {
+    val spoken = stringResource(
+        when (notice) {
+            BandNotice.AudioRestart -> R.string.notice_audio_restart_description
+            BandNotice.SubtitleDropped -> R.string.notice_subtitle_dropped_description
+            BandNotice.TurnUnavailable -> R.string.notice_turn_unavailable_description
+        },
+    )
+    Column(
+        modifier = modifier
+            .glassPanel(FlickShape.Md)
+            .padding(horizontal = 11.dp, vertical = 9.dp)
+            // [SilentAudioCard]'s reason: the drawn detail line is set in caps for the
+            // ten-foot read, which is not how it should be heard. One spoken sentence
+            // replaces both lines.
+            .clearAndSetSemantics { contentDescription = spoken },
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = stringResource(
+                when (notice) {
+                    BandNotice.AudioRestart -> R.string.notice_audio_restart_title
+                    BandNotice.SubtitleDropped -> R.string.notice_subtitle_dropped_title
+                    BandNotice.TurnUnavailable -> R.string.orientation_hint_as_filed_title
+                },
+            ),
+            style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = stringResource(
+                when (notice) {
+                    BandNotice.AudioRestart -> R.string.notice_audio_restart_line
+                    BandNotice.SubtitleDropped -> R.string.notice_subtitle_dropped_line
+                    BandNotice.TurnUnavailable -> R.string.video_rotation_note_locked
+                },
+            ),
+            style = FlickType.monoEyebrow(trackingEm = 0.14f),
+            color = FlickColor.OnSurfaceDim,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
  * T7. The calm rebuffer read — restyled onto the state plate, because it lands
  * dead centre, in the band neither scrim covers, and its only protection was the
  * 0.38 state dim. Over a white frame that left the title at 3.2:1 and both the
  * detail line and the amber loader under 1.9:1 — invisible exactly when the viewer
  * most needs to know the app has not died. The handshake card, which carries a
  * far less urgent message, has had a full-screen veil behind it all along.
+ *
+ * The words escalate once the buffer this plate is claiming to hold has been spent —
+ * see [bufferingPlate]. Nothing about the recovery changes: it was only the narration
+ * that went on saying "quality held" for minutes after it had stopped being true.
  */
 @Composable
-private fun BufferingOverlay(modifier: Modifier = Modifier) {
+private fun BufferingOverlay(
+    plate: BufferingPlate,
+    deviceLabel: String?,
+    modifier: Modifier = Modifier,
+) {
+    val device = deviceLabel ?: stringResource(R.string.device_fallback)
     GlassPanel(
         modifier = modifier,
         shape = FlickShape.Xl,
@@ -2062,13 +2176,21 @@ private fun BufferingOverlay(modifier: Modifier = Modifier) {
             size = BufferingLoaderSize,
         )
         Text(
-            text = stringResource(R.string.buffering_title),
+            text = stringResource(
+                when (plate) {
+                    BufferingPlate.TOPPING_UP -> R.string.buffering_title
+                    BufferingPlate.STALLED -> R.string.buffering_stalled_title
+                },
+            ),
             style = FlickType.display(sizeSp = 22),
             color = Color.White,
             maxLines = 1,
         )
         Text(
-            text = stringResource(R.string.buffering_detail),
+            text = when (plate) {
+                BufferingPlate.TOPPING_UP -> stringResource(R.string.buffering_detail)
+                BufferingPlate.STALLED -> stringResource(R.string.buffering_stalled_detail, device)
+            },
             style = FlickType.body(sizeSp = 16),
             color = FlickColor.OnSurfaceDim,
             maxLines = 1,

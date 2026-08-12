@@ -75,10 +75,12 @@ fun PhoneSettingsScreen(
     supportAvailable: Boolean,
     onOpenSupport: () -> Unit,
     batteryExempt: Boolean,
+    notificationsGranted: Boolean,
     themePreference: ThemePreference,
     onSelectTheme: (ThemePreference) -> Unit,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
 ) {
     val colors = LocalFlickColors.current
     val castingItem by controller.castingItem.collectAsState()
@@ -138,8 +140,10 @@ fun PhoneSettingsScreen(
         // the cards, and this screen's 22 dp rhythm must not be inserted between them.
         Advisories(
             batteryExempt = batteryExempt,
+            notificationsGranted = notificationsGranted,
             onOpenWifiSettings = onOpenWifiSettings,
             onRequestBatteryExemption = onRequestBatteryExemption,
+            onOpenNotificationSettings = onOpenNotificationSettings,
         )
         VideoNamesSection(
             simplified = simplifiedVideoNames,

@@ -185,8 +185,19 @@ class CastServerService : Service() {
                     startGate.begin(castId).also { startInForeground(buildNotification(castId)) }
                 }
 
-                if (uri == null || bindHost == null || !NetworkUtils.isOwnedLanIpv4(bindHost)) {
-                    failCurrentStart(session, startId, getString(R.string.error_server_start))
+                // Two different faults wearing one branch: an address this phone does not
+                // own is no LAN to serve on, while a missing URI is this app handing its
+                // own service nothing. The coordinator draws a different face for each.
+                if (bindHost == null || !NetworkUtils.isOwnedLanIpv4(bindHost)) {
+                    failCurrentStart(session, startId, SourceFault.NO_LAN_ADDRESS, getString(R.string.error_no_lan))
+                    return START_NOT_STICKY
+                }
+                if (uri == null) {
+                    // Not the bind failure: nothing was bound, and its face names a port
+                    // another app is holding — a fabricated cause for this app handing its
+                    // own service a start with no film in it. `unknown` raised locally is
+                    // the honest floor, and the coordinator draws the local generic body.
+                    failCurrentStart(session, startId, "unknown", getString(R.string.error_generic_title))
                     return START_NOT_STICKY
                 }
                 startArtwork(session, uri)
@@ -194,7 +205,7 @@ class CastServerService : Service() {
                 serviceScope.launch {
                     if (!startGate.isLatest(session)) return@launch
                     if (!NetworkUtils.isOwnedLanIpv4(bindHost)) {
-                        failCurrentStart(session, startId, getString(R.string.error_no_lan))
+                        failCurrentStart(session, startId, SourceFault.NO_LAN_ADDRESS, getString(R.string.error_no_lan))
                         return@launch
                     }
                     if (!startGate.isLatest(session)) return@launch
@@ -232,7 +243,7 @@ class CastServerService : Service() {
                         }
                         if (!started) return@launch
                     } catch (e: Exception) {
-                        failCurrentStart(session, startId, getString(R.string.error_server_start))
+                        failCurrentStart(session, startId, SourceFault.BIND_FAILED, getString(R.string.error_server_start))
                     }
                 }
                 return START_NOT_STICKY
@@ -298,7 +309,11 @@ class CastServerService : Service() {
         }
     }
 
-    private fun failCurrentStart(session: CastGeneration, startId: Int, message: String) {
+    /**
+     * [code] is what the coordinator draws a face from; [message] stays the diagnostics
+     * record it always was, and the two must name the same fault.
+     */
+    private fun failCurrentStart(session: CastGeneration, startId: Int, code: String, message: String) {
         synchronized(teardownGuard) {
             // A stale failure can only clean up work it created. It must never set
             // ERROR, remove the notification, or stop a newer cast.
@@ -312,7 +327,7 @@ class CastServerService : Service() {
             ServerStateHolder.publishTerminal(
                 session,
                 SourceServerTerminalKind.FAILED,
-                SOURCE_SERVER_START_FAILED,
+                code,
             )
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelfResult(startId)
@@ -615,7 +630,6 @@ class CastServerService : Service() {
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
         private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
-        private const val SOURCE_SERVER_START_FAILED = "source_server_start_failed"
         private const val SAMPLE_INTERVAL_MS = 1_000L
 
         // 16 bytes = 128 bits of SecureRandom entropy per session token.

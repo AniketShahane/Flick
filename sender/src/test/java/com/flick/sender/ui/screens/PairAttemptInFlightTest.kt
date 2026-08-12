@@ -27,7 +27,6 @@ class PairAttemptInFlightTest {
     @Test fun nothingElseDoes() {
         assertFalse(pairAttemptInFlight(ConnectionStatus.DISCONNECTED))
         assertFalse(pairAttemptInFlight(ConnectionStatus.CONNECTED))
-        assertFalse(pairAttemptInFlight(ConnectionStatus.FAILED))
     }
 
     /**

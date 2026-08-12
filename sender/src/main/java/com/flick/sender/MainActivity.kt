@@ -1,14 +1,17 @@
 package com.flick.sender
 
 import android.Manifest
+import android.app.Activity
 import android.app.UiModeManager
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -35,12 +38,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.flick.sender.media.MediaAccess
+import com.flick.sender.media.mediaPermissionState
 import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.support.SupportCatalog
@@ -236,10 +241,22 @@ private fun FlickRoot(
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
     val supportCatalog = remember { SupportCatalog.configured() }
 
+    // Whether this process has ever put the video prompt on screen. The platform reports
+    // no rationale both BEFORE the first request and AFTER a permanent denial, so without
+    // this latch the two are indistinguishable — and only one of them can be asked again.
+    var videoRequested by remember { mutableStateOf(false) }
+    var videoRationale by remember { mutableStateOf(showsVideoRationale(context)) }
+    var notificationsGranted by remember { mutableStateOf(hasNotificationPermission(context)) }
+
     // POST_NOTIFICATIONS (API 33+) so the foreground-service notification shows.
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { /* serving still works without it; the notification just stays hidden */ }
+    ) {
+        // Serving still works without it; the notification and its transport just stay
+        // hidden, which is a fact the advisories destination now states rather than a
+        // silence the user is left to discover mid-cast.
+        notificationsGranted = hasNotificationPermission(context)
+    }
 
     // Video access for the MediaStore gallery.
     val videoLauncher = rememberLauncherForActivityResult(
@@ -247,6 +264,7 @@ private fun FlickRoot(
     ) {
         // Query the authoritative permission state. On Android 14+, the callback
         // can represent either full-library or user-selected access.
+        videoRationale = showsVideoRationale(context)
         controller.onMediaAccess(currentVideoAccess(context))
     }
 
@@ -272,6 +290,11 @@ private fun FlickRoot(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryExempt = isIgnoringBatteryOptimizations(context)
+                // Both permissions are settable from outside the app, so both are re-read
+                // here for the same reason the exemption is: the user may have just come
+                // back from the Settings screen this app sent them to.
+                videoRationale = showsVideoRationale(context)
+                notificationsGranted = hasNotificationPermission(context)
                 // Selected Photos Access can change while Flick is backgrounded.
                 // Re-query MediaStore even when access remains granted.
                 controller.onMediaAccess(currentVideoAccess(context))
@@ -288,9 +311,28 @@ private fun FlickRoot(
             batteryExempt = batteryExempt,
             themePreference = appearance.preference,
             onSelectTheme = appearance::select,
-            onRequestVideoPermission = { videoLauncher.launch(videoPermissions()) },
+            mediaPermission = mediaPermissionState(
+                granted = currentVideoAccess(context) != MediaAccess.NONE,
+                showRationale = videoRationale,
+                requested = videoRequested,
+            ),
+            notificationsGranted = notificationsGranted,
+            onRequestVideoPermission = {
+                videoRequested = true
+                videoLauncher.launch(videoPermissions())
+            },
+            onOpenAppSettings = { openAppSettings(context) },
+            // Settings, not the launcher: the advisory is only ever drawn after the
+            // prompt has already been refused, and asking again from there opens nothing.
+            onOpenNotificationSettings = { openNotificationSettings(context) },
+            // A phone with no Wi-Fi settings activity is rare and real (kiosk and
+            // enterprise images strip it). The primary action of the no-LAN face is this
+            // one intent, so a silent failure leaves the only control on the screen dead.
             onOpenWifiSettings = {
                 runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    .onFailure {
+                        Toast.makeText(context, R.string.error_no_wifi_settings_toast, Toast.LENGTH_SHORT).show()
+                    }
             },
             // The OS list, NOT ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS. That intent
             // is the one-tap dialog, and it requires the REQUEST_IGNORE_BATTERY_-
@@ -366,4 +408,57 @@ private fun currentVideoAccess(context: Context): MediaAccess {
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
     val pm = context.getSystemService(PowerManager::class.java) ?: return true
     return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+/** Below API 33 the permission does not exist and the notification is always posted. */
+private fun hasNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+
+/**
+ * Only an Activity can be asked whether a rationale is owed, and only for a permission
+ * this build actually requests — the pre-33 storage read and the 33+ video read are
+ * different strings, and asking about one the manifest does not declare answers false
+ * forever, which would read as a permanent block on every phone.
+ */
+private fun showsVideoRationale(context: Context): Boolean {
+    val activity = context.findActivity() ?: return false
+    return videoPermissions().any {
+        ActivityCompat.shouldShowRequestPermissionRationale(activity, it)
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun openAppSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", context.packageName, null),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+}
+
+/**
+ * Falls back to the app's own settings page: the per-app notification screen is not
+ * present on every image, and the channel this app posts on is reachable from there too.
+ */
+private fun openNotificationSettings(context: Context) {
+    val direct = runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+    if (direct.isFailure) openAppSettings(context)
 }

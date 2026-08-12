@@ -12,7 +12,9 @@ import com.flick.sender.MediaMeta
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
+import com.flick.sender.SourceFault
 import com.flick.sender.SourceServerTerminalKind
+import com.flick.sender.preferredTerminalCode
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
 import com.flick.sender.media.AudioDelayMemoryStore
@@ -52,6 +54,7 @@ import com.flick.sender.model.CastFailure
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.MediaItem
+import com.flick.sender.model.TerminalOrigin
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.model.VideoRotation
 import com.flick.sender.support.SupportCatalog
@@ -75,6 +78,79 @@ data class PairedTv(val name: String, val host: String, val port: Int, val tvId:
 enum class PairErrorKind {
     CODE_MISMATCH, UNREACHABLE, INVALID_QR, UPDATE_REQUIRED, INVALID_ENTRY, PAIRING_REQUIRED, LOCAL_STORAGE,
     TIMED_OUT, REJECTED, CODE_EXPIRED, TV_SURFACE, LOCKED, TV_STORAGE, REPAIR_NEEDED, ENDPOINT_CHANGED,
+    REFUSED, NO_ROUTE, NO_ANSWER, NO_NETWORK, ADDRESS_UNSUPPORTED,
+}
+
+/**
+ * What a finished dial leaves the pairing form able to say.
+ *
+ * The four dial faults are separated here rather than in [ControlTransportFailure],
+ * which decides absorb-vs-rethrow for a live socket and must not carry a UI taxonomy.
+ * [sameSubnet] reaches exactly one arm: silence from a TV on this phone's own /24 rules
+ * the Wi-Fi out, and that is the one thing the shipped copy got backwards.
+ *
+ * [offNetwork] is the evidence for the opposite claim, and it is required for the same
+ * reason: "this phone isn't on a Wi-Fi network" is a statement about the phone, so it may
+ * be made only where the phone was actually asked.
+ */
+internal fun pairErrorFor(
+    result: ControlClient.Result,
+    sameSubnet: Boolean,
+    offNetwork: Boolean,
+): PairErrorKind = when (result) {
+    is ControlClient.Result.Unreachable -> pairErrorForFault(result.fault, sameSubnet, offNetwork)
+    // A code that left the phone means the receiver was reached and a person did not
+    // answer — a different fact from a dial that never landed, and the only one of the
+    // two the shipped TIMED_OUT copy is about.
+    is ControlClient.Result.TimedOut ->
+        if (result.pairCodeSent) PairErrorKind.TIMED_OUT else pairErrorForFault(result.fault, sameSubnet, offNetwork)
+    is ControlClient.Result.RejectedByTv -> PairErrorKind.REJECTED
+    // Past the upgrade every typed field is demonstrably correct, so asking the user to
+    // retype three of them is the textbook wrong instruction.
+    is ControlClient.Result.ProtocolError -> PairErrorKind.UPDATE_REQUIRED
+    ControlClient.Result.UpdateRequired -> PairErrorKind.UPDATE_REQUIRED
+    else -> PairErrorKind.INVALID_ENTRY
+}
+
+/**
+ * One fault, two vocabularies: the pairing form's, and the cast error face's.
+ *
+ * [DialFault.NO_NETWORK] is the arm [offNetwork] exists for. It is mapped from a bare
+ * `SocketException`, which also covers a VPN refusing LAN traffic, a torn-down socket and
+ * an exhausted descriptor table — states a phone reaches while sitting on the Wi-Fi its
+ * TV is on. Telling that user to join the network they are already on is the instruction
+ * this whole taxonomy was built to stop giving.
+ */
+internal fun pairErrorForFault(
+    fault: DialFault,
+    sameSubnet: Boolean,
+    offNetwork: Boolean,
+): PairErrorKind = when (fault) {
+    DialFault.REFUSED -> PairErrorKind.REFUSED
+    DialFault.NO_ROUTE -> PairErrorKind.NO_ROUTE
+    DialFault.NO_NETWORK -> if (offNetwork) PairErrorKind.NO_NETWORK else PairErrorKind.UNREACHABLE
+    // Silence is the one outcome the phone cannot resolve on its own. A shared /24 is the
+    // only thing that lets it rule the Wi-Fi out rather than send the user to rejoin it.
+    DialFault.NO_ANSWER -> if (sameSubnet) PairErrorKind.NO_ANSWER else PairErrorKind.UNREACHABLE
+    DialFault.REJECTED -> PairErrorKind.REJECTED
+}
+
+/**
+ * The same fault as a local terminal code. None of these is on the wire —
+ * `ControlFrameSchema.failureCodes` is an inbound allow-list — so they cost nothing
+ * there and `castErrorFace` is their only consumer.
+ */
+internal fun controlFaultCode(fault: DialFault, offNetwork: Boolean): String = when (fault) {
+    DialFault.REFUSED -> "control_refused"
+    DialFault.NO_ROUTE -> "control_no_route"
+    DialFault.NO_ANSWER -> "control_no_answer"
+    // Same evidence rule as the pairing vocabulary above: the no-Wi-Fi face may not be
+    // drawn for a `SocketException` raised on a phone that holds a link and an address.
+    DialFault.NO_NETWORK -> if (offNetwork) "control_no_network" else "control_unreachable"
+    // The upgrade completed and the receiver then closed. That proves the TV is awake and
+    // its Flick is running, which is the one thing the residual "unreachable" face — "check
+    // the TV is awake" — states the opposite of.
+    DialFault.REJECTED -> "control_rejected"
 }
 
 /** A secret-free, monotonic result signal for a manual pairing form. */
@@ -404,6 +480,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var retryItem: CastRequest? = null
     private var currentRequest: CastRequest? = null
     private var loadSentCastId: String? = null
+
+    /**
+     * The last address this phone actually dialed, held so a failure can be measured
+     * against this phone's own /24. The authenticated endpoint is torn down by the time
+     * a face composes, and the paired record's host is where the TV was last SEEN — a
+     * resume may have reached it somewhere else.
+     */
+    private var dialedHost: String? = null
     // The four digits a scanned v4 QR carried, held here rather than in the published
     // launch so the only way to reach them is to spend them. Cleared with the launch.
     private var pendingPairCode: String? = null
@@ -437,6 +521,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         LibraryView(scope = LibraryFolders.scope(libraryFolder, emptyList(), resolved = false)),
     )
     val library = _library.asStateFlow()
+
+    /**
+     * Whether the last MediaStore walk reached the end of its cursor, or null where no
+     * walk has answered yet.
+     *
+     * The empty state and the grid's advisory both need it, and neither may infer it from
+     * the list: a read that stopped partway looks exactly like a short library. Null is
+     * the seed rather than false because false is itself a finding — "Android stopped
+     * answering" — and a read still in flight has found nothing of the sort.
+     */
+    private val _libraryComplete = MutableStateFlow<Boolean?>(null)
+    val libraryComplete = _libraryComplete.asStateFlow()
     /**
      * The order the grid deals its tiles in. Read at construction like the folder above, so
      * the first grid a launch paints is already in the order this phone's owner chose — a
@@ -511,6 +607,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // read the link as it was when the cast died, not as an idle phone reads it after.
     private val _failureLinkVerdict = MutableStateFlow<LinkVerdict>(LinkVerdict.Unknown)
     val failureLinkVerdict: StateFlow<LinkVerdict> = _failureLinkVerdict.asStateFlow()
+
+    /**
+     * Whether this phone and the TV it was talking to shared a /24 when the cast died.
+     *
+     * Null is the honest third answer and not a default: this phone could not place
+     * itself next to the TV — no address of its own, or no Wi-Fi link for the copy to
+     * make its claim about — so neither "you are on the same network" nor its opposite
+     * may be claimed. See [sameSubnetAs]. Captured at the terminal for
+     * [failureLinkVerdict]'s reason — by the time the face composes the endpoint is gone.
+     */
+    private val _failureSameSubnet = MutableStateFlow<Boolean?>(null)
+    val failureSameSubnet: StateFlow<Boolean?> = _failureSameSubnet.asStateFlow()
 
     /**
      * The phone's media notification, spending the same verbs the remote does.
@@ -601,11 +709,17 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 event?.takeIf { it.castId == currentCastId }?.let(::onSourceTerminal)
             }
         }
+        // A file that stopped being readable mid-play. It is a terminal in its own right:
+        // the bytes have stopped and the TV will run out of buffer, but only this phone
+        // knows why, and waiting for the receiver's guess would spend that knowledge.
+        scope.launch {
+            ServerStateHolder.sourceFault.collect { event ->
+                event?.takeIf { it.castId == currentCastId }?.let { terminal(it.castId, it.code) }
+            }
+        }
         scope.launch { control.connection.collect { status ->
             if (status == ConnectionStatus.CONNECTED) session.onConnected()
-            if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.FAILED) {
-                currentCastId?.let(::onControlLost)
-            }
+            if (status == ConnectionStatus.DISCONNECTED) currentCastId?.let(::onControlLost)
             publishTransport()
         } }
     }
@@ -673,6 +787,44 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         castCommandable(_castStart.value, currentCastId, control.connection.value)
 
     /**
+     * This phone's own site-local address, or null.
+     *
+     * Null is proof there is no LAN to cast over. A non-null value proves the opposite
+     * only in the weak sense [LanProximity] documents — a cellular rmnet 10/8 address
+     * satisfies it — so nothing here may turn a non-null into a claim about Wi-Fi.
+     */
+    private fun ownLanIpv4(): String? = com.flick.sender.NetworkUtils.getSiteLocalIpv4()
+
+    /**
+     * Whether this phone and [host] sit on one /24, or null where that cannot be claimed.
+     *
+     * The Wi-Fi test is [LanProximity]'s documented limit rather than belt-and-braces: a
+     * cellular rmnet 10/8 address satisfies the /24 comparison against an ISP-default TV
+     * address, and every body this feeds rules the Wi-Fi out BY NAME. A phone that is not
+     * on Wi-Fi at all is exactly the phone for which "join the right network" is the fix,
+     * so it must reach the hedged copy rather than the copy that rules the network out.
+     *
+     * It cannot rule out a second network that happens to share the same /24 — a hotspot
+     * or a neighbour's AP on the same consumer-router default range — because nothing
+     * readable without a location permission distinguishes those. The claim stays "on the
+     * same network", never "the network is fine".
+     */
+    private fun sameSubnetAs(host: String?): Boolean? {
+        if (com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) == null) return null
+        val own = ownLanIpv4() ?: return null
+        val target = host ?: return null
+        return LanProximity.sameSubnet(own, target)
+    }
+
+    /**
+     * Whether this phone provably holds neither a Wi-Fi link nor a LAN address — the only
+     * state in which "this phone isn't on a Wi-Fi network" is a fact rather than a guess
+     * about whatever a bare `SocketException` meant.
+     */
+    private fun offNetwork(): Boolean =
+        com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) == null && ownLanIpv4() == null
+
+    /**
      * Republish what the media notification may say and do. Cheap and idempotent — a
      * `MutableStateFlow` drops an equal value — so every edge that could change it calls
      * this rather than each of them deciding whether it needed to.
@@ -721,6 +873,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // No query is run here, so the empty list that follows is not evidence about
             // this phone's storage and must not be allowed to convict the stored folder.
             libraryResolved = false
+            _libraryComplete.value = null
             publishLibrary(emptyList())
             _libraryLoading.value = false
             return
@@ -734,6 +887,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // is missing exactly the rows the newest-first sort put last. The rows it
                 // did get are still published — withheld is the verdict, not the library.
                 libraryResolved = read.complete
+                _libraryComplete.value = read.complete
                 publishLibrary(read.items)
                 _libraryLoading.value = false
                 libraryJob = null
@@ -1134,7 +1288,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
         if (reject != null || tvId == null) {
             FlickLog.w("pair", "submit rejected reason=$reject")
-            _pairError.value = if (reject == "code") PairErrorKind.INVALID_ENTRY else PairErrorKind.UNREACHABLE
+            // Nothing was reached because nothing was dialed. An advertised endpoint this
+            // build cannot use is a fact about the address, never about the TV's presence.
+            _pairError.value = when (reject) {
+                "code" -> PairErrorKind.INVALID_ENTRY
+                "endpoint" -> PairErrorKind.ADDRESS_UNSUPPORTED
+                else -> PairErrorKind.PAIRING_REQUIRED
+            }
             return
         }
         val attempt = beginPairingAttempt(); _pairError.value = null
@@ -1194,6 +1354,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         manualGeneration: Long? = null,
     ) {
         val legacyAtExactHost = store.legacyForHost(host)
+        dialedHost = host
+        val sameSubnet = sameSubnetAs(host) == true
         val first = control.pair(host, port, deviceLabel, code)
         // Refused before a single byte of the code left the phone is the dead-port
         // fingerprint of a receiver that rebound. Retry the SAME host only — a rogue
@@ -1230,24 +1392,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 _pairError.value = PairErrorKind.UPDATE_REQUIRED
                 finishManualPairAttempt(manualGeneration)
             }
-            is ControlClient.Result.Unreachable -> {
+            is ControlClient.Result.Unreachable,
+            is ControlClient.Result.TimedOut,
+            is ControlClient.Result.RejectedByTv,
+            is ControlClient.Result.ProtocolError,
+            -> {
                 if (PairResultPolicy.clearCode(result)) clearEnteredCode()
-                _pairError.value = PairErrorKind.UNREACHABLE
-                finishManualPairAttempt(manualGeneration)
-            }
-            is ControlClient.Result.TimedOut -> {
-                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
-                _pairError.value = PairErrorKind.TIMED_OUT
-                finishManualPairAttempt(manualGeneration)
-            }
-            is ControlClient.Result.RejectedByTv -> {
-                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
-                _pairError.value = PairErrorKind.REJECTED
-                finishManualPairAttempt(manualGeneration)
-            }
-            is ControlClient.Result.ProtocolError -> {
-                if (PairResultPolicy.clearCode(result)) clearEnteredCode()
-                _pairError.value = PairErrorKind.INVALID_ENTRY
+                _pairError.value = pairErrorFor(result, sameSubnet, offNetwork())
                 finishManualPairAttempt(manualGeneration)
             }
             ControlClient.Result.Busy -> {
@@ -1315,6 +1466,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pairingJob = scope.launch {
             var sawUntrustedFailure = false
             var sawTransportFailure = false
+            // The LAST candidate's answer, not the first: the queue walks from the stored
+            // endpoint outwards, so the address the phone tried most recently is the one
+            // whose kernel answer the user is owed an explanation of.
+            //
+            // Null rather than a NO_ANSWER seed, because the seed was itself a claim: a
+            // sweep whose every candidate came back DENIED for a transient reason met a TV
+            // that answered, and reporting "got no answer at all" about it is the exact
+            // false sentence this taxonomy exists to stop.
+            var lastFault: DialFault? = null
             val candidates = ResumeCandidateQueue(pairing.host, pairing.port, pairing.tvId, MAX_RESUME_CANDIDATES)
             var awaitedNsd = false
             while (true) {
@@ -1327,13 +1487,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     candidate = candidates.next(devices.value)
                 }
                 if (candidate == null) break
+                dialedHost = candidate.host
                 val result = control.resume(pairing, candidate.host, candidate.port)
                 FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
                 when (result) {
                     is ControlClient.Result.Resumed -> if (pairingGate.isCurrent(attempt)) {
                         if (!PairingPersistence.commit { store.commitVerifiedEndpoint(pairing.tvId, result.endpoint.tv, candidate.host, candidate.port) }) {
                             control.close()
-                            failPendingResume("control_unreachable")
+                            // The dial succeeded end to end and a write to this phone
+                            // failed. `persistPaired` has said so honestly for years; this
+                            // path used to report the TV as unreachable instead.
+                            failPendingResume(
+                                "pairing_store_failed",
+                                pairError = PairErrorKind.LOCAL_STORAGE,
+                            )
                             return@launch
                         }
                         _connectedTv.value = PairedTv(result.endpoint.tv, candidate.host, candidate.port, pairing.tvId)
@@ -1347,8 +1514,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     is ControlClient.Result.Denied ->
                         if (result.reason in TRANSIENT_DENIALS) sawTransportFailure = true else sawUntrustedFailure = true
                     is ControlClient.Result.ProtocolError -> sawUntrustedFailure = true
-                    is ControlClient.Result.Unreachable, is ControlClient.Result.TimedOut, is ControlClient.Result.RejectedByTv ->
+                    is ControlClient.Result.Unreachable -> {
+                        lastFault = result.fault
                         sawTransportFailure = true
+                    }
+                    is ControlClient.Result.TimedOut -> {
+                        lastFault = result.fault
+                        sawTransportFailure = true
+                    }
+                    is ControlClient.Result.RejectedByTv -> {
+                        lastFault = DialFault.REJECTED
+                        sawTransportFailure = true
+                    }
                     else -> sawUntrustedFailure = true
                 }
                 if (!pairingGate.isCurrent(attempt)) return@launch
@@ -1358,10 +1535,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (sawUntrustedFailure) {
                     FlickLog.w("pair", "marked needs_repair tvId=${pairing.tvId}")
                     store.markNeedsRepair(pairing.tvId)
-                    _pairError.value = PairErrorKind.CODE_MISMATCH
+                    // The user typed no code here, so "that code didn't match" names a
+                    // field they never filled in. `markNeedsRepair` on the line above is
+                    // the app stating this same diagnosis to itself.
+                    _pairError.value = PairErrorKind.REPAIR_NEEDED
                     _route.value = Route.Connect
                 } else if (sawTransportFailure) {
-                    failPendingResume("control_unreachable")
+                    val fault = lastFault
+                    if (fault != null) {
+                        failPendingResume(controlFaultCode(fault, offNetwork()), fault)
+                    } else {
+                        // Nothing but transient denials: every candidate ANSWERED, and
+                        // said why. That is the same fact the post-upgrade close carries.
+                        failPendingResume("control_rejected", DialFault.REJECTED)
+                    }
                 }
             }
         }
@@ -1407,13 +1594,23 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     private fun flickToTv(request: CastRequest) {
-        val item = request.item
-        val tv = _connectedTv.value ?: run { openConnect(); return }
+        val tv = _connectedTv.value ?: run {
+            // Bounced to Connect with nothing said. The Connect screen already draws
+            // PairErrorCard from this flow, so naming the reason is one assignment.
+            _pairError.value = PairErrorKind.PAIRING_REQUIRED
+            openConnect()
+            return
+        }
         if (control.authenticatedEndpoint() == null) {
-            store.get(tv.tvId)?.takeIf { !it.needsRepair }?.let { pairing ->
-                pendingCast = request
-                resume(pairing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
-            } ?: openConnect()
+            val pairing = store.get(tv.tvId)
+            if (pairing == null || pairing.needsRepair) {
+                _pairError.value =
+                    if (pairing == null) PairErrorKind.PAIRING_REQUIRED else PairErrorKind.REPAIR_NEEDED
+                openConnect()
+                return
+            }
+            pendingCast = request
+            resume(pairing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
             return
         }
         startCast(request)
@@ -1444,7 +1641,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         castJob = scope.launch {
             var readyCommit = false
             try {
+                // Proof, not a guess: `getSiteLocalIpv4` returns null only when this phone
+                // holds no site-local address at all. It is also the commonest no-LAN case
+                // — Wi-Fi simply off — and the one no wire code could ever report, because
+                // nothing is dialed to report it.
+                if (ownLanIpv4() == null) throw CastStartupFailure(SourceFault.NO_LAN_ADDRESS)
                 val endpoint = control.authenticatedEndpoint() ?: throw CastStartupFailure("control_unreachable")
+                dialedHost = endpoint.host
                 if (!com.flick.sender.NetworkUtils.isOwnedLanIpv4(endpoint.peerIp)) throw CastStartupFailure("no_compatible_lan")
                 if (item.uri.scheme != "content") throw CastStartupFailure("source_unavailable")
                 // MediaStore leaves SIZE null for files its scanner never finished, and
@@ -1465,10 +1668,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val subtitle = owned ?: recalledSubtitleFor(item, castId, thisGeneration)
                 ServerStateHolder.beginStarting(castId)
                 CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)
+                // Not `startup_timeout`: this throw is strictly before `loadSentCastId` is
+                // written below, so the shipped copy's claim that the TV accepted the cast
+                // is provably false here — nothing was ever asked of it.
                 val server = withTimeoutOrNull(9_000) { ServerStateHolder.state.first { it.castId == castId && (it.status == ServerStatus.RUNNING || it.status == ServerStatus.ERROR) } }
-                    ?: throw CastStartupFailure("startup_timeout")
+                    ?: throw CastStartupFailure("source_start_timeout")
                 val videoUrl = server.videoUrl
-                if (server.status != ServerStatus.RUNNING || videoUrl == null) throw CastStartupFailure("media_bind_failed")
+                if (server.status != ServerStatus.RUNNING || videoUrl == null) {
+                    // The service names its own fault where it has one; the bind failure
+                    // is only the floor for a RUNNING state with no URL to serve from.
+                    throw CastStartupFailure(
+                        ServerStateHolder.terminalEvent.value
+                            ?.takeIf { it.castId == castId }?.errorCode
+                            ?: SourceFault.BIND_FAILED,
+                    )
+                }
                 // The subtitle capability is published before RUNNING, so it is already
                 // visible on the state the wait above returned.
                 val subUrl = subtitleUrlFor(
@@ -1489,7 +1703,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // cast, so it may not hold one up. A memory missed on the one cast that
                 // outran the disk is a memory the viewer re-dials in one gesture.
                 val rememberedDelayMs = rememberedAudioDelayMs(audioDelayStore.state.value, fingerprint)
-                session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)
+                // A false here is certainty: the frame provably never left this phone.
+                // Letting the two-second `accepted` wait below expire instead would file
+                // that certainty as the TV having stayed silent.
+                if (!session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)) {
+                    throw CastStartupFailure("load_not_sent")
+                }
                 // Back in force before the first frame is decoded, and in one frame rather
                 // than a walk — see PlaybackSession.applyRememberedAudioDelay for why a
                 // cast with nothing on screen yet is the one move that needs no walking.
@@ -1521,7 +1740,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 decoderFaults.forget(item.uriKey)
                 _decoderSuspects.value = decoderFaults.suspects()
             } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
-              catch (_: Exception) { terminal(castId, "unknown") }
+              catch (e: Exception) {
+                  // The only cast terminal that used to leave no diagnostic trace at all.
+                  // The class name and nothing else: a message can carry a URI or a path.
+                  FlickLog.w("cast", "cast start failed ${e.javaClass.simpleName}")
+                  terminal(castId, "unknown")
+              }
             finally { if (!readyCommit) cleanup(castId) }
         }
     }
@@ -1622,9 +1846,46 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // what disarms it, so the stage transition is one of the edges that republishes.
         publishTransport()
     }
-    private fun terminal(castId: String, code: String, retryable: Boolean = false, httpStatus: Int? = null) {
+    /**
+     * [reportedBeforeStart] is what the raising side claims about the phase. It is a claim
+     * rather than the answer: this phone holds its own record of whether the TV ever
+     * reported a first frame for this cast, and the copy may say "the film was playing"
+     * only where both agree. The default is the honest floor for every local raise, all of
+     * which happen before or during startup unless the Active record says otherwise.
+     */
+    private fun terminal(
+        castId: String,
+        reportedCode: String,
+        retryable: Boolean = false,
+        httpStatus: Int? = null,
+        origin: TerminalOrigin = TerminalOrigin.LOCAL,
+        reportedBeforeStart: Boolean = true,
+    ) {
         if (currentCastId != castId) return
+        val reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId
+        // `streamSlice` is the only place in the system that knows why a body stopped, so
+        // where it recorded a reason for THIS cast it outranks the receiver's guess about
+        // the same silence. Every other receiver verdict was reached with the file in
+        // front of it and is better evidence than anything this phone holds.
+        val preferred = preferredTerminalCode(
+            reportedCode,
+            ServerStateHolder.sourceFault.value?.takeIf { it.castId == castId }?.code,
+        )
+        // A control link that went quiet under a phone holding no LAN address of its own
+        // is a phone that left the network, and that is a different diagnosis with a
+        // different fix — one this side can prove, and the only one of the two with a
+        // control behind it.
+        val code = if (preferred == "control_disconnected" && ownLanIpv4() == null) {
+            "control_disconnected_no_lan"
+        } else {
+            preferred
+        }
+        // The origin follows the code it ends up carrying: a receiver frame whose verdict
+        // was replaced by this phone's own record is no longer the receiver speaking, and
+        // the copy that varies on origin must not say it was.
+        val resolvedOrigin = if (code == reportedCode) origin else TerminalOrigin.LOCAL
         _failureLinkVerdict.value = linkMonitor.verdict.value
+        _failureSameSubnet.value = sameSubnetAs(dialedHost)
         val item = _castingItem.value
         val request = currentRequest
         val offerRetry = castRetryOffered(retryable, item != null)
@@ -1633,7 +1894,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             val retryStart = CastRetryPolicy.start(
                 originalStartMs = original.startMs,
                 originalStartOver = original.startOver,
-                active = (_castStart.value as? CastStartState.Active)?.castId == castId,
+                active = reachedActive,
                 confirmedMs = playback.confirmedMs,
                 durationMs = playback.durationMs,
                 wireDurationMs = original.item.durationMs,
@@ -1654,8 +1915,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 _unplayableFiles.value = unplayableMemory.mark(item.uriKey, code)
             }
         }
-        FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code retryable=$offerRetry httpStatus=$httpStatus")
-        _castFailure.value = CastFailure(code, offerRetry, httpStatus)
+        // Both witnesses have to agree before the copy may describe a film that was
+        // playing: a receiver frame carries the receiver's own phase, and this phone's
+        // Active record is what proves a frame ever reached the screen.
+        val beforeStart = reportedBeforeStart || !reachedActive
+        FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code origin=$resolvedOrigin retryable=$offerRetry beforeStart=$beforeStart httpStatus=$httpStatus")
+        _castFailure.value = CastFailure(code, offerRetry, httpStatus, resolvedOrigin, beforeStart)
         publishCastStart(CastStartState.Failed(castId, code))
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = true)
         _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
@@ -1682,7 +1947,22 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         when (frame.optString("t")) {
             "loadAccepted" -> accepted?.complete(frame)
             "loadReady" -> ready?.complete(frame)
-            "loadFailed", "error" -> terminal(id, frame.getString("code"), frame.getBoolean("retryable"), if (frame.has("httpStatus")) frame.getInt("httpStatus") else null)
+            // The one arm that speaks for the receiver. Everything else that reaches
+            // `terminal` was raised by this phone about itself.
+            //
+            // The frame type IS the phase: the receiver encodes a failure before its first
+            // frame as `loadFailed` and one after as `error`, so the same code arrives
+            // twice over meaning two different things about when it happened. Read here
+            // rather than inferred, because a mid-film code that degrades to the generic
+            // face would otherwise be described as a cast that never started.
+            "loadFailed", "error" -> terminal(
+                id,
+                frame.getString("code"),
+                frame.getBoolean("retryable"),
+                if (frame.has("httpStatus")) frame.getInt("httpStatus") else null,
+                TerminalOrigin.RECEIVER,
+                reportedBeforeStart = frame.optString("t") == "loadFailed",
+            )
             // The film is playing and stays playing: this ends no cast and fails nothing.
             // It is filed against the item the cast is serving, which the id check above
             // has already proven is this one.
@@ -1699,10 +1979,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             SourceServerTerminalKind.STOPPED -> {
                 completeCastToLibrary(id)
             }
-            SourceServerTerminalKind.FAILED -> terminal(id, "media_bind_failed")
+            // The service already names which of its own faults fired; the hardcoded
+            // bind failure it used to be reported a port collision for a phone that had
+            // simply left the Wi-Fi.
+            SourceServerTerminalKind.FAILED -> terminal(id, event.errorCode ?: SourceFault.BIND_FAILED)
         }
     }
-    private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch" -> CastErrorKind.NO_LAN; "sender_not_serving", "http_rejected", "media_bind_failed" -> CastErrorKind.REACHABLE_NOT_SERVING; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
+    /**
+     * The coarse taxonomy, and no longer the driver of any face that has a code of its
+     * own: `sender_not_serving`, `http_rejected`, `media_bind_failed`, `control_disconnected`
+     * and `media_unreachable` are all matched in `castErrorFace` before this is consulted.
+     * The last of those is why the kind below still says UNREACHABLE and the screen does
+     * not — the TV saying it could not fetch from this phone arrives over a live socket,
+     * so the only unreachable thing is this phone's own film server.
+     */
+    private fun errorKind(code: String) = when (code) { "no_compatible_lan", "host_mismatch", "no_lan_address", "control_no_network", "control_disconnected_no_lan" -> CastErrorKind.NO_LAN; "control_unreachable", "control_disconnected", "media_unreachable" -> CastErrorKind.UNREACHABLE; else -> CastErrorKind.GENERIC }
     fun playPause() = session.togglePlayPause(); fun skip(deltaMs: Long) = session.skip(deltaMs); fun commitPendingSkip() = session.commitPendingSkip(); fun scrubStart() = session.scrubStart(); fun scrubTo(fraction: Float) = session.scrubTo(fraction); fun scrubEnd() = session.scrubEnd(); fun setVolume(level: Float) = session.setVolume(level)
 
     /**
@@ -1734,15 +2025,31 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             audioDelayRecorder.acknowledge(write, success)
         }
     }
-    private fun failPendingResume(code: String) {
+    /**
+     * [pairError] is for the faults that are not a dial fault at all — a resume that
+     * reached the TV and then failed on this phone's own storage has no [DialFault] to
+     * translate, and the residual UNREACHABLE would report a disk as a missing TV.
+     */
+    private fun failPendingResume(
+        code: String,
+        fault: DialFault? = null,
+        pairError: PairErrorKind? = null,
+    ) {
         val request = pendingCast
         pendingCast = null
+        // Frozen here for the same reason `terminal` freezes it: the addresses are gone by
+        // the time the face composes, and null stays the honest third answer.
+        _failureSameSubnet.value = sameSubnetAs(dialedHost)
         if (request != null) {
             retryItem = request
             _failureItem.value = request.item
             _castFailure.value = CastFailure(code, retryable = true)
             _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
-        } else _pairError.value = PairErrorKind.UNREACHABLE
+        } else {
+            _pairError.value = pairError
+                ?: fault?.let { pairErrorForFault(it, _failureSameSubnet.value == true, offNetwork()) }
+                ?: PairErrorKind.UNREACHABLE
+        }
     }
     private fun persistPaired(
         key: String,

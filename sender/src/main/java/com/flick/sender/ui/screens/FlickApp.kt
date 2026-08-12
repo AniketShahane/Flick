@@ -50,6 +50,7 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
+import com.flick.sender.media.MediaPermissionState
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
 import com.flick.sender.net.BackDisposition
@@ -110,11 +111,15 @@ fun FlickApp(
     controller: FlickController,
     supportCatalog: SupportCatalog?,
     batteryExempt: Boolean,
+    notificationsGranted: Boolean,
+    mediaPermission: MediaPermissionState,
     themePreference: ThemePreference,
     onSelectTheme: (ThemePreference) -> Unit,
     onRequestVideoPermission: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     onOpenWifiSettings: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     onOpenCheckout: (String) -> Unit,
 ) {
     val colors = LocalFlickColors.current
@@ -442,12 +447,14 @@ fun FlickApp(
                             ),
                     ) {
                         when (r) {
-                            Route.Connect -> ConnectScreen(controller)
+                            Route.Connect -> ConnectScreen(controller, onOpenWifiSettings)
                             Route.Library -> LibraryScreen(
                                 controller = controller,
                                 supportAvailable = supportCatalog != null,
                                 onOpenSupport = { controller.toggleSupportSheet(true) },
                                 onRequestVideoPermission = onRequestVideoPermission,
+                                mediaPermission = mediaPermission,
+                                onOpenAppSettings = onOpenAppSettings,
                                 uiState = libraryUi,
                                 sharedScope = sharedScope,
                                 animatedScope = this@AnimatedContent,
@@ -457,10 +464,12 @@ fun FlickApp(
                                 supportAvailable = supportCatalog != null,
                                 onOpenSupport = { controller.toggleSupportSheet(true) },
                                 batteryExempt = batteryExempt,
+                                notificationsGranted = notificationsGranted,
                                 themePreference = themePreference,
                                 onSelectTheme = onSelectTheme,
                                 onOpenWifiSettings = onOpenWifiSettings,
                                 onRequestBatteryExemption = onRequestBatteryExemption,
+                                onOpenNotificationSettings = onOpenNotificationSettings,
                             )
                             is Route.Detail -> DetailScreen(
                                 controller = controller,

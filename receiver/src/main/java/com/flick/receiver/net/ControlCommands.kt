@@ -42,7 +42,7 @@ interface ControlCommands {
     ): ControlCastResult?
     fun replayResult(castId: String): ControlCastResult?
     /** Called only for the currently-owned control generation. */
-    fun onControlLost(generation: Long)
+    fun onControlLost(generation: Long, reason: ControlLossReason)
     fun onPlay(castId: String)
     fun onPause(castId: String)
     fun onSeek(castId: String, posMs: Long)
@@ -74,6 +74,25 @@ interface ControlCommands {
     fun onCancelLoad(castId: String): Boolean
     /** True only when this stopped the current preparing or active cast. */
     fun onStop(castId: String): Boolean
+}
+
+/**
+ * Why the control lease went away — the close reason the server already computes and
+ * used to discard on the way to [ControlCommands.onControlLost].
+ *
+ * [announces] is the whole of what the distinction buys: a Forget or a superseding
+ * connection is this TV's own doing, and a card blaming the network for it would be
+ * false. Only a socket that simply stopped answering is worth a sentence on screen.
+ */
+enum class ControlLossReason(val wire: String, val announces: Boolean) {
+    /** The socket ended while it still held the lease: nothing on this TV took it away. */
+    DROPPED("dropped", announces = true),
+
+    /** This TV stopped its own server — a rebind or a teardown, each explained by itself. */
+    CLOSED("closed", announces = false),
+    FORGOTTEN("forgotten", announces = false),
+    REVOKED("revoked", announces = false),
+    SUPERSEDED("superseded", announces = false),
 }
 
 sealed interface ControlCastResult {

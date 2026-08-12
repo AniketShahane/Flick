@@ -1,12 +1,14 @@
 package com.flick.receiver.net
 
 import android.os.SystemClock
+import com.flick.receiver.util.FlickLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.NoRouteToHostException
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -37,6 +39,15 @@ object PreflightProbe {
         try { Socket().use { it.connect(InetSocketAddress(url.host, url.port), minOf(TCP_DEADLINE_MS, remainingMs().toLong()).toInt()) } }
         catch (_: SocketTimeoutException) { return@withContext ProbeResult.Unreachable }
         catch (_: ConnectException) { return@withContext ProbeResult.ConnectionRefused }
+        catch (_: NoRouteToHostException) {
+            // EHOSTUNREACH is the router refusing to carry the packet between two peers
+            // it can both see, which is a different fault from a phone that is asleep —
+            // and the only one of the two a viewer can fix. It shares Unreachable's wire
+            // answer because the vocabulary is frozen; the log is what preserves the
+            // distinction until a code can carry it.
+            FlickLog.w("probe", "result=NoRouteToHost")
+            return@withContext ProbeResult.Unreachable
+        }
         catch (_: IOException) { return@withContext ProbeResult.Unreachable }
         if (timedOut()) return@withContext ProbeResult.Unreachable
         var connection: HttpURLConnection? = null

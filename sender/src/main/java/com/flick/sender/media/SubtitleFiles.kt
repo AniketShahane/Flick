@@ -153,6 +153,33 @@ object SubtitleFiles {
 }
 
 /**
+ * Why a picked document cannot be attached. Four outcomes, not two, and the split is the
+ * whole point: a file with NO extension and a file with an extension Flick does not take
+ * are different problems with different instructions, and a size the provider will not
+ * report is not a file that is too large.
+ */
+enum class PickRejection { UNNAMED, WRONG_KIND, UNMEASURABLE, TOO_LARGE }
+
+/**
+ * [sizeBytes] is `SubtitleDocument.sizeOf`'s answer, where -1 is the provider declining to
+ * say. It is refused rather than attempted because `MediaHttpServer` enforces the same
+ * ceiling on the same value and answers 404 to an unmeasurable file — so accepting one
+ * here would attach a subtitle the TV is then never allowed to fetch.
+ *
+ * Null is the only value that means "attach it".
+ */
+fun subtitlePickRejection(name: String?, sizeBytes: Long): PickRejection? = when {
+    name == null -> PickRejection.UNNAMED
+    // extensionOf answers null for a name with no extension at all, which is the one case
+    // where naming the four accepted extensions is not the instruction the user needs.
+    SubtitleFiles.extensionOf(name) == null -> PickRejection.UNNAMED
+    !SubtitleFiles.isSubtitleName(name) -> PickRejection.WRONG_KIND
+    sizeBytes < 0L -> PickRejection.UNMEASURABLE
+    sizeBytes > SubtitleFiles.MaxSubtitleBytes -> PickRejection.TOO_LARGE
+    else -> null
+}
+
+/**
  * The folder grant a build BEFORE this one took, and the only handle left on it.
  *
  * That build offered a whole folder of sidecars, picked with ACTION_OPEN_DOCUMENT_TREE and

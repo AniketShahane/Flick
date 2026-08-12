@@ -37,6 +37,10 @@
          timer row, and a second line overflows the pair column's vertical budget
          (see PairColumnItemGap) and crushes the action row's labels. -->
     <string name="pair_locked">Pairing locked — try again shortly.</string>
+    <!-- Preferred over the flat line above wherever `Locked.retryAtElapsedMs` is known:
+         the lockouts it covers run from 30 s to eight minutes, and one phrase cannot be
+         true of both ends. %1$s is m:ss and never a spoken duration. -->
+    <string name="pair_locked_countdown">Too many wrong codes were tried. A fresh code appears on this screen in %1$s.</string>
     <!-- The cumulative-failure seal, distinct from the timed lockout above: that one
          clears itself, this one does not. The copy has to say so, or a user who mistyped
          waits for a countdown that never comes and reads the TV as broken. It names the
@@ -66,6 +70,24 @@
     <string name="settings_forget_all_confirm">Press again to confirm</string>
     <string name="pair_waiting_network_title">Waiting for Wi-Fi…</string>
     <string name="pair_waiting_network_detail">Connect this TV to your home network to start pairing.</string>
+    <!-- Reached only after LanAddress.current() returned a site-local address, so "it's on
+         your network" is proven — and the card above contradicted a fact the code held one
+         line earlier. No retry key: the reconcile safety net already re-runs every 10 s. -->
+    <string name="pair_bind_failed_title">This TV can\'t open a port to listen on</string>
+    <string name="pair_bind_failed_detail">It\'s on your network, but nothing could claim a port for the connection to your phone. Restarting Flick on this TV usually clears it.</string>
+    <string name="pair_not_site_local_title">This network isn\'t one Flick can use</string>
+    <string name="pair_not_site_local_detail">This TV is online, but its address isn\'t a home-network one — Flick only casts inside a private network. A normal home router hands out the right kind.</string>
+    <!-- The socket is bound, so the code, address and port on this screen are all real:
+         this line may promise them and must not say the TV is offline. -->
+    <string name="pair_not_discoverable">This TV couldn\'t announce itself on your network. The code on this screen still works — add it by hand using the address and port shown here.</string>
+
+    <!-- Storage refusals. Neither invites the press that just failed: a fresh code is
+         already on screen for the first, and the second is the seal that a restart is the
+         only way out of. Neither prints a peer address. -->
+    <string name="pair_save_failed_title">This TV couldn\'t save the pairing</string>
+    <string name="pair_save_failed_detail">You allowed %1$s, but this TV couldn\'t write the pairing to its own storage, so nothing was added. A fresh code is on screen below.</string>
+    <string name="pair_resume_failed_title">Pairing couldn\'t be reopened</string>
+    <string name="pair_resume_failed_detail">This TV couldn\'t clear the pause from its own storage, so it\'s still refusing codes. Restart Flick on this TV, then try Resume again.</string>
 
     <!-- T2 · Idle — ready to cast -->
     <string name="idle_ready">Ready for a flick — open Flick on your phone</string>
@@ -75,7 +97,11 @@
 
     <!-- Connecting (pre-flight probe gate) / handshake -->
     <string name="connecting_title">Starting your film…</string>
-    <string name="connecting_detail">Opening a direct stream — no transcode, no cloud.</string>
+    <!-- Back on this screen is a wired, working cancel — the handler calls
+         server.stopLocalCast() and falls back to session.backToStandby() — so naming it
+         invents nothing. No progress claim: the handshake genuinely sits in one stage,
+         which is why the loader is indeterminate by design. -->
+    <string name="connecting_detail">Opening a direct stream — no transcode, no cloud. Press Back to cancel.</string>
     <!-- Used only when both the device label and the media title are known. -->
     <string name="connecting_device_title">%1$s is flicking %2$s</string>
 
@@ -213,6 +239,25 @@
     <string name="audio_silent_card_description">Playing without sound. This TV can\'t play %1$s audio.</string>
     <string name="audio_silent_card_description_unknown">Playing without sound. This TV can\'t play this film\'s audio.</string>
 
+    <!--
+      The band's event notices: what just happened to this film, once per cast. None of
+      these may promise a fix, so the audio one names the interruption and not an
+      outcome: the sound coming back is not certain — a second refusal after the rebuild
+      ends the cast, under a terminal screen this line would have contradicted. A dropped
+      subtitle is not offered again either, because the rollback is one-shot. Nor may the
+      subtitle line call the file broken: a cache eviction on the phone looks identical
+      from here.
+    -->
+    <string name="notice_audio_restart_title">The sound was interrupted</string>
+    <string name="notice_audio_restart_line">THIS TV IS CHANGING HOW IT PLAYS THIS FILM\'S AUDIO</string>
+    <string name="notice_subtitle_dropped_title">That subtitle wouldn\'t load</string>
+    <string name="notice_subtitle_dropped_line">THE FILM IS PLAYING WITHOUT IT</string>
+    <!-- Spoken, not drawn: each card splits one sentence over two lines, and the second
+         is set in caps for the ten-foot read rather than for a screen reader. -->
+    <string name="notice_audio_restart_description">The sound was interrupted. This TV is changing how it plays this film\'s audio.</string>
+    <string name="notice_subtitle_dropped_description">That subtitle wouldn\'t load. The film is playing without it.</string>
+    <string name="notice_turn_unavailable_description">Showing this film as filed. This TV can\'t turn this film.</string>
+
     <!-- Stream metrics: transport card + panel -->
     <string name="metrics_card_title">Stream metrics</string>
     <string name="metrics_panel_title">Stream metrics</string>
@@ -237,9 +282,14 @@
     <string name="metrics_value_dropped">%1$d</string>
     <string name="metrics_value_transport">TCP · %1$s</string>
 
-    <!-- T7 · Buffering -->
+    <!-- T7 · Buffering. The second pair replaces the first once the forward buffer this
+         one claims to be holding has been spent — see BufferingPlatePolicy. It refuses to
+         choose between a dead link and a stopped sender, because from here they are the
+         same silence, and quotes no countdown the recovery would have to honour. -->
     <string name="buffering_title">Topping up — quality held</string>
     <string name="buffering_detail">the film stays on screen</string>
+    <string name="buffering_stalled_title">The film has stopped arriving</string>
+    <string name="buffering_stalled_detail">this TV is still asking %1$s for it</string>
 
     <!-- T8 · Quality moment -->
     <string name="quality_decoder">decoder</string>
@@ -250,16 +300,20 @@
     <string name="quality_hdr10">HDR10</string>
     <string name="quality_direct_play">Direct-play</string>
 
-    <!-- T9a · Reachable, not serving (amber) -->
+    <!-- T9a · SENDER_NOT_SERVING (amber). The probe or the transport proved the phone was
+         answering, so "battery saver paused it" was invented — and "your place is held"
+         was a promise fail() cannot keep: it calls controller.stop(), which clears the
+         saved position. The before-the-first-frame form lives in strings_errors.xml. -->
     <string name="error_not_serving_title">Your phone stopped serving</string>
-    <string name="error_not_serving_detail">%1$s is on the network but stopped sending. Flick may be closed, or battery saver paused it. Your place is held.</string>
-    <string name="error_try_again">Try again</string>
+    <string name="error_not_serving_detail">%1$s is on the network and answering, but the film stopped arriving. Start it again from your phone.</string>
     <string name="error_back_to_standby">Back to standby</string>
 
-    <!-- T9b · Unreachable (crimson) -->
+    <!-- T9b · PHONE_UNREACHABLE mid-film (crimson). Nothing in the receiver watches for
+         the phone returning and no path re-prepares, so the shipped "playback resumes the
+         moment it's back" was a promise no code keeps — under a button that ends the
+         session. The before-the-first-frame form lives in strings_errors.xml. -->
     <string name="error_unreachable_title">Lost sight of your phone</string>
-    <string name="error_unreachable_detail">%1$s left the network mid-stream. Your place is safe — playback resumes the moment it\'s back.</string>
-    <string name="error_keep_waiting">Keep waiting</string>
+    <string name="error_unreachable_detail">%1$s stopped answering this TV mid-film. Nothing here resumes on its own — start it again from your phone when it\'s back.</string>
     <string name="error_end_session">End session</string>
     <string name="device_fallback">your phone</string>
 

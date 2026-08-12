@@ -58,6 +58,23 @@ data class DiagnosticsSnapshot(
     val errorCodeName: String?,
     /** Count of silent bounded auto-recoveries performed this session. */
     val autoRecoveryCount: Int,
+    /**
+     * Times the audio sink was rebuilt to decode a bitstream the output refused — see
+     * [AudioOutputPolicy]. Incremented in [PlayerController] and, until now, never read
+     * anywhere: a 1 here is the only visible trace of an audio route that cannot carry
+     * passthrough.
+     */
+    val audioSinkRebuildCount: Int = 0,
+    /**
+     * Media load errors Media3 retried through, excluding the sideloaded subtitle's.
+     *
+     * They were dropped outright, so nothing recorded how close a stall came to fatal:
+     * ~20 retries over ~100 s can be spent behind a plate that says the quality is being
+     * held, and this is the count that says how much of that budget was actually used.
+     */
+    val mediaLoadErrorCount: Int = 0,
+    /** Which rebuffer plate this stall has earned — see [bufferingPlate]. */
+    val bufferingPlate: BufferingPlate = BufferingPlate.TOPPING_UP,
     /** User seeks performed after playback started. */
     val seekCount: Int,
     /** Time the most recent seek took to reach READY (ms); 0 until first seek. */

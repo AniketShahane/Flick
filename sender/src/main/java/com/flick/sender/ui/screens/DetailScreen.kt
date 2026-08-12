@@ -2,6 +2,7 @@ package com.flick.sender.ui.screens
 
 import android.content.Intent
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterTransition
@@ -346,6 +347,10 @@ fun DetailScreen(
                         advisory = advisory,
                         onSwitchNetwork = {
                             runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                                .onFailure {
+                                    Toast.makeText(context, R.string.error_no_wifi_settings_toast, Toast.LENGTH_SHORT)
+                                        .show()
+                                }
                         },
                         castEnabled = progressReady && !castStart.isCommitting(),
                         onCastAnyway = { controller.flickToTv(item) },
@@ -403,6 +408,8 @@ fun DetailScreen(
                                     .setDataAndType(item.uri, "video/*")
                                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
                             )
+                        }.onFailure {
+                            Toast.makeText(context, R.string.error_no_player_toast, Toast.LENGTH_SHORT).show()
                         }
                     },
                 )

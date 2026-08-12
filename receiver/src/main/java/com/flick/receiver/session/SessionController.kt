@@ -8,6 +8,7 @@ import androidx.media3.common.PlaybackException
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.net.ControlCastResult
 import com.flick.receiver.net.ControlCommands
+import com.flick.receiver.net.ControlLossReason
 import com.flick.receiver.net.ExternalSubtitle
 import com.flick.receiver.net.PreflightProbe
 import com.flick.receiver.net.ProbeResult
@@ -25,18 +26,28 @@ sealed interface MediaStage {
     data class Checking(val castId: String, val controlLeaseGeneration: Long) : MediaStage
     data class Preparing(val castId: String, val controlLeaseGeneration: Long) : MediaStage
     data class Active(val castId: String, val controlLeaseGeneration: Long) : MediaStage
-    data class Error(val castId: String?, val code: CastFailureCode, val controlLeaseGeneration: Long?) : MediaStage {
+    data class Error(
+        val castId: String?,
+        val code: CastFailureCode,
+        val controlLeaseGeneration: Long?,
+        val detail: ReceiverFaultDetail = ReceiverFaultDetail.None,
+        /**
+         * Whether the film had reached its first frame. Already computed for the
+         * phone's terminal frame; carried here too because it is the only thing
+         * separating "never started" from "died mid-film", and a card that gets it
+         * wrong says "mid-film" about a pre-flight probe.
+         */
+        val beforeReady: Boolean = true,
+    ) : MediaStage {
         val kind get() = errorKindFor(code)
+        val face get() = receiverErrorFace(code, detail)
     }
 }
 
 /**
- * What the TV screen is allowed to say happened.
- *
- * The person holding the remote reads this, so it may not name a cause the receiver has
- * no evidence for. Everything that was not [Unreachable] used to collapse to
- * [NotServing] — which put *"Your phone stopped serving… battery saver paused it"* on
- * screen for a decoder failure, blaming a phone that was serving perfectly.
+ * The wire-facing summary of what happened: three values, one per party the terminal
+ * frame can indict. The SCREEN reads [MediaStage.Error.face] instead — this grain is
+ * what let a decoder failure render as "Your phone stopped serving".
  */
 enum class ErrorKind {
     /** Reachable, but the bytes stopped arriving: the sender's side of the fault. */
@@ -203,6 +214,8 @@ class SessionController(
     /** The control connection that synchronously adopted [castId]. */
     private var controlLeaseGeneration: Long? = null
     private var probeJob: Job? = null
+    /** The waiting sentence a dropped socket owes the room — see [onControlLost]. */
+    private var controlLossAnnounceJob: Job? = null
     private var startupDeadlineJob: Job? = null
     private var startupRetries = 0
     private var startupDeadlineElapsedMs = 0L
@@ -472,7 +485,9 @@ class SessionController(
                 retainedResult = outcome
                 ready?.invoke(castId, outcome.probeLatencyMs, outcome.startupMs)
             },
-            onError = { error -> onStartupError(castId, generation, probeLatencyMs, startedElapsedMs, error) },
+            onError = { error, detail ->
+                onStartupError(castId, generation, probeLatencyMs, startedElapsedMs, error, detail)
+            },
             onRotationRePrepare = { extendStartupDeadlineForRotation(castId, generation) },
         )
     }
@@ -483,6 +498,7 @@ class SessionController(
         probeLatencyMs: Long,
         startedElapsedMs: Long,
         error: PlaybackException,
+        detail: ReceiverFaultDetail,
     ) {
         if (!gate.isCurrent(castId, generation)) return
         val retryDelay = StartupRetryPolicy.delayForRetry(
@@ -507,14 +523,28 @@ class SessionController(
             if (PlaybackFailureClassifier.isStartupRetryable(error)) CastFailureCode.STARTUP_TIMEOUT else PlaybackFailureClassifier.classify(error),
             retryable = PlaybackFailureClassifier.isStartupRetryable(error),
             beforeReady = true,
+            detail = detail,
         )
     }
 
-    /** The exact exception comes from PlayerController, rather than a polling phase. */
-    private fun onPlaybackError(error: PlaybackException) {
+    /**
+     * The exact exception comes from PlayerController, rather than a polling phase.
+     *
+     * The gate — not the stage — is what answers "is this callback still mine". A stage
+     * test discarded every fatal error raised outside Active and left the cast to expire
+     * as STARTUP_TIMEOUT eighteen seconds later, under a screen still saying the film was
+     * starting; [fail] re-asks the generation question and drops a genuinely stale one.
+     */
+    private fun onPlaybackError(error: PlaybackException, detail: ReceiverFaultDetail) {
         val id = castId ?: return
-        if (stage !is MediaStage.Active) return
-        fail(id, generation, PlaybackFailureClassifier.classify(error), retryable = true, beforeReady = false)
+        fail(
+            id,
+            generation,
+            PlaybackFailureClassifier.classify(error),
+            retryable = true,
+            beforeReady = TerminalPhase.beforeReady(stage),
+            detail = detail,
+        )
     }
 
     /**
@@ -552,15 +582,18 @@ class SessionController(
         retryable: Boolean,
         status: Int? = null,
         beforeReady: Boolean,
+        detail: ReceiverFaultDetail = ReceiverFaultDetail.None,
     ) {
         if (!gate.isCurrent(id, generation)) return
-        FlickLog.w("cast", "fail code=${code.wire} retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
+        FlickLog.w("cast", "fail code=${code.wire} detail=$detail retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
         controller.stop()
         startupDeadlineJob?.cancel()
         startupDeadlineJob = null
         val outcome = ControlCastResult.Failed(id, code, retryable, status, beforeReady)
         retainedResult = outcome
-        stage = MediaStage.Error(id, code, controlLeaseGeneration)
+        // [detail] never reaches the wire: the frame below carries [code] alone, which is
+        // the whole of the vocabulary the sender validates against.
+        stage = MediaStage.Error(id, code, controlLeaseGeneration, detail, beforeReady)
         terminal?.invoke(id, code, retryable, status, beforeReady)
         // Keep only the immutable result for a duplicate replay; no player or
         // active ownership survives a terminal failure.
@@ -614,10 +647,59 @@ class SessionController(
         return true
     }
 
-    /** Called by control ownership before it can allow queued work to survive a close. */
-    override fun onControlLost(generation: Long) {
+    /**
+     * Called by control ownership before it can allow queued work to survive a close.
+     *
+     * A cast that was on screen when the socket died is owed the sentence, so this ends
+     * at a rendered diagnosis rather than at "Ready for a flick". Nothing is sent: the
+     * socket that would have carried a terminal frame is the thing that just closed.
+     *
+     * The sentence WAITS, and that wait is the whole of what makes it true. The sender
+     * answers a lost link with a bounded automatic re-cast (`ControlRecoveryPolicy`, two
+     * attempts inside a decaying window) whenever its own media path says the TV is still
+     * pulling bytes, so the seconds after a drop are exactly when a card reading "nothing
+     * here resumes on its own — start it again from your phone" is most likely to be
+     * contradicted by the film restarting under it. A re-cast that lands inside
+     * [CONTROL_LOSS_ANNOUNCE_DELAY_MS] takes the stage off None and this never speaks;
+     * one that does not is a link nobody rescued, which is what the card claims.
+     *
+     * A stage that is ALREADY [MediaStage.Error] is left standing. It holds no player, no
+     * probe job and no ownership — it is a rendered sentence, not a live session — and
+     * tearing it down replaced the one explanation the room ever got, mid-read.
+     *
+     * [ControlLossReason.announces] is what keeps an owner's own Forget from being
+     * dressed as a network fault.
+     */
+    override fun onControlLost(generation: Long, reason: ControlLossReason) {
         if (!gate.shouldInvalidateForControlLoss(generation) && stageLeaseGeneration() != generation) return
-        invalidateToNone(clearRetained = true)
+        if (stage is MediaStage.Error) return
+        val id = castId
+        val explains = reason.announces && id != null && stage !is MediaStage.None
+        if (!explains) {
+            invalidateToNone(clearRetained = true)
+            return
+        }
+        val beforeReady = TerminalPhase.beforeReady(stage)
+        val lease = controlLeaseGeneration
+        invalidate(clearRetained = true)
+        controller.stop()
+        title = null
+        seekTargetMs = 0L
+        stage = MediaStage.None
+        FlickLog.w("cast", "controlLost reason=${reason.wire} beforeReady=$beforeReady castIdFp=${FlickLog.fp(id)}")
+        controlLossAnnounceJob = scope.launch {
+            delay(CONTROL_LOSS_ANNOUNCE_DELAY_MS)
+            // Anything at all having happened in the meantime — a re-cast, a Back, a new
+            // phone — owns the screen, and none of them wants this sentence over it.
+            if (stage !is MediaStage.None) return@launch
+            FlickLog.w("cast", "controlLost announced castIdFp=${FlickLog.fp(id)}")
+            stage = MediaStage.Error(
+                castId = id,
+                code = CastFailureCode.CONTROL_DISCONNECTED,
+                controlLeaseGeneration = lease,
+                beforeReady = beforeReady,
+            )
+        }
     }
 
     /** Lifecycle/LAN teardown is terminal: never revive this URL on ON_START. */
@@ -633,6 +715,23 @@ class SessionController(
         return result
     }
 
+    /**
+     * The address this TV was reachable on went away, said on this screen too.
+     *
+     * Raised only by the LAN reconcile, and only after [forceLocalTeardown] has already
+     * taken the cast down — the stage it publishes is a rendered diagnosis over a
+     * session that no longer exists, which is why it takes the id back as an argument
+     * rather than reading one.
+     */
+    fun raiseNetworkChanged(castId: String, beforeReady: Boolean) {
+        stage = MediaStage.Error(
+            castId = castId,
+            code = CastFailureCode.NO_COMPATIBLE_LAN,
+            controlLeaseGeneration = null,
+            beforeReady = beforeReady,
+        )
+    }
+
     private fun current(id: String) = id == castId
 
     /** A command for a cast this session no longer owns, said out loud. */
@@ -644,6 +743,9 @@ class SessionController(
         gate.forceInvalidate()
         pendingSeek = null
         probeJob?.cancel(); probeJob = null
+        // Cancelled before [onControlLost] arms its own, so a second drop cannot leave
+        // two waiting sentences, and so a fresh cast or a Back silences the pending one.
+        controlLossAnnounceJob?.cancel(); controlLossAnnounceJob = null
         startupDeadlineJob?.cancel(); startupDeadlineJob = null
         controller.clearStartupListener()
         clearStartupState()
@@ -735,6 +837,14 @@ class SessionController(
 
     private companion object {
         const val STARTUP_DEADLINE_MS = 18_000L
+
+        /**
+         * How long a dropped control socket is given to be rescued before this TV says
+         * so. Long enough for the sender's automatic re-cast — a dial, a handshake, a
+         * pre-flight probe and a load — and far short of the 30–45 s its own ping
+         * watchdog needs, so a phone that really is gone is never held behind it.
+         */
+        const val CONTROL_LOSS_ANNOUNCE_DELAY_MS = 6_000L
     }
 }
 

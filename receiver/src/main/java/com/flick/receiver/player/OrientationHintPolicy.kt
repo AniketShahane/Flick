@@ -95,29 +95,30 @@ fun orientationHintFor(
  * transient cards at once is two things talking, and a viewer 4.5 s into a
  * sideways film has had time to wonder what to do about it.
  *
- * [silentAudioShowing] is that same rule against the third card the band carries,
- * and this side is the one that yields. A viewer can find the orientation tile
- * later and turn the picture themselves; nothing anywhere restores the sound, so
- * the notice that says so is not a pointer they can act on and cannot be offered
- * again. It goes first, and the hint takes the band after it.
+ * [bandClaimed] is that same rule against every other card the band carries, and
+ * this side is the one that always yields. A viewer can find the orientation tile
+ * later and turn the picture themselves; nothing anywhere restores the sound, and
+ * nothing brings back a subtitle or an audio route mid-film — so those notices are
+ * not pointers anyone can act on and cannot be offered again. They go first, and the
+ * hint takes the band after them.
  *
- * What the caller passes is the band being OCCUPIED, not the notice's phase. The
- * two cards land on identical coordinates, so a notice that is still fading out is
- * still on the glass and the hint may not fade up underneath it; the caller holds
- * this true across the exit — `FlickMotion.BAND_HANDOVER_MS` — which is a claim on
- * the band that a phase alone cannot express.
+ * What the caller passes is the band being OCCUPIED, not any card's phase. Every
+ * card lands on identical coordinates, so one still fading out is still on the glass
+ * and the hint may not fade up underneath it; the caller holds this true across the
+ * exit — `FlickMotion.BAND_HANDOVER_MS` — which is a claim on the band that a phase
+ * alone cannot express.
  */
 fun orientationHintPhase(
     hint: OrientationHint?,
     filmVisible: Boolean,
     qualityShowing: Boolean,
-    silentAudioShowing: Boolean,
+    bandClaimed: Boolean,
     panelOpen: Boolean,
     alreadyShown: Boolean,
 ): OrientationHintPhase = when {
     alreadyShown -> OrientationHintPhase.Spent
     hint == null -> OrientationHintPhase.Waiting
     panelOpen -> OrientationHintPhase.Spent
-    !filmVisible || qualityShowing || silentAudioShowing -> OrientationHintPhase.Waiting
+    !filmVisible || qualityShowing || bandClaimed -> OrientationHintPhase.Waiting
     else -> OrientationHintPhase.Showing
 }

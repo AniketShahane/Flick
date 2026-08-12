@@ -15,6 +15,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.Density
+import com.flick.receiver.net.PairNetworkFace
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.PlaybackPhase
@@ -23,7 +24,7 @@ import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.PairScreen
 import com.flick.receiver.ui.screens.PlaybackScreen
 import com.flick.receiver.ui.screens.QualityInfo
-import com.flick.receiver.session.ErrorKind
+import com.flick.receiver.session.ReceiverErrorFace
 import com.flick.receiver.ui.theme.FlickTvTheme
 import org.junit.Rule
 import org.junit.Test
@@ -122,7 +123,7 @@ class TvSafeAreaContainmentTest {
                     qrPayload = "flick://192.0.2.2:47654",
                     host = "192.0.2.2",
                     port = 47654,
-                    networkReady = true,
+                    networkFace = PairNetworkFace.READY,
                     bindUptimeSec = 42L,
                     onRename = {},
                     onOpenSettings = {},
@@ -144,7 +145,7 @@ class TvSafeAreaContainmentTest {
                     qrPayload = "flick://192.0.2.2:47654",
                     host = "192.0.2.2",
                     port = 47654,
-                    networkReady = true,
+                    networkFace = PairNetworkFace.READY,
                     onRename = {},
                     onOpenSettings = {},
                     codeExpiresAtElapsedMs = null,
@@ -164,7 +165,7 @@ class TvSafeAreaContainmentTest {
                     qrPayload = null,
                     host = "",
                     port = -1,
-                    networkReady = false,
+                    networkFace = PairNetworkFace.NO_ADDRESS,
                     onRename = {},
                     onOpenSettings = {},
                 )
@@ -185,7 +186,7 @@ class TvSafeAreaContainmentTest {
                         qrPayload = "flick://192.0.2.2:47654",
                         host = "192.0.2.2",
                         port = 47654,
-                        networkReady = true,
+                        networkFace = PairNetworkFace.READY,
                         onRename = {},
                         onOpenSettings = {},
                     )
@@ -214,33 +215,91 @@ class TvSafeAreaContainmentTest {
         assertInsideSafeArea("IdleScreen")
     }
 
-    @Test
-    fun error_unreachable_fits_the_safe_area() {
+    /**
+     * One per face, because they differ in height: the bodies run from one sentence to
+     * three, and the card is an unscrolled Column inside a fixed viewport — the shape
+     * this whole file exists to catch. A composed rule can only take content once, so
+     * these cannot be a loop.
+     */
+    private fun assertErrorFaceFits(face: ReceiverErrorFace, beforeReady: Boolean = true) {
         composeRule.setContent {
             FlickTvTheme {
                 ErrorScreen(
-                    kind = ErrorKind.Unreachable,
+                    face = face,
                     deviceLabel = "Pixel 9 Pro",
                     onDismiss = {},
+                    beforeReady = beforeReady,
                 )
             }
         }
-        assertInsideSafeArea("ErrorScreen · unreachable")
+        assertInsideSafeArea("ErrorScreen · $face · beforeReady=$beforeReady")
     }
 
-    @Test
-    fun error_not_serving_fits_the_safe_area() {
-        composeRule.setContent {
-            FlickTvTheme {
-                ErrorScreen(
-                    kind = ErrorKind.NotServing,
-                    deviceLabel = "Pixel 9 Pro",
-                    onDismiss = {},
-                )
-            }
-        }
-        assertInsideSafeArea("ErrorScreen · not serving")
-    }
+    @Test fun error_video_codec_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.VIDEO_CODEC_UNSUPPORTED)
+
+    @Test fun error_video_format_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.VIDEO_FORMAT_UNSUPPORTED)
+
+    @Test fun error_hdr_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.HDR_PROFILE_UNSUPPORTED)
+
+    @Test fun error_container_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.CONTAINER_UNSUPPORTED)
+
+    @Test fun error_malformed_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.MEDIA_MALFORMED)
+
+    @Test fun error_decoder_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.DECODER_UNAVAILABLE)
+
+    @Test fun error_decoder_taken_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.DECODER_TAKEN)
+
+    @Test fun error_decoder_taken_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.DECODER_TAKEN, beforeReady = false)
+
+    @Test fun error_audio_output_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.AUDIO_OUTPUT_REFUSED)
+
+    @Test fun error_audio_output_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.AUDIO_OUTPUT_REFUSED, beforeReady = false)
+
+    @Test fun error_startup_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.STARTUP_TIMEOUT)
+
+    @Test fun error_refused_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.SENDER_REFUSED)
+
+    @Test fun error_not_serving_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.SENDER_NOT_SERVING)
+
+    @Test fun error_not_serving_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.SENDER_NOT_SERVING, beforeReady = false)
+
+    @Test fun error_unreachable_before_start_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.PHONE_UNREACHABLE, beforeReady = true)
+
+    @Test fun error_unreachable_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.PHONE_UNREACHABLE, beforeReady = false)
+
+    @Test fun error_link_lost_before_start_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.LINK_LOST, beforeReady = true)
+
+    @Test fun error_link_lost_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.LINK_LOST, beforeReady = false)
+
+    @Test fun error_tv_network_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.TV_NETWORK_CHANGED)
+
+    @Test fun error_tv_network_mid_film_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.TV_NETWORK_CHANGED, beforeReady = false)
+
+    @Test fun error_picture_stopped_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.PICTURE_STOPPED, beforeReady = false)
+
+    @Test fun error_stopped_fits_the_safe_area() =
+        assertErrorFaceFits(ReceiverErrorFace.PLAYBACK_STOPPED)
 
     @Test
     fun playback_chrome_fits_the_safe_area() {

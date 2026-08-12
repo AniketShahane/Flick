@@ -5,6 +5,9 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.flick.receiver.util.FlickLog
 
 /**
@@ -33,6 +36,19 @@ class NsdAdvertiser(context: Context) {
     private var generation = 0L
     private var retry: Runnable? = null
 
+    /**
+     * Whether this TV is still announcing itself, or has spent the retry ladder and
+     * given up for good.
+     *
+     * Compose state because the pair screen has to stop claiming otherwise: it kept a
+     * pulsing live dot and "Listening" over a service registration that had failed three
+     * times and would never be attempted again. It degrades ONE route — the QR and the
+     * manual-entry card on the same screen still work — so the screen may say so
+     * without saying the TV is offline.
+     */
+    var advertising by mutableStateOf(true)
+        private set
+
     fun register(
         serviceName: String,
         port: Int,
@@ -42,6 +58,7 @@ class NsdAdvertiser(context: Context) {
     ) {
         unregister()
         FlickLog.i("nsd", "register name=$serviceName port=$port state=$state v=$PROTOCOL_VERSION")
+        advertising = true
         request = Request(serviceName, port, model, state, tvId)
         startRegistration(request!!, generation)
     }
@@ -82,7 +99,15 @@ class NsdAdvertiser(context: Context) {
     }
 
     private fun retry(expectedGeneration: Long) {
-        if (generation != expectedGeneration || request == null || attempt >= MAX_RETRIES) return
+        if (generation != expectedGeneration || request == null) return
+        if (attempt >= MAX_RETRIES) {
+            // The ladder is spent and nothing re-arms it short of a rebind, so this is
+            // permanent for this binding — and the screen may not go on claiming
+            // discovery works.
+            advertising = false
+            FlickLog.w("nsd", "gave up attempts=$attempt port=${request?.port ?: -1}")
+            return
+        }
         val delay = RETRY_DELAYS_MS[attempt++]
         retry?.let(handler::removeCallbacks)
         retry = Runnable { if (generation == expectedGeneration) request?.let { startRegistration(it, expectedGeneration) } }

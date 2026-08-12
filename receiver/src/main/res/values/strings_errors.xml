@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TV-side terminal copy. Kept in its own file because res/values merges every file in the
+  directory, so this cannot collide with edits to strings.xml.
+
+  Two rules the whole file holds. It never blames the phone for something the phone did
+  not do — that mistake is why these faces exist. And it never offers a retry: the sender
+  owns the fresh castId and media token, so a second key here would be an offer this TV
+  cannot honour.
+-->
+<resources>
+    <string name="error_video_codec_title">This TV can\'t decode this video</string>
+    <string name="error_video_codec_detail">This TV has no hardware decoder for this film\'s video track, so it was never started. Your phone and your Wi-Fi are both fine — an H.264 or HEVC copy plays here.</string>
+
+    <!-- Separate from the codec face on purpose: this arm also carries "the decoder took
+         the format and it exceeds what this panel's decoder can handle", and calling that
+         a missing codec would be a hair wider than the proof. -->
+    <string name="error_video_format_title">This TV can\'t take this video track</string>
+    <string name="error_video_format_detail">The film reached this TV and its decoder wouldn\'t accept this video track — it may simply be larger than this TV can handle. Nothing is wrong with your phone or your Wi-Fi.</string>
+
+    <string name="error_hdr_title">This TV can\'t play Dolby Vision</string>
+    <string name="error_hdr_detail">The video track is Dolby Vision and this TV can\'t decode that profile. An HDR10 or SDR copy of the same film plays here.</string>
+
+    <string name="error_container_title">This TV can\'t open this file</string>
+    <string name="error_container_detail">This TV couldn\'t read the container the film is wrapped in, so it never reached a decoder. The film itself may be fine — an MP4 copy usually plays.</string>
+
+    <!-- "Probably" is doing real work: a damaged file and a decoder bug on valid samples
+         are indistinguishable from here. -->
+    <string name="error_malformed_title">This film\'s data wouldn\'t decode</string>
+    <string name="error_malformed_detail">The bytes arrived and this TV couldn\'t make sense of them partway through. This copy of the film is probably incomplete or damaged.</string>
+
+    <!-- "Even after trying a second one" is provable: setEnableDecoderFallback(true) is on
+         over a hardware-only candidate list, so media3 already walked to the next one. -->
+    <string name="error_decoder_title">This TV couldn\'t start a decoder</string>
+    <string name="error_decoder_detail">This TV wouldn\'t open a decoder for this film, even after trying a second one. Nothing is wrong with your phone or the file.</string>
+
+    <!-- Two forms because the reclaim is phase-blind: ERROR_CODE_DECODING_RESOURCES_RECLAIMED
+         also fires at codec init on a TV whose decoder another app already holds, and
+         "while the film was playing" would then be about a film that never started. -->
+    <string name="error_decoder_taken_title">Another app took this TV\'s decoder</string>
+    <string name="error_decoder_taken_detail">Something else on this TV claimed the video decoder while the film was playing. Close it, then start the film again from your phone.</string>
+    <string name="error_decoder_taken_detail_beforestart">Something else on this TV claimed the video decoder before the film could start. Close it, then start the film again from your phone.</string>
+
+    <!-- The route is deliberately NOT named: the platform advertises AC-3 from the HDMI
+         EDID rather than from the live route, so nothing here can prove it is Bluetooth.
+         "Sent as it is or decoded here first" is a literal statement of the two attempts.
+         Two forms because the rebuild is latched for the process: the second refusal can
+         land inside the startup window of a LATER film, before any frame, where "the
+         picture was fine" is a claim about a picture that was never painted. -->
+    <string name="error_audio_output_title">This TV\'s sound output refused the film</string>
+    <string name="error_audio_output_detail">The picture was fine — this TV\'s sound output wouldn\'t take this film\'s audio, sent as it is or decoded here first. Check where this TV is sending sound, then start the film again from your phone.</string>
+    <string name="error_audio_output_detail_beforestart">This TV\'s sound output wouldn\'t take this film\'s audio, sent as it is or decoded here first, so the film was never started. Check where this TV is sending sound, then start the film again from your phone.</string>
+
+    <!-- The pre-flight probe returned Ok before the player was ever started, so "the first
+         bytes arrived" is measured and the shipped "stopped sending" is refuted by it. -->
+    <string name="error_startup_title">This TV didn\'t reach the first frame</string>
+    <string name="error_startup_detail">The film was accepted and the first bytes arrived, but no picture reached this screen in time. Your phone can start it again.</string>
+
+    <!-- "Address", never "link": every other face on these screens spends that word on the
+         connection ("Link dropped"), and the thing that expired here is the media URL. -->
+    <string name="error_refused_title">Your phone wouldn\'t hand over the file</string>
+    <string name="error_refused_detail">%1$s answered this TV and turned the request for the film down. The address it was given for the film may simply have expired — start it again from your phone.</string>
+
+    <!-- Before the first frame the phone is provably present: this is raised while the
+         control socket is up, so "Lost sight of your phone" would contradict the very
+         line under it. The probe's evidence is only "TCP to the file server did not
+         complete", and a sleeping phone and a router separating peers are identical from
+         here — so both are named, and neither the title nor the action claims a session
+         to end over a link that is answering. -->
+    <string name="error_unreachable_title_beforestart">Your phone\'s file server didn\'t answer</string>
+    <string name="error_unreachable_detail_beforestart">%1$s is talking to this TV, but its file server didn\'t answer at all. Either it just dropped off the Wi-Fi, or your router is keeping the two apart.</string>
+
+    <!-- The before-the-first-frame form of T9a. A pre-flight refusal and a startup read
+         that never delivered both reach this face with nothing served yet, and the
+         shipped "the film stopped arriving" is about a film that started. -->
+    <string name="error_not_serving_detail_beforestart">%1$s is talking to this TV, but its file server never handed the film over. Start it again from your phone.</string>
+
+    <string name="error_link_lost_title">Your phone stopped talking to this TV</string>
+    <string name="error_link_lost_detail">The connection to %1$s dropped, so this TV stopped the film. It may have gone to sleep, or your router may be keeping the two apart — start it again from your phone.</string>
+    <string name="error_link_lost_detail_beforestart">The connection to %1$s dropped before the film started. It may have gone to sleep, or your router may be keeping the two apart.</string>
+
+    <!-- The reconcile computes beforeReady at the teardown and carries it here, so the
+         address going away mid-handshake may not be reported as a film that stopped. -->
+    <string name="error_tv_network_title">This TV\'s network address changed</string>
+    <string name="error_tv_network_detail">The film stopped because the address this TV was reachable on went away. Give it a moment to settle, then cast again from %1$s.</string>
+    <string name="error_tv_network_detail_beforestart">The cast couldn\'t start because the address this TV was reachable on went away. Give it a moment to settle, then cast again from %1$s.</string>
+
+    <!-- Claims only what stopped, never why: a wedged codec and a lost surface look
+         identical from in here, as TurnWatchdog's doc already concedes. It may not claim
+         the sound or the clock either — the watchdog reaches the same verdict with the
+         clock frozen, and a film already playing silent has been told so by the
+         silent-audio notice minutes earlier. -->
+    <string name="error_picture_stopped_title">The picture stopped on this TV</string>
+    <string name="error_picture_stopped_detail">No new picture reached this screen while the film was still playing. This TV already tried to restart the video on its own — start the film again from your phone.</string>
+
+    <!-- "May both be fine" rather than "are fine": several codes in this bucket are
+         HTTP-shaped and could indict the sender, so asserting the phone is healthy would
+         be the same overreach in the opposite direction. -->
+    <string name="error_stopped_title">This TV couldn\'t play this film</string>
+    <string name="error_stopped_detail">The film stopped and this TV didn\'t get a reason it can explain. Your phone and your Wi-Fi may both be fine.</string>
+</resources>

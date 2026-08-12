@@ -179,7 +179,8 @@ class SessionReloadTest {
 
         val failure = failures.single()
         assertNotEquals(CastFailureCode.STARTUP_TIMEOUT, failure.code)
-        assertEquals(CastFailureCode.SENDER_NOT_SERVING, failure.code)
+        // 2000 is deliberately undiagnosed — see PlaybackFailureClassifier.classify.
+        assertEquals(CastFailureCode.UNKNOWN, failure.code)
         // beforeReady=false is what the wire turns into `error` rather than
         // `loadFailed`: this cast demonstrably started.
         assertFalse(failure.beforeReady)
@@ -274,6 +275,64 @@ class SessionReloadTest {
 
         assertEquals(emptyList<Int>(), player.rotations)
         assertEquals(0, player.autoRotations)
+    }
+
+    // --- What a fatal error is allowed to become -----------------------------
+
+    /**
+     * The stage was never the gate. A fatal error raised while the cast was still
+     * Preparing used to be discarded outright, and the cast then expired as
+     * `startup_timeout` eighteen seconds later under a screen still saying the film was
+     * starting. The generation gate is what answers "is this callback still mine".
+     */
+    @Test fun aFatalErrorBeforeTheFirstFrameIsDiagnosedRatherThanWaitedOut() = runTest {
+        val player = RecordingPlayer()
+        val session = SessionController(player, backgroundScope, { true }, { ProbeResult.Ok(PROBE_MS) })
+        val failures = session.recordTerminals()
+
+        session.onLoadMedia(LEASE, CAST, URL, TITLE, DURATION_MS, 0L, null)
+        runCurrent()
+        player.failPlayback(
+            PlaybackException("decoder", null, PlaybackException.ERROR_CODE_DECODER_INIT_FAILED),
+        )
+
+        val failure = failures.single()
+        assertEquals(CastFailureCode.DECODER_INIT, failure.code)
+        assertTrue(failure.beforeReady)
+        assertTrue(session.stage is MediaStage.Error)
+    }
+
+    /** The detail is the screen's; the wire carries the code it always carried. */
+    @Test fun theLocalDetailReachesTheScreenWithoutReachingTheWire() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val failures = session.recordTerminals()
+
+        player.failPlayback(
+            PlaybackException("audio", null, PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED),
+            ReceiverFaultDetail.AudioOutputRefused,
+        )
+
+        assertEquals(
+            ReceiverErrorFace.AUDIO_OUTPUT_REFUSED,
+            (session.stage as MediaStage.Error).face,
+        )
+        assertEquals(CastFailureCode.DECODER_INIT, failures.single().code)
+    }
+
+    /** A cast that ended still refuses a stale callback filed against it. */
+    @Test fun anErrorForACastThisSessionNoLongerOwnsIsStillDropped() = runTest {
+        val player = RecordingPlayer()
+        val session = activeSession(player)
+        val failures = session.recordTerminals()
+        session.backToStandby()
+
+        player.failPlayback(
+            PlaybackException("io", null, PlaybackException.ERROR_CODE_IO_UNSPECIFIED),
+        )
+
+        assertEquals(emptyList<ControlCastResult.Failed>(), failures)
+        assertEquals(MediaStage.None, session.stage)
     }
 
     // --- The film that plays silent ------------------------------------------
@@ -418,13 +477,13 @@ internal class RecordingPlayer : SessionPlayer {
     val audioDelays = mutableListOf<Int>()
 
     private var firstFrame: (() -> Unit)? = null
-    private var startupError: ((PlaybackException) -> Unit)? = null
+    private var startupError: ((PlaybackException, ReceiverFaultDetail) -> Unit)? = null
     private var rotationRePrepare: (() -> Unit)? = null
-    private var playbackFailure: ((PlaybackException) -> Unit)? = null
+    private var playbackFailure: ((PlaybackException, ReceiverFaultDetail) -> Unit)? = null
     private var subtitleDropped: ((String, ExternalSubtitle) -> Unit)? = null
     private var silentAudio: ((String, String) -> Unit)? = null
 
-    override fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
+    override fun setPlaybackFailureListener(listener: ((PlaybackException, ReceiverFaultDetail) -> Unit)?) {
         playbackFailure = listener
     }
 
@@ -446,7 +505,7 @@ internal class RecordingPlayer : SessionPlayer {
         mediaId: String,
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
-        onError: (PlaybackException) -> Unit,
+        onError: (PlaybackException, ReceiverFaultDetail) -> Unit,
         onRotationRePrepare: () -> Unit,
     ) {
         instance++
@@ -521,8 +580,19 @@ internal class RecordingPlayer : SessionPlayer {
         rotationRePrepare?.invoke()
     }
 
-    fun failPlayback(error: PlaybackException) {
-        playbackFailure?.invoke(error)
+    fun failPlayback(
+        error: PlaybackException,
+        detail: ReceiverFaultDetail = ReceiverFaultDetail.None,
+    ) {
+        playbackFailure?.invoke(error, detail)
+    }
+
+    /** The startup transaction's own error arm, which never reaches [failPlayback]. */
+    fun failStartup(
+        error: PlaybackException,
+        detail: ReceiverFaultDetail = ReceiverFaultDetail.None,
+    ) {
+        startupError?.invoke(error, detail)
     }
 
     fun reportSubtitleDropped(mediaId: String, subtitle: ExternalSubtitle) {

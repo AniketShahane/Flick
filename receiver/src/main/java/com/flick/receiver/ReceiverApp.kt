@@ -83,8 +83,12 @@ import com.flick.receiver.net.LanBindingMonitor
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.net.PairingManager
 import com.flick.receiver.net.PairingSurface
+import com.flick.receiver.net.pairNetworkFace
 import com.flick.receiver.net.ReceiverBindingGate
 import com.flick.receiver.net.controlPortTier
+import com.flick.receiver.player.BAND_NOTICE_MS
+import com.flick.receiver.player.BandNotice
+import com.flick.receiver.player.BandNoticePhase
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.HdrType
 import com.flick.receiver.player.ORIENTATION_HINT_MS
@@ -100,7 +104,10 @@ import com.flick.receiver.player.SubtitleTrackInfo
 import com.flick.receiver.player.SurfaceTurn
 import com.flick.receiver.player.ThroughputHistory
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.player.TurnNote
+import com.flick.receiver.player.bandNoticePhase
 import com.flick.receiver.player.orientationHintPhase
+import com.flick.receiver.player.pendingBandNotice
 import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.player.silentAudioNoticePhase
 import com.flick.receiver.player.surfaceTurnTransform
@@ -327,6 +334,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val portStore = remember { ControlPortStore(context) }
     var boundHost by remember { mutableStateOf<String?>(null) }
     var boundPort by remember { mutableStateOf(-1) }
+    // The address the reconcile last RESOLVED, which is not the address it managed to
+    // bind — see [pairNetworkFace].
+    var lanHost by remember { mutableStateOf<String?>(null) }
+    var anyIpv4 by remember { mutableStateOf(false) }
     // Bind health, surfaced low-emphasis on the pair screen so a stale port is
     // visually distinguishable from a wrong code.
     var bindAtMs by remember { mutableStateOf(0L) }
@@ -339,6 +350,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // Pair-screen rename temporarily closes the authorization surface so neither
     // its live code nor a confirmation can be hidden under the keyboard dialog.
     var reopenPairingAfterRename by remember { mutableStateOf(false) }
+    // The last Resume press this TV could not write. Cleared when the seal actually
+    // lifts, so the notice never outlives the state it describes.
+    var resumeFailed by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
     // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
     // adds a timer of its own.
@@ -381,6 +395,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     var orientationHintShown by remember { mutableStateOf(false) }
     /** Whether this cast has already had its one silent-audio notice. */
     var silentAudioNoticeShown by remember { mutableStateOf(false) }
+    /** The band's event notices this cast has already given; each is spent once. */
+    var bandNoticesShown by remember { mutableStateOf(emptySet<BandNotice>()) }
     var chromeVisible by remember { mutableStateOf(true) }
     var openPanel by remember { mutableStateOf(PlaybackPanel.None) }
     // The scrub bar's focus is what promotes physical left/right from a focus move
@@ -485,7 +501,22 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             suspend fun release(trigger: String, previous: String?) {
                 FlickLog.i("bind", "teardown trigger=$trigger prev=${previous ?: "none"}")
                 lastTeardown = trigger
-                session.forceLocalTeardown()
+                // The phone is told, and told BEFORE the socket that would carry it is
+                // stopped — unlike the ON_STOP path above, this teardown used to discard
+                // its own result and leave the phone waiting on a cast nothing would ever
+                // resolve. `no_compatible_lan` is already in the sender's inbound
+                // allow-list, so no un-updated phone rejects the frame; it reads it as
+                // this TV losing its address rather than as the phone having none.
+                val teardown = session.forceLocalTeardown()
+                teardown.castId?.let {
+                    server.sendTerminal(
+                        it,
+                        com.flick.receiver.net.CastFailureCode.NO_COMPATIBLE_LAN,
+                        false,
+                        beforeReady = teardown.beforeReady,
+                    )
+                    session.raiseNetworkChanged(it, teardown.beforeReady)
+                }
                 server.stop()
                 nsd.unregister()
                 boundHost = null
@@ -495,9 +526,20 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 if (!bindingGate.mayBindOrAdvertise()) return
                 val host = LanAddress.current()
                 if (host == null) {
+                    // Sampled only here, and only because the answer decides which of
+                    // two contradictory things the pair screen says: a TV with a
+                    // non-site-local address is online and has already taken the advice
+                    // the waiting-for-Wi-Fi card gives.
+                    lanHost = null
+                    anyIpv4 = LanAddress.hasAnyIpv4()
                     if (boundHost != null) release("no_lan_address", boundHost)
                     return
                 }
+                // Recorded BEFORE the bind, and separately from [boundHost]: a bind that
+                // fails leaves boundHost null, and folding the two together is what told
+                // a TV holding a perfectly good address to connect to its home network.
+                lanHost = host
+                anyIpv4 = true
                 if (host == boundHost) return
                 // A new address is a control-loss boundary even when the old
                 // address still exists: invalidate the cast before advertising a
@@ -593,6 +635,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // as well as by the player because the player's own latch is dropped by
         // every RELOAD too, and a subtitle attached mid-watch is the same film.
         silentAudioNoticeShown = false
+        // Each event notice is once per cast too, and they are spent independently:
+        // a film can lose its subtitle and refuse a turn, and both are worth saying.
+        bandNoticesShown = emptySet()
     }
 
     // The silent-audio notice. Same split as the hint below: the reading is the
@@ -652,6 +697,49 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
     val silentAudioHoldsBand = silentAudioShowing || silentAudioBandClaim
 
+    // The band's event slot — see [BandNotice]. It sits between the silent-audio
+    // reading and the orientation hint on the queue's own rule: it reports things a
+    // viewer can do nothing about, so it goes ahead of the one card that points at a
+    // control, and behind the one card nothing anywhere can undo.
+    val bandNotice = pendingBandNotice(
+        audioRestarting = controller.audioRestarted,
+        subtitleDropped = controller.subtitleDropped,
+        turnUnavailable = controller.turnNote == TurnNote.NotOnThisTv,
+        alreadyShown = bandNoticesShown,
+    )
+    val bandSlotPhase = bandNoticePhase(
+        notice = bandNotice,
+        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        qualityShowing = showQuality,
+        bandClaimed = silentAudioHoldsBand,
+        panelOpen = openPanel != PlaybackPanel.None,
+    )
+    LaunchedEffect(bandSlotPhase, bandNotice) {
+        val shown = bandNotice ?: return@LaunchedEffect
+        when (bandSlotPhase) {
+            BandNoticePhase.Waiting -> Unit
+            BandNoticePhase.Spent -> bandNoticesShown = bandNoticesShown + shown
+            BandNoticePhase.Showing -> {
+                delay(BAND_NOTICE_MS)
+                bandNoticesShown = bandNoticesShown + shown
+            }
+        }
+    }
+
+    // The same claim the silent-audio card holds, for the same reason and for exactly
+    // the same span; the hint waits on both.
+    val bandNoticeShowing = bandSlotPhase == BandNoticePhase.Showing
+    var bandNoticeClaim by remember { mutableStateOf(false) }
+    LaunchedEffect(bandNoticeShowing, bandHandoverMs) {
+        if (bandNoticeShowing) {
+            bandNoticeClaim = true
+        } else if (bandNoticeClaim) {
+            delay(bandHandoverMs)
+            bandNoticeClaim = false
+        }
+    }
+    val bandNoticeHoldsBand = bandNoticeShowing || bandNoticeClaim
+
     // The picture-orientation hint. The reading is the controller's — it is the
     // only thing that knows what the decoder was configured with — and the phase
     // below is the whole of when it may be seen; the screen renders it and
@@ -662,10 +750,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // and the clock may not run behind the connecting screen.
         filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
         qualityShowing = showQuality,
-        // The band's occupancy, not the notice's phase: a card that is still fading
-        // out is still on the glass, and this is the only surface where the two
+        // The band's occupancy, not any card's phase: a card that is still fading
+        // out is still on the glass, and this is the only surface where all three
         // cards land on exactly the same coordinates.
-        silentAudioShowing = silentAudioHoldsBand,
+        bandClaimed = silentAudioHoldsBand || bandNoticeHoldsBand,
         panelOpen = openPanel != PlaybackPanel.None,
         alreadyShown = orientationHintShown,
     )
@@ -690,6 +778,16 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     LaunchedEffect(stage, chromeVisible) {
         if (rootFocusCatcherEnabled(stage, chromeVisible)) {
             runCatching { rootFocus.requestFocus() }
+        }
+    }
+
+    // A rename asked of a standby screen does not survive a cast arriving over it:
+    // the dialog is dropped from composition above, and the request goes with it
+    // rather than lying in wait to reopen a code when the film ends.
+    LaunchedEffect(stage) {
+        if (stage !is MediaStage.None) {
+            renameTarget = null
+            reopenPairingAfterRename = false
         }
     }
 
@@ -808,6 +906,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
+
+    // Every %1$s on the connecting, playback, buffering and error surfaces is about the
+    // phone driving THIS session, and the label above answers a different question —
+    // which phone was PAIRED last. With two phones paired it names the wrong one, and
+    // those surfaces put that name inside sentences that accuse. The control lease knows
+    // which paired record authenticated the socket; the stored label is the fallback for
+    // a TV nothing has connected to since it started.
+    val controlPeerLabel by server.controlPeerLabel.collectAsState()
+    val castDeviceLabel = controlPeerLabel ?: deviceLabel
 
     // The code the surface is actually offering, and the QR built from it.
     //
@@ -968,7 +1075,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         seeking = session.seeking,
                         volume = frame.volume,
                         title = session.title,
-                        deviceLabel = deviceLabel,
+                        deviceLabel = castDeviceLabel,
                         hdr = snapshot.hdrType,
                         chromeVisible = chromeVisible,
                         quality = if (showQuality) qualityInfo(snapshot) else null,
@@ -999,6 +1106,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             .takeIf { hintPhase == OrientationHintPhase.Showing },
                         silentAudioMimeType = controller.silentAudioMimeType
                             .takeIf { silentAudioPhase == SilentAudioNoticePhase.Showing },
+                        bandNotice = bandNotice.takeIf { bandNoticeShowing },
                         openPanel = openPanel,
                         onOpenPanel = { openPanel = it },
                         onScrubFocusChanged = { scrubFocused = it },
@@ -1034,7 +1142,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
                 is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) {
                     ConnectingScreen(
-                        deviceLabel = deviceLabel,
+                        deviceLabel = castDeviceLabel,
                         title = session.title,
                     ) { playerSurface() }
                 }
@@ -1042,9 +1150,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 // The screen offers no retry: a failed v2 cast must get a fresh
                 // cast ID and media token, and only the sender can mint those.
                 is MediaStage.Error -> ErrorScreen(
-                    kind = stage.kind,
-                    deviceLabel = deviceLabel,
+                    face = stage.face,
+                    deviceLabel = castDeviceLabel,
                     onDismiss = { session.backToStandby() },
+                    beforeReady = stage.beforeReady,
                 )
 
                 MediaStage.None -> {
@@ -1170,7 +1279,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     qrPayload = rendered.qrPayload,
                                     host = boundHost ?: "",
                                     port = boundPort,
-                                    networkReady = boundHost != null && boundPort > 0,
+                                    networkFace = pairNetworkFace(
+                                        hasSiteLocalIpv4 = lanHost != null,
+                                        hasAnyIpv4 = anyIpv4,
+                                        boundPort = boundPort,
+                                    ),
+                                    discoverable = nsd.advertising,
                                     bindUptimeSec = bindUptimeSec,
                                     rebindCount = rebindCount,
                                     lastTeardown = lastTeardown,
@@ -1183,7 +1297,16 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // The physical-presence half of the ceiling.
                                     // Nothing reachable over the LAN can call this;
                                     // it takes a button press in the room.
-                                    onResumePairing = { pairing.resumePairing() },
+                                    // The Boolean was discarded, which left the one key
+                                    // a sealed surface offers inert forever while the
+                                    // seal promised pairing would reopen here. False is
+                                    // always the refused durable write: `!surfaceSealed`
+                                    // is unreachable from a key only a seal draws.
+                                    onResumePairing = { resumeFailed = !pairing.resumePairing() },
+                                    resumeFailed = resumeFailed,
+                                    saveFailedLabel = pairingSnapshot.saveFailedLabel,
+                                    lockedRetryAtElapsedMs =
+                                        (pairingSnapshot.surface as? PairingSurface.Locked)?.retryAtElapsedMs,
                                     // Snapshotted, so the card finishes its exit
                                     // still naming the phone it was asking about.
                                     confirmDeviceLabel = rendered.confirming?.deviceLabel,
@@ -1252,7 +1375,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 }
             }
 
-            renameTarget?.let { target ->
+            // Gated on the stage, and composed outside the router only because it may
+            // cover any standby surface. A cast arriving under it used to leave a
+            // focus-trapping modal over the playing film holding the whole D-pad, so
+            // the remote could not reach the transport at all.
+            renameTarget?.takeIf { stage is MediaStage.None }?.let { target ->
                 RenameLabelDialog(
                     title = stringResource(
                         when (target) {
@@ -1290,9 +1417,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     },
                     onDismiss = {
                         renameTarget = null
+                        // The stage is part of the guard, not only the surface. With a
+                        // cast on screen the router draws no pair surface at all, so a
+                        // code opened here would be live, rotating and accepting
+                        // attempts with nothing rendering it — the one state
+                        // `closeSurface` and `pairingSurfaceRendered` exist to make
+                        // impossible.
                         if (reopenPairingAfterRename) {
                             reopenPairingAfterRename = false
-                            if (pairing.snapshot.value.surface is PairingSurface.Standby) {
+                            if (session.stage is MediaStage.None &&
+                                pairing.snapshot.value.surface is PairingSurface.Standby
+                            ) {
                                 pairing.requestOpen()
                             }
                         }
@@ -1303,6 +1438,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     LaunchedEffect(pairingSnapshot.surface) {
+        if (pairingSnapshot.surface !is PairingSurface.Sealed) resumeFailed = false
         if (pairingSnapshot.surface is PairingSurface.Success) { delay(1_500); pairing.finishSuccess() }
     }
 }

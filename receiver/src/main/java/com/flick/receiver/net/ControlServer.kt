@@ -29,6 +29,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -137,6 +140,22 @@ class ControlServer(
     val boundHost: String? get() = binding?.host
     val boundPort: Int get() = binding?.port ?: -1
 
+    private val leaseholder = MutableStateFlow<String?>(null)
+
+    /**
+     * The paired phone that most recently held the control lease.
+     *
+     * Every screen that names a phone is naming the one driving THIS session, and the
+     * only other answer available was "the phone paired most recently" — which, with two
+     * phones paired, put the wrong name inside sentences that accuse ("%s answered this
+     * TV and turned the request down"). The record that authenticated the socket is the
+     * one fact that cannot be wrong about it.
+     *
+     * Deliberately NOT cleared when the socket closes: the sentences that need it most
+     * are drawn after the link is gone.
+     */
+    val controlPeerLabel: StateFlow<String?> = leaseholder.asStateFlow()
+
     /**
      * Walks [ports] in order and returns the port that actually bound, or -1.
      * The caller persists and advertises the RETURNED port, never the requested one.
@@ -190,29 +209,29 @@ class ControlServer(
 
     /** Non-suspending teardown for onDispose; revokes the lease now, stops the engine off-thread. */
     fun stopDetached() {
-        revokeActive("closed")
+        revokeActive(ControlLossReason.CLOSED)
         lifecycleScope.launch { stop() }
     }
 
     private suspend fun stopLocked() {
-        revokeActive("closed")
+        revokeActive(ControlLossReason.CLOSED)
         val prior = binding ?: return
         binding = null
         withContext(NonCancellable + Dispatchers.IO) { runCatching { prior.engine.stopSuspend(300, 800) } }
         FlickLog.i("bind", "stopped host=${prior.host} port=${prior.port}")
     }
 
-    private fun revokeActive(closeReason: String) {
+    private fun revokeActive(reason: ControlLossReason) {
         val lost = synchronized(serverLock) {
             val prior = active
             active = null
             generation = counter.incrementAndGet()
-            ownership.invalidate()?.also { notifyControlLost(it) }
+            ownership.invalidate()?.also { notifyControlLost(it, reason) }
             prior
         }
         lost?.let { connection ->
             connection.session.launch {
-                runCatching { connection.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, closeReason)) }
+                runCatching { connection.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, reason.wire)) }
             }
         }
     }
@@ -229,16 +248,16 @@ class ControlServer(
      * an unconditional clear would still drop that replacement. Comparing the same
      * object under the lock revokes what was inspected, or nothing.
      */
-    private fun revokeActiveConnection(target: Connection, closeReason: String) {
+    private fun revokeActiveConnection(target: Connection, reason: ControlLossReason) {
         val lost = synchronized(serverLock) {
             if (active !== target) return
             active = null
             generation = counter.incrementAndGet()
-            ownership.invalidate()?.also { notifyControlLost(it) }
+            ownership.invalidate()?.also { notifyControlLost(it, reason) }
             target
         }
         lost.session.launch {
-            runCatching { lost.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, closeReason)) }
+            runCatching { lost.session.close(CloseReason(CloseReason.Codes.GOING_AWAY, reason.wire)) }
         }
     }
 
@@ -279,7 +298,7 @@ class ControlServer(
         val connection = active
         val castId = connection?.let { ownership.currentCast(it.token, it.generation) }
         if (connection != null && castId != null) stopCast(connection, castId)
-        revokeActive("revoked")
+        revokeActive(ControlLossReason.REVOKED)
         val cleared = pairing.forgetAllPairings()
         if (cleared) {
             // The revoke above ends the cast through the player while there is
@@ -289,7 +308,7 @@ class ControlServer(
             // before it can otherwise finish its proof and take the lease during
             // the write — after which nothing would look at it again.
             invalidateResumes(null)
-            revokeActive("revoked")
+            revokeActive(ControlLossReason.REVOKED)
         }
         return cleared
     }
@@ -357,7 +376,7 @@ class ControlServer(
         // phone that is merely connected has no cast and needs none of this — the
         // revoke alone is the whole job.
         if (castId != null) stopCast(connection, castId)
-        revokeActiveConnection(connection, "forgotten")
+        revokeActiveConnection(connection, ControlLossReason.FORGOTTEN)
         FlickLog.i("pair", "forget revoked session keyIdFp=${FlickLog.fp(keyId)} hadCast=${castId != null}")
         return true
     }
@@ -479,11 +498,14 @@ class ControlServer(
                 }
                 LeaseAdmission.INSTALL -> Unit
             }
+            // Published as soon as the lease is this connection's, so a screen raised by
+            // the very first command on it already names the phone that sent it.
+            leaseholder.value = auth.record.label
             if (auth.resumed) emit(resumed(auth, host, port))
             // The new lease is visible before the old idle socket is closed. Its finally
             // cannot release or poison this lease because every release checks token+gen.
             (displaced as? DefaultWebSocketServerSession)?.launch {
-                runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "superseded")) }
+                runCatching { close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, ControlLossReason.SUPERSEDED.wire)) }
             }
 
             stateFeed(connection)
@@ -534,7 +556,10 @@ class ControlServer(
                     }
                 }
                 FlickLog.i("ws", "close gen=${connection.generation} peer=$peer released=$released")
-                if (released) notifyControlLost(connection.generation)
+                // Reached only when this socket still HELD the lease when it ended —
+                // every revoke above clears ownership first, so `released` is false
+                // there. That is what makes DROPPED provable rather than assumed.
+                if (released) notifyControlLost(connection.generation, ControlLossReason.DROPPED)
             }
         } finally {
             resume.getAndSet(null)?.let(outstandingResumes::remove)
@@ -776,7 +801,23 @@ class ControlServer(
                         ControlOwnership.CastAdoption.NEW -> {
                             pairing.closeSurface()
                             onMainResult { commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle) }
-                                ?: run { ownership.clearCast(connection.token, connection.generation, cast); return reject("main_timeout") }
+                                ?: run {
+                                    ownership.clearCast(connection.token, connection.generation, cast)
+                                    // Deliberately NOT one of the six sender-side
+                                    // validation rejects above. Those are the phone's
+                                    // frame being wrong; this is THIS TV's main thread
+                                    // failing to answer inside a second, which is the
+                                    // stall the heartbeat instrumentation exists to
+                                    // catch — so it gets its own tag and its own count
+                                    // rather than hiding among faults that belong to
+                                    // the other device.
+                                    FlickLog.w(
+                                        "main",
+                                        "loadMedia stalled budgetMs=$MAIN_ADOPTION_TIMEOUT_MS " +
+                                            "n=${mainThreadStalls.incrementAndGet()} castIdFp=${FlickLog.fp(cast)}",
+                                    )
+                                    return false
+                                }
                         }
                         ControlOwnership.CastAdoption.STALE_LEASE -> return reject("stale_lease")
                     }
@@ -876,6 +917,13 @@ class ControlServer(
         return true
     }
 
+    /**
+     * How many casts this TV's own main thread failed to adopt in time. Counted rather
+     * than only logged because it is the one reject in `loadMedia` that indicts this
+     * device, and a rate is what separates a one-off from a TV that is wedged.
+     */
+    private val mainThreadStalls = AtomicLong(0L)
+
     /** Ktor calls on a worker; compose/player ownership stays on the main thread. */
     private fun onMainResult(block: () -> ControlCastResult?): ControlCastResult? {
         if (Looper.myLooper() == Looper.getMainLooper()) return block()
@@ -965,7 +1013,9 @@ class ControlServer(
         if (active?.token !== connection.token || active?.generation != connection.generation || generation != connection.generation) return
         connection.session.launch { if (active?.token === connection.token && generation == connection.generation) connection.emit(payload) }
     }
-    private fun notifyControlLost(lostGeneration: Long) { main.post { commands.onControlLost(lostGeneration) } }
+    private fun notifyControlLost(lostGeneration: Long, reason: ControlLossReason) {
+        main.post { commands.onControlLost(lostGeneration, reason) }
+    }
     /**
      * The wire bytes are unchanged and stay generic; [reason] never leaves the
      * device. Five distinct pre-auth exits used to funnel through one argument-less

@@ -42,6 +42,7 @@ import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionResult
 import com.flick.receiver.net.ExternalSubtitle
+import com.flick.receiver.session.ReceiverFaultDetail
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.WifiTelemetry
 import java.io.IOException
@@ -54,7 +55,12 @@ import java.io.IOException
  * decoder, a surface or a LAN to be exercised.
  */
 interface SessionPlayer {
-    fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?)
+    /**
+     * The failure, plus the local detail the wire code cannot carry — see
+     * [faultDetail]. The detail travels with the exception because it is derived from
+     * player state that only exists here and only at this instant.
+     */
+    fun setPlaybackFailureListener(listener: ((PlaybackException, ReceiverFaultDetail) -> Unit)?)
     fun setExternalSubtitleDroppedListener(listener: ((String, ExternalSubtitle) -> Unit)?)
 
     /**
@@ -83,7 +89,7 @@ interface SessionPlayer {
         mediaId: String,
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
-        onError: (PlaybackException) -> Unit,
+        onError: (PlaybackException, ReceiverFaultDetail) -> Unit,
         onRotationRePrepare: () -> Unit,
     )
 
@@ -235,6 +241,30 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Latest pre-flight probe round-trip (ms); <= 0 until [recordProbeLatency]. */
     private var probeLatencyMs: Long = 0L
 
+    // --- Frozen-picture watch (main thread, sampled from [snapshot]) ------------
+
+    /** Rendered-frame count at the previous sample; -1 before the first one. */
+    private var lastRenderedFrames: Long = -1L
+
+    /** Confirmed position at the previous sample, so a masked clock cannot pass for one. */
+    private var lastSampledPositionMs: Long = -1L
+
+    /** Consecutive samples the rendered counter has not moved on. */
+    private var frozenPictureSamples: Int = 0
+
+    /**
+     * Whether this film has EVER put a frame on the surface.
+     *
+     * A latch and not a reading: the re-prepare below rebuilds the renderers, which
+     * reallocates the decoder's counters, so from the next sample on the live count says
+     * "never rendered" about a film that has been playing for an hour — and the guard
+     * that reads it would suppress the very announcement the re-prepare failed to earn.
+     */
+    private var pictureEverRendered: Boolean = false
+
+    /** Whether this film has already spent its one silent re-prepare for a dead picture. */
+    private var pictureRePrepared: Boolean = false
+
     /** Last commanded volume (0..1); survives player rebuilds and null-player reads. */
     private var lastVolume: Float = 1f
 
@@ -272,6 +302,19 @@ class PlayerController(context: Context) : SessionPlayer {
      * is the only writer and never stops a cast over it.
      */
     var silentAudioMimeType by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Whether this cast has had its audio sink rebuilt under it — see
+     * [AudioOutputPolicy]. Latched rather than pulsed: the band's queue is what decides
+     * when the notice is actually seen, and the rebuild itself is over in one
+     * main-thread turn.
+     */
+    var audioRestarted by mutableStateOf(false)
+        private set
+
+    /** Whether a sideloaded subtitle was dropped from this cast, by either route. */
+    var subtitleDropped by mutableStateOf(false)
         private set
 
     /**
@@ -383,9 +426,15 @@ class PlayerController(context: Context) : SessionPlayer {
      * so this cannot change while the app is running — and it is deliberately not
      * part of the wire rule; see [AudioDelayPolicy.accepts].
      */
-    private val audioDelayCapMs: Int by lazy {
-        AudioDelayPolicy.maxDelayMsFor(bufferBudgetFor(Runtime.getRuntime().maxMemory()))
-    }
+    private val audioDelayCapMs: Int by lazy { AudioDelayPolicy.maxDelayMsFor(bufferBudget) }
+
+    /**
+     * This device's load-control budget. The heap grant is a property of the process and
+     * [bufferBudgetFor] is a pure function of it, so one reading serves every player this
+     * class builds — and serves the rebuffer plate, which measures a stall against the
+     * ride-out this budget actually bought rather than against a guessed constant.
+     */
+    private val bufferBudget: BufferBudget by lazy { bufferBudgetFor(Runtime.getRuntime().maxMemory()) }
 
     // Facts about the audio the decoder is actually being fed, for the honest
     // codec chips. Written only from the analytics listener and cleared for each
@@ -397,14 +446,14 @@ class PlayerController(context: Context) : SessionPlayer {
     private data class StartupCallbacks(
         val mediaId: String,
         val onFirstFrame: () -> Unit,
-        val onError: (PlaybackException) -> Unit,
+        val onError: (PlaybackException, ReceiverFaultDetail) -> Unit,
         val onRotationRePrepare: () -> Unit,
     )
 
     /** Non-null only from player adoption until the exact first video frame. */
     private var startupCallbacks: StartupCallbacks? = null
     private val firstFrameGate = FirstFrameGate()
-    private var playbackFailureListener: ((PlaybackException) -> Unit)? = null
+    private var playbackFailureListener: ((PlaybackException, ReceiverFaultDetail) -> Unit)? = null
     private var externalSubtitleDroppedListener: ((String, ExternalSubtitle) -> Unit)? = null
     private var silentAudioListener: ((String, String) -> Unit)? = null
 
@@ -586,7 +635,7 @@ class PlayerController(context: Context) : SessionPlayer {
             startupCallbacks?.let { callbacks ->
                 startupCallbacks = null
                 recordPlaybackError(error)
-                callbacks.onError(error)
+                callbacks.onError(error, faultDetail(error, decodeCompressedAudio))
                 return
             }
             if (isTransientError(error) && recoveryGateCount < MAX_RECOVERY_ATTEMPTS) {
@@ -599,9 +648,12 @@ class PlayerController(context: Context) : SessionPlayer {
                 return
             }
             // Non-transient (4xx, decoder init) or the recovery budget is spent →
-            // hand off to the diagnosis UI.
+            // hand off to the diagnosis UI. The detail is read HERE, while
+            // [decodeCompressedAudio] still says whether the one sink rebuild this
+            // cast is allowed has already been spent — which is the whole difference
+            // between a refusal the app answered and one it cannot.
             recordPlaybackError(error)
-            playbackFailureListener?.invoke(error)
+            playbackFailureListener?.invoke(error, faultDetail(error, decodeCompressedAudio))
         }
     }
 
@@ -629,6 +681,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // must not re-prepare over this one-shot rollback.
         pendingRecovery.cancel()
         subtitleFailureState.recordRollback()
+        subtitleDropped = true
         currentSubtitle = null
         val resumePositionMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
@@ -715,6 +768,12 @@ class PlayerController(context: Context) : SessionPlayer {
                 val window = Timeline.Window()
                 eventTime.currentTimeline.getWindow(period.windowIndex, window)
                 window.mediaItem
+            }.onFailure {
+                // Failing closed below is right — an unresolvable period cannot be told
+                // from one belonging to another cast — but it costs a film that IS
+                // decoding the whole 18 s startup budget under a screen saying it is
+                // starting, so it may not also be silent.
+                FlickLog.w("player", "firstFrame period unresolved; gate fails closed")
             }.getOrNull()
             val mediaId = renderedMediaItem?.mediaId
             val attemptToken = renderedMediaItem?.subtitleReloadAttemptToken()
@@ -797,7 +856,12 @@ class PlayerController(context: Context) : SessionPlayer {
             if (wasCanceled) return
             if (isCurrentExternalSubtitleLoad(loadEventInfo)) {
                 subtitleFailureState.recordLoadFailure()
+                return
             }
+            // Every other load error used to be dropped here, which is why nothing could
+            // say how much of the ~100 s retry budget a stall had spent. Counting is all
+            // that happens — re-preparing eagerly would stall a film that is fine.
+            instrumentation.mediaLoadErrorCount++
         }
 
         override fun onLoadCompleted(
@@ -888,6 +952,107 @@ class PlayerController(context: Context) : SessionPlayer {
         val counters = exo?.videoDecoderCounters ?: return 0L
         counters.ensureUpdated()
         return counters.renderedOutputBufferCount.toLong()
+    }
+
+    // --- Frozen picture -------------------------------------------------------
+
+    /**
+     * Watch the one counter that can tell a picture this app never painted from a picture
+     * it painted and something beneath it discarded — see [pictureVerdict] for what the
+     * verdict may and may not claim.
+     *
+     * A TURNED film is deliberately skipped: it already has a per-frame heartbeat and a
+     * hand-back of its own in [TurnWatchdog], and two watchdogs racing over one picture
+     * would spend the turn's one fallback on a re-prepare it did not ask for.
+     */
+    private fun watchPictureProgress(exo: ExoPlayer?, rendered: Long, positionMs: Long) {
+        if (exo == null || currentUrl == null || surfaceTurn.isTurned) {
+            resetPictureProgress()
+            return
+        }
+        if (rendered > 0L) pictureEverRendered = true
+        val advancing = lastSampledPositionMs in 0 until positionMs
+        val moved = rendered != lastRenderedFrames
+        val ready = exo.playbackState == Player.STATE_READY
+        val playing = exo.isPlaying
+        lastRenderedFrames = rendered
+        lastSampledPositionMs = positionMs
+        if (moved || !ready || !playing) {
+            // Samples spent paused, buffering or ended are not counted against the film
+            // that resumes out of them: a two-minute pause would otherwise arrive at the
+            // threshold on its first playing sample and spend the film's one recovery on
+            // a picture that was never stuck.
+            //
+            // [pictureRePrepared] is deliberately NOT handed back here. A re-prepare
+            // rebuilds the renderers and reallocates their counters, so the attempt
+            // itself always reads as the picture moving — and handing the latch back on
+            // a picture that recovers for a few frames each time would make a dying one
+            // an endless re-prepare instead of one attempt and an answer.
+            frozenPictureSamples = 0
+            return
+        }
+        frozenPictureSamples++
+        val verdict = pictureVerdict(
+            frozenSamples = frozenPictureSamples,
+            ready = ready,
+            playing = playing,
+            positionAdvancing = advancing,
+            hasRenderedAFrame = pictureEverRendered,
+            framesExpected = framesAreExpected(exo.videoFormat?.frameRate ?: Format.NO_VALUE.toFloat()),
+            rePrepared = pictureRePrepared,
+        )
+        when (verdict) {
+            PictureVerdict.HEALTHY -> Unit
+            PictureVerdict.REPREPARE -> {
+                FlickLog.w(
+                    "player",
+                    "pictureFrozen samples=$frozenPictureSamples renderedFrames=$rendered " +
+                        "clockAdvancing=$advancing; rebuilding the player once",
+                )
+                pictureRePrepared = true
+                frozenPictureSamples = 0
+                lastGoodPositionMs = positionMs
+                pendingRecovery.cancel()
+                // stop() first, and that is the whole recovery: prepare() returns
+                // immediately unless the player is IDLE, so without it this is a seek to
+                // the position the picture is already stuck at — a codec flush, not the
+                // decoder rebuild a wedged renderer needs. The scheduleRecovery path this
+                // imitates runs from the post-error IDLE state, where prepare() rebuilds
+                // on its own.
+                exo.stop()
+                exo.seekTo(positionMs)
+                exo.prepare()
+                exo.playWhenReady = true
+            }
+            PictureVerdict.ANNOUNCE -> {
+                resetPictureProgress()
+                FlickLog.e("player", "pictureStopped renderedFrames=$rendered; ending the cast")
+                // UNKNOWN is the honest wire answer: this TV genuinely cannot explain it
+                // in the shared vocabulary, and the vocabulary is frozen. The detail is
+                // what gives the screen its sentence, and it never leaves this device.
+                val error = PlaybackException(
+                    "picture stopped",
+                    null,
+                    PlaybackException.ERROR_CODE_UNSPECIFIED,
+                )
+                recordPlaybackError(error)
+                // On the next main-thread turn, for the reason every other recovery here
+                // takes one: the listener ends the cast, which stops this very player,
+                // and this is running inside the sampling read of it.
+                recoveryHandler.post {
+                    playbackFailureListener?.invoke(error, ReceiverFaultDetail.PictureStopped)
+                }
+            }
+        }
+    }
+
+    /** A new film — or no film — is judged on its own frames. */
+    private fun resetPictureProgress() {
+        lastRenderedFrames = -1L
+        lastSampledPositionMs = -1L
+        frozenPictureSamples = 0
+        pictureEverRendered = false
+        pictureRePrepared = false
     }
 
     // --- Unplayable video -----------------------------------------------------
@@ -986,10 +1151,10 @@ class PlayerController(context: Context) : SessionPlayer {
         recordPlaybackError(error)
         startupCallbacks?.let { callbacks ->
             startupCallbacks = null
-            callbacks.onError(error)
+            callbacks.onError(error, ReceiverFaultDetail.None)
             return
         }
-        playbackFailureListener?.invoke(error)
+        playbackFailureListener?.invoke(error, ReceiverFaultDetail.None)
     }
 
     // --- Picture orientation -------------------------------------------------
@@ -1284,6 +1449,7 @@ class PlayerController(context: Context) : SessionPlayer {
             "audioOutputRefused code=${error.errorCodeName}; rebuilding sink to decode",
         )
         instrumentation.audioSinkRebuildCount++
+        audioRestarted = true
         decodeCompressedAudio = true
         pendingRecovery.cancel()
         pendingAudioSinkRebuild.post { rebuildForDecodedAudio() }
@@ -1565,6 +1731,18 @@ class PlayerController(context: Context) : SessionPlayer {
         }
     }
 
+    /**
+     * The ride-out this device bought at the rate it is actually receiving.
+     *
+     * With no estimate yet the planned peak stands in, which is the SHORTEST honest
+     * answer this budget can give — never zero, which would escalate the plate on a
+     * stall nothing had measured.
+     */
+    private fun protectionSeconds(): Int {
+        val bitrate = bandwidthMeter.bitrateEstimate.takeIf { it > 0L } ?: PLANNED_PEAK_BITRATE_BPS
+        return bufferBudget.protectionSecondsAt(bitrate).toInt()
+    }
+
     /** Post a delayed re-prepare of the current player at [lastGoodPositionMs]. */
     private fun scheduleRecovery(attempt: Int) {
         val delayMs = RECOVERY_BACKOFF_MS[(attempt - 1).coerceIn(0, RECOVERY_BACKOFF_MS.lastIndex)]
@@ -1590,7 +1768,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // measured on — see [bufferBudgetFor]. Read at construction because the
         // grant is a property of the process, and logged because the buffer is the
         // whole anti-buffering thesis and a silently shrunken one must be visible.
-        val budget = bufferBudgetFor(Runtime.getRuntime().maxMemory())
+        val budget = bufferBudget
         FlickLog.i(
             "player",
             "loadControl targetMiB=${budget.targetBufferBytes / (1024 * 1024)} " +
@@ -1766,6 +1944,9 @@ class PlayerController(context: Context) : SessionPlayer {
         currentSubtitle = subtitle
         currentMediaId = mediaId
         subtitleFailureState.reset()
+        // A reload is the viewer asking again, so the drop this is about is no longer
+        // the current state of the film — the rollback is one-shot per attempt.
+        subtitleDropped = false
         // A capability verdict belongs to the file it was reached about: the next cast
         // gets to be judged on its own tracks. This is every load and reload path.
         videoShortfallReported = false
@@ -1891,6 +2072,8 @@ class PlayerController(context: Context) : SessionPlayer {
         stableReadySinceMs = 0L
         probeLatencyMs = 0L
         instrumentation.reset()
+        resetPictureProgress()
+        audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
         // a property of this TV's current audio route, not of the film that found
         // it: once the output has refused a bitstream, every later film would fail
@@ -1920,7 +2103,7 @@ class PlayerController(context: Context) : SessionPlayer {
         mediaId: String,
         subtitle: ExternalSubtitle?,
         onFirstFrame: () -> Unit,
-        onError: (PlaybackException) -> Unit,
+        onError: (PlaybackException, ReceiverFaultDetail) -> Unit,
         onRotationRePrepare: () -> Unit,
     ) {
         firstFrameGate.arm(mediaId)
@@ -1933,6 +2116,8 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingRecovery.cancel()
         recoveryGateCount = 0
         instrumentation.reset()
+        resetPictureProgress()
+        audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
         // a property of this TV's current audio route, not of the film that found
         // it: once the output has refused a bitstream, every later film would fail
@@ -2001,6 +2186,7 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingPlayWhenReady = resumePlayWhenReady
         lastGoodPositionMs = resumeMs
         stableReadySinceMs = 0L
+        resetPictureProgress()
         resetSubtitleState(subtitle, mediaId)
         // A sideloaded track arrives under SELECTION_FLAG_DEFAULT, which both the
         // panel's Off row and any earlier per-group override outrank. A fresh
@@ -2036,7 +2222,7 @@ class PlayerController(context: Context) : SessionPlayer {
     override fun clearStartupListener() { startupCallbacks = null; firstFrameGate.clear() }
 
     /** Delivers the exact Media3 failure to the session while it is still actionable. */
-    override fun setPlaybackFailureListener(listener: ((PlaybackException) -> Unit)?) {
+    override fun setPlaybackFailureListener(listener: ((PlaybackException, ReceiverFaultDetail) -> Unit)?) {
         playbackFailureListener = listener
     }
 
@@ -2281,6 +2467,9 @@ class PlayerController(context: Context) : SessionPlayer {
             closeSeekFillWindow()
         }
 
+        val rendered = renderedFrames(exo)
+        watchPictureProgress(exo, rendered, position)
+
         val wifi = WifiTelemetry.read(appContext)
 
         return DiagnosticsSnapshot(
@@ -2295,7 +2484,7 @@ class PlayerController(context: Context) : SessionPlayer {
             currentlyRebuffering = instrumentation.currentRebufferStartMs != 0L,
             bufferedAheadMs = bufferedAhead,
             droppedFrames = instrumentation.droppedFrames,
-            renderedFrames = renderedFrames(exo),
+            renderedFrames = rendered,
             bitrateEstimateBps = bandwidthMeter.bitrateEstimate,
             decoderName = instrumentation.decoderName,
             videoMimeType = instrumentation.videoMimeType,
@@ -2306,6 +2495,13 @@ class PlayerController(context: Context) : SessionPlayer {
             errorCode = instrumentation.errorCode,
             errorCodeName = instrumentation.errorCodeName,
             autoRecoveryCount = instrumentation.autoRecoveryCount,
+            audioSinkRebuildCount = instrumentation.audioSinkRebuildCount,
+            mediaLoadErrorCount = instrumentation.mediaLoadErrorCount,
+            bufferingPlate = bufferingPlate(
+                stallMs = liveRebufferMs,
+                protectionSeconds = protectionSeconds(),
+                recoveryAttempts = recoveryGateCount,
+            ),
             seekCount = instrumentation.seekCount,
             lastSeekFillMs = instrumentation.lastSeekFillMs,
             probeLatencyMs = probeLatencyMs,

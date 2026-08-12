@@ -1,6 +1,7 @@
 package com.flick.receiver.player
 
 import com.flick.receiver.net.CastFailureCode
+import com.flick.receiver.session.ReceiverFaultDetail
 import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import java.net.ConnectException
@@ -61,7 +62,21 @@ object PlaybackFailureClassifier {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
             PlaybackException.ERROR_CODE_TIMEOUT -> CastFailureCode.MEDIA_UNREACHABLE
-            PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> CastFailureCode.SENDER_NOT_SERVING
+            // A read that ran past the end of what is being served: the file shrank or was
+            // replaced under a live session. Bare, with no HTTP 416 and no matched cause,
+            // it is still a statement about the source — and the sender can upgrade it
+            // with a source fault of its own.
+            PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE -> CastFailureCode.SENDER_NOT_SERVING
+            // 2000 is deliberately NOT diagnosed here. `sender_not_serving` drives the two
+            // most assertive sentences either app owns — this TV's "is on the network and
+            // answering" and the phone's "Flick's own server is what went down" — and an
+            // unspecified IO error is by definition evidence for neither party. UNKNOWN is
+            // the floor both screens already carry honest copy for.
+            //
+            // The DRM codes (6000-6008) and the frame-processor ones (7000/7001) fall here
+            // for a different reason and are meant to: this app opens no protected media
+            // and installs no video effects, so a face for either would be copy for a
+            // state that cannot arise.
             else -> CastFailureCode.UNKNOWN
         }
     }
@@ -83,13 +98,38 @@ object PlaybackFailureClassifier {
     fun classifyParserFailure(knownUnsupportedContainer: Boolean): CastFailureCode =
         if (knownUnsupportedContainer) CastFailureCode.UNSUPPORTED_CONTAINER else CastFailureCode.MALFORMED_MEDIA
 
+    /**
+     * An unspecified IO failure earns a startup retry even though it earns no diagnosis:
+     * a retry inside the startup budget costs a second and a wrong sentence costs the
+     * truth, so the two decisions are allowed to read the same code differently.
+     */
     fun isStartupRetryable(error: PlaybackException): Boolean = when (classify(error)) {
         CastFailureCode.MEDIA_UNREACHABLE,
         CastFailureCode.SENDER_NOT_SERVING -> true
+        // Only where the walk found nothing: an HTTP rejection carried on a 2000
+        // exception is still a rejection, and retrying one is retrying a refusal.
+        CastFailureCode.UNKNOWN -> error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED
         else -> false
     }
 
     /** Explicit HTTP rejection is terminal in both startup and steady state. */
     fun isSteadyStateRecoveryAllowed(error: PlaybackException): Boolean =
         classify(error) != CastFailureCode.HTTP_REJECTED
+}
+
+/**
+ * Local detail the wire cannot carry. [CastFailureCode.DECODER_INIT] is the honest wire
+ * neighbour for three different faults; on this side of the socket the receiver still has
+ * the raw exception and can tell them apart for its own screen.
+ *
+ * [decodeCompressedAudioLatched] is the once-per-cast rebuild having already been spent,
+ * which is what makes an output refusal terminal rather than recoverable — an unlatched
+ * one never reaches a terminal screen at all.
+ */
+fun faultDetail(error: PlaybackException, decodeCompressedAudioLatched: Boolean): ReceiverFaultDetail = when {
+    error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED ->
+        ReceiverFaultDetail.DecoderReclaimed
+    AudioOutputPolicy.isOutputRefusal(error.errorCode) && decodeCompressedAudioLatched ->
+        ReceiverFaultDetail.AudioOutputRefused
+    else -> ReceiverFaultDetail.None
 }

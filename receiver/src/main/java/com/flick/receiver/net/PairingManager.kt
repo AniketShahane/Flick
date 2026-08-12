@@ -18,6 +18,15 @@ data class PairingSnapshot(
     val pairedCount: Int,
     val mostRecentDeviceLabel: String?,
     val devices: List<PairedPhone> = emptyList(),
+    /**
+     * The phone whose Allow this TV could not write to its own storage, or null.
+     *
+     * Non-null only while the code minted in place of the refused one is the code on
+     * screen — see [PairingManager.saveFailedForGeneration] — so the notice cannot
+     * outlive its own truth. The phone is already told `denied reason=storage`; this is
+     * the same fact told to the device that actually failed.
+     */
+    val saveFailedLabel: String? = null,
 )
 
 /**
@@ -479,6 +488,11 @@ class PairingManager(
             // back: clear the prompt and offer a fresh code rather than leaving the
             // screen asking about a phone whose key this TV failed to store.
             pending = null
+            // Tagged with the generation the code below is about to take, so the notice
+            // rides exactly that one code and is gone on the next rotation. A
+            // publishEligible that lands anywhere but CODE simply never matches.
+            saveFailedForGeneration = generation + 1
+            saveFailedLabel = label
             publishEligible()
             return PairAttemptResult.PersistenceFailed
         }
@@ -777,6 +791,14 @@ class PairingManager(
         val remaining = (lockoutUntilWall - wall()).coerceIn(0L, MAX_LOCKOUT_MS)
         return elapsed() + remaining
     }
+    /**
+     * The code generation minted in place of a refused commit, and the phone it was
+     * refused for. Together they bound the save-failed notice to one code rather than
+     * to a flag someone has to remember to clear.
+     */
+    private var saveFailedForGeneration: Long? = null
+    private var saveFailedLabel: String? = null
+
     private fun publish(surface: PairingSurface) { _snapshot.value = snapshot(surface) }
     // Count and list come from the same decoded read. A record that cannot be
     // decoded can never satisfy [findKey] either, so counting it would claim a
@@ -784,7 +806,9 @@ class PairingManager(
     // list one row short of its own heading.
     private fun snapshot(surface: PairingSurface): PairingSnapshot {
         val phones = storedPhones()
-        return PairingSnapshot(surface, phones.size, pairedLabel(), phones)
+        val saveFailed = saveFailedLabel
+            ?.takeIf { (surface as? PairingSurface.Open)?.generation == saveFailedForGeneration }
+        return PairingSnapshot(surface, phones.size, pairedLabel(), phones, saveFailed)
     }
     private fun storedPhones(): List<PairedPhone> = pairedPhonesOf(storedRecords())
     private fun storedRecords(): Set<String> = prefs.getStringSet(KEY_RECORDS, emptySet()) ?: emptySet()

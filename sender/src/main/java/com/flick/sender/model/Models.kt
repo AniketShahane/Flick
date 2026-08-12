@@ -120,7 +120,7 @@ enum class TvAvailability { READY, SLEEPING, UNKNOWN }
  * separate state from [PAIRING] because the two owe the user different things: one is
  * "working on it", the other is "your move, and it is over there".
  */
-enum class ConnectionStatus { DISCONNECTED, CONNECTING, PAIRING, CONFIRM_ON_TV, CONNECTED, FAILED }
+enum class ConnectionStatus { DISCONNECTED, CONNECTING, PAIRING, CONFIRM_ON_TV, CONNECTED }
 
 /** The receiver's playback lifecycle, mirrored from TV `state` frames. */
 enum class PlaybackPhase { IDLE, BUFFERING, PLAYING, PAUSED, ENDED, ERROR }
@@ -200,9 +200,32 @@ data class PlaybackUiState(
 /** Which error face S12 shows. */
 enum class CastErrorKind { REACHABLE_NOT_SERVING, UNREACHABLE, NO_LAN, GENERIC }
 
+/**
+ * Which side raised a terminal.
+ *
+ * The wire vocabulary is frozen — `ControlFrameSchema` validates inbound codes against an
+ * allow-list — so several codes arrive both from this phone's own startup body and from
+ * the receiver, and there they mean opposite things: `no_compatible_lan` is "this phone
+ * has no LAN address" locally and "the TV's address went away" from the far end. This is
+ * the only thing that tells the two apart.
+ */
+enum class TerminalOrigin { LOCAL, RECEIVER }
+
 /** Stable terminal taxonomy retained alongside the friendly error face. */
 data class CastFailure(
     val code: String,
     val retryable: Boolean,
     val httpStatus: Int? = null,
+    val origin: TerminalOrigin = TerminalOrigin.LOCAL,
+    /**
+     * Whether the film had yet to show a frame when this failed.
+     *
+     * The same code arrives in both phases — the receiver encodes the phase as the frame
+     * type rather than in the code, and a control link drops as readily during startup as
+     * mid-film — so the bodies that describe a film "playing fine up to that point" need
+     * this or they describe casts that never started. True is the default because it is
+     * the claim that survives being wrong the better of the two: a cast that never started
+     * is what almost every terminal here is about.
+     */
+    val beforeStart: Boolean = true,
 )

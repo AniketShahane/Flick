@@ -119,6 +119,13 @@ sealed interface SubtitleFetchOutcome {
     /** The API answered with a download address outside OpenSubtitles' own domains. */
     data object LinkRejected : SubtitleFetchOutcome
     data object TooLarge : SubtitleFetchOutcome
+
+    /**
+     * The file arrived and this phone could not keep it. Split from [Unavailable] because
+     * that arm's sentence names OpenSubtitles for something that happened here, after the
+     * download had already come out of the shared daily allowance.
+     */
+    data object NotSaved : SubtitleFetchOutcome
     data object Unavailable : SubtitleFetchOutcome
 }
 
@@ -282,7 +289,7 @@ class OpenSubtitlesClient private constructor(
             directory.mkdirs()
             pruneCache(directory)
             File(directory, name).apply { writeBytes(bytes) }
-        }.getOrNull() ?: return@withContext SubtitleFetchOutcome.Unavailable
+        }.getOrNull() ?: return@withContext SubtitleFetchOutcome.NotSaved
         SubtitleFetchOutcome.Ready(Uri.fromFile(written), name, subtitle.language, quota)
     }
 

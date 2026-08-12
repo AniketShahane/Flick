@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,16 +61,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.flick.sender.NetworkUtils
 import com.flick.sender.PairLaunchEventIds
 import com.flick.sender.R
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.TvAvailability
+import com.flick.sender.net.DiscoveryFace
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.ManualPairAttemptEvent
 import com.flick.sender.net.PairErrorKind
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.net.PairedTv
+import com.flick.sender.net.discoveryFace
 import com.flick.sender.ui.components.DeviceRow
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.FlickSubtleButton
@@ -87,12 +91,15 @@ import com.flick.sender.ui.theme.PressedPillShape
 import com.flick.sender.ui.theme.Spark
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.delay
 
 /** S1 — first-run connect & pair. Discovery leads; the code card is the escape hatch. */
 @Composable
-fun ConnectScreen(controller: FlickController) {
+fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
     val colors = LocalFlickColors.current
     val devices by controller.devices.collectAsState()
+    val browse by controller.nsd.browse.collectAsState()
+    val unresolvedNames by controller.nsd.unresolvedNames.collectAsState()
     val pairTarget by controller.pairTarget.collectAsState()
     val pairError by controller.pairError.collectAsState()
     val pendingPairLaunch by controller.pendingPairLaunch.collectAsState()
@@ -124,10 +131,35 @@ fun ConnectScreen(controller: FlickController) {
         PairErrorKind.TV_STORAGE -> stringResource(R.string.pair_error_tv_storage)
         PairErrorKind.REPAIR_NEEDED -> stringResource(R.string.pair_error_repair)
         PairErrorKind.ENDPOINT_CHANGED -> stringResource(R.string.pair_error_endpoint_changed)
+        PairErrorKind.REFUSED -> stringResource(R.string.pair_error_refused)
+        PairErrorKind.NO_ROUTE -> stringResource(R.string.pair_error_no_route)
+        PairErrorKind.NO_ANSWER -> stringResource(R.string.pair_error_no_answer)
+        PairErrorKind.NO_NETWORK -> stringResource(R.string.pair_error_no_network)
+        PairErrorKind.ADDRESS_UNSUPPORTED -> stringResource(R.string.pair_error_address_unsupported)
         null -> null
     }
     val connecting = pairAttemptInFlight(connection)
     val awaitingTvConfirmation = connection == ConnectionStatus.CONFIRM_ON_TV
+
+    // The address is re-read on a timer rather than held: Wi-Fi comes and goes under this
+    // screen, and a phone that joined a network while it was open must stop being told
+    // there is nothing to search. The elapsed clock starts with the screen, so the settle
+    // window is measured from when the user actually began waiting.
+    var hasLanAddress by remember { mutableStateOf(NetworkUtils.getSiteLocalIpv4() != null) }
+    var searchElapsedMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            hasLanAddress = NetworkUtils.getSiteLocalIpv4() != null
+            delay(DiscoveryPollMs)
+            searchElapsedMs += DiscoveryPollMs
+        }
+    }
+    val discovery = discoveryFace(
+        hasLanAddress = hasLanAddress,
+        browse = browse,
+        deviceCount = devices.size,
+        elapsedMs = searchElapsedMs,
+    )
 
     // Both pulses come from a real outcome, never from arriving here: CONNECTED is
     // published only once the receiver has accepted the code, and pairError only moves
@@ -267,10 +299,11 @@ fun ConnectScreen(controller: FlickController) {
                 )
             }
             if (devices.isEmpty()) {
-                Text(
-                    text = stringResource(R.string.connect_searching),
-                    style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-                    modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
+                DiscoveryNote(
+                    face = discovery,
+                    unresolved = unresolvedNames,
+                    onOpenWifiSettings = onOpenWifiSettings,
+                    onEnterAddress = { manual.open() },
                 )
             } else {
                 devices.forEach { tv ->
@@ -622,6 +655,13 @@ private fun PrivacyPill() {
     }
 }
 
+/**
+ * How often this screen re-reads its own LAN address, and the unit its settle clock
+ * counts in. Matches the shared telemetry poll the library's link pill runs on, so the
+ * two surfaces can never disagree about whether this phone is on a network.
+ */
+private const val DiscoveryPollMs = 2_000L
+
 /** Matches the Settings support row, which is the other card in this app built to be found. */
 private val TvAppBadgeSize = 46.dp
 
@@ -695,6 +735,80 @@ private fun TvAppNote() {
                 text = stringResource(R.string.connect_tv_app_body),
                 style = FlickText.bodyMedium.copy(color = colors.onSpark.copy(alpha = 0.82f)),
             )
+        }
+    }
+}
+
+/**
+ * What the empty device list is actually saying.
+ *
+ * Only [DiscoveryFace.SEARCHING] is the shipped spinner-line. The other three each name a
+ * different fact and each offers the move that fits it — and none of them says "looking"
+ * about a search that is not running, which is what the one shipped line said forever.
+ *
+ * [unresolved] is drawn under NOTHING_FOUND alone: a name that answered the browse and
+ * never resolved is proof a `_flick._tcp` service exists, and it would only clutter a
+ * list that is working.
+ */
+@Composable
+private fun DiscoveryNote(
+    face: DiscoveryFace,
+    unresolved: Int,
+    onOpenWifiSettings: () -> Unit,
+    onEnterAddress: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    when (face) {
+        DiscoveryFace.SEARCHING, DiscoveryFace.FOUND -> Text(
+            text = stringResource(R.string.connect_searching),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
+        )
+        DiscoveryFace.NO_NETWORK -> DiscoveryCard(
+            title = stringResource(R.string.connect_no_network_title),
+            body = stringResource(R.string.connect_no_network_body),
+            actionText = stringResource(R.string.connect_no_network_action),
+            onAction = onOpenWifiSettings,
+        )
+        DiscoveryFace.SEARCH_UNAVAILABLE -> DiscoveryCard(
+            title = stringResource(R.string.connect_search_unavailable_title),
+            body = stringResource(R.string.connect_search_unavailable_body),
+            actionText = stringResource(R.string.connect_search_unavailable_action),
+            onAction = onEnterAddress,
+        )
+        DiscoveryFace.NOTHING_FOUND -> DiscoveryCard(
+            title = stringResource(R.string.connect_nothing_found_title),
+            body = stringResource(R.string.connect_nothing_found_body),
+            note = if (unresolved > 0) stringResource(R.string.connect_unresolved_note) else null,
+        )
+    }
+}
+
+@Composable
+private fun DiscoveryCard(
+    title: String,
+    body: String,
+    note: String? = null,
+    actionText: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    val colors = LocalFlickColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlickCorners.warning))
+            .background(colors.surfaceTonal)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(title, style = FlickText.titleSmall.copy(color = colors.onSurface))
+        Text(body, style = FlickText.bodySmall.copy(color = colors.onSurfaceDim))
+        if (note != null) {
+            Text(note, style = FlickText.bodySmall.copy(color = colors.onSurfaceFaint))
+        }
+        if (actionText != null && onAction != null) {
+            Spacer(Modifier.height(4.dp))
+            FlickSubtleButton(text = actionText, onClick = onAction)
         }
     }
 }

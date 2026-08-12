@@ -1,6 +1,7 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterTransition
@@ -134,7 +135,13 @@ fun ConnectingScreen(
                         .setDataAndType(uri, "video/*")
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
                 )
-            }.onSuccess { controller.cancelCast() }
+            }
+                .onSuccess { controller.cancelCast() }
+                // Silence here would leave the escape hatch from a stalling cast looking
+                // like a button that simply does not work.
+                .onFailure {
+                    Toast.makeText(context, R.string.error_no_player_toast, Toast.LENGTH_SHORT).show()
+                }
         }
     }
     val slowLinkScroll = rememberScrollState()

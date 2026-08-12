@@ -52,6 +52,33 @@ class NsdDiscovery(context: Context) {
     private val _devices = MutableStateFlow<List<DiscoveredTv>>(emptyList())
     val devices: StateFlow<List<DiscoveredTv>> = _devices.asStateFlow()
 
+    /**
+     * Where this app's browse stands with the platform.
+     *
+     * [BrowseState.UNAVAILABLE] is the platform having refused this app's search and every
+     * retry for it — which is a different sentence from "no TV answered", and one the
+     * screen previously had no way to tell. This class's own doc already promises a
+     * manual-entry fallback; without this nothing ever told the user it existed.
+     *
+     * The seed is [BrowseState.PENDING] rather than a refusal, because nothing has refused
+     * anything before the first [start]: `discoverServices` is acknowledged on an async
+     * binder callback, and a screen composed inside that window used to accuse Android of
+     * blocking a search that had just been requested.
+     */
+    private val _browse = MutableStateFlow(BrowseState.PENDING)
+    val browse: StateFlow<BrowseState> = _browse.asStateFlow()
+
+    /**
+     * Services that answered the browse and have not produced a usable record.
+     *
+     * A found-but-unresolved name is proof a `_flick._tcp` service exists, which is the
+     * one thing an empty list cannot say for itself.
+     */
+    private val _unresolvedNames = MutableStateFlow(0)
+    val unresolvedNames: StateFlow<Int> = _unresolvedNames.asStateFlow()
+
+    private val awaitingResolve = HashSet<String>()
+
     private val lock = Any()
     private val pending = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
@@ -94,7 +121,10 @@ class NsdDiscovery(context: Context) {
                     FlickLog.w("nsd", "discovery failed code=$errorCode")
                     discoveryFailed { retryGate.stopFailed() }
                 }
-                override fun onDiscoveryStarted(serviceType: String?) { FlickLog.i("nsd", "discovery started") }
+                override fun onDiscoveryStarted(serviceType: String?) {
+                    FlickLog.i("nsd", "discovery started")
+                    _browse.value = BrowseState.RUNNING
+                }
                 override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed { retryGate.stopped() }
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                     if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
@@ -106,11 +136,15 @@ class NsdDiscovery(context: Context) {
                 }
             }
             discoveryListener = listener
+            // A request that has left this app and not yet been answered is a search in
+            // flight, not a refused one: only `onStartDiscoveryFailed` and a thrown
+            // request below are refusals, and both are handled where they happen.
+            _browse.value = BrowseState.PENDING
             runCatching {
                 nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
             }.onFailure {
                 discoveryListener = null
-                if (retryGate.startFailed()) scheduleRetry()
+                if (retryGate.startFailed()) scheduleRetry() else _browse.value = BrowseState.UNAVAILABLE
             }
             if (discoveryListener != null) startSweep()
         }
@@ -125,6 +159,11 @@ class NsdDiscovery(context: Context) {
             retryJob?.cancel(); retryJob = null
             sweepJob?.cancel(); sweepJob = null
             monitors.keys.toList().forEach(::dropMonitor)
+            awaitingResolve.clear()
+            _unresolvedNames.value = 0
+            // Back to pending, never to unavailable: this app asked for the browse to end,
+            // and a screen that reads this next is reading it after the next start().
+            _browse.value = BrowseState.PENDING
             retryGate.stopRequested()
         }
     }
@@ -149,7 +188,13 @@ class NsdDiscovery(context: Context) {
 
     private fun enqueueResolve(info: NsdServiceInfo) {
         synchronized(lock) {
-            info.serviceName?.let { lastInfoByName[it] = info }
+            info.serviceName?.let {
+                lastInfoByName[it] = info
+                if (_devices.value.none { device -> device.name == it }) {
+                    awaitingResolve += it
+                    _unresolvedNames.value = awaitingResolve.size
+                }
+            }
             pending.addLast(info)
             pumpResolve()
         }
@@ -270,6 +315,7 @@ class NsdDiscovery(context: Context) {
             _devices.value = (_devices.value.filter { it.name != name && it.host != tv.host } + tv)
                 .sortedByDescending { it.state == TvAvailability.READY }
             _resolveRevision.value = stamp
+            if (awaitingResolve.remove(name)) _unresolvedNames.value = awaitingResolve.size
             ensureMonitor(name)
         }
     }
@@ -295,6 +341,7 @@ class NsdDiscovery(context: Context) {
                         resolvedAt.remove(name)
                         lastInfoByName.remove(name)
                         dropMonitor(name)
+                        if (awaitingResolve.remove(name)) _unresolvedNames.value = awaitingResolve.size
                         _devices.value = _devices.value.filter { it.name != name }
                     }
                 }
@@ -319,7 +366,14 @@ class NsdDiscovery(context: Context) {
             // cannot resurrect discovery behind the UI's back.
             if (discoveryListener == null) return
             discoveryListener = null
-            if (retry()) scheduleRetry()
+            // Only an exhausted retry budget may say the search is unavailable: a browse
+            // that will be reopened in a second is still, from the user's side, pending.
+            if (retry()) {
+                _browse.value = BrowseState.PENDING
+                scheduleRetry()
+            } else {
+                _browse.value = BrowseState.UNAVAILABLE
+            }
         }
     }
 

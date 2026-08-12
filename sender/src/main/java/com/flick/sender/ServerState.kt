@@ -22,6 +22,19 @@ data class SourceServerEvent(
 )
 
 /**
+ * A fault this phone's own server raised about a cast that was already being served.
+ *
+ * Separate from [SourceServerEvent] because it is not a terminal: the request handler
+ * that raises it neither owns the cast nor can end one. It is the record the coordinator
+ * prefers over whatever the receiver later guesses about a body that stopped arriving.
+ */
+data class SourceFaultEvent(
+    val sequence: Long,
+    val castId: String,
+    val code: String,
+)
+
+/**
  * Immutable snapshot of what the phone UI should show. Produced by the service
  * (source of truth for RUNNING) and by the Activity (for the pre-flight
  * STARTING / no-network ERROR states).
@@ -57,6 +70,11 @@ object ServerStateHolder {
     val terminalEvent: StateFlow<SourceServerEvent?> = _terminalEvent.asStateFlow()
     private var terminalSequence = 0L
 
+    private val _sourceFault = MutableStateFlow<SourceFaultEvent?>(null)
+    /** Last mid-stream fault this phone's server raised, retained for the same reason. */
+    val sourceFault: StateFlow<SourceFaultEvent?> = _sourceFault.asStateFlow()
+    private var faultSequence = 0L
+
     /** A pick just happened; we are resolving metadata / the LAN IP. */
     fun beginStarting(castId: String) {
         _state.value = ServerUiState(status = ServerStatus.STARTING, castId = castId)
@@ -89,6 +107,21 @@ object ServerStateHolder {
 
     fun setIdle() {
         _state.value = ServerUiState()
+    }
+
+    /**
+     * Record why the bytes stopped, against whichever cast is being served right now.
+     *
+     * The cast id is read here rather than passed in: the HTTP handler that raises this
+     * is deliberately ignorant of cast identity — it holds a token and a file descriptor
+     * — and threading one through would give the request path a second thing to keep in
+     * step with a retarget. A publish with no cast running is dropped, because a fault
+     * with nothing to attribute it to is not evidence about anything.
+     */
+    @Synchronized
+    fun publishSourceFault(code: String) {
+        val castId = _state.value.castId ?: return
+        _sourceFault.value = SourceFaultEvent(sequence = ++faultSequence, castId = castId, code = code)
     }
 
     @Synchronized

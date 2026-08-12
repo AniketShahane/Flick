@@ -35,7 +35,6 @@ class CastCommandableTest {
             ConnectionStatus.CONNECTING,
             ConnectionStatus.PAIRING,
             ConnectionStatus.CONFIRM_ON_TV,
-            ConnectionStatus.FAILED,
         ).forEach { status ->
             assertFalse(status.name, castCommandable(CastStartState.Active(CAST), CAST, status))
         }
