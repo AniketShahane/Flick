@@ -46,7 +46,7 @@ class LanBindingMonitor(
     }
 
     fun start() {
-        resample("start")
+        resample(LAN_CALLBACK_START)
         runCatching { manager.registerDefaultNetworkCallback(callback) }
     }
 
@@ -57,7 +57,32 @@ class LanBindingMonitor(
     private fun resample(callback: String) {
         val next = sample()
         val changed = next != _address.value
-        FlickLog.v("lan", "callback=$callback addr=${next ?: "null"} changed=$changed")
+        if (logsLanResample(callback, changed)) {
+            FlickLog.v("lan", "callback=$callback addr=${next ?: "null"} changed=$changed")
+        }
         _address.value = next
     }
 }
+
+internal const val LAN_CALLBACK_START = "start"
+
+/**
+ * Whether a re-sample is worth a line.
+ *
+ * The monitor above already knows these callbacks are mostly noise — it is the entire reason
+ * it re-samples an ADDRESS rather than counting events. That reasoning was applied to what it
+ * DOES and never to what it SAYS, so an idle TV on a healthy link wrote a line every few
+ * seconds to report that nothing had changed.
+ *
+ * [FlickLog] records every level into a 200-entry ring, `v` included, so roughly twenty
+ * minutes of sitting still evicts a whole cast; and on a release build `v` never reaches
+ * logcat, so those lines are at once the only thing IN the ring and invisible outside it.
+ * Observed on the verified TV: a five-hour-old process whose entire buffer was this one line
+ * repeated, with the pairing and the playback it was opened to explain long since gone.
+ *
+ * So speak when the answer moved. A re-sample agreeing with the last one is the normal case
+ * and describes nothing. [LAN_CALLBACK_START] always speaks, because a first sample of null
+ * is a real answer about this TV rather than agreement with a value never taken.
+ */
+internal fun logsLanResample(callback: String, changed: Boolean): Boolean =
+    changed || callback == LAN_CALLBACK_START
