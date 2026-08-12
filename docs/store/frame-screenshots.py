@@ -109,6 +109,21 @@ def fit_font(lines, max_width, start):
 REDACTIONS = {
     "pairing.png": [((405, 1200, 1294, 1325),
                      ["Google TV Streamer ·", "192.168.42.17:47654"])],
+    # The TV names the phone it is paired to, so any capture of these two screens
+    # carries the author's actual handset model — into a public repo, and onto a
+    # store listing. "Pixel 9 Pro" is the device label already used as the fixture in
+    # the receiver's instrumentation tests, so the listing and the tests name the same
+    # imaginary phone rather than inventing a second one.
+    #
+    # Each box starts AFTER the leading glyph — the green status dot on idle, the source
+    # icon on paused — so only the words are repainted and the mark survives untouched.
+    # Boxes were measured off the captures, not estimated: text cap-top y974 (idle) and
+    # y75 (paused), cap-height 23, and the height of 43 is what the font-size formula
+    # below turns into 31 px, whose glyph height is 24. The replacement renders NARROWER
+    # than the string it covers in both cases (338 vs 358, 358 vs 384), so neither can
+    # overflow its chip.
+    "tv-idle.png": [((137, 965, 495, 1008), ["Paired with Pixel 9 Pro"])],
+    "tv-paused.png": [((180, 66, 564, 109), ["Flicked from Pixel 9 Pro"])],
 }
 
 
