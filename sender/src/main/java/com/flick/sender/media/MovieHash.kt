@@ -3,6 +3,8 @@ package com.flick.sender.media
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
@@ -68,9 +70,18 @@ object MovieHash {
      * [sizeHint] is MediaStore's own size, used only when the descriptor will not state
      * one. The I/O runs on [Dispatchers.IO]: composition never waits on a disk read.
      */
+    /**
+     * Timed because the subtitles sheet WAITS on it: search is gated until the fingerprint
+     * settles, so whatever this costs is felt as the sheet being slow to become usable, and
+     * a viewer reporting "opening subtitles is slow" cannot tell this apart from the network
+     * search that follows. Two 64 KiB reads should be milliseconds; a provider that opens
+     * slowly, or storage reached through FUSE, is where the seconds would be. The hash
+     * itself is never logged — only how long it took and whether there is one.
+     */
     suspend fun of(context: Context, uri: Uri, sizeHint: Long = -1L): Fingerprint? =
         withContext(Dispatchers.IO) {
-            runCatching {
+            val startedMs = SystemClock.elapsedRealtime()
+            val fingerprint = runCatching {
                 context.contentResolver.openFileDescriptor(uri, "r")?.let { descriptor ->
                     // AutoCloseInputStream owns the descriptor, so closing the stream
                     // closes the fd exactly once and `let` must not close it a second
@@ -91,6 +102,12 @@ object MovieHash {
                     }
                 }
             }.getOrNull()
+            FlickLog.i(
+                "cast",
+                "moviehash tookMs=${SystemClock.elapsedRealtime() - startedMs} " +
+                    "hashed=${fingerprint != null} bytes=${fingerprint?.sizeBytes ?: -1L}",
+            )
+            fingerprint
         }
 
     /** Descriptor truth wins; the MediaStore hint is used only when no size is stated. */
