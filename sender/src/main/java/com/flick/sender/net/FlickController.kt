@@ -486,8 +486,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * against this phone's own /24. The authenticated endpoint is torn down by the time
      * a face composes, and the paired record's host is where the TV was last SEEN — a
      * resume may have reached it somewhere else.
+     *
+     * Provenance rides with the address because the measurement is worthless without it:
+     * see [LanProximity.sameSubnetClaim].
      */
-    private var dialedHost: String? = null
+    private var dialedHost: DialedHost? = null
     // The four digits a scanned v4 QR carried, held here rather than in the published
     // launch so the only way to reach them is to spend them. Cleared with the launch.
     private var pendingPairCode: String? = null
@@ -612,9 +615,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * Whether this phone and the TV it was talking to shared a /24 when the cast died.
      *
      * Null is the honest third answer and not a default: this phone could not place
-     * itself next to the TV — no address of its own, or no Wi-Fi link for the copy to
-     * make its claim about — so neither "you are on the same network" nor its opposite
-     * may be claimed. See [sameSubnetAs]. Captured at the terminal for
+     * itself next to the TV — no address of its own, no Wi-Fi link for the copy to make
+     * its claim about, or an address it only remembered rather than met on the network it
+     * is on now — so neither "you are on the same network" nor its opposite may be
+     * claimed. See [sameSubnetAs]. Captured at the terminal for
      * [failureLinkVerdict]'s reason — by the time the face composes the endpoint is gone.
      */
     private val _failureSameSubnet = MutableStateFlow<Boolean?>(null)
@@ -796,7 +800,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun ownLanIpv4(): String? = com.flick.sender.NetworkUtils.getSiteLocalIpv4()
 
     /**
-     * Whether this phone and [host] sit on one /24, or null where that cannot be claimed.
+     * Whether this phone and [dialed] sit on one /24, or null where that cannot be claimed.
      *
      * The Wi-Fi test is [LanProximity]'s documented limit rather than belt-and-braces: a
      * cellular rmnet 10/8 address satisfies the /24 comparison against an ISP-default TV
@@ -807,13 +811,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * It cannot rule out a second network that happens to share the same /24 — a hotspot
      * or a neighbour's AP on the same consumer-router default range — because nothing
      * readable without a location permission distinguishes those. The claim stays "on the
-     * same network", never "the network is fine".
+     * same network", never "the network is fine". A remembered address is not even that
+     * much, which is the gate [LanProximity.sameSubnetClaim] holds.
      */
-    private fun sameSubnetAs(host: String?): Boolean? {
+    private fun sameSubnetAs(dialed: DialedHost?): Boolean? {
         if (com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) == null) return null
-        val own = ownLanIpv4() ?: return null
-        val target = host ?: return null
-        return LanProximity.sameSubnet(own, target)
+        return LanProximity.sameSubnetClaim(ownLanIpv4(), dialed)
     }
 
     /**
@@ -1354,8 +1357,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         manualGeneration: Long? = null,
     ) {
         val legacyAtExactHost = store.legacyForHost(host)
-        dialedHost = host
-        val sameSubnet = sameSubnetAs(host) == true
+        // Live either way: a first pair reaches here off an advertisement this phone just
+        // re-resolved, or off an address a person is reading from the TV's own screen as
+        // they spend it. Neither is a memory of where the TV used to be.
+        dialedHost = DialedHost(host, liveVerified = true)
+        val sameSubnet = sameSubnetAs(dialedHost) == true
         val first = control.pair(host, port, deviceLabel, code)
         // Refused before a single byte of the code left the phone is the dead-port
         // fingerprint of a receiver that rebound. Retry the SAME host only — a rogue
@@ -1487,7 +1493,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     candidate = candidates.next(devices.value)
                 }
                 if (candidate == null) break
-                dialedHost = candidate.host
+                dialedHost = DialedHost(candidate.host, candidate.discovered)
                 val result = control.resume(pairing, candidate.host, candidate.port)
                 FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
                 when (result) {
@@ -1647,7 +1653,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // nothing is dialed to report it.
                 if (ownLanIpv4() == null) throw CastStartupFailure(SourceFault.NO_LAN_ADDRESS)
                 val endpoint = control.authenticatedEndpoint() ?: throw CastStartupFailure("control_unreachable")
-                dialedHost = endpoint.host
+                // The authenticated socket is the strongest witness there is: this phone
+                // completed a keyed exchange with that address moments ago.
+                dialedHost = DialedHost(endpoint.host, liveVerified = true)
                 if (!com.flick.sender.NetworkUtils.isOwnedLanIpv4(endpoint.peerIp)) throw CastStartupFailure("no_compatible_lan")
                 if (item.uri.scheme != "content") throw CastStartupFailure("source_unavailable")
                 // MediaStore leaves SIZE null for files its scanner never finished, and

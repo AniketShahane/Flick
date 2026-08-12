@@ -4,14 +4,30 @@ import com.flick.sender.model.DiscoveredTv
 
 /** Candidate policy is pure so discovery hints cannot poison a stored endpoint. */
 internal object ResumeCandidates {
-    data class Endpoint(val host: String, val port: Int)
+    /**
+     * [discovered] is provenance, not rank: it says this address arrived in an
+     * advertisement that crossed the network this phone is on NOW, rather than out of a
+     * record written on a network it may since have left. Nothing may claim the two
+     * devices share a network off a merely remembered address — see
+     * [LanProximity.sameSubnetClaim].
+     */
+    data class Endpoint(val host: String, val port: Int, val discovered: Boolean) {
+        /**
+         * Identity for the queue below, deliberately narrower than the value: a late
+         * advertisement corroborating an endpoint already dialed is the same endpoint,
+         * and must not spend a second slot in a bounded sweep.
+         */
+        val address: Pair<String, Int> get() = host to port
+    }
 
     fun ordered(lastHost: String, lastPort: Int, tvId: String, discovered: List<DiscoveredTv>): List<Endpoint> {
-        val last = Endpoint(lastHost, lastPort)
-        val candidates = discovered.asSequence()
-            .filter { it.tvId == tvId && PairLaunch.isCanonicalIpv4(it.host) && it.port in 1..65535 }
-            .map { Endpoint(it.host, it.port) }
-            .filter { it != last }
+        val live = discovered.filter { it.tvId == tvId && PairLaunch.isCanonicalIpv4(it.host) && it.port in 1..65535 }
+        // The stored endpoint is a memory UNLESS a live advertisement names it exactly,
+        // which is the receiver saying it is at that address on this network right now.
+        val last = Endpoint(lastHost, lastPort, live.any { it.host == lastHost && it.port == lastPort })
+        val candidates = live.asSequence()
+            .map { Endpoint(it.host, it.port, discovered = true) }
+            .filter { it.address != last.address }
             .distinct()
             .sortedWith(compareBy<Endpoint> { it.host }.thenBy { it.port })
             .take(3)
@@ -32,11 +48,11 @@ internal class ResumeCandidateQueue(
     private val tvId: String,
     private val maximum: Int = 4,
 ) {
-    private val tried = LinkedHashSet<ResumeCandidates.Endpoint>()
+    private val tried = LinkedHashSet<Pair<String, Int>>()
     fun next(discovered: List<DiscoveredTv>): ResumeCandidates.Endpoint? =
-        ResumeCandidates.ordered(lastHost, lastPort, tvId, discovered).firstOrNull { it !in tried && tried.size < maximum }
-            ?.also(tried::add)
+        ResumeCandidates.ordered(lastHost, lastPort, tvId, discovered).firstOrNull { it.address !in tried && tried.size < maximum }
+            ?.also { tried += it.address }
     fun hasCapacity() = tried.size < maximum
     fun hasNext(discovered: List<DiscoveredTv>) =
-        tried.size < maximum && ResumeCandidates.ordered(lastHost, lastPort, tvId, discovered).any { it !in tried }
+        tried.size < maximum && ResumeCandidates.ordered(lastHost, lastPort, tvId, discovered).any { it.address !in tried }
 }
