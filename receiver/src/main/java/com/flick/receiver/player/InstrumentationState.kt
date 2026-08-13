@@ -82,6 +82,17 @@ class InstrumentationState {
     /** How long the most recent seek took to reach STATE_READY (ms); 0 until first seek. */
     var lastSeekFillMs: Long = 0L
 
+    /**
+     * elapsedRealtime() while an in-place reload is refilling; 0 otherwise.
+     *
+     * Its own field rather than a second use of [seekFillStartMs]: a reload is not a
+     * seek, and borrowing that window would write a subtitle swap's refill into
+     * [lastSeekFillMs], trading one dishonest number for another. What it shares with
+     * a seek is only that the buffering it causes is the viewer's own doing and is
+     * therefore not a stall — see the [rebufferCount] guard.
+     */
+    var reloadFillStartMs: Long = 0L
+
     /** Clears everything for a fresh playback session (called from [PlayerController.play]). */
     fun reset() {
         playbackStarted = false
@@ -109,5 +120,6 @@ class InstrumentationState {
         seekCount = 0
         seekFillStartMs = 0L
         lastSeekFillMs = 0L
+        reloadFillStartMs = 0L
     }
 }
