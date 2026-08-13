@@ -123,6 +123,30 @@ explains the two-app shape; a real screen recording of the apps is what evidence
 
 ## 3. Data safety
 
+> **Re-verified 2026-08-12 against `884a9f9`** (the error-transparency pass: 84 files,
+> +5697/−384, 66 new user-facing strings). That branch fast-forwards `main`, so the tree
+> checked below is byte-identical to the post-merge tree — this is a verification of the
+> upload state, not of a proposal. A verification is not carried across a diff that size;
+> the section was re-derived rather than re-read. What the re-check found:
+>
+> - **Only external host is still `https://api.opensubtitles.com`** — sole match in shipping
+>   source (`OpenSubtitlesClient.kt:485`). The other URLs in the tree are font-licence text
+>   in `assets/licenses/`, which is displayed, never fetched.
+> - **Still no account or sign-in.** `OpenSubtitlesSession` / `restoredSession` have zero
+>   callers outside `OpenSubtitlesWire.kt` and its unit test; no `/login` request exists in
+>   shipping source. The only `password` matches are `KeyboardType.NumberPassword` on the
+>   **pairing-code** fields — a masked numeric keyboard for the 4-digit code, not a credential.
+> - **No new permission.** The eleven declared permissions are unchanged.
+> - **The sender manifest did change**, and it is worth stating rather than leaving to be
+>   rediscovered under review: a `<queries>` element declaring one `ACTION_VIEW` + `video/*`
+>   intent, so the error screen can tell whether a local player exists before offering the
+>   button. This is the narrow form and **deliberately not `QUERY_ALL_PACKAGES`** — which
+>   matters, because `QUERY_ALL_PACKAGES` is a sensitive permission needing its own Console
+>   declaration and this needs none. It collects nothing, so no Data safety row changes.
+> - **The 66 new strings introduce no new claim.** They name OpenSubtitles in a few subtitle
+>   errors — already disclosed in the privacy policy below — and `connecting_detail` says
+>   "no transcode, no cloud", which matches the listing copy rather than overreaching.
+
 These answers were derived by reading the code. Two facts anchor everything:
 
 - The **only** external host either app contacts is `https://api.opensubtitles.com/api/v1`.
