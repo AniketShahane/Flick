@@ -465,12 +465,13 @@ class PlayerController(context: Context) : SessionPlayer {
                 Player.STATE_BUFFERING -> {
                     // Buffering interrupts the stable stretch that re-arms recovery.
                     stableReadySinceMs = 0L
-                    // Only count buffering that happens AFTER playback has started;
-                    // the initial fill is not a rebuffer/stall, and buffering caused
-                    // by a user seek is tracked as a seek fill, not a rebuffer.
-                    if (instrumentation.playbackStarted &&
-                        instrumentation.currentRebufferStartMs == 0L &&
-                        instrumentation.seekFillStartMs == 0L
+                    if (
+                        StallAccounting.opensStall(
+                            playbackStarted = instrumentation.playbackStarted,
+                            stallOpen = instrumentation.currentRebufferStartMs != 0L,
+                            seekFillOpen = instrumentation.seekFillStartMs != 0L,
+                            reloadFillOpen = instrumentation.reloadFillStartMs != 0L,
+                        )
                     ) {
                         instrumentation.rebufferCount++
                         instrumentation.currentRebufferStartMs = SystemClock.elapsedRealtime()
@@ -488,6 +489,10 @@ class PlayerController(context: Context) : SessionPlayer {
                     instrumentation.playbackStarted = true
                     if (stableReadySinceMs == 0L) stableReadySinceMs = SystemClock.elapsedRealtime()
                     closeSeekFillWindow()
+                    // Closed on READY alone, exactly like the seek window above, and
+                    // deliberately NOT on IDLE: a reload passes through prepare(), and
+                    // clearing on the way there would reopen the very window this shuts.
+                    instrumentation.reloadFillStartMs = 0L
                     closeRebufferWindow()
                 }
                 Player.STATE_ENDED, Player.STATE_IDLE -> {
@@ -2198,6 +2203,9 @@ class PlayerController(context: Context) : SessionPlayer {
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .build()
         }
+        // Opened BEFORE setMediaItem, which is what puts the player into
+        // STATE_BUFFERING — the seek on the way out arrives too late to classify it.
+        instrumentation.reloadFillStartMs = SystemClock.elapsedRealtime()
         val attemptToken = if (subtitle != null) ++nextSubtitleReloadAttemptToken else null
         val reloadedMediaItem = mediaItemFor(
             url = url,
