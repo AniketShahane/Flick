@@ -215,7 +215,9 @@ class RenameLabelDialogTest {
         // composing, and that arrives as an onValueChange which clears the
         // failure flag before it is ever drawn.
         composeRule.onNodeWithTag("rename-name-field").performImeAction()
-        composeRule.onNodeWithText("Couldn’t save the name. Try again.").assertIsEnabled()
+        // The apostrophe is ASCII, as it is in every string this app ships: a
+        // typographic one here matched nothing and failed a message that renders.
+        composeRule.onNodeWithText("Couldn't save the name. Try again.").assertIsEnabled()
         composeRule.onNodeWithTag("rename-save").assertIsEnabled()
         composeRule.onNodeWithTag("rename-name-field").assertIsFocused()
         composeRule.runOnIdle { assertEquals(0, dismisses) }
