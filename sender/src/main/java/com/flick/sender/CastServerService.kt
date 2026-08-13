@@ -688,7 +688,7 @@ class CastServerService : Service() {
                 .setAction(ACTION_SET_SUBTITLE)
                 .putExtra(EXTRA_CAST_ID, castId)
                 .putExtra(EXTRA_SUBTITLE_URI, subtitleUri)
-            context.startService(intent)
+            deliverToRunningService(context, intent, "setSubtitle")
         }
 
         @Suppress("DEPRECATION")
@@ -703,7 +703,32 @@ class CastServerService : Service() {
         fun stop(context: Context, castId: String) {
             val intent = Intent(context, CastServerService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CAST_ID, castId)
             // Delivered as a normal start command; the service tears itself down.
-            context.startService(intent)
+            deliverToRunningService(context, intent, "stop")
+        }
+
+        /**
+         * A plain start command aimed at a service that is supposed to ALREADY be
+         * running, with the one refusal that is not an error swallowed.
+         *
+         * From API 31 a background start throws [android.app.BackgroundServiceStartNotAllowedException],
+         * an [IllegalStateException]. `cleanup()` runs off state changes rather than off
+         * a screen, so it fires while the app is cached — a control socket that dies
+         * minutes after a cast ended reaches here with no foreground service alive, and
+         * an uncaught throw killed the process on a real phone (08-11, PID 19400,
+         * `procs:0 bg:+5m21s`, from a StateFlow collect on the main thread).
+         *
+         * Swallowing is right by construction rather than by convenience: the refusal
+         * is the platform stating the app holds no foreground service, which for this
+         * app means the media server is already down. There is nothing left to stop and
+         * no cast left to retitle. Only that exception is caught — anything else is a
+         * real fault and still crashes.
+         */
+        private fun deliverToRunningService(context: Context, intent: Intent, verb: String) {
+            try {
+                context.startService(intent)
+            } catch (e: IllegalStateException) {
+                FlickLog.w("http", "service command refused verb=$verb err=${e.javaClass.simpleName}")
+            }
         }
 
         private fun startForegroundServiceCompat(context: Context, intent: Intent) {
