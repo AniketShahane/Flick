@@ -913,8 +913,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // those surfaces put that name inside sentences that accuse. The control lease knows
     // which paired record authenticated the socket; the stored label is the fallback for
     // a TV nothing has connected to since it started.
-    val controlPeerLabel by server.controlPeerLabel.collectAsState()
-    val castDeviceLabel = controlPeerLabel ?: deviceLabel
+    //
+    // It outranks the freshly published snapshot for as long as a lease is held, so it
+    // is what a rename has to reach: the key id it carries is the only thing that can
+    // say a rename is about this phone — see [ControlServer.onPhoneRenamed].
+    val controlPeer by server.controlPeer.collectAsState()
+    val castDeviceLabel = controlPeer?.label ?: deviceLabel
 
     // The code the surface is actually offering, and the QR built from it.
     //
@@ -1245,7 +1249,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // revoke — and `ControlServer.forget` takes the
                                     // manager monitor before `serverLock`, so
                                     // routing a manager write back through the
-                                    // server is the lock order that deadlocks.
+                                    // server is the lock order that deadlocks. The
+                                    // server is TOLD the new name once that write
+                                    // has returned, by a call that takes no lock;
+                                    // see the commit below.
                                     //
                                     onRenamePhone = { keyId ->
                                         pairing.pairedDevices()
@@ -1410,7 +1417,21 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             is RenameTarget.Phone -> pairing.pairedDevices()
                                 .firstOrNull { it.keyId == target.keyId }
                                 ?.let { current ->
-                                    current.label == next || pairing.rename(target.keyId, next)
+                                    val renamed = current.label == next ||
+                                        pairing.rename(target.keyId, next)
+                                    // AFTER the manager write has returned, so the
+                                    // manager monitor is no longer held: `ControlServer`
+                                    // takes that monitor before `serverLock` on the
+                                    // forget path, and this must not be the call that
+                                    // takes the two the other way round. It acquires no
+                                    // lock at all.
+                                    //
+                                    // `next` is what the store now holds: the dialog
+                                    // normalizes before it commits and `rename`
+                                    // normalizes again, and [normalizeLabel] is
+                                    // idempotent.
+                                    if (renamed) server.onPhoneRenamed(target.keyId, next)
+                                    renamed
                                 }
                                 ?: false
                         }

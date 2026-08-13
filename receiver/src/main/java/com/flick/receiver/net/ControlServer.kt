@@ -32,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -140,7 +141,7 @@ class ControlServer(
     val boundHost: String? get() = binding?.host
     val boundPort: Int get() = binding?.port ?: -1
 
-    private val leaseholder = MutableStateFlow<String?>(null)
+    private val leaseholder = MutableStateFlow<ControlPeer?>(null)
 
     /**
      * The paired phone that most recently held the control lease.
@@ -152,9 +153,34 @@ class ControlServer(
      * one fact that cannot be wrong about it.
      *
      * Deliberately NOT cleared when the socket closes: the sentences that need it most
-     * are drawn after the link is gone.
+     * are drawn after the link is gone. The key id therefore outlives the lease too, and
+     * must — a rename landing after the phone hung up still renames the phone those
+     * sentences are about, and [onPhoneRenamed] has nothing else to recognise it by.
      */
-    val controlPeerLabel: StateFlow<String?> = leaseholder.asStateFlow()
+    val controlPeer: StateFlow<ControlPeer?> = leaseholder.asStateFlow()
+
+    /**
+     * Re-publishes [keyId]'s name, so every surface drawn from [controlPeer] stops
+     * naming the phone by the name the viewer has just replaced. This is the only
+     * other writer: the lease install reads the label once, and while a phone holds
+     * that lease [controlPeer] outranks the snapshot a rename does refresh.
+     *
+     * **Acquires no lock**, which is the only reason it may be called at all. Every
+     * forget takes the manager monitor and then [serverLock]; a rename is committed
+     * under that same manager monitor, so anything it calls that reached for
+     * [serverLock] would complete the AB-BA inversion [invalidateResumes] describes.
+     * The caller must also be past its own manager write — see `ReceiverApp`.
+     *
+     * `update` is a compare-and-set over one immutable value, so a lease installed
+     * by a different phone mid-call wins outright rather than leaving that phone's
+     * key id beside this one's name.
+     *
+     * Nothing goes on the wire. The label is this TV's own name for a phone; the
+     * phone was never told it, and the v2 frame set has no field that could.
+     */
+    fun onPhoneRenamed(keyId: String, label: String) {
+        leaseholder.update { leaseholderAfterRename(it, keyId, label) }
+    }
 
     /**
      * Walks [ports] in order and returns the port that actually bound, or -1.
@@ -499,8 +525,12 @@ class ControlServer(
                 LeaseAdmission.INSTALL -> Unit
             }
             // Published as soon as the lease is this connection's, so a screen raised by
-            // the very first command on it already names the phone that sent it.
-            leaseholder.value = auth.record.label
+            // the very first command on it already names the phone that sent it. The key
+            // id rides along in the same value rather than in a field beside it: this
+            // runs on a Ktor worker and [onPhoneRenamed] runs on the main thread, and two
+            // independent writes can interleave into one phone's key id beside another's
+            // name.
+            leaseholder.value = ControlPeer(auth.record.keyId, auth.record.label)
             if (auth.resumed) emit(resumed(auth, host, port))
             // The new lease is visible before the old idle socket is closed. Its finally
             // cannot release or poison this lease because every release checks token+gen.
@@ -1270,6 +1300,34 @@ internal fun forgetRevokesActiveConnection(forgottenKeyId: String, activeKeyId: 
  */
 internal fun forgetInvalidatesResumeChallenge(challengeKeyId: String, forgottenKeyId: String?): Boolean =
     forgottenKeyId == null || forgottenKeyId == challengeKeyId
+
+/**
+ * The phone a cast surface names, as ONE value: the label it draws, and the key id
+ * of the record that label came from.
+ *
+ * They are a single immutable value rather than two fields because they are written
+ * from a Ktor worker when the lease installs and read-modified from the main thread
+ * when a phone is renamed. Two independent writes can interleave into one phone's
+ * key id beside another phone's name, which is a live cast labelled with the name of
+ * a device that is not driving it.
+ */
+data class ControlPeer(val keyId: String, val label: String)
+
+/**
+ * What [ControlServer.controlPeer] must hold once [renamedKeyId] has taken [label]
+ * — [current] unchanged when the rename names some other phone, or none at all.
+ *
+ * The identity compared is the KEY ID and never the label. The label is the value
+ * being replaced, so it is stale here by definition, and two phones may honestly
+ * carry the same one: matching on it would put the new name on whichever of them
+ * held the lease. A null [current] is a TV nothing has connected to since it
+ * started, which no rename can be about.
+ *
+ * An unchanged name returns a value equal to [current], so the flow conflates it and
+ * no surface redraws.
+ */
+internal fun leaseholderAfterRename(current: ControlPeer?, renamedKeyId: String, label: String): ControlPeer? =
+    if (current?.keyId == renamedKeyId) ControlPeer(renamedKeyId, label) else current
 
 /** What a completed authentication is allowed to do with the control lease. */
 internal enum class LeaseAdmission { FORGOTTEN, BUSY, INSTALL }
