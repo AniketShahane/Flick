@@ -67,6 +67,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -469,6 +470,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             _subtitleOwnerKey.value = value?.uriKey
         }
     private val pairingGate = PairingAttemptGate()
+    private val tvNameRefreshGate = TvNameRefreshGate()
     private val manualPairAttemptLedger = ManualPairAttemptLedger()
     private val pairCodeReset = PairCodeReset()
     private val castGate = CastGenerationGate()
@@ -726,6 +728,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             if (status == ConnectionStatus.DISCONNECTED) currentCastId?.let(::onControlLost)
             publishTransport()
         } }
+        // A rename on the TV is the one fact about the receiver that reaches this phone
+        // over neither channel it holds: the control wire is frozen and carries no name
+        // change, and its session survives the app being backgrounded, so it is never
+        // re-established on its own. An advertisement is the only cue left — a cue and
+        // never the value, which is what [TvNameRefreshGate] is for.
+        //
+        // Combined with the cast stage and the route because a cue met while this phone is
+        // busy is deferred rather than dropped, and every reason to defer it ends on one of
+        // those two rather than on another advertisement. mDNS need not re-resolve a record
+        // it already holds, so without them a hint met mid-cast — or met while the viewer
+        // was reading the Connect screen — could wait for a rename that never comes.
+        scope.launch {
+            combine(nsd.devices, _castStart, _route) { discovered, _, _ -> discovered }
+                .collect(::considerTvNameRefresh)
+        }
     }
 
     /**
@@ -1557,6 +1574,71 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The stale name a rename on the TV leaves on every surface that names the receiver —
+     * the library pill, the detail CTA, the media notification, the error copy — because
+     * [_connectedTv] is written only where a proof lands and nothing re-proves an idle link.
+     *
+     * Acting on the advertisement is a re-handshake and NOT a name change: the name that
+     * arrives is the one the receiver signed, which is why an unauthenticated cue can
+     * safely drive it.
+     */
+    private fun considerTvNameRefresh(discovered: List<DiscoveredTv>) {
+        val shown = _connectedTv.value ?: return
+        // Read before the gate, so a record that could not be resumed at all never spends
+        // the single hint this advertised name gets.
+        val pairing = store.get(shown.tvId)?.takeIf { !it.needsRepair } ?: return
+        if (!tvNameRefreshGate.refreshes(pairing.tvId, shown.name, idleForNameRefresh(), discovered)) return
+        FlickLog.i("nsd", "tv name refresh tvId=${pairing.tvId}")
+        refreshTvName(pairing)
+    }
+
+    /**
+     * Whether a re-handshake would cost this phone nothing it is in the middle of. A resume
+     * closes the control session before it dials, so a live cast, a cast queued behind a
+     * dial, a pairing already running and a code sheet waiting on the receiver each outrank
+     * a cosmetic name.
+     *
+     * [Route.Connect] outranks it too, and not because anything there is in flight. That
+     * screen is the app's only reader of the control connection status, so a dial nobody
+     * asked for arrives on it as a pairing that is: the manual sheet raises its progress
+     * state and refuses submit, the connected row drops its tick, and the reconnect fires
+     * the confirm haptic with no press behind it. A phone that buzzes at nobody is worse
+     * than the stale name this exists to correct.
+     */
+    private fun idleForNameRefresh(): Boolean =
+        currentCastId == null && pendingCast == null && pairingJob?.isActive != true &&
+            _pairTarget.value == null && _pendingPairLaunch.value == null &&
+            _route.value != Route.Connect && _route.value != Route.Connecting
+
+    /**
+     * Re-proves the pairing at the endpoint this phone last authenticated at, and takes the
+     * name out of the answer.
+     *
+     * That endpoint alone, rather than [ResumeCandidates]' sweep: nothing but an
+     * unauthenticated advertisement asked for this, so it may not choose which address the
+     * phone dials. A LAN advertiser claiming the paired id can then cost at most one
+     * re-handshake with the TV this phone already trusts, and can never redirect it.
+     *
+     * Every failure is silent for the same reason. A resume the user asked for may mark the
+     * pairing for repair, raise an error face and move the route; a refresh nobody asked for
+     * may do none of those — breaking a working pairing on an unauthenticated cue would be
+     * a far worse bug than the stale name it set out to fix.
+     */
+    private fun refreshTvName(pairing: PairingStore.Pairing) {
+        val attempt = beginPairingAttempt()
+        pairingJob = scope.launch {
+            val endpoint = (control.resume(pairing) as? ControlClient.Result.Resumed)?.endpoint
+            if (endpoint == null || !pairingGate.isCurrent(attempt)) return@launch
+            val committed = PairingPersistence.commit {
+                store.commitVerifiedEndpoint(pairing.tvId, endpoint.tv, pairing.host, pairing.port)
+            }
+            if (!committed) return@launch
+            _connectedTv.value = PairedTv(endpoint.tv, pairing.host, pairing.port, pairing.tvId)
+            publishTransport()
         }
     }
 
