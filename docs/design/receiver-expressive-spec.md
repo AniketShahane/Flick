@@ -341,15 +341,26 @@ case the card exists for.
 ### 5.2 Connecting / handshake (`ReceiverApp.ConnectingScreen`)
 
 Full-bleed `Canvas` @ 82 % over the (covered) player surface. Centred card:
-450 dp wide, `GlassPanel` fill, 26 dp radius, 32 dp padding, `GlassBorder`
-hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
+380 dp wide, `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
+`GlassBorder` hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
 (`FlickMotion.TvRiseCard`).
 
 Contents: `FlickLoader` — the Material 3 Expressive shape-morph loading indicator
 in `Spark`, at `FlickLoaderDefaults.Size` — then `connecting_title` Bricolage 800 /
-27 sp, then `connecting_detail` 24 sp `OnSurfaceDim`. Where a device label is
-known, the title becomes "<device> is flicking <title>" using the real session
-values.
+22 sp, then `connecting_detail` 16 sp `OnSurfaceDim`, separated by `FlickSpace.Md`.
+Where a device label is known, the title becomes "<device> is flicking <title>"
+using the real session values.
+
+**Re-cut from the numbers above** (450 dp / 32 dp / 27 sp / 24 sp), which were
+measured against nothing: the card took **52 % of the 864 dp usable width and ~62 %
+of the 486 dp usable height** to say one sentence, its 32 dp padding bypassed the
+`PanelPadding` token that exists for this, and its 24 sp *detail* outweighed the
+22 sp used for *headings* on every peer surface — `PairScreen`, `SubtitlesPanel`,
+`StreamMetricsPanel` — which inverts the hierarchy it was meant to establish. At
+the sizes above the column is ~44 % of the usable height. Type came down and
+`FlickSpace` did not follow it, per `FlickDimens`' own rule; the loader keeps
+`FlickLoaderDefaults.Size` deliberately, because shrinking the copy around it is
+what makes the morph the one bold thing on the screen.
 
 The hand-drawn 48 dp amber arc this replaces is retired. The loader is the phone's,
 so the two apps now speak one vocabulary for the same handshake: see

@@ -133,8 +133,10 @@ import com.flick.receiver.ui.screens.rememberDiagnosticsLines
 import com.flick.receiver.ui.screens.videoResolutionClass
 import com.flick.receiver.ui.screens.videoResolutionLines
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
+import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.components.RenameLabelDialog
 import com.flick.receiver.ui.theme.FlickType
@@ -294,8 +296,12 @@ internal fun receiverPlaybackGesturesEnabled(
     panelOpen: Boolean,
 ): Boolean = playbackActive && !panelOpen
 
-/** Handshake card width (receiver-expressive-spec.md §5.2). */
-private val HANDSHAKE_CARD_WIDTH = 450.dp
+/**
+ * Handshake card width (receiver-expressive-spec.md §5.2), re-cut against the 864 dp
+ * usable width the rest of the module is measured on: at the spec's 450 dp the card took
+ * over half the safe area to say one sentence, and the loader is what the screen is for.
+ */
+private val HANDSHAKE_CARD_WIDTH = 380.dp
 
 /** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
 private val SUBTITLE_SIZES = SubtitleSize.values()
@@ -1580,8 +1586,8 @@ private fun ConnectingScreen(
                 modifier = Modifier.width(HANDSHAKE_CARD_WIDTH),
                 shape = FlickShape.Hero,
                 tone = GlassPanelTone.Panel,
-                contentPadding = PaddingValues(32.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = FlickDimens.PanelPadding,
+                verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 riseDistance = FlickMotion.TvRiseCard,
             ) {
@@ -1596,13 +1602,13 @@ private fun ConnectingScreen(
                     } else {
                         stringResource(R.string.connecting_title)
                     },
-                    style = FlickType.display(sizeSp = 27),
+                    style = FlickType.display(sizeSp = 22),
                     color = FlickColor.OnSurface,
                     textAlign = TextAlign.Center,
                 )
                 Text(
                     text = stringResource(R.string.connecting_detail),
-                    style = FlickType.body(sizeSp = 24),
+                    style = FlickType.body(sizeSp = 16),
                     color = FlickColor.OnSurfaceDim,
                     textAlign = TextAlign.Center,
                 )
