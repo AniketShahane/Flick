@@ -297,11 +297,12 @@ internal fun receiverPlaybackGesturesEnabled(
 ): Boolean = playbackActive && !panelOpen
 
 /**
- * Handshake card width (receiver-expressive-spec.md §5.2), re-cut against the 864 dp
- * usable width the rest of the module is measured on: at the spec's 450 dp the card took
- * over half the safe area to say one sentence, and the loader is what the screen is for.
+ * Handshake card width (receiver-expressive-spec.md §5.2). Set by the headline it carries:
+ * at 380 dp "<device> is flicking <film> (year)" wrapped and left the year alone on the
+ * second line. This leaves ~518 dp of text column, which holds a film name and year of
+ * roughly thirty characters on one line; longer ones wrap inside the name instead.
  */
-private val HANDSHAKE_CARD_WIDTH = 380.dp
+private val HANDSHAKE_CARD_WIDTH = 560.dp
 
 /** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
 private val SUBTITLE_SIZES = SubtitleSize.values()

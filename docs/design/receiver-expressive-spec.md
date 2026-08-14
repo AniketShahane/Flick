@@ -341,7 +341,7 @@ case the card exists for.
 ### 5.2 Connecting / handshake (`ReceiverApp.ConnectingScreen`)
 
 Full-bleed `Canvas` @ 82 % over the (covered) player surface. Centred card:
-380 dp wide, `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
+560 dp wide, `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
 `GlassBorder` hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
 (`FlickMotion.TvRiseCard`).
 
@@ -356,11 +356,21 @@ measured against nothing: the card took **52 % of the 864 dp usable width and ~6
 of the 486 dp usable height** to say one sentence, its 32 dp padding bypassed the
 `PanelPadding` token that exists for this, and its 24 sp *detail* outweighed the
 22 sp used for *headings* on every peer surface — `PairScreen`, `SubtitlesPanel`,
-`StreamMetricsPanel` — which inverts the hierarchy it was meant to establish. At
-the sizes above the column is ~44 % of the usable height. Type came down and
-`FlickSpace` did not follow it, per `FlickDimens`' own rule; the loader keeps
-`FlickLoaderDefaults.Size` deliberately, because shrinking the copy around it is
+`StreamMetricsPanel` — which inverts the hierarchy it was meant to establish. Type
+came down and `FlickSpace` did not follow it, per `FlickDimens`' own rule; the loader
+keeps `FlickLoaderDefaults.Size` deliberately, because shrinking the copy around it is
 what makes the morph the one bold thing on the screen.
+
+**Width answers to the headline, not to the detail.** Seen rendered, the 380 dp that
+re-cut produced broke "&lt;device&gt; is flicking &lt;film&gt; (year)" across two lines and left
+the year standing on the second by itself: the width had been cut against the *detail*,
+which is the shortest thing on the card, while the headline is the longest. 560 dp — 65 %
+of the usable width — gives a ~518 dp text column, on which a film name and year of
+roughly thirty characters stay on one line; past that the headline wraps inside the name,
+which is the acceptable break. Recovering that second title line takes the column to ~40 %
+of the usable height, so the card is wider *and* shorter than the one it replaces.
+`connecting_detail` carries its own newline rather than trusting the wrapper, which at this
+column fits "Press Back" onto the first line and strands "to cancel." on the second.
 
 The hand-drawn 48 dp amber arc this replaces is retired. The loader is the phone's,
 so the two apps now speak one vocabulary for the same handshake: see

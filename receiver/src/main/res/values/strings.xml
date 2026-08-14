@@ -100,8 +100,11 @@
     <!-- Back on this screen is a wired, working cancel — the handler calls
          server.stopLocalCast() and falls back to session.backToStandby() — so naming it
          invents nothing. No progress claim: the handshake genuinely sits in one stage,
-         which is why the loader is indeterminate by design. -->
-    <string name="connecting_detail">Opening a direct stream — no transcode, no cloud. Press Back to cancel.</string>
+         which is why the loader is indeterminate by design.
+         The break is placed, not left to the wrapper: at the card's width the greedy
+         wrap fits "Press Back" onto the first line and strands "to cancel." on the
+         second, splitting the one instruction here. A translator may move it. -->
+    <string name="connecting_detail">Opening a direct stream — no transcode, no cloud.\nPress Back to cancel.</string>
     <!-- Used only when both the device label and the media title are known. -->
     <string name="connecting_device_title">%1$s is flicking %2$s</string>
 
