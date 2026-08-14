@@ -5,6 +5,7 @@ Two deep-research efforts (each: 5 Sonnet 5 research agents + 5 adversarial veri
 - [`01-streaming-over-home-wifi.md`](./01-streaming-over-home-wifi.md) — can *live streaming* just work over home Wi-Fi (beat client isolation + band/VBR limits) without a hotspot?
 - [`02-fast-transfer-to-tv.md`](./02-fast-transfer-to-tv.md) — what's the *absolute fastest* way to copy an ≤8 GB file to the TV's storage and play it locally (32 GB, watch-then-delete)?
 - [`03-plain-wifi-re-diagnosis.md`](./03-plain-wifi-re-diagnosis.md) — **forensic re-read of the Phase-0 evidence: the home-LAN block is *dynamic and pair-specific*, not static client isolation.** Partially supersedes 01's framing for *this* network; general conclusions in 01/02 still stand.
+- [`04-peer-block-measured.md`](./04-peer-block-measured.md) (2026-08-14, **live measurement, not research**) — the block reproduced and measured while active: it is **layer 2** (link-local ICMPv6 fails both ways), **multicast crosses it while unicast does not** (a usable detection fingerprint), it is **transient and self-clearing**, and **the receiver has no Wi-Fi Direct** — which answers the gating test at the bottom of this file. Supersedes the Wi-Fi Direct row below.
 
 ## Combined verdict (the decision-relevant bottom line)
 
@@ -18,7 +19,7 @@ Only four paths cross client isolation, for **both** streaming and transfer:
 |---|---|---|
 | **Wired Ethernet on the TV** | ✅ (usually) | One-time, permanent; also removes the 2.4/5 GHz VBR problem. Not universal (some mesh/enterprise "Net Isolation" blocks wired↔wireless too). |
 | **USB exFAT drive** | ✅ always | Only transport *verified on real Google TV Streamer hardware*; ~3 min/8 GB (USB2-class ~46 MB/s, corrected down from an initial USB3 overclaim). |
-| **Wi-Fi Direct** | ✅ architecturally | **Unverified on this TV's chipset** — the single biggest open question. Spec sheet silent; MediaTek driver hints lean "no." |
+| ~~**Wi-Fi Direct**~~ | ❌ **not available** | **Answered 2026-08-14 — see [`04`](./04-peer-block-measured.md) N4.** `pm list features` on the real receiver returns only `android.hardware.wifi` and `…wifi.passpoint`; no `wifi.direct`, no `wifi.aware`, empty `dumpsys wifip2p`. The driver hints were right. Not buildable on this hardware. |
 | **Cloud round-trip** | ✅ | Slow (45+ min just to upload 8 GB); privacy/quota cost. Last resort only. |
 
 ## Recommendation
@@ -41,6 +42,16 @@ Decision logic the app should implement:
 - **Android 16/17 Local Network Protection** (`NEARBY_WIFI_DEVICES` → mandatory `ACCESS_LOCAL_NETWORK` at targetSdk 37) gates the phone's inbound server + mDNS. Handle now.
 - **VBR stalls are fully solvable in-app** via `DefaultLoadControl` tuning (`setPrioritizeTimeOverSizeThresholds(true)`, larger target buffer bytes/time).
 
-## The one test that gates the architecture
+## The one test that gated the architecture — RUN, and the answer is no
 
-Run on the **actual Google TV Streamer**: `adb shell pm list features | grep -i wifi` (and a `WifiP2pManager.discoverPeers()/createGroup()` spike). This resolves whether an *automatic wireless* isolation bypass (Wi-Fi Direct) is buildable at all, before committing engineering to it.
+`adb shell pm list features | grep -i wifi` on the actual Google TV Streamer, 2026-08-14:
+
+```
+feature:android.hardware.wifi
+feature:android.hardware.wifi.passpoint
+```
+
+No `wifi.direct`, no `wifi.aware`; `dumpsys wifip2p` empty. **There is no automatic wireless bypass
+to build.** The `WifiP2pManager` spike is moot and should not be attempted. Any wireless path that
+takes the router out of the loop must therefore be the phone's own hotspot, joined by hand on the
+TV's screen — see [`04`](./04-peer-block-measured.md).
