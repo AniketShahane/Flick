@@ -312,10 +312,23 @@ class NsdDiscovery(context: Context) {
             resolvedAt[name] = stamp
             // Drop the same name (a re-registration) and any other record squatting the
             // same host (a rename), so neither key can leave a duplicate behind.
+            val retired = retiredByResolve(_devices.value, name, tv.host)
             _devices.value = (_devices.value.filter { it.name != name && it.host != tv.host } + tv)
                 .sortedByDescending { it.state == TvAvailability.READY }
             _resolveRevision.value = stamp
             if (awaitingResolve.remove(name)) _unresolvedNames.value = awaitingResolve.size
+            // A renamed TV retires its old name HERE and nowhere else: the line above is
+            // the only place that name leaves [_devices], and [onLost] — the one path that
+            // tears a name down — returns early on a name already gone from it. Left as it
+            // was, the retired name kept its own `ServiceInfoCallback` registered for the
+            // life of the process, re-querying a name nothing on the LAN answers to and
+            // holding one of [MAX_MONITORS] against the TVs that still exist.
+            retired.forEach { gone ->
+                resolvedAt.remove(gone)
+                lastInfoByName.remove(gone)
+                dropMonitor(gone)
+                if (awaitingResolve.remove(gone)) _unresolvedNames.value = awaitingResolve.size
+            }
             ensureMonitor(name)
         }
     }
@@ -419,3 +432,22 @@ class NsdDiscovery(context: Context) {
         const val SWEEP_BUDGET = 20
     }
 }
+
+/**
+ * The names a resolve of [name] at [host] displaces — the old names of a TV that was
+ * renamed, which this resolve is about to drop from the device list.
+ *
+ * A rename is the only way a name leaves that list without passing through the loss
+ * path, and the loss path is where a name's record subscription is unregistered. So
+ * these names are exactly the ones whose subscription would otherwise outlive them:
+ * one mDNS query every ~20 s, for a name nothing on the LAN answers to, for the life
+ * of the process — and one of the four subscription slots held against a TV that
+ * still exists.
+ *
+ * Matching is on the host and never on the name: the new name is the only thing known
+ * about the rename, and the old one is by definition the value being replaced. A
+ * record carrying [name] itself is a re-registration rather than a rename, and keeps
+ * its subscription.
+ */
+internal fun retiredByResolve(devices: List<DiscoveredTv>, name: String, host: String): List<String> =
+    devices.filter { it.name != name && it.host == host }.map { it.name }
