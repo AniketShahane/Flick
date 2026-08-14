@@ -1,5 +1,6 @@
 package com.flick.sender
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -655,7 +656,10 @@ class CastServerService : Service() {
             return flags
         }
 
-        /** Start (or re-target) the foreground media server for [uri]. */
+        /**
+         * Start (or re-target) the foreground media server for [uri], answering whether
+         * the start command left this phone at all — see [startForegroundServiceCompat].
+         */
         fun start(
             context: Context,
             castId: String,
@@ -664,7 +668,7 @@ class CastServerService : Service() {
             size: Long,
             bindHost: String,
             subtitleUri: Uri? = null,
-        ) {
+        ): Boolean {
             val intent = Intent(context, CastServerService::class.java).apply {
                 action = ACTION_START
                 data = uri
@@ -675,7 +679,7 @@ class CastServerService : Service() {
                 putExtra(EXTRA_BIND_HOST, bindHost)
                 putExtra(EXTRA_SUBTITLE_URI, subtitleUri)
             }
-            startForegroundServiceCompat(context, intent)
+            return startForegroundServiceCompat(context, intent)
         }
 
         /**
@@ -731,14 +735,53 @@ class CastServerService : Service() {
             }
         }
 
-        private fun startForegroundServiceCompat(context: Context, intent: Intent) {
+        /**
+         * The START half of the refusal [deliverToRunningService] already swallows, and the
+         * more dangerous half: from API 31 a foreground-service start made while the app is
+         * in the background throws [android.app.ForegroundServiceStartNotAllowedException],
+         * an [IllegalStateException], and an uncaught one kills the process rather than the
+         * cast. Nothing has been bound or served when it fires, so false is the whole of
+         * what happened and the caller draws a face that says exactly that.
+         *
+         * Only that refusal is caught. Anything else is a real fault and still crashes.
+         */
+        private fun startForegroundServiceCompat(context: Context, intent: Intent): Boolean = try {
             // minSdk is 26 (O), so startForegroundService is always available.
             context.startForegroundService(intent)
+            true
+        } catch (e: IllegalStateException) {
+            FlickLog.w("bind", "service start refused err=${e.javaClass.simpleName}")
+            false
         }
     }
 }
 
 private object ControlCastId { fun valid(value: String) = ControlProtocolV2.id(value) }
+
+/**
+ * Whether this process may start a foreground service right now.
+ *
+ * From API 31 it may not while it is in the background, and the platform answers that with
+ * a throw rather than a refusal. [importance] is the process state the app can read of
+ * itself without a permission; [ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE]
+ * is the floor because it is the last state that still means a window of this app is on
+ * screen — a service already running foreground sits above it, which is why an ordinary
+ * re-target mid-cast never reaches this question.
+ *
+ * It is a bound and not a guarantee: the app can be backgrounded between this answer and
+ * the start, and there are exemptions this cannot see. The catch in
+ * `startForegroundServiceCompat` is what makes either kind of miss survivable.
+ */
+internal fun foregroundStartAllowed(sdkInt: Int, importance: Int): Boolean =
+    sdkInt < Build.VERSION_CODES.S ||
+        importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
+
+/** This process's own importance, as the platform currently reports it. */
+internal fun currentProcessImportance(): Int {
+    val state = ActivityManager.RunningAppProcessInfo()
+    ActivityManager.getMyMemoryState(state)
+    return state.importance
+}
 
 /**
  * Process-wide publication of the still the media notification and the platform session

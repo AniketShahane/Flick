@@ -4,9 +4,11 @@ import android.content.Context
 import android.net.wifi.WifiManager
 
 /**
- * Cheap, best-effort read of the TV's OWN Wi-Fi link for the diagnostics overlay.
- * Both ends' band + RSSI is what turns "the stream stalled" into a fast "which
- * end / which layer" diagnosis, so the receiver samples its own radio each tick.
+ * Cheap, best-effort read of the TV's OWN Wi-Fi link, for the diagnostics overlay
+ * and for the association edges `WifiAssociationMonitor` records. Both ends' band +
+ * RSSI is what turns "the stream stalled" into a fast "which end / which layer"
+ * diagnosis, so the receiver samples its own radio on each diagnostics tick and
+ * again whenever the radio changes network underneath it.
  *
  * Constraint: [WifiManager.getConnectionInfo] is deprecated at API 31 in favour
  * of a ConnectivityManager `NetworkCapabilities` transport-info read, but that
@@ -18,8 +20,18 @@ import android.net.wifi.WifiManager
  */
 object WifiTelemetry {
 
-    /** A TV Wi-Fi link sample: [band] is a human label, speed in Mb/s, rssi in dBm. */
-    data class Link(val band: String, val linkSpeedMbps: Int, val rssiDbm: Int)
+    /**
+     * A TV Wi-Fi link sample: [band] is a human label for [frequencyMhz], speed in
+     * Mb/s, rssi in dBm. The raw frequency is carried alongside the label because a
+     * log line is parsed by eye and by grep, and "5 GHz" cannot tell one channel
+     * from another across a roam.
+     */
+    data class Link(
+        val band: String,
+        val frequencyMhz: Int,
+        val linkSpeedMbps: Int,
+        val rssiDbm: Int,
+    )
 
     /** Null on Ethernet / not associated / unavailable (frequency <= 0). */
     fun read(context: Context): Link? {
@@ -34,6 +46,6 @@ object WifiTelemetry {
             frequencyMhz >= 4900 -> "5 GHz"
             else -> "2.4 GHz"
         }
-        return Link(band, info.linkSpeed, info.rssi)
+        return Link(band, frequencyMhz, info.linkSpeed, info.rssi)
     }
 }

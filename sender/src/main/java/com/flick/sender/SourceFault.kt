@@ -14,6 +14,14 @@ object SourceFault {
     const val SOURCE_LOST = "source_lost"
 
     /**
+     * The platform refused to start the service at all — an API 31+ background start.
+     *
+     * Deliberately not [BIND_FAILED]: nothing was bound, so that face's "another app may
+     * be holding the port" would be a cause invented for a refusal that named itself.
+     */
+    const val START_REFUSED = "media_start_refused"
+
+    /**
      * A throwable that escaped `streamSlice` after the range had already been accepted.
      *
      * Every one of them means the same thing to the viewer — the file stopped being

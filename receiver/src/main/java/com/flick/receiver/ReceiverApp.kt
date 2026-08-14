@@ -85,6 +85,7 @@ import com.flick.receiver.net.PairingManager
 import com.flick.receiver.net.PairingSurface
 import com.flick.receiver.net.pairNetworkFace
 import com.flick.receiver.net.ReceiverBindingGate
+import com.flick.receiver.net.WifiAssociationMonitor
 import com.flick.receiver.net.controlPortTier
 import com.flick.receiver.player.BAND_NOTICE_MS
 import com.flick.receiver.player.BandNotice
@@ -315,6 +316,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val pairingSnapshot by pairing.snapshot.collectAsState()
     val nsd = remember { NsdAdvertiser(context) }
     val lanMonitor = remember { LanBindingMonitor(context) }
+    val wifiAssociations = remember { WifiAssociationMonitor(context) }
     val scope = rememberCoroutineScope()
     val playbackFlow = remember { MutableStateFlow(PlaybackFrame.IDLE) }
     var lifecycleStarted by remember {
@@ -420,6 +422,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // terminal release + control server + NSD teardown on dispose (no leaks).
     DisposableEffect(lifecycleOwner) {
         lanMonitor.start()
+        // Scoped to the composition rather than to STARTED, like the LAN monitor
+        // beside it: the registration is passive, so listening through a
+        // screensaver costs nothing and covers the hours that matter most. It
+        // still dies with the Activity — the receiver has no Service, so a TV in
+        // standby records no association at all.
+        wifiAssociations.start()
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> {
@@ -487,6 +495,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             server.stopDetached()
             nsd.unregister()
             lanMonitor.stop()
+            wifiAssociations.stop()
         }
     }
 

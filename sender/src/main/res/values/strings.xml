@@ -845,6 +845,14 @@
     <string name="error_serverstart_body">Flick couldn\'t open the port it streams from on this phone, so %1$s was never sent anything. Another app may be holding it.</string>
     <string name="error_serverstart_pill">Server didn\'t start</string>
 
+    <!-- Android refusing the foreground-service start outright, which it does from API 31
+         while the app is in the background. Nothing was bound and no port was contested, so
+         this may not borrow the copy above. It is reachable from the window that waits a
+         router block out: the path can come back while Flick is in someone\'s pocket. -->
+    <string name="error_startrefused_title">Android wouldn\'t let Flick start serving</string>
+    <string name="error_startrefused_body">Flick was in the background when the film was ready to go back on %1$s, and Android only lets it start the film server while it\'s open. Play the film again from here.</string>
+    <string name="error_startrefused_pill">Start not allowed</string>
+
     <string name="error_refused_title">This phone turned the TV away</string>
     <!-- "Link" is what every other face on this screen calls the CONNECTION. What went
          stale here is the film\'s address, so this one says address. -->
@@ -940,13 +948,27 @@
 
     <!-- EHOSTUNREACH is the router's or the local stack's own answer, not a timeout and not
          a guess. Paired with the same-/24 test the phone can state both halves as fact; the
-         third body is for a phone that could not read its own address and may claim
-         neither. No Wi-Fi action is offered on any of them: the fix is not on the phone. -->
+         third body is for a phone that could not read its own address, or for a TV that did
+         not answer a fresh mDNS resolve, and may claim neither. No Wi-Fi action is offered
+         on any of them: the fix is not on the phone.
+
+         These no longer send the owner looking for AP isolation, client isolation or a
+         guest network. Measurement falsified static isolation on both axes: the same pair
+         streams fine most of the time, and a third wireless host reached both ends while
+         the two were blocked from each other. What was measured is a router that stops
+         carrying traffic between exactly these two devices and starts again by itself,
+         which is what these say — hedged, because it is a statement about someone else's
+         router, and with no duration promised as a fact.
+
+         The waiting variants are true only while the phone is still checking behind the
+         face; the plain ones are what is left when that window closes. -->
     <string name="error_noroute_title">Your router is keeping these two apart</string>
-    <string name="error_noroute_body">Nothing was allowed through between this phone and %1$s. Look for AP isolation, client isolation, or a guest network in your router\'s settings.</string>
-    <string name="error_noroute_body_samesubnet">This phone and %1$s are on the same network, but the router refused to pass anything between them. Look for AP isolation, client isolation, or a guest network in your router\'s settings.</string>
+    <string name="error_noroute_body">Nothing is getting through between this phone and %1$s. This usually clears by itself within a few minutes.</string>
+    <string name="error_noroute_body_waiting">Nothing is getting through between this phone and %1$s. This usually clears by itself within a few minutes — Flick is still checking, and will put the film back on where you left it.</string>
+    <string name="error_noroute_body_samesubnet">This phone and %1$s are on the same network, but the router has stopped passing anything between them. This usually clears by itself within a few minutes.</string>
+    <string name="error_noroute_body_samesubnet_waiting">This phone and %1$s are on the same network, but the router has stopped passing anything between them. This usually clears by itself within a few minutes — Flick is still checking, and will put the film back on where you left it.</string>
     <string name="error_noroute_body_offsubnet">This phone and %1$s are on different parts of your network, and nothing was allowed through between them. Put both on the same Wi-Fi network — not a guest one.</string>
-    <string name="error_noroute_pill">Router blocking devices</string>
+    <string name="error_noroute_pill">Router not passing traffic</string>
     <!-- EHOSTUNREACH can come from this phone\'s own stack, and the phone that could not
          read its own address is exactly the phone whose interface may have gone. The body
          for that case deliberately names nobody, so the title and the pill over and under

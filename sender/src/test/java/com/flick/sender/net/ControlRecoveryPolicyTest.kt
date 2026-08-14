@@ -134,4 +134,113 @@ class ControlRecoveryPolicyTest {
         canDial = true,
         attempt = attempt,
     )
+
+    /**
+     * The window that waits a router block out carries [recovers]' conservatism: a cast the
+     * TV was playing, and something to dial with. It says nothing about the fault, because
+     * at the moment a control socket dies nothing has been dialled yet.
+     */
+    @Test fun onlyAPlayingCastWithAPairingIsWaitedOut() {
+        assertTrue(ControlRecoveryPolicy.waitsOutLoss(reachedActive = true, canDial = true))
+        assertFalse(ControlRecoveryPolicy.waitsOutLoss(reachedActive = false, canDial = true))
+        assertFalse(ControlRecoveryPolicy.waitsOutLoss(reachedActive = true, canDial = false))
+    }
+
+    /**
+     * The measured fingerprint and nothing else. EHOSTUNREACH for a TV mDNS is still
+     * advertising is the router declining to forward, and that fault clears itself; silence
+     * is a TV that is switched off and an RST is one that is not listening, and neither
+     * improves by being waited for.
+     */
+    @Test fun onlyTheNoRouteFingerprintKeepsTheWindowOpen() {
+        assertTrue(waitsOn(DialFault.NO_ROUTE))
+        assertFalse(waitsOn(DialFault.NO_ANSWER))
+        assertFalse(waitsOn(DialFault.REFUSED))
+        assertFalse(waitsOn(DialFault.NO_NETWORK))
+        assertFalse(waitsOn(DialFault.REJECTED))
+        assertFalse(waitsOn(null))
+    }
+
+    /**
+     * The other half of that fingerprint, and the half a socket cannot supply. A TV that was
+     * unplugged mid-film loses its neighbour entry on this phone, and from then on the
+     * kernel answers a dial to it with the block's own EHOSTUNREACH — so the fault alone
+     * would keep the window open, and the face under it promising the film back, for a TV
+     * that is off.
+     */
+    @Test fun aTvThatAnswersNoAdvertisementIsNotWaitedFor() {
+        assertFalse(waitsOn(DialFault.NO_ROUTE, freshlyAdvertised = false))
+    }
+
+    /**
+     * Both measured blocks — 13 m 43 s and about 20 m — have to fall inside the window, or
+     * the app would stop checking while the fault it was built for was still running.
+     */
+    @Test fun theWindowOutlastsTheBlocksThatWereMeasured() {
+        assertTrue(ControlRecoveryPolicy.waiting(armedAtMs = 1_000L, nowMs = 1_000L + 13L * 60_000L + 43_000L))
+        assertTrue(waitsOn(DialFault.NO_ROUTE, nowMs = 1_000L + 19L * 60_000L))
+        assertFalse(waitsOn(DialFault.NO_ROUTE, nowMs = 1_000L + 21L * 60_000L))
+    }
+
+    private fun waitsOn(
+        fault: DialFault?,
+        freshlyAdvertised: Boolean = true,
+        nowMs: Long = 61_000L,
+    ) = ControlRecoveryPolicy.waitsOn(fault, freshlyAdvertised, armedAtMs = 1_000L, nowMs = nowMs)
+
+    /** Zero is no window at all, not one that opened at the boot of the phone. */
+    @Test fun anUnarmedWindowIsNotOpen() {
+        assertFalse(ControlRecoveryPolicy.waiting(armedAtMs = 0L, nowMs = 0L))
+        assertFalse(ControlRecoveryPolicy.waiting(armedAtMs = 0L, nowMs = 5_000L))
+    }
+
+    /**
+     * The cadence: doubling, and then a plateau. The cap is the whole decision — a dial is
+     * a few packets, so the only thing a longer plateau buys is a viewer sitting in front of
+     * a path that came back minutes ago.
+     */
+    @Test fun theBackoffDoublesToTheCapAndStaysThere() {
+        assertEquals(5_000L, ControlRecoveryPolicy.retryDelayMs(1, jitter = 0.0))
+        assertEquals(10_000L, ControlRecoveryPolicy.retryDelayMs(2, jitter = 0.0))
+        assertEquals(20_000L, ControlRecoveryPolicy.retryDelayMs(3, jitter = 0.0))
+        assertEquals(ControlRecoveryPolicy.BLOCK_RETRY_CAP_MS, ControlRecoveryPolicy.retryDelayMs(4, jitter = 0.0))
+        assertEquals(ControlRecoveryPolicy.BLOCK_RETRY_CAP_MS, ControlRecoveryPolicy.retryDelayMs(50, jitter = 0.0))
+    }
+
+    /**
+     * Jitter only ever shortens: the cap is a promise about the worst case, and a phone
+     * whose ticks fell into step with a periodic timer on the far side would sample the same
+     * phase of it every time.
+     */
+    @Test fun jitterOnlyEverShortensTheWait() {
+        for (attempt in 1..8) {
+            val plain = ControlRecoveryPolicy.retryDelayMs(attempt, jitter = 0.0)
+            for (draw in listOf(0.01, 0.5, 0.99, 1.0)) {
+                val jittered = ControlRecoveryPolicy.retryDelayMs(attempt, draw)
+                assertTrue("attempt $attempt draw $draw exceeded its wait", jittered <= plain)
+                assertTrue("attempt $attempt draw $draw collapsed", jittered >= plain * 3 / 4)
+            }
+        }
+    }
+
+    /** A draw outside 0..1 is a caller bug and must not produce a negative wait. */
+    @Test fun anImpossibleDrawStillProducesAWait() {
+        assertEquals(5_000L, ControlRecoveryPolicy.retryDelayMs(1, jitter = -3.0))
+        assertEquals(3_750L, ControlRecoveryPolicy.retryDelayMs(1, jitter = 4.0))
+        assertTrue(ControlRecoveryPolicy.retryDelayMs(0, jitter = 0.0) > 0L)
+    }
+
+    /**
+     * The window has to hold many more attempts than it has room for waits, or the cadence
+     * would run out before the fault does.
+     */
+    @Test fun theCadenceFillsTheWindowManyTimesOver() {
+        var spentMs = 0L
+        var attempts = 0
+        while (spentMs < ControlRecoveryPolicy.BLOCK_WINDOW_MS) {
+            attempts += 1
+            spentMs += ControlRecoveryPolicy.retryDelayMs(attempts, jitter = 0.0)
+        }
+        assertTrue("only $attempts attempts fit the window", attempts > 20)
+    }
 }

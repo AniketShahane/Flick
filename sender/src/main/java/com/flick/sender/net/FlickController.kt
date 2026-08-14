@@ -17,6 +17,9 @@ import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.preferredTerminalCode
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
+import com.flick.sender.WifiAssociationMonitor
+import com.flick.sender.currentProcessImportance
+import com.flick.sender.foregroundStartAllowed
 import com.flick.sender.media.AudioDelayMemoryStore
 import com.flick.sender.media.AudioDelayRecorder
 import com.flick.sender.media.AudioDelayWrite
@@ -60,10 +63,12 @@ import com.flick.sender.model.VideoRotation
 import com.flick.sender.support.SupportCatalog
 import com.flick.sender.support.SupportPromptStore
 import com.flick.sender.util.FlickLog
+import kotlin.random.Random
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -153,6 +158,53 @@ internal fun controlFaultCode(fault: DialFault, offNetwork: Boolean): String = w
     // the TV is awake" — states the opposite of.
     DialFault.REJECTED -> "control_rejected"
 }
+
+/**
+ * Whether a finished dial may state where this phone and the TV sit relative to each other.
+ *
+ * [DialFault.NO_ROUTE] is the one fault whose face names the router, and naming it takes
+ * two facts: the kernel's EHOSTUNREACH, and a TV that is demonstrably there to be kept
+ * apart from. The platform's NSD stack answers a resolve out of its own cache, so a TV
+ * switched off minutes ago is still advertised and the router would wear a fault that was
+ * never its. [freshlyAdvertised] is a record re-resolved in this same pass; without it the
+ * face falls back to the copy that convicts nobody.
+ *
+ * Every other fault is unchanged. [DialFault.REFUSED] carries an RST, which is proof the
+ * path forwards, and its face never names the router at all.
+ */
+internal fun dialPlacesTv(fault: DialFault, freshlyAdvertised: Boolean): Boolean =
+    fault != DialFault.NO_ROUTE || freshlyAdvertised
+
+/**
+ * Whether a route is one a re-handshake nobody asked for may run under.
+ *
+ * [Route.Connect] and [Route.Connecting] are in flight or being read: that screen is the
+ * app's only reader of the control connection status, so a background dial arrives on it
+ * as a pairing that is — the manual sheet raises its progress state and refuses submit,
+ * the connected row drops its tick, and the reconnect fires the confirm haptic with no
+ * press behind it.
+ *
+ * [Route.Failure] is the face the block window lives behind, and the reason is not
+ * cosmetic. A refresh reaches the pairing gate like every other caller and stands that
+ * window down, while its own dial is silent by design and re-arms nothing — so a rename
+ * advertised mid-block would end a twenty-minute wait milliseconds after it armed. mDNS
+ * keeps crossing while the block runs, which is exactly when such a record arrives.
+ */
+internal fun routeIdleForNameRefresh(route: Route): Boolean =
+    route != Route.Connect && route != Route.Connecting && route !is Route.Failure
+
+/**
+ * Whether a route change stands the block-wait window down.
+ *
+ * The window lives behind the face its own loss raised and spends every dial from there,
+ * so a viewer who leaves that face has answered. [waiting] is what keeps this to the
+ * window: a sweep is in flight for seconds at a time — longer where candidates run their
+ * dial bound out — and both of its endings publish a route of their own, the error face
+ * again or the film starting on the TV. Either would land over the screen the viewer just
+ * asked for, and the first of them re-arms the very gate the next tick reads as idle.
+ */
+internal fun blockWaitStandsDown(from: Route, to: Route, waiting: Boolean): Boolean =
+    waiting && from is Route.Failure && to !is Route.Failure
 
 /** A secret-free, monotonic result signal for a manual pairing form. */
 internal data class ManualPairAttemptEvent(
@@ -500,6 +552,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val silentAudioMemory = SilentAudioMemory()
     private val decoderFaults = DecoderFaultLedger()
     private val linkMonitor = LinkCapacityMonitor { SystemClock.elapsedRealtime() }
+    private val wifiAssociations = WifiAssociationMonitor(appContext)
 
     // The last moment this phone provably put bytes on the media socket, off the same
     // 1 Hz readings the capacity monitor measures on. It is the second witness a control
@@ -507,6 +560,30 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var lastServedByteAtMs = 0L
     private var controlRecoveries = 0
     private var lastControlRecoveryAtMs = 0L
+
+    /**
+     * The window this phone spends waiting a router block out, and the film it is holding.
+     *
+     * Its own [Job], never [pairingJob]: that one is shared by resume(), refreshTvName()
+     * and runPairing(), and [invalidatePairingAttempt] cancels it — including from inside
+     * the dial this window itself asks for.
+     *
+     * [blockVerdict] and [blockAdvertised] are how the sweep's answer reaches the loop, and
+     * it takes both: they are the two facts [ControlRecoveryPolicy.waitsOn] weighs. Neither
+     * survives the sweep that produced them — the fault exists only where the candidate walk
+     * ends (see resume()), where it is flattened into a code, and the re-resolve is asked
+     * for there and nowhere else.
+     *
+     * [blockDialing] marks this window's OWN dial, which passes through
+     * [beginPairingAttempt] like every other and would otherwise cancel the window from
+     * inside it.
+     */
+    private var blockJob: Job? = null
+    private var blockRequest: CastRequest? = null
+    private var blockArmedAtMs = 0L
+    private var blockVerdict: DialFault? = null
+    private var blockAdvertised = false
+    private var blockDialing = false
 
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
     val route: StateFlow<Route> = _route.asStateFlow()
@@ -618,13 +695,24 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      *
      * Null is the honest third answer and not a default: this phone could not place
      * itself next to the TV — no address of its own, no Wi-Fi link for the copy to make
-     * its claim about, or an address it only remembered rather than met on the network it
-     * is on now — so neither "you are on the same network" nor its opposite may be
-     * claimed. See [sameSubnetAs]. Captured at the terminal for
+     * its claim about, an address it only remembered rather than met on the network it is
+     * on now, or a TV that answered no fresh advertisement and is therefore not provably
+     * on that network at all — so neither "you are on the same network" nor its opposite
+     * may be claimed. See [sameSubnetAs] and [dialPlacesTv]. Captured at the terminal for
      * [failureLinkVerdict]'s reason — by the time the face composes the endpoint is gone.
      */
     private val _failureSameSubnet = MutableStateFlow<Boolean?>(null)
     val failureSameSubnet: StateFlow<Boolean?> = _failureSameSubnet.asStateFlow()
+
+    /**
+     * Whether this phone is still checking behind the error face on screen.
+     *
+     * Live rather than frozen with the failure, because it is the only claim that face
+     * makes about the future: the window closes on its own, and the sentence promising it
+     * has to close with it.
+     */
+    private val _waitingOutBlock = MutableStateFlow(false)
+    val waitingOutBlock: StateFlow<Boolean> = _waitingOutBlock.asStateFlow()
 
     /**
      * The phone's media notification, spending the same verbs the remote does.
@@ -670,6 +758,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     init {
+        // Here rather than beside a cast: the interval this answers about begins before any
+        // cast is started and outlasts every one that fails.
+        wifiAssociations.start()
         CastTransportState.attach(transportCommands)
         scope.launch { control.frames.collect(::onFrame) }
         scope.launch { session.haptics.collect { haptics.play(it) } }
@@ -766,32 +857,43 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val serving = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, nowMs)
         val request = currentRequest
         val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
+        val reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId
         val attempt = ControlRecoveryPolicy.attempt(controlRecoveries, lastControlRecoveryAtMs, nowMs)
         val recovers = ControlRecoveryPolicy.recovers(
-            reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId,
+            reachedActive = reachedActive,
             mediaServing = serving,
             canDial = request != null && pairing != null,
             attempt = attempt,
         )
         FlickLog.w("cast", "control lost castIdFp=${FlickLog.fp(castId)} serving=$serving attempt=$attempt recovering=$recovers")
         if (!recovers || request == null) {
+            // Captured HERE, above the terminal: cleanup() nulls currentRequest and
+            // retryCast() spends retryItem, so nothing below this line still names the film
+            // or the second it was on.
+            val waited = request
+                ?.takeIf {
+                    ControlRecoveryPolicy.waitsOutLoss(
+                        reachedActive = reachedActive,
+                        canDial = pairing != null,
+                    )
+                }
+                ?.let { pending ->
+                    val start = resumedStartFor(pending, active = reachedActive)
+                    pending.copy(startMs = start.startMs, startOver = start.startOver)
+                }
             // Retryable now, whatever the reason. A link that dropped says nothing about
             // the file, and the error face has to be able to offer the film back — which
             // for this code it could not, so the cast simply ended.
             terminal(castId, "control_disconnected", retryable = true)
+            // After the face, never instead of it. The window is a second chance behind a
+            // terminal the viewer can already act on, and its first dial is what decides
+            // whether this was the measured block or a TV that has gone.
+            if (waited != null) armBlockWait(waited)
             return
         }
         controlRecoveries = attempt
         lastControlRecoveryAtMs = nowMs
-        val playback = session.state.value
-        val resumed = CastRetryPolicy.start(
-            originalStartMs = request.startMs,
-            originalStartOver = request.startOver,
-            active = true,
-            confirmedMs = playback.confirmedMs,
-            durationMs = playback.durationMs,
-            wireDurationMs = request.item.durationMs,
-        )
+        val resumed = resumedStartFor(request, active = true)
         // The face before the dial: this cast is being re-established rather than failing,
         // and the connecting screen is the only one that says so.
         publishCastStart(CastStartState.ConnectingControl(castId))
@@ -802,6 +904,213 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // remote stop is sent: the socket that would carry it is the one that just went.
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = false)
         flickToTv(request.copy(startMs = resumed.startMs, startOver = resumed.startOver))
+    }
+
+    /**
+     * Where a re-cast of [request] should start, from what the TV last confirmed.
+     *
+     * One rule for both the immediate recovery and the window that waits a block out: the
+     * position is clamped to the duration that goes on the wire, because the receiver
+     * answers startMs > durationMs by closing the control socket.
+     */
+    private fun resumedStartFor(request: CastRequest, active: Boolean): RetryStart {
+        val playback = session.state.value
+        return CastRetryPolicy.start(
+            originalStartMs = request.startMs,
+            originalStartOver = request.startOver,
+            active = active,
+            confirmedMs = playback.confirmedMs,
+            durationMs = playback.durationMs,
+            wireDurationMs = request.item.durationMs,
+        )
+    }
+
+    /**
+     * Wait a router block out, and put the film back the moment the path returns.
+     *
+     * The fault this exists for was measured rather than theorised (research/03): the
+     * router stops forwarding between exactly these two devices while both stay healthy on
+     * the same radio, multicast keeps crossing so mDNS goes on advertising a TV no socket
+     * can reach, and thirteen to twenty minutes later it clears itself. Nothing an
+     * unprivileged app can do repairs it, so this does not try to. It waits.
+     *
+     * Three properties this window has to hold, each of them a bug someone would otherwise
+     * hit:
+     *
+     * It is INVISIBLE while it runs. It moves no route, plays no haptic, and spends a dial
+     * only from the error face this loss already put on screen — [idleForBlockRetry] is
+     * [idleForNameRefresh]'s discipline applied to a louder background action, and for the
+     * same reason: a dial nobody asked for arrives on the Connect screen as a pairing, and
+     * a phone that buzzes at nobody is worse than the thing it was fixing.
+     *
+     * It holds NO LOCKS. The cast's Wi-Fi and wake locks went with `cleanup()` before this
+     * opened, and no battery exemption is asked for, so Doze will defer these waits — the
+     * loop is written against a monotonic deadline rather than against the delay it asked
+     * for, and re-checks rather than trusting one to have fired on time.
+     *
+     * And what it does at the end is a NEW cast, not a reconnect: the receiver tore its own
+     * session down when the control socket died, so there is nothing on the far end to
+     * re-adopt. The viewer pays a re-buffer, and no copy anywhere pretends otherwise.
+     */
+    private fun armBlockWait(request: CastRequest) {
+        blockRequest = request
+        if (blockJob?.isActive == true) return
+        blockArmedAtMs = SystemClock.elapsedRealtime()
+        blockVerdict = null
+        blockAdvertised = false
+        _waitingOutBlock.value = true
+        // Stamped on the same monotonic clock the association log uses, so the question
+        // this whole feature exists to answer — did a re-association end the block? — is a
+        // subtraction across two lines of one ring rather than a clock conversion.
+        FlickLog.i(
+            "cast",
+            "block wait armed atMs=$blockArmedAtMs windowMs=${ControlRecoveryPolicy.BLOCK_WINDOW_MS}",
+        )
+        blockJob = scope.launch {
+            var attempt = 0
+            while (true) {
+                attempt += 1
+                awaitElapsed(
+                    SystemClock.elapsedRealtime() +
+                        ControlRecoveryPolicy.retryDelayMs(attempt, Random.nextDouble()),
+                )
+                val nowMs = SystemClock.elapsedRealtime()
+                if (!ControlRecoveryPolicy.waiting(blockArmedAtMs, nowMs)) {
+                    FlickLog.i("cast", "block wait done reason=window atMs=$nowMs attempts=$attempt")
+                    break
+                }
+                if (!idleForBlockRetry()) {
+                    FlickLog.i("cast", "block wait done reason=busy atMs=$nowMs attempts=$attempt")
+                    break
+                }
+                val pending = blockRequest ?: break
+                val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
+                if (pairing == null) {
+                    FlickLog.i("cast", "block wait done reason=unpaired atMs=$nowMs attempts=$attempt")
+                    break
+                }
+                // Every tick, because SWEEP_BUDGET at SWEEP_PERIOD_MS is five minutes of
+                // re-resolution and this window is twenty. start() is idempotent and
+                // re-arms that budget.
+                nsd.start()
+                // A dial that lands ends in a foreground-service start, which the platform
+                // answers with a throw rather than a refusal while this app is in the
+                // background. The window keeps running; the attempt is simply not spent.
+                if (!foregroundStartAllowed(Build.VERSION.SDK_INT, currentProcessImportance())) {
+                    FlickLog.i("cast", "block retry skipped reason=background atMs=$nowMs attempt=$attempt")
+                    continue
+                }
+                FlickLog.i("cast", "block retry attempt=$attempt atMs=$nowMs sinceArmedMs=${nowMs - blockArmedAtMs}")
+                // Cleared before the dial, so a sweep that ends anywhere but the arm that
+                // records one — a busy receiver, a denial, a write that failed here —
+                // cannot be read as the previous attempt's fault all over again.
+                blockVerdict = null
+                blockAdvertised = false
+                blockDialing = true
+                flickToTv(pending)
+                blockDialing = false
+                // The sweep runs on pairingJob, and its answer is what decides whether this
+                // is still worth waiting on. Joining is also what keeps the cadence honest:
+                // a candidate walk can spend seconds, and those are seconds of the window.
+                pairingJob?.join()
+                if (!ControlRecoveryPolicy.waitsOn(
+                        blockVerdict,
+                        blockAdvertised,
+                        blockArmedAtMs,
+                        SystemClock.elapsedRealtime(),
+                    )
+                ) {
+                    FlickLog.i(
+                        "cast",
+                        "block wait done reason=fault fault=${blockVerdict?.name?.lowercase() ?: "none"} " +
+                            "advertised=$blockAdvertised atMs=${SystemClock.elapsedRealtime()} attempts=$attempt",
+                    )
+                    break
+                }
+            }
+            clearBlockWait()
+        }
+    }
+
+    /**
+     * What a completed candidate sweep leaves the window: its two facts, and whether to go
+     * on.
+     *
+     * This is the only place a finished sweep still holds a [DialFault] — past it the
+     * failure is a code and a face — and [freshlyAdvertised] is the answer to the resolve
+     * that sweep spent, which is asked for nowhere else. Together they are what keeps the
+     * window armed for the measured layer-2 fingerprint and not for a TV that is simply
+     * switched off, whose dead neighbour entry answers with the same EHOSTUNREACH.
+     *
+     * [request] is the cast that was queued behind the dial, read before `failPendingResume`
+     * moves it into the retry slot. With nothing queued there is nothing to put back and
+     * nothing to wait for.
+     */
+    private fun considerBlockWait(fault: DialFault?, freshlyAdvertised: Boolean, request: CastRequest?) {
+        blockVerdict = fault
+        blockAdvertised = freshlyAdvertised
+        val nowMs = SystemClock.elapsedRealtime()
+        // A window already open keeps its own deadline: twenty minutes is the outage this
+        // is sized against, not the allowance of each attempt inside it.
+        val armedAtMs = if (blockJob?.isActive == true) blockArmedAtMs else nowMs
+        if (request == null || !ControlRecoveryPolicy.waitsOn(fault, freshlyAdvertised, armedAtMs, nowMs)) {
+            endBlockWait()
+            return
+        }
+        blockArmedAtMs = armedAtMs
+        armBlockWait(request)
+    }
+
+    /**
+     * Whether the window may spend a dial right now.
+     *
+     * [Route.Failure] is the whole of the navigation test, and it is deliberately positive:
+     * this window exists behind the face its own loss raised, so anywhere else is the viewer
+     * having moved on — to the library, to a film, to the Connect screen this must never
+     * dial underneath.
+     *
+     * It answers only about the moment before the dial. A tap that lands while the sweep
+     * runs is [navigate]'s to catch, because by then this loop is inside `join`.
+     */
+    private fun idleForBlockRetry(): Boolean =
+        currentCastId == null && pendingCast == null && pairingJob?.isActive != true &&
+            _pairTarget.value == null && _pendingPairLaunch.value == null &&
+            _route.value is Route.Failure
+
+    /**
+     * Sleep until [dueAtMs] on the monotonic clock.
+     *
+     * Not one `delay`: nothing holds a wake lock across this window, so the timer behind it
+     * is deferred by Doze and counts device-uptime rather than elapsed time. One wait can
+     * therefore return minutes late, or — coming out of a doze — before the deadline it was
+     * asked for. Only the deadline is believed.
+     */
+    private suspend fun awaitElapsed(dueAtMs: Long) {
+        while (true) {
+            val remainingMs = dueAtMs - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) return
+            delay(remainingMs)
+        }
+    }
+
+    /** The window is over: the film is back on, or the viewer moved on. */
+    private fun endBlockWait() {
+        val armed = blockJob?.isActive == true || blockRequest != null
+        blockJob?.cancel()
+        blockJob = null
+        // Every cast start passes through here, so a window that was never open says
+        // nothing rather than logging the end of a wait nobody was keeping.
+        if (!armed) return
+        FlickLog.i("cast", "block wait ended atMs=${SystemClock.elapsedRealtime()}")
+        clearBlockWait()
+    }
+
+    private fun clearBlockWait() {
+        blockRequest = null
+        blockVerdict = null
+        blockAdvertised = false
+        blockArmedAtMs = 0L
+        _waitingOutBlock.value = false
     }
 
     private fun transportCommandable(): Boolean =
@@ -960,9 +1269,22 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             scoped = LibraryFolders.scoped(items, folderScope, MediaItem::relativePath, MediaItem::bucketId),
         )
     }
-    fun openConnect() { nsd.start(); _connectFromLibrary.value = true; _route.value = Route.Connect }
-    fun openLibrary() { _route.value = Route.Library }
-    fun openSettings() { _route.value = Route.Settings }
+    /**
+     * A route the viewer chose.
+     *
+     * Every navigation a person can make goes through here because of the one face that has
+     * a dial running behind it. The block window's sweep is cancelled through the pairing
+     * generation and through nothing else — a route assignment leaves it in flight, and it
+     * publishes its own ending over the screen that was just asked for. See
+     * [blockWaitStandsDown].
+     */
+    private fun navigate(route: Route) {
+        if (blockWaitStandsDown(_route.value, route, blockJob?.isActive == true)) invalidatePairingAttempt()
+        _route.value = route
+    }
+    fun openConnect() { nsd.start(); _connectFromLibrary.value = true; navigate(Route.Connect) }
+    fun openLibrary() { navigate(Route.Library) }
+    fun openSettings() { navigate(Route.Settings) }
     fun openDetail(item: MediaItem) {
         // A sideloaded subtitle belongs to the title it was picked for. Browsing to a
         // different one drops it, but only while nothing is casting: a live cast owns
@@ -976,7 +1298,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             subtitleOwner = item
             recallSubtitle(item)
         }
-        _route.value = Route.Detail(item)
+        navigate(Route.Detail(item))
     }
 
     /**
@@ -1173,7 +1495,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 cancelPairing()
                 _route.value = Route.Library
             }
-            BackDisposition.SHOW_LIBRARY -> _route.value = Route.Library
+            BackDisposition.SHOW_LIBRARY -> navigate(Route.Library)
         }
     }
     fun minimizeNowPlaying() {
@@ -1238,7 +1560,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // invalidatePairingAttempt() is already a no-op while authenticated, so a QR
         // scanned mid-cast must not yank the user out of playback either.
         if (_route.value != Route.NowPlaying && _route.value != Route.Connecting && currentCastId == null) {
-            _route.value = Route.Connect
+            navigate(Route.Connect)
         }
     }
 
@@ -1565,13 +1887,28 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     _route.value = Route.Connect
                 } else if (sawTransportFailure) {
                     val fault = lastFault
+                    // Asked before the face composes and only where the answer changes it:
+                    // the router may be named for EHOSTUNREACH only against a TV that
+                    // answered a resolve in this same pass. See [dialPlacesTv].
+                    // The window weighs the same answer, for the same reason: at socket
+                    // level a router that will not forward and a TV that has gone are one
+                    // errno apiece and the same one. See [ControlRecoveryPolicy.waitsOn].
+                    val advertised = fault == DialFault.NO_ROUTE && nsd.advertisedNow(pairing.tvId)
+                    if (!pairingGate.isCurrent(attempt)) return@launch
+                    // Read before `failPendingResume`, which moves it into the retry slot.
+                    val queued = pendingCast
                     if (fault != null) {
-                        failPendingResume(controlFaultCode(fault, offNetwork()), fault)
+                        failPendingResume(
+                            controlFaultCode(fault, offNetwork()),
+                            fault,
+                            placesTv = dialPlacesTv(fault, advertised),
+                        )
                     } else {
                         // Nothing but transient denials: every candidate ANSWERED, and
                         // said why. That is the same fact the post-upgrade close carries.
                         failPendingResume("control_rejected", DialFault.REJECTED)
                     }
+                    considerBlockWait(fault, advertised, queued)
                 }
             }
         }
@@ -1602,17 +1939,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * dial, a pairing already running and a code sheet waiting on the receiver each outrank
      * a cosmetic name.
      *
-     * [Route.Connect] outranks it too, and not because anything there is in flight. That
-     * screen is the app's only reader of the control connection status, so a dial nobody
-     * asked for arrives on it as a pairing that is: the manual sheet raises its progress
-     * state and refuses submit, the connected row drops its tick, and the reconnect fires
-     * the confirm haptic with no press behind it. A phone that buzzes at nobody is worse
-     * than the stale name this exists to correct.
+     * The routes that outrank it are [routeIdleForNameRefresh]'s, and not one of them is in
+     * flight: a phone that buzzes at nobody, and a wait this refresh would silently end, are
+     * both worse than the stale name this exists to correct.
      */
     private fun idleForNameRefresh(): Boolean =
         currentCastId == null && pendingCast == null && pairingJob?.isActive != true &&
             _pairTarget.value == null && _pendingPairLaunch.value == null &&
-            _route.value != Route.Connect && _route.value != Route.Connecting
+            routeIdleForNameRefresh(_route.value)
 
     /**
      * Re-proves the pairing at the endpoint this phone last authenticated at, and takes the
@@ -1676,6 +2010,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * recovery budget the previous one may have spent is not theirs to inherit.
      */
     private fun beginUserCast(request: CastRequest) {
+        // Including the window that was waiting a block out on the viewer's behalf: they
+        // are here, they have chosen, and a second cast arriving behind theirs is the one
+        // thing that window may never do.
+        endBlockWait()
         controlRecoveries = 0
         lastControlRecoveryAtMs = 0L
         flickToTv(request)
@@ -1757,7 +2095,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // with a re-buffer.
                 val subtitle = owned ?: recalledSubtitleFor(item, castId, thisGeneration)
                 ServerStateHolder.beginStarting(castId)
-                CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)
+                // A refusal here is the platform declining to start a foreground service
+                // from the background, which it answers with a throw. Nothing was bound and
+                // no port was contested, so it may not fall through to the nine-second wait
+                // below and be reported as this phone having been slow.
+                if (!CastServerService.start(appContext, castId, item.uri, item.name, sizeBytes, endpoint.peerIp, subtitle?.uri)) {
+                    throw CastStartupFailure(SourceFault.START_REFUSED)
+                }
                 // Not `startup_timeout`: this throw is strictly before `loadSentCastId` is
                 // written below, so the shipped copy's claim that the TV accepted the cast
                 // is provably false here — nothing was ever asked of it.
@@ -1860,6 +2204,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * below and the sequence it has always run is unchanged.
      */
     private fun cancelCast(silent: Boolean) {
+        // Both callers end the window: the viewer pressed Cancel, or a cast is starting
+        // and there is nothing left to wait for. The silent path is startCast's own
+        // supersede, which is the successful end of a wait rather than the abandoned one.
+        endBlockWait()
         val queued = pendingCast != null
         pendingCast = null
         val live = currentCastId
@@ -1868,6 +2216,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (!silent && (queued || live != null)) _route.value = Route.Library
     }
     fun stopCast() {
+        endBlockWait()
         currentCastId?.let { castId ->
             control.send(ControlProtocolV2.command("stop", castId))
             completeCastToLibrary(castId)
@@ -2101,6 +2450,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         else FlickLog.w("cast", "setRotation drop reason=not_commandable choice=$choice")
     }
     fun setAudioDelay(delayMs: Int) = session.setAudioDelay(delayMs); fun nudgeAudioDelay(later: Boolean) = session.nudgeAudioDelay(later); fun resetAudioDelay() = session.resetAudioDelay()
+    /** The window stands down through [beginUserCast]: a tap outranks anything waiting. */
     fun retryCast() { retryItem?.let { request -> retryItem = null; beginUserCast(request) } }
     /** "Keep watching": the card goes and stays gone for this cast. Playback never stopped. */
     fun dismissLinkStall() = linkMonitor.dismissStall()
@@ -2119,17 +2469,24 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * [pairError] is for the faults that are not a dial fault at all — a resume that
      * reached the TV and then failed on this phone's own storage has no [DialFault] to
      * translate, and the residual UNREACHABLE would report a disk as a missing TV.
+     *
+     * [placesTv] is the caller's evidence that there is a TV to be placed at all. False
+     * takes the same hedged copy a phone that could not read its own address takes: an
+     * mDNS record answered out of the platform's cache is not proof the receiver is on the
+     * network, and "you are both on the same network" may not be said about a device that
+     * has not been heard from. See [dialPlacesTv].
      */
     private fun failPendingResume(
         code: String,
         fault: DialFault? = null,
         pairError: PairErrorKind? = null,
+        placesTv: Boolean = true,
     ) {
         val request = pendingCast
         pendingCast = null
         // Frozen here for the same reason `terminal` freezes it: the addresses are gone by
         // the time the face composes, and null stays the honest third answer.
-        _failureSameSubnet.value = sameSubnetAs(dialedHost)
+        _failureSameSubnet.value = if (placesTv) sameSubnetAs(dialedHost) else null
         if (request != null) {
             retryItem = request
             _failureItem.value = request.item
@@ -2179,7 +2536,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             _manualPairAttempt.value = manualPairAttemptLedger.event
         }
     }
-    private fun invalidatePairingAttempt() { pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; control.cancelUnauthenticated() }
+    /**
+     * [blockDialing] is the one attempt this may not stand the window down for: the
+     * window's own dial reaches here through [beginPairingAttempt], and cancelling itself
+     * on the way into the thing it asked for would end every wait at its first tick.
+     * Every other caller is a person doing something else with this phone — the one
+     * background caller left, the name refresh, is kept off the window's face by
+     * [routeIdleForNameRefresh].
+     */
+    private fun invalidatePairingAttempt() {
+        if (!blockDialing) endBlockWait()
+        pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; control.cancelUnauthenticated()
+    }
     private class CastStartupFailure(val code: String) : RuntimeException()
 
     private companion object {

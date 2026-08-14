@@ -126,6 +126,22 @@ class CastErrorPresentationTest {
         assertEquals(CastErrorFace.COMMAND_NOT_SENT, face("load_not_sent"))
     }
 
+    /**
+     * Android refusing the foreground-service start is not a port another app is holding.
+     * Nothing was bound when it fired, so the bind failure's face — which names that port —
+     * would be a cause invented for a refusal that named itself. It is reachable from the
+     * window that waits a router block out: the path can come back while Flick is in
+     * someone's pocket.
+     */
+    @Test
+    fun `a refused service start never borrows the bind failure's face`() {
+        assertEquals(CastErrorFace.SERVER_NOT_ALLOWED, face("media_start_refused"))
+        assertNotEquals(CastErrorFace.SERVER_NOT_STARTED, face("media_start_refused"))
+        val presentation = present("media_start_refused", origin = TerminalOrigin.LOCAL)
+        assertEquals(CastErrorAction.BACK_TO_LIBRARY, presentation.primary)
+        assertNull(presentation.secondary)
+    }
+
     // Only the transfer cap gets the capacity face; every other refusal is a refusal.
     @Test
     fun `a 503 from this phone's own server is capacity, not a refusal`() {
@@ -385,6 +401,7 @@ class CastErrorPresentationTest {
             "source_lost", "no_lan_address", "source_start_timeout", "load_not_sent",
             "control_refused", "control_no_route", "control_no_answer", "control_no_network",
             "control_rejected", "control_disconnected_no_lan", "pairing_store_failed",
+            "media_start_refused",
         )
 
         /** Verbatim `ControlFrameSchema.failureCodes`, which is the wire's own list. */

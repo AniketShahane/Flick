@@ -70,6 +70,9 @@ internal enum class CastErrorFace {
     // answered with a refusal, and a file that stopped being readable here.
     PHONE_NOT_SERVING, SERVER_NOT_STARTED, PHONE_REFUSED, SERVER_BUSY, SOURCE_LOST,
     PHONE_SLOW_START, COMMAND_NOT_SENT,
+    // Android refusing the foreground-service start, which the bind failure's face would
+    // otherwise report as a port another app is holding.
+    SERVER_NOT_ALLOWED,
     // What a failed dial actually proved, where it used to prove only "unreachable".
     RECEIVER_NOT_OPEN, ROUTER_BLOCKING, NO_ANSWER, LINK_DROPPED, TV_LOST_NETWORK,
     // Three more the residual "unreachable" was standing in for: a TV that answered and
@@ -167,6 +170,7 @@ internal fun castErrorFace(
     "startup_timeout" -> if (linkStarved) CastErrorFace.SLOW_LINK else CastErrorFace.SLOW_START
     "sender_not_serving" -> CastErrorFace.PHONE_NOT_SERVING
     "media_bind_failed" -> CastErrorFace.SERVER_NOT_STARTED
+    "media_start_refused" -> CastErrorFace.SERVER_NOT_ALLOWED
     "http_rejected" -> if (httpStatus == 503) CastErrorFace.SERVER_BUSY else CastErrorFace.PHONE_REFUSED
     "source_lost" -> CastErrorFace.SOURCE_LOST
     "source_start_timeout" -> CastErrorFace.PHONE_SLOW_START
@@ -241,6 +245,9 @@ private fun CastErrorFace.moves(): Pair<CastErrorAction, CastErrorAction?> = whe
     CastErrorFace.SOURCE_LOST,
     CastErrorFace.PHONE_SLOW_START,
     CastErrorFace.COMMAND_NOT_SENT,
+    // Its own copy names the move: play the film again from a screen that is in front of
+    // the user, which is the state Android refused this start for want of.
+    CastErrorFace.SERVER_NOT_ALLOWED,
     CastErrorFace.LINK_DROPPED,
     CastErrorFace.TV_LOST_NETWORK,
     // Its copy indicts this phone, so it may not lead with a button about the TV. That
@@ -301,6 +308,8 @@ fun ErrorScreen(
     val starved = failureVerdict as? LinkVerdict.Starved
     // Also frozen at the terminal: both addresses are gone by the time this composes.
     val sameSubnet by controller.failureSameSubnet.collectAsState()
+    // Live, unlike the two above: this one is about what the phone is doing now.
+    val stillChecking by controller.waitingOutBlock.collectAsState()
 
     // Resolved once, before anything is drawn. `available` already collapses the offer to
     // the library when there is nothing to hand over; this is the other half of the same
@@ -367,6 +376,7 @@ fun ErrorScreen(
         origin = failure.origin,
         sameSubnet = sameSubnet,
         beforeStart = failure.beforeStart,
+        stillChecking = stillChecking,
     )
     val pillText = face.pill(sameSubnet)
     val primary = presentation.primary
@@ -499,6 +509,7 @@ private fun CastErrorFace.tone(): StatusKind = when (this) {
     CastErrorFace.SOURCE_LOST,
     CastErrorFace.PHONE_SLOW_START,
     CastErrorFace.COMMAND_NOT_SENT,
+    CastErrorFace.SERVER_NOT_ALLOWED,
     CastErrorFace.PAIRING_NOT_SAVED,
     -> StatusKind.CAUTION
     CastErrorFace.TV_APP_CLOSED,
@@ -550,6 +561,7 @@ private fun CastErrorFace.title(
     CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_title)
     CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_title)
     CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_title)
+    CastErrorFace.SERVER_NOT_ALLOWED -> stringResource(R.string.error_startrefused_title)
     CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_title)
     CastErrorFace.ROUTER_BLOCKING -> if (sameSubnet == null) {
         stringResource(R.string.error_noroute_title_unproven)
@@ -581,7 +593,8 @@ private fun CastErrorFace.title(
  *
  * [origin] and [sameSubnet] each reach the faces whose honest sentence depends on them. A
  * null [sameSubnet] is the phone having been unable to place itself next to the TV — no
- * address of its own, or no Wi-Fi link to make the claim about — which is the one state in
+ * address of its own, no Wi-Fi link to make the claim about, or a TV that answered no fresh
+ * mDNS resolve and so is not provably on the network at all — which is the one state in
  * which neither "you are on the same network" nor its opposite may be claimed, so those
  * faces fall back to the copy that asserts neither.
  *
@@ -589,6 +602,10 @@ private fun CastErrorFace.title(
  * it as the frame type, this phone cross-checks it against its own Active record, and
  * three bodies here would otherwise describe a film that never showed a frame as one that
  * "played fine up to that point".
+ *
+ * [stillChecking] is the one claim on this screen about the future, so it is read live from
+ * the coordinator rather than frozen with the failure: the window that waits a router block
+ * out closes on its own after twenty minutes, and the sentence promising it must go with it.
  */
 @Composable
 private fun CastErrorFace.body(
@@ -598,6 +615,7 @@ private fun CastErrorFace.body(
     origin: TerminalOrigin,
     sameSubnet: Boolean?,
     beforeStart: Boolean,
+    stillChecking: Boolean,
 ): String = when (this) {
     CastErrorFace.UNSUPPORTED_CONTAINER -> stringResource(R.string.error_container_body, tvName)
     CastErrorFace.UNSUPPORTED_VIDEO -> stringResource(R.string.error_video_body, tvName)
@@ -634,14 +652,26 @@ private fun CastErrorFace.body(
     CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_body, tvName)
     CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_body, tvName)
     CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_body, tvName)
+    CastErrorFace.SERVER_NOT_ALLOWED -> stringResource(R.string.error_startrefused_body, tvName)
     CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_body, tvName)
     CastErrorFace.ROUTER_BLOCKING -> when (sameSubnet) {
-        true -> stringResource(R.string.error_noroute_body_samesubnet, tvName)
+        true -> if (stillChecking) {
+            stringResource(R.string.error_noroute_body_samesubnet_waiting, tvName)
+        } else {
+            stringResource(R.string.error_noroute_body_samesubnet, tvName)
+        }
+        // Two networks is a different fault from the transient pair-block the other two
+        // bodies describe, and it does not clear itself — so it promises neither.
         false -> stringResource(R.string.error_noroute_body_offsubnet, tvName)
-        // The phone could not place itself next to the TV — no address of its own, or no
-        // Wi-Fi link to make the claim about — so it may state only the half the kernel
-        // proved: something between the two refused to forward.
-        null -> stringResource(R.string.error_noroute_body, tvName)
+        // The phone could not place itself next to the TV — no address of its own, no
+        // Wi-Fi link to make the claim about, or a TV that answered no fresh resolve — so
+        // it may state only the half the kernel proved: something between the two refused
+        // to forward.
+        null -> if (stillChecking) {
+            stringResource(R.string.error_noroute_body_waiting, tvName)
+        } else {
+            stringResource(R.string.error_noroute_body, tvName)
+        }
     }
     CastErrorFace.NO_ANSWER -> if (sameSubnet == true) {
         stringResource(R.string.error_noanswer_body_samesubnet, tvName)
@@ -696,6 +726,7 @@ private fun CastErrorFace.pill(sameSubnet: Boolean?): String = when (this) {
     CastErrorFace.SOURCE_LOST -> stringResource(R.string.error_sourcelost_pill)
     CastErrorFace.PHONE_SLOW_START -> stringResource(R.string.error_phonestart_pill)
     CastErrorFace.COMMAND_NOT_SENT -> stringResource(R.string.error_notsent_pill)
+    CastErrorFace.SERVER_NOT_ALLOWED -> stringResource(R.string.error_startrefused_pill)
     CastErrorFace.RECEIVER_NOT_OPEN -> stringResource(R.string.error_refuseddial_pill)
     CastErrorFace.ROUTER_BLOCKING -> if (sameSubnet == null) {
         stringResource(R.string.error_noroute_pill_unproven)

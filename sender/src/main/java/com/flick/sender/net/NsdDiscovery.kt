@@ -176,15 +176,45 @@ class NsdDiscovery(context: Context) {
      */
     suspend fun refresh(tvId: String, timeoutMs: Long = REFRESH_TIMEOUT_MS): DiscoveredTv? {
         val cached = _devices.value.firstOrNull { it.tvId == tvId } ?: return null
-        val before = synchronized(lock) {
-            val info = lastInfoByName[cached.name] ?: return cached
-            pending.addLast(info)
-            pumpResolve()
-            _resolveRevision.value
-        }
-        withTimeoutOrNull(timeoutMs) { _resolveRevision.first { it > before } }
+        reresolve(cached.name, timeoutMs)
         return _devices.value.firstOrNull { it.tvId == tvId } ?: cached
     }
+
+    /**
+     * Whether [tvId] answered a resolve inside [timeoutMs] — advertised NOW, rather than
+     * advertised at some point this process still holds a record from.
+     *
+     * The distinction is the whole of it. `resolveService` is answered from the platform's
+     * own cache on several releases, and this class holds its records until a loss ages
+     * out, so a TV switched off minutes ago is still in [devices] and still resolves. A
+     * caller about to convict the network of keeping two live devices apart needs the
+     * stronger fact, and nothing weaker than a record re-stamped in this pass supplies it.
+     *
+     * False is therefore "not proven", never "gone": a resolve queued behind another one
+     * misses this budget with the TV sitting there. Callers hedge on it rather than
+     * reversing their diagnosis.
+     */
+    suspend fun advertisedNow(tvId: String, timeoutMs: Long = REFRESH_TIMEOUT_MS): Boolean {
+        val cached = _devices.value.firstOrNull { it.tvId == tvId } ?: return false
+        return reresolve(cached.name, timeoutMs)
+    }
+
+    /** Re-queries one held record, answering whether a newer resolve for it landed. */
+    private suspend fun reresolve(name: String, timeoutMs: Long): Boolean {
+        val before = synchronized(lock) {
+            val info = lastInfoByName[name] ?: return false
+            pending.addLast(info)
+            pumpResolve()
+            resolvedAt[name] ?: 0L
+        }
+        // The revision is the change signal and the per-name stamp is the answer: a resolve
+        // of some other service advances the first and says nothing about this name.
+        withTimeoutOrNull(timeoutMs) { _resolveRevision.first { resolvedSince(name, before) } }
+        return resolvedSince(name, before)
+    }
+
+    private fun resolvedSince(name: String, stamp: Long): Boolean =
+        synchronized(lock) { (resolvedAt[name] ?: 0L) > stamp }
 
     private fun enqueueResolve(info: NsdServiceInfo) {
         synchronized(lock) {
