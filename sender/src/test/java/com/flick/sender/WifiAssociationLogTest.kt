@@ -84,9 +84,22 @@ class WifiAssociationLogTest {
      * BSSID could arrive in, and the epoch that replaces them is derived here and names
      * nothing outside this phone.
      */
+    /**
+     * Observed on the real phone: three app restarts inside four minutes each logged an
+     * identical `epoch=1`, and not one of them was the radio doing anything. A callback
+     * replays `onAvailable` for a network already up the moment it registers, so a
+     * monitor's first arrival cannot be told from an association it simply walked in on —
+     * and counting it would make the ±30 s correlation agree with whatever it was asked.
+     */
+    @Test fun theFirstArrivalIsNotReportedAsAnAssociation() {
+        assertEquals(WIFI_EDGE_FIRST, wifiAssociationEdge(WIFI_FIRST_EPOCH))
+        assertEquals(WIFI_EDGE_AVAILABLE, wifiAssociationEdge(WIFI_FIRST_EPOCH + 1))
+        assertEquals(WIFI_EDGE_AVAILABLE, wifiAssociationEdge(9))
+    }
+
     @Test fun everyEdgeIsGreppableAndCarriesNoNetworkIdentity() {
         val link = WifiLinkInfo(WifiBand.GHZ_24, frequencyMhz = 2437, linkSpeedMbps = 72, rssiDbm = -70)
-        for (edge in listOf("available", "lost")) {
+        for (edge in listOf(WIFI_EDGE_FIRST, WIFI_EDGE_AVAILABLE, WIFI_EDGE_LOST)) {
             for (reading in listOf(link, null)) {
                 val line = wifiAssociationLine(edge, epoch = 1, atMs = 1L, link = reading)
                 assertTrue(line, line.startsWith("wifi-assoc "))

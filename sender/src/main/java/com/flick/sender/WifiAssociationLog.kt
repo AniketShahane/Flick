@@ -43,11 +43,11 @@ class WifiAssociationMonitor(context: Context) {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                ledger.available(network.networkHandle)?.let { record("available", it) }
+                ledger.available(network.networkHandle)?.let { record(wifiAssociationEdge(it), it) }
             }
 
             override fun onLost(network: Network) {
-                ledger.lost(network.networkHandle)?.let { record("lost", it) }
+                ledger.lost(network.networkHandle)?.let { record(WIFI_EDGE_LOST, it) }
             }
         }
         runCatching { manager.registerNetworkCallback(request, callback) }
@@ -66,6 +66,30 @@ class WifiAssociationMonitor(context: Context) {
         )
     }
 }
+
+internal const val WIFI_EDGE_FIRST = "first"
+internal const val WIFI_EDGE_AVAILABLE = "available"
+internal const val WIFI_EDGE_LOST = "lost"
+
+/** The epoch a monitor hands out before it has seen the radio move. */
+internal const val WIFI_FIRST_EPOCH = 1
+
+/**
+ * What to call an arriving association, given the epoch it opened.
+ *
+ * A callback replays `onAvailable` for every already-up network the moment it registers,
+ * so a monitor's FIRST arrival is the association that was already in place at least as
+ * often as it is a new one — and the two are indistinguishable from inside the process.
+ * Reading it as an edge is the false positive that would make a ±30 s correlation agree
+ * with whatever it was asked: three app restarts inside four minutes each logged an
+ * identical `epoch=1`, none of which was the radio doing anything.
+ *
+ * Naming it [WIFI_EDGE_FIRST] states only what is known — this is the first thing this
+ * monitor saw — and leaves [WIFI_EDGE_AVAILABLE] meaning one unambiguous thing: a NEW
+ * association, observed by a monitor that was already watching. Only those are evidence.
+ */
+internal fun wifiAssociationEdge(epoch: Int): String =
+    if (epoch == WIFI_FIRST_EPOCH) WIFI_EDGE_FIRST else WIFI_EDGE_AVAILABLE
 
 /**
  * Which association each [Network] belongs to.

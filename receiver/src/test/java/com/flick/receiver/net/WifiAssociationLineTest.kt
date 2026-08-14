@@ -24,8 +24,8 @@ class WifiAssociationLineTest {
     )
 
     private fun fields(line: String): Map<String, String> {
-        assertTrue("line is not greppable as a wifi edge: $line", line.startsWith("wifi edge="))
-        return line.removePrefix("wifi ")
+        assertTrue("line is not greppable as a wifi edge: $line", line.startsWith("wifi-assoc edge="))
+        return line.removePrefix("wifi-assoc ")
             .split(" ")
             .associate { it.substringBefore('=') to it.substringAfter('=') }
     }
@@ -37,12 +37,35 @@ class WifiAssociationLineTest {
      * later edit from adding "just the network name" to the line.
      */
     @Test fun theLineCarriesExactlyTheseKeysAndNoIdentifier() {
-        val keys = fields(wifiAssociationLine(WIFI_EDGE_AVAILABLE, epoch = 4, monoMs = 98_765_432L, link = link)).keys
+        val keys = fields(wifiAssociationLine(WIFI_EDGE_AVAILABLE, epoch = 4, atMs = 98_765_432L, link = link)).keys
 
         assertEquals(
-            setOf("edge", "epoch", "monoMs", "freqMhz", "linkMbps", "rssiDbm"),
+            setOf("edge", "epoch", "atMs", "freqMhz", "linkMbps", "rssiDbm"),
             keys,
         )
+    }
+
+    /**
+     * The anchor and the stamp key are shared with the sender on purpose: the question
+     * these lines exist for is answered by laying the phone's ring beside the TV's and
+     * subtracting, and two spellings would make that a manual reconciliation every time.
+     */
+    @Test fun theLineUsesTheSameAnchorAndStampKeyAsTheSender() {
+        val line = wifiAssociationLine(WIFI_EDGE_AVAILABLE, 4, 98_765_432L, link)
+
+        assertTrue(line, line.startsWith("wifi-assoc "))
+        assertTrue(line, line.contains(" atMs=98765432 "))
+    }
+
+    /**
+     * A monitor's first arrival is the association already in place at least as often as
+     * it is a new one, and nothing inside the process can tell them apart. Only a later
+     * epoch is evidence that the radio moved, so only a later epoch may say "available".
+     */
+    @Test fun theFirstArrivalIsNotCalledAnAssociation() {
+        assertEquals(WIFI_EDGE_FIRST, wifiAssociationEdge(WIFI_FIRST_EPOCH))
+        assertEquals(WIFI_EDGE_AVAILABLE, wifiAssociationEdge(WIFI_FIRST_EPOCH + 1))
+        assertEquals(WIFI_EDGE_AVAILABLE, wifiAssociationEdge(7))
     }
 
     /** Both edges are the same table, so a grep of the two reads as one column set. */
@@ -85,8 +108,8 @@ class WifiAssociationLineTest {
      * seconds, no rounding, no locale.
      */
     @Test fun theMonotonicStampReachesTheLineUnaltered() {
-        val line = fields(wifiAssociationLine(WIFI_EDGE_AVAILABLE, 1, 4_294_967_296L, link))
+        val line = fields(wifiAssociationLine(WIFI_EDGE_AVAILABLE, 2, 4_294_967_296L, link))
 
-        assertEquals("4294967296", line["monoMs"])
+        assertEquals("4294967296", line["atMs"])
     }
 }

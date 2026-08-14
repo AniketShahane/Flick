@@ -36,7 +36,8 @@ import com.flick.receiver.util.WifiTelemetry
  * [WifiAssociationEpochs] hands out a counter instead, which says WHICH association
  * a line is about without saying which network it is. That counter is local to one
  * monitor, so a second `epoch=1` in a single log is a fresh Activity rather than a
- * fresh association.
+ * fresh association — and [wifiAssociationEdge] marks it on the line rather than
+ * leaving it for a reader to remember.
  */
 class WifiAssociationMonitor(context: Context) {
 
@@ -59,7 +60,7 @@ class WifiAssociationMonitor(context: Context) {
     // holds no lock.
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            epochs.onAvailable(network)?.let { record(WIFI_EDGE_AVAILABLE, it) }
+            epochs.onAvailable(network)?.let { record(wifiAssociationEdge(it), it) }
         }
 
         override fun onLost(network: Network) {
@@ -97,15 +98,37 @@ class WifiAssociationMonitor(context: Context) {
             wifiAssociationLine(
                 edge = edge,
                 epoch = epoch,
-                monoMs = SystemClock.elapsedRealtime(),
+                atMs = SystemClock.elapsedRealtime(),
                 link = WifiTelemetry.read(appContext),
             ),
         )
     }
 }
 
+internal const val WIFI_EDGE_FIRST = "first"
 internal const val WIFI_EDGE_AVAILABLE = "available"
 internal const val WIFI_EDGE_LOST = "lost"
+
+/** The epoch a monitor hands out before it has seen the radio move. */
+internal const val WIFI_FIRST_EPOCH = 1
+
+/**
+ * What to call an arriving association, given the epoch it opened.
+ *
+ * A callback replays `onAvailable` for every already-up network the moment it registers,
+ * so a monitor's FIRST arrival is at least as often the association already in place as a
+ * new one, and from inside the process the two cannot be told apart. Counting it as an
+ * edge is the false positive that would make a ±30 s correlation agree with whatever it
+ * was asked. [WIFI_EDGE_FIRST] therefore claims only what is known — the first thing this
+ * monitor saw — which leaves [WIFI_EDGE_AVAILABLE] meaning exactly one thing: a NEW
+ * association seen by a monitor that was already watching. Only those are evidence.
+ *
+ * This is the narrower companion to [WifiAssociationEpochs], which settles re-announcement
+ * WITHIN one monitor's life; a composition-scoped monitor restarts with a fresh counter,
+ * and this is what says so on the line itself rather than in a reader's memory.
+ */
+internal fun wifiAssociationEdge(epoch: Int): String =
+    if (epoch == WIFI_FIRST_EPOCH) WIFI_EDGE_FIRST else WIFI_EDGE_AVAILABLE
 
 /** What a frequency, link speed or RSSI reads as when the radio no longer has one. */
 internal const val WIFI_LINK_UNREAD = "none"
@@ -169,12 +192,17 @@ internal class WifiAssociationEpochs<K : Any>(private val capacity: Int = LIVE_C
 /**
  * One association edge as a line, in [FlickLog]'s `key=value` shape.
  *
- * Both edges carry exactly the same keys so that
- * `adb logcat -s FlickTV:I | grep 'wifi edge='` is a table rather than a sequence
- * of paragraphs, and the key set is the redaction contract made checkable: nothing
- * identifying can be added to it by accident.
+ * Both edges carry exactly the same keys so that `adb logcat | grep wifi-assoc` is a
+ * table rather than a sequence of paragraphs, and the key set is the redaction contract
+ * made checkable: nothing identifying can be added to it by accident.
  *
- * [monoMs] is `SystemClock.elapsedRealtime`. The logcat stamp beside it is the wall
+ * The anchor and [atMs] deliberately match the sender's line word for word. The question
+ * both exist for is whether an association on EITHER device coincides with a block
+ * clearing, which is answered by putting two devices' rings side by side and subtracting
+ * — and a phone that said `wifi-assoc … atMs=` while the TV said `wifi … monoMs=` would
+ * have to be reconciled by hand every time, which is how a diagnostic stops being used.
+ *
+ * [atMs] is `SystemClock.elapsedRealtime`. The logcat stamp beside it is the wall
  * clock an incident time is matched against; this is the one two edges can be
  * subtracted from each other across, over a clock the user or NTP may have moved.
  *
@@ -185,10 +213,10 @@ internal class WifiAssociationEpochs<K : Any>(private val capacity: Int = LIVE_C
 internal fun wifiAssociationLine(
     edge: String,
     epoch: Int,
-    monoMs: Long,
+    atMs: Long,
     link: WifiTelemetry.Link?,
 ): String =
-    "wifi edge=$edge epoch=$epoch monoMs=$monoMs " +
+    "wifi-assoc edge=$edge epoch=$epoch atMs=$atMs " +
         "freqMhz=${link?.frequencyMhz ?: WIFI_LINK_UNREAD} " +
         "linkMbps=${link?.linkSpeedMbps ?: WIFI_LINK_UNREAD} " +
         "rssiDbm=${link?.rssiDbm ?: WIFI_LINK_UNREAD}"

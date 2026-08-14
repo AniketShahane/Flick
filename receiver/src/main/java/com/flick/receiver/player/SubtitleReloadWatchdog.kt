@@ -68,6 +68,22 @@ internal class SubtitleReloadWatchdog {
         return true
     }
 
+    /**
+     * Whether the FILM half of this attempt is already healthy and the subtitle is the
+     * only thing still outstanding — the one shape that has earned more time than the
+     * deadline gives it.
+     *
+     * A reload that has neither resumed nor drawn is a stall, and rolling it back is the
+     * point of the deadline. One that is playing a new frame while its text source is
+     * still arriving is not a stall at all, and dropping its subtitle re-prepares a
+     * healthy player for nothing.
+     */
+    fun filmHealthyWithoutSubtitle(token: Long, mediaId: String?): Boolean {
+        val current = attempt?.takeIf { it.token == token && it.mediaId == mediaId }
+            ?: return false
+        return current.readyAfterReload && current.presentedAfterReload && !current.subtitleLoaded
+    }
+
     fun cancel() {
         attempt = null
     }
@@ -80,6 +96,26 @@ internal class SubtitleReloadWatchdog {
         return healthy
     }
 }
+
+/**
+ * Whether a reload that reached its deadline gets another interval instead of a rollback.
+ *
+ * Measured on the verified hardware: a 4K reload became READY and drew, then had its
+ * subtitle arrive **751 ms after** the 12 s deadline had already dropped it — and the drop
+ * re-prepared a healthy player, costing a 2 231 ms freeze where every other rebuffer in
+ * that session was 16-18 ms. The deadline was not wrong about the budget, it was wrong to
+ * treat "still arriving" as "stalled".
+ *
+ * So the extension is bounded twice over: only while the film is playing without its text
+ * ([SubtitleReloadWatchdog.filmHealthyWithoutSubtitle]), and never past [capMs] from the
+ * arm. A subtitle that never arrives still gets rolled back — just at the cap rather than
+ * at the first interval.
+ */
+internal fun subtitleReloadExtends(
+    filmHealthyWithoutSubtitle: Boolean,
+    elapsedSinceArmMs: Long,
+    capMs: Long,
+): Boolean = filmHealthyWithoutSubtitle && elapsedSinceArmMs < capMs
 
 /** One-shot attribution state shared by explicit-error and watchdog rollback. */
 /**

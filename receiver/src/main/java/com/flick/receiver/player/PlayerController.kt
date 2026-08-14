@@ -728,17 +728,32 @@ class PlayerController(context: Context) : SessionPlayer {
             alreadyReloading = exo.playbackState != Player.STATE_READY,
         )
         pendingSubtitleReloadAttemptToken = attemptToken
+        val armedAtMs = SystemClock.uptimeMillis()
         lateinit var deadline: Runnable
         deadline = Runnable {
             if (pendingSubtitleReloadDeadline !== deadline) return@Runnable
-            pendingSubtitleReloadDeadline = null
-            pendingSubtitleReloadAttemptToken = null
             if (player !== exo) {
+                pendingSubtitleReloadDeadline = null
+                pendingSubtitleReloadAttemptToken = null
                 subtitleReloadWatchdog.cancel()
                 return@Runnable
             }
+            val waitedMs = SystemClock.uptimeMillis() - armedAtMs
+            // Re-posting leaves this Runnable and its token installed, so the identity
+            // guard above still names the same attempt on the next pass.
+            if (subtitleReloadExtends(
+                    subtitleReloadWatchdog.filmHealthyWithoutSubtitle(attemptToken, currentMediaId),
+                    waitedMs,
+                    SUBTITLE_RELOAD_CAP_MS,
+                )
+            ) {
+                recoveryHandler.postDelayed(deadline, SUBTITLE_RELOAD_GRACE_MS)
+                return@Runnable
+            }
+            pendingSubtitleReloadDeadline = null
+            pendingSubtitleReloadAttemptToken = null
             if (!subtitleReloadWatchdog.consumeDeadline(attemptToken, currentMediaId)) return@Runnable
-            dropExternalSubtitle("external reload did not resume within ${SUBTITLE_RELOAD_DEADLINE_MS}ms")
+            dropExternalSubtitle("external reload did not resume within ${waitedMs}ms")
         }
         pendingSubtitleReloadDeadline = deadline
         recoveryHandler.postDelayed(deadline, SUBTITLE_RELOAD_DEADLINE_MS)
@@ -2559,6 +2574,14 @@ class PlayerController(context: Context) : SessionPlayer {
         // Well below the phone's control-lease loss floor, but long enough for a
         // fresh 4K decoder prepare on the verified Google TV Streamer.
         const val SUBTITLE_RELOAD_DEADLINE_MS = 12_000L
+
+        // Re-check interval once the film is playing and only the text source is still
+        // outstanding, and the absolute bound on those extensions. Both exist because a
+        // measured 4K reload landed its subtitle 751 ms the wrong side of the deadline
+        // above, and rolling a healthy player back cost a 2 231 ms freeze — an order of
+        // magnitude worse than the stall the deadline is there to end.
+        const val SUBTITLE_RELOAD_GRACE_MS = 3_000L
+        const val SUBTITLE_RELOAD_CAP_MS = 30_000L
 
         // How long the audio-delay line waits for a walked nudge to stop moving. The
         // phone walks one hop every 40 ms, so this must outlast a hop by enough that
