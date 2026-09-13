@@ -2,6 +2,7 @@ package com.flick.receiver.ui.theme
 
 import android.graphics.Bitmap
 import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
@@ -18,6 +19,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.LinearGradientShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TileMode
@@ -29,7 +31,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
 
 /**
  * Fixed cinematic-dark theme for the TV. The TV NEVER re-tints from artwork — it
@@ -103,13 +108,32 @@ fun Modifier.glass(shape: Shape = FlickShape.Md): Modifier =
         .border(1.dp, FlickColor.GlassBorder, shape)
 
 /**
- * Cool chrome glass: [FlickColor.GlassChrome] + the cool hairline. The **bottom
- * transport panel** and any side chrome that sits directly on the film.
+ * Cool chrome glass: [FlickColor.GlassChrome] + a raking sheen + a drop shadow +
+ * the cool hairline. The **bottom transport panel** and any side chrome that sits
+ * directly on the film.
+ *
+ * The phone's floating chrome reads as glass off four things: a backdrop blur, a
+ * specular sheen, a tinted drop shadow and a hairline. **The blur is the one this
+ * app cannot have** — the film is on a `SurfaceView`, which no backdrop effect can
+ * sample, and a live blur over 4K on this TV's GPU is the frame budget the whole
+ * app exists to protect. The other three cost a gradient pass and an elevation, so
+ * the TV takes all three.
+ *
+ * The shadow is deliberately the default black rather than a tint: over a bright
+ * frame it is the whole reason the pane lifts off the film, and over a dark one it
+ * costs nothing. It must NOT clip — `GlassPanel` allows a focused child's detached
+ * amber ring to extend past the panel's bounds, and nothing else in this chain
+ * clips either.
  */
 fun Modifier.glassChrome(shape: Shape = FlickShape.Hero): Modifier =
     this
+        .shadow(elevation = ChromeElevation, shape = shape, clip = false)
         .background(FlickColor.GlassChrome, shape)
+        .background(chromeSheenBrush(), shape)
         .border(1.dp, FlickColor.GlassBorderCool, shape)
+
+/** How far the chrome panel floats off the film. */
+private val ChromeElevation = 18.dp
 
 /**
  * Dense panel glass: [FlickColor.GlassPanel] + a hairline. The **subtitles and
@@ -254,6 +278,113 @@ fun ambientGlowBrush(tint: Color = FlickColor.Spark): Brush =
         0f to Color.Transparent,
         1f to tint.copy(alpha = 0.18f),
     )
+
+// ── The chrome panel's sheen (§2a, the phone's `flickGlass` minus the blur) ──
+//
+// Every fraction below is a distance along the SHEEN'S OWN axis measured from the
+// panel's top-left corner, and that is not the same thing as a fraction of the
+// panel's height. `angledSheen` lays its gradient line along the 168° direction
+// and gives it the length |W·sinθ| + |H·cosθ|, so t = 0 lands exactly on the
+// top-left corner and t = 1 exactly on the bottom-right. On a panel as wide and
+// shallow as the transport the horizontal term is nearly half of that length, and
+// the sweep is a true diagonal rake rather than a vertical wash.
+//
+// The transport on the reference canvas: 864 dp wide (960 − 2 × 48 of overscan),
+// ~207 dp tall (2 × 18 of [FlickDimens.PanelPadding] around a 59 dp header, a
+// 24 dp scrub row, a 56 dp control row and two 16 dp gaps — the control row is the
+// play key, which is the tallest thing in it). Its gradient line is therefore
+// 864 × 0.2079 + 207 × 0.9781 ≈ 382 dp long, and its ink — everything inside the
+// 21 / 18 dp panel padding — spans t ∈ [0.0575, 0.9425]:
+//
+//   nearest ink corner  (21, 18)   → (21 × 0.2079 + 18 × 0.9781) / 382 = 0.0575
+//   farthest ink corner (843, 189) → (843 × 0.2079 + 189 × 0.9781) / 382 = 0.9425
+//
+// A TALLER panel is the direction that moves both corners toward the bright stops,
+// and it takes a lot of height to matter: the lip and the foot only meet their
+// corners at a gradient line of ~549 dp, which is a panel about 376 dp tall. A
+// 2× font scale lands near 280. The margin is real, not incidental.
+//
+// Those two numbers are the whole reason the bright stops are where they are.
+
+/**
+ * Where [FlickColor.ChromeSheenLip] has finished falling to the shoulder.
+ *
+ * The lip is the brightest thing the chrome draws and it may never land on ink.
+ * The panel's nearest ink corner sits at 0.057 along the sheen's axis, so the lip
+ * has to be spent before then — with room left for a taller panel, which lengthens
+ * the gradient line and pulls that corner's fraction DOWN toward this stop.
+ *
+ * Widening this is how a future edit would brighten ink without touching a colour.
+ * `PlaybackContrastTest` is the guard on that.
+ */
+internal const val CHROME_SHEEN_LIP_END = 0.04f
+
+/**
+ * Where [FlickColor.ChromeSheenFoot] is allowed to begin — the mirror of
+ * [CHROME_SHEEN_LIP_END], at the other corner.
+ *
+ * The panel's farthest ink corner is at 0.943, and the bottom-right of the control
+ * row is a real control: the stream-metrics key. The design's 0.90 put the foot's
+ * ramp across it. Held here, the cool wash stays in the bottom-right padding.
+ *
+ * This is the same correction the phone's nav bar carries as `NavSheenFootStart`,
+ * for the same reason and found the same way.
+ */
+internal const val CHROME_SHEEN_FOOT_START = 0.96f
+
+/** Where the sheen has faded to nothing, before the foot picks it back up. */
+private const val CHROME_SHEEN_CLEAR_START = 0.60f
+
+/** Where the body's long fade to [CHROME_SHEEN_CLEAR_START] begins. */
+private const val CHROME_SHEEN_BODY = 0.42f
+
+/**
+ * The raking specular sheen over the chrome panel.
+ *
+ * One instance, for every panel size there will ever be: a [ShaderBrush] caches
+ * its platform shader against the size it is asked for, so a brush rebuilt inside
+ * a draw or a recomposition throws that cache away and makes the driver
+ * regenerate the gradient. This one is a pure function of fractional stops and is
+ * created once for the process.
+ */
+fun chromeSheenBrush(): Brush = ChromeSheen
+
+private val ChromeSheen: Brush = angledSheen(
+    168f,
+    0f to FlickColor.ChromeSheenLip,
+    CHROME_SHEEN_LIP_END to FlickColor.ChromeSheenShoulder,
+    CHROME_SHEEN_BODY to FlickColor.ChromeSheenBody,
+    CHROME_SHEEN_CLEAR_START to Color.Transparent,
+    CHROME_SHEEN_FOOT_START to Color.Transparent,
+    1f to FlickColor.ChromeSheenFoot,
+)
+
+/**
+ * CSS-style angled linear gradient: 0° points up and the angle grows clockwise.
+ * Compose only offers explicit endpoints, so the gradient line is re-derived from
+ * the drawn size on every shader creation — which is also what makes t = 0 the
+ * top-left corner and t = 1 the bottom-right for any size the panel takes.
+ *
+ * The same construction as the phone's `angledGradient`; the two sheens are the
+ * same effect on two screens and must not drift apart.
+ */
+private fun angledSheen(degrees: Float, vararg stops: Pair<Float, Color>): Brush =
+    object : ShaderBrush() {
+        override fun createShader(size: Size): Shader {
+            val radians = Math.toRadians(degrees.toDouble())
+            val dx = sin(radians).toFloat()
+            val dy = -cos(radians).toFloat()
+            val length = abs(size.width * dx) + abs(size.height * dy)
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            return LinearGradientShader(
+                from = Offset(cx - dx * length / 2f, cy - dy * length / 2f),
+                to = Offset(cx + dx * length / 2f, cy + dy * length / 2f),
+                colors = stops.map { it.second },
+                colorStops = stops.map { it.first },
+            )
+        }
+    }
 
 /**
  * One ambient radial, plus the rectangle it can actually tint.

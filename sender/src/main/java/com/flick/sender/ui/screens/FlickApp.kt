@@ -523,6 +523,10 @@ fun FlickApp(
                         // passes underneath the dock.
                         allowed = SenderShellPolicy.dockVisible(route) && !sheetRaised,
                         morphing = morphing,
+                        // The same source the pill below it reads. Both surfaces are
+                        // siblings over the route, so one source at the route boundary
+                        // serves the whole bottom stack.
+                        hazeState = navHazeState,
                         sharedScope = sharedScope,
                         onOpen = { controller.restoreNowPlaying() },
                     )

@@ -390,9 +390,23 @@ fun PlaybackScreen(
 
     // The turn currently on screen, resolved once: the transport tile wears it and
     // the hint over the film names it, so the sign and the control cannot disagree.
-    val shownRotationLabel = stringResource(
-        rotationLabelRes(shownVideoRotation(videoRotation, autoVideoRotationDegrees)),
-    )
+    val shownRotation = shownVideoRotation(videoRotation, autoVideoRotationDegrees)
+    val shownRotationLabel = stringResource(rotationLabelRes(shownRotation))
+    // The same turn as a number, for the tile's mark. `shownVideoRotation` exists
+    // to resolve Auto away, and Auto is the only value with no degrees of its own —
+    // so this elvis is unreachable and not a default.
+    val shownRotationDegrees = shownRotation.extraDegrees ?: 0
+    val rotationIsAuto = videoRotation == VideoRotation.Auto
+    // The word the tile actually prints under its mark, resolved here so the sign
+    // that sends a viewer to that tile can name it by the same one. Under Auto —
+    // the only state the sign ever appears in — the tile spends its line on AUTO
+    // and the degrees move into the mark, so a sign still saying "the 90° tile"
+    // would be pointing at a number that is no longer on screen anywhere.
+    val rotationTileLabel = if (rotationIsAuto) {
+        stringResource(R.string.video_rotation_card_auto)
+    } else {
+        shownRotationLabel
+    }
 
     val primaryLive = primaryTransportLive(phase, onReplay)
     val chromeEntryFocus = when {
@@ -597,7 +611,13 @@ fun PlaybackScreen(
                 // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
                 .padding(top = 42.dp),
         ) {
-            retainedHint?.let { OrientationHintCard(hint = it, degrees = shownRotationLabel) }
+            retainedHint?.let {
+                OrientationHintCard(
+                    hint = it,
+                    tileLabel = rotationTileLabel,
+                    turnDegrees = shownRotationDegrees,
+                )
+            }
         }
 
         // The silent-audio notice, in the same band and under the same two rules —
@@ -720,7 +740,8 @@ fun PlaybackScreen(
                 // that has room for a track name.
                 subtitlesOn = subtitleTracks.any { it.isSelected },
                 rotationLabel = shownRotationLabel,
-                rotationIsAuto = videoRotation == VideoRotation.Auto,
+                rotationIsAuto = rotationIsAuto,
+                rotationTurnDegrees = shownRotationDegrees,
                 onOpenPanel = onOpenPanel,
                 onBack10 = onBack10,
                 onPlayPause = onPlayPause,
@@ -1059,6 +1080,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
     subtitlesOn: Boolean,
     rotationLabel: String,
     rotationIsAuto: Boolean,
+    rotationTurnDegrees: Int,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onBack10: () -> Unit,
     onPlayPause: () -> Unit,
@@ -1166,6 +1188,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 subtitlesOn = subtitlesOn,
                 rotationLabel = rotationLabel,
                 rotationIsAuto = rotationIsAuto,
+                rotationTurnDegrees = rotationTurnDegrees,
                 metricsSubLabel = if (diagnostics.bitrateEstimateBps > 0L) {
                     stringResource(R.string.metrics_value_mbps, formatMbps(diagnostics.bitrateEstimateBps))
                 } else {
@@ -1473,14 +1496,15 @@ private fun TransportScrubRow(
 }
 
 /**
- * `[SUBS][90°] ⟨−10 · play · +10⟩ [volume] [Stream metrics]`.
+ * `[SUBS][turn] ⟨−10 · play · +10⟩ [volume][metrics]`.
  *
- * The two flanking boxes carry equal weight, which centres the transport group
- * and lets either card ellipsise rather than overflow the panel on a narrow
- * viewport. The leading box carries two controls, not one: the subtitles card
- * gave up the track name it used to state — the panel behind it is the only
- * surface with room for one — and the square that opens the orientation panel is
- * what the freed width became.
+ * The two flanking boxes carry equal weight, which is what puts the play key on
+ * the screen's centre line and lets either card ellipsise rather than overflow
+ * the panel on a narrow viewport. Each box carries a pair, not one control: the
+ * subtitles card gave up the track name it used to state — the panel behind it is
+ * the only surface with room for one — and the square that opens the orientation
+ * panel is what the freed width became; volume moved INSIDE the trailing box,
+ * beside a stream-metrics key that gave up its lockup for the same reason.
  *
  * **The row is traversed the way it is drawn.** Physical left/right used to be
  * captured as ±10 s seeks at the Activity boundary before Compose could see them,
@@ -1507,6 +1531,7 @@ private fun TransportControlRow(
     subtitlesOn: Boolean,
     rotationLabel: String,
     rotationIsAuto: Boolean,
+    rotationTurnDegrees: Int,
     metricsSubLabel: String,
     onOpenPanel: (PlaybackPanel) -> Unit,
     onBack10: () -> Unit,
@@ -1533,6 +1558,17 @@ private fun TransportControlRow(
     val replay = if (phase == PlaybackPhase.Ended) onReplay else null
     val primaryLive = primaryTransportLive(phase, onReplay)
     FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
+        // Exactly three children, and the two outer ones carry the SAME weight:
+        // that is what puts [TransportCluster] on the row's centre line. The
+        // cluster is internally symmetric (48 / 16 / 56 / 16 / 48), so its centre
+        // is the play key's centre, and [FlickDimens.PanelPadding] and the safe
+        // area are both horizontally symmetric — so the row's centre is the
+        // screen's. That is the same centre `RestingPauseKey` is drawn on, which
+        // is the point: summoning the chrome must not slide the key sideways.
+        //
+        // Nothing unweighted may be added beside the cluster again. Volume sat
+        // there until this row was rebuilt, and it pushed the play key left of
+        // centre by half its own width.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1548,14 +1584,8 @@ private fun TransportControlRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
                 ) {
-                    PanelCard(
-                        glyph = FlickIcons.ClosedCaption,
-                        title = stringResource(R.string.subtitles_card_title),
-                        state = stringResource(
-                            if (subtitlesOn) R.string.subtitles_state_on
-                            else R.string.subtitles_state_off,
-                        ),
-                        open = openPanel == PlaybackPanel.Subtitles,
+                    SubtitlesKey(
+                        on = subtitlesOn,
                         enabled = interactive,
                         focusRequester = subtitlesCardFocusRequester,
                         onClick = {
@@ -1569,10 +1599,10 @@ private fun TransportControlRow(
                         // layout centre rather than a point inside the focus lift.
                         modifier = Modifier.tvRevealSource(subtitlesRevealOrigin),
                     )
-                    OrientationTile(
+                    OrientationKey(
                         degrees = rotationLabel,
                         auto = rotationIsAuto,
-                        open = openPanel == PlaybackPanel.Orientation,
+                        turnDegrees = rotationTurnDegrees,
                         enabled = interactive,
                         focusRequester = orientationCardFocusRequester,
                         onClick = {
@@ -1605,127 +1635,202 @@ private fun TransportControlRow(
                 forward10ContentDescription = stringResource(R.string.transport_forward_10),
             )
 
-            VolumeCells(
-                level = volume,
-                onChange = onSetVolume,
-                enabled = interactive,
-                contentDescription = stringResource(R.string.volume),
-                stateDescription = stringResource(
-                    R.string.volume_state,
-                    (volume.coerceIn(0f, 1f) * 100).toInt(),
-                ),
-                modifier = Modifier.focusRequester(volumeFocusRequester),
-            )
-
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                PanelCard(
-                    glyph = FlickIcons.Monitoring,
-                    title = stringResource(R.string.metrics_card_title),
-                    state = metricsSubLabel,
-                    open = openPanel == PlaybackPanel.Metrics,
-                    enabled = interactive,
-                    focusRequester = metricsCardFocusRequester,
-                    onClick = {
-                        onOpenPanel(
-                            if (openPanel == PlaybackPanel.Metrics) PlaybackPanel.None
-                            else PlaybackPanel.Metrics,
-                        )
-                    },
-                    modifier = Modifier.tvRevealSource(metricsRevealOrigin),
-                )
+                // The mirror of the left pair, and for the same reason: the gap
+                // between these two is the sibling step, not the row's 14 dp.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
+                ) {
+                    VolumeCells(
+                        level = volume,
+                        onChange = onSetVolume,
+                        enabled = interactive,
+                        contentDescription = stringResource(R.string.volume),
+                        stateDescription = stringResource(
+                            R.string.volume_state,
+                            (volume.coerceIn(0f, 1f) * 100).toInt(),
+                        ),
+                        modifier = Modifier.focusRequester(volumeFocusRequester),
+                    )
+                    // Glyph only. The Mbps reading this key used to print is not
+                    // something a viewer reads from across a room mid-film — it
+                    // belongs in the panel the key opens, and in the description
+                    // below for anyone who asks. Dropping the lockup is also what
+                    // buys back the width that lets the play key sit on the
+                    // screen's centre line.
+                    GlyphKey(
+                        glyph = FlickIcons.Monitoring,
+                        contentDescription = stringResource(
+                            R.string.metrics_card_description,
+                            metricsSubLabel,
+                        ),
+                        open = openPanel == PlaybackPanel.Metrics,
+                        enabled = interactive,
+                        focusRequester = metricsCardFocusRequester,
+                        onClick = {
+                            onOpenPanel(
+                                if (openPanel == PlaybackPanel.Metrics) PlaybackPanel.None
+                                else PlaybackPanel.Metrics,
+                            )
+                        },
+                        modifier = Modifier.tvRevealSource(metricsRevealOrigin),
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * A side card in the control row.
+ * The control row's two named keys — captions and picture turn — are ONE lockup:
+ * a mark, a gap, a word, on a single line. They are siblings on screen and so they
+ * are siblings in code, sharing this padding, this gap and this label style, which
+ * is what puts their marks and their words on one common centre line.
  *
- * [open] is carried in the semantics only. The amber invert it used to wear is
- * gone with the reason for it: a panel now REPLACES the control bar, so this card
- * is never on screen while its own panel is — the panel itself is what says the
- * panel is open. Three `animateColorAsState`s recomposing this card once a frame,
- * on precisely the frames the panel is arriving, went with it.
+ * They used to disagree: the captions card stacked a title over a state line while
+ * the turn control was a square stacking a mark over a label, and two controls
+ * standing side by side with different internal geometry never quite line up no
+ * matter how carefully each one is centred on its own.
+ */
+private val ControlKeyPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)
+
+/** Mark to word, inside one key. */
+private val ControlKeyGap = 9.dp
+
+/**
+ * The floor under every key in this row, and `Transport.kt` puts its ±10 s keys on
+ * the same 48 dp: a control aimed at with a D-pad is still a target, and a lockup
+ * that happens to be short is not a reason to shrink one.
+ *
+ * It is also what holds the two named keys to ONE plate height. Their marks differ
+ * by 4 dp on purpose — see [OrientationGlyphSize] — and left to their content they
+ * would hand that difference straight to their plates, which is exactly the kind of
+ * near-miss that makes two controls standing side by side look wrong without
+ * looking obviously wrong.
+ */
+private val ControlKeyMinHeight = 48.dp
+
+/**
+ * Both keys' word, at one size and one weight. Proportional rather than the mono
+ * the turn label used to wear: `SUBS` and `180°` are the same rank of thing here,
+ * and a degree sign is a mark on a number rather than a letter after it — mono's
+ * eyebrow tracking pushed it off into `0 °`.
  */
 @Composable
-private fun PanelCard(
-    glyph: ImageVector,
-    title: String,
-    state: String,
-    open: Boolean,
+private fun controlKeyLabelStyle() = FlickType.body(sizeSp = 16, weight = FontWeight.Bold)
+
+/**
+ * Every glyph the control row carries, at one size. Larger than the 16 dp the old
+ * stacked lockup used because a mark that carries a control's state is no longer a
+ * bullet beside a word.
+ */
+private val ControlGlyphSize = 24.dp
+
+/**
+ * The captions key.
+ *
+ * The WHOLE key lights, not the mark alone: it inverts to the transport's own gold
+ * with the play key's ink on it. That is the entire state — there is no `ON` / `OFF`
+ * printed under it any more,
+ * because a control that has lit up has already said it, and a word repeating it was
+ * the reason this key was two lines tall and out of step with the turn key beside it.
+ *
+ * The state survives with the text gone: it is in [contentDescription], which is what
+ * a screen reader reads and what a viewer who cannot separate amber from white still
+ * gets. Colour is the only VISUAL channel here, and that is a deliberate cost paid for
+ * a one-line key — it is bought back in the semantics rather than waived.
+ *
+ * The plate crossfades and the ink cuts. At the effects spring's speed the two read
+ * as one event, and an `Icon` cannot take its tint in the draw phase without becoming
+ * a custom draw — which is not worth buying for a glyph that changes twice a film.
+ */
+@Composable
+private fun SubtitlesKey(
+    on: Boolean,
     enabled: Boolean,
     focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Lit is the INVERT, not a tint of it. A translucent amber over this panel's
+    // blue glass composites to a warm brown — it reads as "something happened to
+    // this key" rather than as the transport's gold, and the gold is the whole
+    // point. So the lit key takes the play key's own opaque [FlickColor.Spark] and
+    // its [FlickColor.OnSpark] ink: one colour means "running" across the bar.
+    //
+    // The ring has to change with it. Amber on amber is not a ring, which is why
+    // `FlickTvButton` documents [FlickColor.FocusRingOnSpark] as the ring any
+    // caller overriding the container must pass.
+    val plate = if (on) FlickColor.Spark else null
+    // One ink for the mark and the word, and plain white at rest — the same white
+    // the turn key beside it wears. A calmer OnChrome on the mark alone put two
+    // different whites inside one lockup, next to a sibling using a third.
+    val ink = if (on) FlickColor.OnSpark else Color.White
     FlickTvButton(
         onClick = onClick,
-        modifier = modifier,
-        selected = open,
+        modifier = modifier.defaultMinSize(minHeight = ControlKeyMinHeight),
+        // No `selected`: with the container and border passed explicitly it changes
+        // no pixel, and all it would still do is make a screen reader append
+        // "selected" to a button that OPENS A PANEL rather than holding a choice.
         enabled = enabled,
+        containerColor = plate,
+        borderColor = plate,
+        ringColor = if (on) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
+        contentDescription = stringResource(
+            R.string.subtitles_card_description,
+            stringResource(
+                if (on) R.string.subtitles_state_on else R.string.subtitles_state_off,
+            ),
+        ),
         focusRequester = focusRequester,
         shape = FlickShape.Md,
-        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        contentPadding = ControlKeyPadding,
+        horizontalArrangement = Arrangement.spacedBy(ControlKeyGap),
     ) {
         Icon(
-            imageVector = glyph,
+            imageVector = FlickIcons.ClosedCaption,
             contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(16.dp),
+            tint = ink,
+            modifier = Modifier.size(ControlGlyphSize),
         )
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(
-                text = title,
-                style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = state,
-                style = FlickType.monoEyebrow(trackingEm = 0.14f),
-                color = FlickColor.OnSurfaceDim,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Text(
+            text = stringResource(R.string.subtitles_card_title),
+            style = controlKeyLabelStyle(),
+            color = ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
 /**
- * The orientation tile's side — the [PanelCard] beside it, measured: 2 × 9 dp of
- * card padding around a 16 sp/1.4 title line, a 3 dp gap and a 14 sp mono state
- * line on Geist Mono's own 1.3 em box. Holding the two to one height is what makes
- * the pair read as one control, and a square rather than a card with a box parked
- * next to it.
+ * The [FlickIcons.PictureTurn] mark, a step above [ControlGlyphSize].
  *
- * A MINIMUM and not a size: the tile's own content is 52 × 56 dp inside it at the
- * scale that number was measured at, so the square is exact there — but a font
- * scale that grows the card beside it grows this too, rather than clipping a
- * degree glyph inside a box that cannot move.
+ * dp is not optical size. The captions mark fills its 24-unit grid nearly square,
+ * while this one is a landscape frame 11.6 units tall — barely three quarters of
+ * the ink in the same box. Matched at 24 dp it read as the smaller mark of the two.
  */
-private val OrientationTileSide = 62.dp
+private val OrientationGlyphSize = 28.dp
 
 /**
- * The picture-orientation tile — a square whose whole content is the turn
- * currently on screen.
+ * The picture-orientation key — the turn currently on screen as a mark, beside where
+ * that turn came from as a word.
  *
- * Deliberately NOT the [PanelCard] lockup. That card names a thing and states it
- * underneath; here the state IS the name — five values, none longer than four
- * glyphs — so the degrees are the hero and a glyph beside them would have nothing
- * left to add.
+ * The mark is what freed the word. [FlickIcons.PictureTurn] states the angle by
+ * standing at it, and the one thing it cannot state is which of the five choices put
+ * it there — so under Auto the word spends itself on `AUTO` and the degrees are read
+ * off the mark. The precise value is still spoken, in `video_rotation_card_description`
+ * over `video_rotation_auto_applied`, and still printed in the panel this key opens.
  *
- * [auto] is the one annotation it carries, and it is this tile's half of
- * `video_rotation_auto_applied`: stacked rather than interpuncted, because
- * "AUTO · 270°" is 108 dp of 14 sp mono and this square is [OrientationTileSide]
- * wide. The spoken form keeps the interpunct — see the content description.
+ * No selected state: a panel REPLACES the control bar, so this key is never on screen
+ * while its own panel is, and the panel itself is what says the panel is open.
  */
 @Composable
-private fun OrientationTile(
+private fun OrientationKey(
     degrees: String,
     auto: Boolean,
-    open: Boolean,
+    turnDegrees: Int,
     enabled: Boolean,
     focusRequester: FocusRequester,
     onClick: () -> Unit,
@@ -1736,41 +1841,107 @@ private fun OrientationTile(
     } else {
         degrees
     }
+    // The mark turns with the picture, and a turn is geometry: it takes a spatial
+    // spring and is read inside the layer block, because this key sits over a live
+    // decoder and may not recompose once a frame to move a glyph.
+    //
+    // Tracked as a running angle rather than as the modular value: 270° → 0° is a
+    // quarter turn clockwise, and a raw target would unwind three quarters backwards
+    // to reach the same picture. The Animatable seeds from the first composition, so
+    // the key arrives already at the turn rather than spinning up from 0° the first
+    // time the chrome appears.
+    val reducedMotion = LocalReducedMotion.current
+    val turnSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
+    val turn = remember { Animatable(turnDegrees.toFloat()) }
+    LaunchedEffect(turnDegrees, reducedMotion) {
+        val delta = ((turnDegrees - turn.value) % 360f + 540f) % 360f - 180f
+        val target = turn.value + delta
+        if (reducedMotion) turn.snapTo(target) else turn.animateTo(target, turnSpec)
+    }
     FlickTvButton(
         onClick = onClick,
-        modifier = modifier.defaultMinSize(
-            minWidth = OrientationTileSide,
-            minHeight = OrientationTileSide,
-        ),
-        selected = open,
+        modifier = modifier.defaultMinSize(minHeight = ControlKeyMinHeight),
         enabled = enabled,
-        // The merged children would announce "AUTO 90°", which is the reading and
-        // not the control. This names both.
+        // The merged children would announce "AUTO", which is where the turn came
+        // from and not what it is. This names the control and the reading both.
         contentDescription = stringResource(R.string.video_rotation_card_description, readout),
         focusRequester = focusRequester,
         shape = FlickShape.Md,
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 5.dp),
+        contentPadding = ControlKeyPadding,
+        horizontalArrangement = Arrangement.spacedBy(ControlKeyGap),
+    ) {
+        Icon(
+            imageVector = FlickIcons.PictureTurn,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier
+                .size(OrientationGlyphSize)
+                .graphicsLayer { rotationZ = turn.value },
+        )
+        Text(
+            text = if (auto) {
+                stringResource(R.string.video_rotation_card_auto)
+            } else {
+                degrees
+            },
+            style = controlKeyLabelStyle(),
+            color = Color.White,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * Side of the glyph-only keys. The same 48 dp as `SecondaryTransportTargetSize`,
+ * so a key with nothing written on it is still the ±10 s keys' target and not a
+ * smaller one.
+ */
+private val GlyphKeySide = 48.dp
+
+/**
+ * The mark inside a [GlyphKey], a step above [ControlGlyphSize].
+ *
+ * The captions mark beside it is a knockout — a solid plate — while the metrics mark
+ * is a 1.8-unit stroke on the same grid, which is a fraction of the ink at the same
+ * dp. The step is what levels them by eye; it is not a second scale.
+ */
+private val GlyphKeyGlyphSize = 24.dp
+
+/**
+ * A control whose whole content is its mark — the square sibling of [SubtitlesKey],
+ * for a control with nothing to print.
+ *
+ * [contentDescription] is not optional here and is not the control's name alone: with
+ * no title and no state line drawn, it is the only place the reading this key stands
+ * for can be spoken.
+ */
+@Composable
+private fun GlyphKey(
+    glyph: ImageVector,
+    contentDescription: String,
+    open: Boolean,
+    enabled: Boolean,
+    focusRequester: FocusRequester,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FlickTvButton(
+        onClick = onClick,
+        modifier = modifier.defaultMinSize(minWidth = GlyphKeySide, minHeight = GlyphKeySide),
+        selected = open,
+        enabled = enabled,
+        contentDescription = contentDescription,
+        focusRequester = focusRequester,
+        shape = FlickShape.Md,
+        contentPadding = PaddingValues(0.dp),
         horizontalArrangement = Arrangement.Center,
     ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            if (auto) {
-                Text(
-                    text = stringResource(R.string.video_rotation_card_auto),
-                    style = FlickType.monoEyebrow(trackingEm = 0.14f),
-                    color = FlickColor.OnSurfaceDim,
-                    maxLines = 1,
-                )
-            }
-            Text(
-                text = degrees,
-                style = FlickType.display(sizeSp = 20),
-                color = Color.White,
-                maxLines = 1,
-            )
-        }
+        Icon(
+            imageVector = glyph,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(GlyphKeyGlyphSize),
+        )
     }
 }
 
@@ -1921,21 +2092,35 @@ private fun PlaybackFinishedChip(modifier: Modifier = Modifier) {
 }
 
 /**
- * The mini tile the hint carries. Wide enough for `270°` at the 0.6 em mono
- * advance plus a little air, and short enough to sit inside the two lines beside
- * it.
+ * The mini tile the hint carries — short enough to sit inside the two lines
+ * beside it, and now sized by the mark rather than by the widest degrees string,
+ * because the mark is what the square holds.
  */
 private val OrientationHintTileSide = 38.dp
+
+/** The mark inside [OrientationHintTileSide], kept clear of its hairline. */
+private val OrientationHintGlyphSize = 20.dp
 
 /**
  * The picture-orientation hint (§ Picture orientation).
  *
  * It leads with the transport's orientation tile in miniature — the same square,
- * the same unfocused control fill and hairline, the same degrees — because that
- * is the thing it is sending the viewer to look for. A silhouette and not a copy:
- * the hint only ever shows while the choice is Auto, so the real tile carries an
- * `AUTO` eyebrow over these degrees that this square has no room for. The degrees
- * are what the line beside it names, and they are what makes the tile findable.
+ * the same unfocused control fill and hairline, the same mark standing at the same
+ * turn — because that is the thing it is sending the viewer to look for. A
+ * silhouette and not a copy: the hint only ever shows while the choice is Auto, so
+ * the real key carries an `AUTO` word beside this mark that this square has no
+ * room for.
+ *
+ * The mark is what makes the tile findable now, and [tileLabel] is the word the
+ * real tile prints — not the degrees. Naming the tile by its degrees was true
+ * while the degrees were the tile's whole content; under Auto they have moved into
+ * the mark, and a sign is worthless if it names its target by something the target
+ * does not show.
+ *
+ * The mark here does NOT animate. The real tile's does, because a viewer watching
+ * it press a turn is owed the movement; this is a sign that arrives already
+ * pointing, and a second spring on a card that lives four seconds would be motion
+ * for its own sake.
  *
  * Drawn rather than the control itself: this is a sign, and a sign that could be
  * pressed would be a second control appearing over the film.
@@ -1947,7 +2132,8 @@ private val OrientationHintTileSide = 38.dp
 @Composable
 private fun OrientationHintCard(
     hint: OrientationHint,
-    degrees: String,
+    tileLabel: String,
+    turnDegrees: Int,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -1965,11 +2151,13 @@ private fun OrientationHintCard(
                 .border(FlickDimens.Hairline, FlickColor.Outline, FlickShape.Sm),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = degrees,
-                style = FlickType.monoTabular(sizeSp = 14),
-                color = Color.White,
-                maxLines = 1,
+            Icon(
+                imageVector = FlickIcons.PictureTurn,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier
+                    .size(OrientationHintGlyphSize)
+                    .graphicsLayer { rotationZ = turnDegrees.toFloat() },
             )
         }
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -1991,7 +2179,7 @@ private fun OrientationHintCard(
                         OrientationHint.TurnedUpright -> R.string.orientation_hint_turned_where
                         OrientationHint.ShownAsFiled -> R.string.orientation_hint_as_filed_where
                     },
-                    degrees,
+                    tileLabel,
                 ),
                 style = FlickType.monoEyebrow(trackingEm = 0.14f),
                 color = FlickColor.OnSurfaceDim,

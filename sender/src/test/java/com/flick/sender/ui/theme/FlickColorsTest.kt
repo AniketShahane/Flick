@@ -384,11 +384,19 @@ class FlickColorsTest {
 
     /**
      * `glass` is the generic floating-surface role. It is translucent, so the colour
-     * actually drawn does not exist until it is drawn over something. Dark navigation has
-     * its own blue glass treatment and is deliberately measured in FlickBottomNavStyleTest.
+     * actually drawn does not exist until it is drawn over something.
      *
-     * The dock can sit over artwork, so each rule below is measured twice: over the page,
-     * and over the extreme backdrop that drags the fill toward its ink.
+     * Both pieces of floating chrome now take a real backdrop blur, and Haze owns their
+     * material: the pill and the Now-Playing dock are tinted stacks measured in
+     * FlickBottomNavStyleTest, at their own budgets. That leaves `glass` reaching the screen
+     * in exactly one place — as the colour the LIGHT tint is a translucent copy of — and
+     * leaves `DarkFlickColors.glass` drawn nowhere at all.
+     *
+     * The rules below are kept as a ratchet on the role rather than as a measurement of a
+     * pixel: a `glass` that drifts grey, opaque or unseparated is a palette regression
+     * whichever surface next asks for it. They are measured twice, over the page and over
+     * the extreme backdrop that drags the fill toward its ink, because floating chrome sits
+     * over artwork.
      */
     private fun FlickColors.glassOnPage() = glass.over(canvas)
 
@@ -490,9 +498,10 @@ class FlickColorsTest {
     }
 
     /**
-     * Every ink the generic dark glass component puts on it, held on the page AND over the
-     * worst still. `onSurface` and `onSurfaceDim` are the dock's title and subtitle, so
-     * they are text at 4.5; `playheadLo` is the dock's play key, a graphic at 3.
+     * Every ink the dark glass role would carry, held on the page AND over the worst still.
+     * `onSurface` and `onSurfaceDim` are a floating bar's title and subtitle, so they are
+     * text at 4.5; `playheadLo` is its played hairline, a graphic at 3. The dock drew these
+     * three on bare `glass` until it moved onto Haze — see the note above the section.
      *
      * That third entry was `spark` until the action colour moved. The dock's key had to
      * follow the MEDIA roles rather than the accent, because the key morphs into the

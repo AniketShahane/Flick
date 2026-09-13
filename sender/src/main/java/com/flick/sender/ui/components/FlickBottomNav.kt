@@ -124,8 +124,8 @@ internal fun FlickBottomNav(
     val glassHazeStyle = remember(colors) {
         HazeStyle(
             tints = navBarHazeTints(colors).map { HazeTint(it) },
-            blurRadius = NavBlurRadius,
-            noiseFactor = NavNoiseFactor,
+            blurRadius = GlassBlurRadius,
+            noiseFactor = GlassNoiseFactor,
             fallbackTint = HazeTint(navBarFallbackTint(colors)),
         )
     }
@@ -488,27 +488,50 @@ private val NavIndicatorSeatHeight = NavIconSize + NavIndicatorVerticalPadding *
 private const val NavTravelDampingRatio = 0.82f
 private const val NavTravelStiffness = 1_000f
 
-/** Haze owns the nav material in both themes; an opaque fill would hide its backdrop. */
-internal fun navBarFill(colors: FlickColors): Color = Color.Transparent
+/**
+ * Haze owns the material of every backdrop-blurred surface in the shell, so none of them
+ * may paint an opaque fill of its own: the fill would land ON TOP of the blurred backdrop
+ * and hide the one thing the blur exists to show.
+ */
+internal fun glassBackdropFill(colors: FlickColors): Color = Color.Transparent
+
+/** See [glassBackdropFill] — the nav's own name for it, which the style test measures. */
+internal fun navBarFill(colors: FlickColors): Color = glassBackdropFill(colors)
 
 /**
- * Tint over the blurred route. Forty percent material leaves sixty percent of the
- * backdrop participating; dark mode splits that budget between a small luminance
- * stabilizer and the bright Ready blue.
+ * Tint over the blurred route for a surface that leaves [backdropVisibility] of it showing
+ * through. Light mode spends the whole tint budget on the pale glass; dark mode splits it
+ * between a small luminance stabilizer and the bright Ready blue.
+ *
+ * The stabilizer is an absolute floor rather than a share of the budget: it is what keeps a
+ * blown-out frame passing underneath from lifting the dark material into a grey, and that
+ * job does not get smaller because the surface doing it is thinner. Which is also the
+ * ceiling — a surface cannot ask for more than 1 - [DarkGlassStabilizerAlpha] of its
+ * backdrop back without asking the blue above it for a negative alpha.
  */
-internal fun navBarHazeTints(colors: FlickColors): List<Color> =
-    if (colors.isLight) {
-        listOf(colors.glass.copy(alpha = NavTintOpacity))
+internal fun glassHazeTints(colors: FlickColors, backdropVisibility: Float): List<Color> {
+    val tintOpacity = 1f - backdropVisibility
+    return if (colors.isLight) {
+        listOf(colors.glass.copy(alpha = tintOpacity))
     } else {
+        val blue = (tintOpacity - DarkGlassStabilizerAlpha) / (1f - DarkGlassStabilizerAlpha)
         listOf(
-            Color.Black.copy(alpha = DarkNavStabilizerAlpha),
-            colors.sparkInverse.copy(alpha = DarkNavTintAlpha),
+            Color.Black.copy(alpha = DarkGlassStabilizerAlpha),
+            colors.sparkInverse.copy(alpha = blue.coerceAtLeast(0f)),
         )
     }
+}
 
 /** One equivalent translucent scrim for platforms where background blur is unavailable. */
+internal fun glassFallbackTint(colors: FlickColors, backdropVisibility: Float): Color =
+    glassHazeTints(colors, backdropVisibility)
+        .fold(Color.Transparent) { base, tint -> tint.compositeOver(base) }
+
+internal fun navBarHazeTints(colors: FlickColors): List<Color> =
+    glassHazeTints(colors, NavBackdropVisibility)
+
 internal fun navBarFallbackTint(colors: FlickColors): Color =
-    navBarHazeTints(colors).fold(Color.Transparent) { base, tint -> tint.compositeOver(base) }
+    glassFallbackTint(colors, NavBackdropVisibility)
 
 /** The dim ink is too quiet on the dark navigation bar's saturated live-blue fill. */
 internal fun navInactiveInk(colors: FlickColors): Color =
@@ -521,13 +544,25 @@ internal fun navActiveLabelInk(colors: FlickColors): Color =
 /** The tight rim is static and makes the translucent material legible in either theme. */
 internal fun navShowsGlassSheen(colors: FlickColors): Boolean = true
 
+/**
+ * How much of the blurred route each glass surface leaves showing through itself.
+ *
+ * The pill is the app's permanent furniture: it floats over every route the shell has, on
+ * artwork and on empty states alike, so it keeps the heavier tint and the legibility that
+ * comes with it. The Now-Playing dock is a temporary, single-purpose bar that exists only
+ * while a cast is live, and it should feel lighter than the thing it sits on rather than
+ * doubling it — two glass surfaces stacked directly one above the other must not read as a
+ * single slab, which is exactly what equal tints would make them. So the upper one is the
+ * thinner one.
+ */
 internal const val NavBackdropVisibility = 0.60f
-private const val NavTintOpacity = 1f - NavBackdropVisibility
-private const val DarkNavStabilizerAlpha = 0.14f
-private const val DarkNavTintAlpha =
-    (NavTintOpacity - DarkNavStabilizerAlpha) / (1f - DarkNavStabilizerAlpha)
-private const val NavNoiseFactor = 0.04f
-private val NavBlurRadius = 20.dp
+internal const val DockBackdropVisibility = 0.74f
+
+private const val DarkGlassStabilizerAlpha = 0.14f
+
+/** Both surfaces are cut from the same material; only the tint budget above differs. */
+internal const val GlassNoiseFactor = 0.04f
+internal val GlassBlurRadius = 20.dp
 
 internal fun navBackdropBlurEnabled(sdkInt: Int): Boolean =
     sdkInt >= Build.VERSION_CODES.TIRAMISU

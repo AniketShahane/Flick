@@ -261,6 +261,62 @@ object FlickColor {
     /** The transport panel's 1 dp inner top hairline, `rgba(230,242,255,.75)`. */
     val PanelHighlight = Color(0xBFE6F2FF)
 
+    // ── The chrome panel's sheen ────────────────────────────────────────────
+    // The phone's floating chrome is glass because it carries four things: a real
+    // backdrop blur, a raking specular sheen, a tinted drop shadow and a hairline.
+    // The TV cannot have the blur — the film is on a `SurfaceView`, which no
+    // backdrop effect can sample, and a live blur over 4K on this TV's GPU is
+    // exactly the frame budget the whole app exists to protect. So the TV gets
+    // the other three, over the fill it already had: nothing here touches
+    // [GlassChrome], whose 34 % was set by a contrast measurement.
+    //
+    // The sheen is raked, not vertical, and on a panel this wide that matters:
+    // see `chromeSheenBrush` for where each stop actually lands.
+
+    /**
+     * The specular lip — white @ 32 %, at the sheen's opening stop.
+     *
+     * The brightest thing the chrome draws, and it is allowed to be because it
+     * only ever falls on the panel's own padding. `CHROME_SHEEN_LIP_END` is what
+     * holds it there.
+     */
+    val ChromeSheenLip = Color(0x52FFFFFF)
+
+    /**
+     * Where the lip lands once it is off the glint — white @ **1.6 %**, and the
+     * most sheen any ink on this panel can receive.
+     *
+     * The design's 6 % was measured on a mock, not against a frame the app did not
+     * choose. Over a white film the transport's tightest row — the amber SYNCING
+     * eyebrow, which starts at 4.83:1 against the bare glass — went to 4.11:1 with
+     * 6 % of white on top of it, under the 4.5 body floor. Every step down was
+     * tested: 2.35 % is the most that keeps every row over the floor, and this is
+     * the step below it. `PlaybackContrastTest` is the guard.
+     */
+    val ChromeSheenShoulder = Color(0x04FFFFFF)
+
+    /** The body of the pane, white @ 0.8 % — half the shoulder, fading to nothing. */
+    val ChromeSheenBody = Color(0x02FFFFFF)
+
+    /**
+     * The far edge of the pane catching the room — `#96BEFF` @ 8 %, cool rather
+     * than white because a pane's foot picks up what is around it, not the light
+     * that struck its lip.
+     *
+     * Held off the ink by `CHROME_SHEEN_FOOT_START` for the same reason as the lip.
+     */
+    val ChromeSheenFoot = Color(0x1496BEFF)
+
+    /**
+     * The most sheen that can fall on any ink the chrome panel carries.
+     *
+     * [ChromeSheenLip] and [ChromeSheenFoot] are both excluded by construction —
+     * their stops sit inside the panel's own padding — so this is the shoulder,
+     * which the gradient only ever decays from as it crosses the content. It is
+     * what `PlaybackContrastTest` composites over every row.
+     */
+    val ChromeSheenOverInk = ChromeSheenShoulder
+
     /** Subtitle cue plate behind burned-in text, `rgba(2,4,10,.62)`. */
     val CueBackground = Color(0x9E02040A)
 

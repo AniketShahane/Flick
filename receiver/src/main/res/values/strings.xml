@@ -177,6 +177,8 @@
     <string name="subtitles_card_title">SUBS</string>
     <string name="subtitles_state_on">ON</string>
     <string name="subtitles_state_off">OFF</string>
+    <!-- Spoken for the captions key, which shows its state as colour rather than as text. -->
+    <string name="subtitles_card_description">Subtitles: %1$s</string>
     <string name="subtitles_panel_title">Subtitles</string>
     <string name="subtitles_close">Close subtitles</string>
     <string name="subtitles_off">Off</string>
@@ -261,8 +263,10 @@
     <string name="notice_subtitle_dropped_description">That subtitle wouldn\'t load. The film is playing without it.</string>
     <string name="notice_turn_unavailable_description">Showing this film as filed. This TV can\'t turn this film.</string>
 
-    <!-- Stream metrics: transport card + panel -->
-    <string name="metrics_card_title">Stream metrics</string>
+    <!-- Stream metrics: transport key + panel -->
+    <!-- Spoken, not drawn: the transport key is the glyph alone, so the throughput
+         reading it used to print is carried here instead. -->
+    <string name="metrics_card_description">Stream metrics: %1$s</string>
     <string name="metrics_panel_title">Stream metrics</string>
     <string name="metrics_panel_close">Close stream metrics</string>
     <string name="metrics_health_healthy">HEALTHY · DIRECT PLAY</string>

@@ -54,6 +54,73 @@ class FlickBottomNavStyleTest {
         }
     }
 
+    /**
+     * The dock and the pill are stacked one directly above the other, and the whole point
+     * of giving the dock a backdrop of its own is that the pair must not read as one slab.
+     * That only holds while the upper surface is the thinner one, which is a relationship
+     * between two numbers rather than a property of either — so it is asserted as one.
+     *
+     * The budget is then checked to one step in 255 rather than to the 0.001 the pill above
+     * is held to, because that is all an sRGB [Color] can carry: it stores eight bits per
+     * channel, so an alpha only ever comes back as some n/255. The pill's 0.40 happens to be
+     * 102/255 exactly and can afford the tighter figure; 0.26 falls between two steps and
+     * lands 0.0027 out through the dark tint's two roundings. Tightening this would be
+     * asserting a precision the colour cannot hold.
+     */
+    @Test fun theDockIsThinnerGlassThanThePillItRidesOn() {
+        for (c in listOf(LightFlickColors, DarkFlickColors)) {
+            val name = if (c.isLight) "light" else "dark"
+            val dock = glassFallbackTint(c, DockBackdropVisibility)
+            val nav = navBarFallbackTint(c)
+            assertTrue(
+                "$name: the dock's tint is ${dock.alpha} against the pill's ${nav.alpha} — " +
+                    "the upper surface has stopped being the lighter one",
+                dock.alpha < nav.alpha,
+            )
+            assertTrue(
+                "$name: dock backdrop visibility is ${1f - dock.alpha}",
+                kotlin.math.abs((1f - dock.alpha) - DockBackdropVisibility) < 1f / 255f,
+            )
+            assertEquals(Color.Transparent, glassBackdropFill(c))
+        }
+    }
+
+    /**
+     * The dock's own version of [eachFallbackMatchesItsTintStackAndHoldsControlsOnItsPage],
+     * measured on the page for the same reason: what a blurred backdrop actually resolves
+     * to under artwork is not something arithmetic can state, so both glass surfaces are
+     * held to the route they spend most of their life over.
+     *
+     * `playheadLo` is asserted in dark only, which is where FlickColorsTest already draws
+     * that line: the played hairline is amber and the light material is a pale blue, so it
+     * stands at 1.87:1 there today. That is the palette's business and not this change's —
+     * the dock's figure is a hairline better than the pill's, not worse.
+     */
+    @Test fun eachDockFallbackMatchesItsTintStackAndHoldsItsOwnInkOnThePage() {
+        for (c in listOf(LightFlickColors, DarkFlickColors)) {
+            val name = if (c.isLight) "light" else "dark"
+            val stacked = glassHazeTints(c, DockBackdropVisibility)
+                .fold(c.canvas) { base, tint -> tint.over(base) }
+            val drawn = glassFallbackTint(c, DockBackdropVisibility).over(c.canvas)
+            assertColorNear(stacked, drawn)
+            // The film's name and the TV's name are text; the played hairline is a graphic.
+            assertTrue(
+                "$name: the dock's title is ${contrast(c.onSurface, drawn)} on its own material",
+                contrast(c.onSurface, drawn) >= 4.5f,
+            )
+            assertTrue(
+                "$name: the dock's TV line is ${contrast(c.onSurfaceDim, drawn)} on its own material",
+                contrast(c.onSurfaceDim, drawn) >= 4.5f,
+            )
+            if (!c.isLight) {
+                assertTrue(
+                    "dark: the played hairline is ${contrast(c.playheadLo, drawn)} on the dock",
+                    contrast(c.playheadLo, drawn) >= 3f,
+                )
+            }
+        }
+    }
+
     @Test fun lightNavigationUsesItsPaleBlueAsATranslucentHazeTint() {
         assertEquals(
             listOf(LightFlickColors.glass.copy(alpha = 0.40f)),

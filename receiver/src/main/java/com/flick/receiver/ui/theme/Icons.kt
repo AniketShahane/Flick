@@ -9,6 +9,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -29,7 +30,8 @@ import androidx.compose.ui.unit.dp
  * which is what puts a floor under how small these can usefully be drawn.
  *
  * [Replay10] / [Forward10] mix a stroked ring with a filled arrowhead — at
- * transport-glyph size a 1.8-unit outline cannot read as solid.
+ * transport-glyph size a 1.8-unit outline cannot read as solid. [ClosedCaption]
+ * and [PictureTurn] go further and carry no stroke at all: see [knockout].
  */
 object FlickIcons {
 
@@ -54,6 +56,24 @@ object FlickIcons {
         ).apply {
             addPath(
                 pathData = PathParser().parsePathString(path).toNodes(),
+                fill = SolidColor(Color.White),
+            )
+        }.build()
+
+    /**
+     * A filled glyph whose inner marks are KNOCKED OUT of the body rather than
+     * drawn over it: an ImageVector carries one tint, so a mark painted on top of
+     * a solid plate would be the plate's own colour. Every subpath must live in
+     * this ONE `addPath` — even-odd resolves within a single path and nowhere else.
+     */
+    private fun knockout(path: String): ImageVector =
+        ImageVector.Builder(
+            defaultWidth = 24.dp, defaultHeight = 24.dp,
+            viewportWidth = 24f, viewportHeight = 24f,
+        ).apply {
+            addPath(
+                pathData = PathParser().parsePathString(path).toNodes(),
+                pathFillType = PathFillType.EvenOdd,
                 fill = SolidColor(Color.White),
             )
         }.build()
@@ -114,10 +134,44 @@ object FlickIcons {
         "M4.5 9.5v5H8l4.5 4v-13L8 9.5H4.5z M15.5 9a4.4 4.4 0 0 1 0 6 M18 6.7a8 8 0 0 1 0 10.6",
     )
 
-    /** Subtitles — the framed "cc" plate. */
-    val ClosedCaption: ImageVector = stroked(
-        "M4.2 6.5a2 2 0 0 1 2 -2h11.6a2 2 0 0 1 2 2v11a2 2 0 0 1 -2 2H6.2a2 2 0 0 1 -2 -2z " +
-            "M10.3 10.9a2.7 2.7 0 1 0 0 4.2 M16.6 10.9a2.7 2.7 0 1 0 0 4.2",
+    /**
+     * Captions as a lit plate with the two Cs cut out of it.
+     *
+     * The stroked outline this replaces carried a 1.8-unit stroke, which at the
+     * 16 dp it was drawn at is 1.2 dp of ink — the letters closed into a smear at
+     * TV viewing distance. A knockout has no stroke to lose: the plate is the ink,
+     * so the mark holds its counters all the way down and has somewhere for the
+     * amber "on" state to land.
+     *
+     * Cs are rings opened 44° to the right, drawn as an outer arc the long way
+     * round and an inner arc back — one closed subpath each, knocked out of the
+     * plate by the shared even-odd rule.
+     */
+    val ClosedCaption: ImageVector = knockout(
+        "M6.2 4.6H17.8A4 4 0 0 1 21.8 8.6V15.4A4 4 0 0 1 17.8 19.4H6.2A4 4 0 0 1 2.2 15.4V8.6A4 4 0 0 1 6.2 4.6Z " +
+            "M11.14 14.38A3.55 3.55 0 1 1 11.14 9.62L9.76 10.86A1.7 1.7 0 1 0 9.76 13.14Z " +
+            "M18.14 14.38A3.55 3.55 0 1 1 18.14 9.62L16.76 10.86A1.7 1.7 0 1 0 16.76 13.14Z",
+    )
+
+    /**
+     * The picture, with the edge that is currently its bottom marked.
+     *
+     * A bare rectangle states half of what an orientation mark is drawn to state:
+     * 0° and 180° are the same silhouette, and so are 90° and 270°. The cut bar
+     * is the asymmetry that separates all four — it rides the bottom edge at 0°,
+     * the left at 90°, the top at 180°, the right at 270°, and the frame turns
+     * from landscape to portrait on the quarter turns as well, so each state is
+     * distinguishable from every other at the size it is actually drawn — which
+     * is what set the bar's 2-unit depth. It was cut at 1.5 first, and rendered on
+     * the real panel that came out a hairline: the one feature carrying three
+     * quarters of the mark's meaning may not be the thinnest thing in it.
+     *
+     * Every point lies within 10.9 units of (12, 12), so the mark stays inside the
+     * 24-unit grid through a full turn and needs no box of its own to rotate in.
+     */
+    val PictureTurn: ImageVector = knockout(
+        "M5.6 6.2H18.4A2.8 2.8 0 0 1 21.2 9V15A2.8 2.8 0 0 1 18.4 17.8H5.6A2.8 2.8 0 0 1 2.8 15V9A2.8 2.8 0 0 1 5.6 6.2Z " +
+            "M9.3 14.6H14.7A0.9 0.9 0 0 1 15.6 15.5V15.7A0.9 0.9 0 0 1 14.7 16.6H9.3A0.9 0.9 0 0 1 8.4 15.7V15.5A0.9 0.9 0 0 1 9.3 14.6Z",
     )
 
     /** Stream metrics — a framed rising trend line. */

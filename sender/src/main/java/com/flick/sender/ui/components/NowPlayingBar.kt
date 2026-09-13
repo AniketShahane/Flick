@@ -1,5 +1,6 @@
 package com.flick.sender.ui.components
 
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
@@ -80,6 +81,10 @@ import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
 
 /** The dock's own height and the air it keeps between itself and the nav pill. */
 private val DockHeight = 66.dp
@@ -123,6 +128,10 @@ private const val RemoteCardKey = "remote-card"
  * [morphing] is the shell's answer to "is the surface on the other side of this flip the
  * remote". When it is, the bar neither rises nor falls: its own bounds become the card,
  * and any enter/exit of its own would be a second motion fighting that one.
+ *
+ * [hazeState] is the shell's one haze source, taken at the route boundary. The dock is a
+ * sibling of the nav pill in the same bottom stack, so the route it blurs is already in
+ * there and this surface needs no source of its own.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -130,6 +139,7 @@ internal fun NowPlayingDock(
     controller: FlickController,
     allowed: Boolean,
     morphing: Boolean,
+    hazeState: HazeState,
     sharedScope: SharedTransitionScope?,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
@@ -166,6 +176,8 @@ internal fun NowPlayingDock(
                 item = departing,
                 tvName = tvName,
                 playback = playback,
+                hazeState = hazeState,
+                morphing = morphing,
                 // The bar is the surface being left only when it is on its way out INTO
                 // the remote; every other departure is the cast itself ending.
                 morphBounds = Modifier.remoteCardBounds(
@@ -307,6 +319,8 @@ private fun DockBar(
     item: MediaItem,
     tvName: String,
     playback: State<PlaybackUiState>,
+    hazeState: HazeState,
+    morphing: Boolean,
     morphBounds: Modifier,
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
@@ -325,6 +339,36 @@ private fun DockBar(
     // role rather than the accent — the accent is a blue in dark, and this line has to be
     // the same substance as the fill the remote shows for the same position.
     val played = colors.playheadLo
+    // The dock is cut from the same material as the pill it rides on — same blur, same
+    // noise, same tint recipe — and differs only in how much of the route it lets through.
+    // See [DockBackdropVisibility] for why the upper of two stacked glass surfaces is the
+    // thinner one.
+    val hazeStyle = remember(colors) {
+        HazeStyle(
+            tints = glassHazeTints(colors, DockBackdropVisibility).map { HazeTint(it) },
+            blurRadius = GlassBlurRadius,
+            noiseFactor = GlassNoiseFactor,
+            fallbackTint = HazeTint(glassFallbackTint(colors, DockBackdropVisibility)),
+        )
+    }
+    val backdropEffect = Modifier.hazeEffect(state = hazeState, style = hazeStyle) {
+        // Same floor as the nav's, and for the same reason — see [navBackdropBlurEnabled].
+        blurEnabled = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
+    }
+    // The material the bar is painted with while the container transform runs, and the
+    // reason the blur stands down for it. A hazeEffect node samples the source through its
+    // OWN resolved coordinates, and for the length of the flight this bar is drawn in the
+    // shared-transition overlay rather than where it lives — so the backdrop it would
+    // sample is not the one lying under the silhouette the viewer is watching. Nor could it
+    // be cut to that silhouette if it were: flickGlass clips the effect to [shape], which
+    // is the bar's resting corner, while the travelling clip is easing the corner from that
+    // corner to the card's square edge for the whole flight.
+    //
+    // The flat tint is the style's own fallbackTint — the colour Haze itself paints where
+    // there is no blur — so the swap changes only whether the backdrop is blurred, never the
+    // hue or the weight of the material. A different colour here would be a pop at the one
+    // moment the bar has to read as the same object as the card it is becoming.
+    val flatTint = remember(colors) { glassFallbackTint(colors, DockBackdropVisibility) }
 
     Box(
         Modifier
@@ -339,7 +383,13 @@ private fun DockBar(
             // The whole bar answers a press on it, but only the left region opens the
             // remote: the transport key beside it is a second, separate target.
             .pressScale(openSource)
-            .flickGlass(colors, shape)
+            .flickGlass(
+                colors = colors,
+                shape = shape,
+                fill = if (morphing) flatTint else glassBackdropFill(colors),
+                showSheen = navShowsGlassSheen(colors),
+                backdropEffect = if (morphing) null else backdropEffect,
+            )
             .clip(shape)
             .drawBehind {
                 // Read in the draw scope: the clock must repaint the hairline without

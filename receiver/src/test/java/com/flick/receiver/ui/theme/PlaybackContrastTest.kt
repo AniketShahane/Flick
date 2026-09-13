@@ -5,6 +5,9 @@ import com.flick.receiver.ui.screens.PAUSED_REST_FILL_ALPHA
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * The playback chrome is drawn over a film this app did not choose, so every
@@ -190,7 +193,15 @@ class PlaybackContrastTest {
     }
 
     @Test fun theTransportPanelHoldsEveryRowItCarries() {
-        fun panelAt(fraction: Float) = FlickColor.GlassChrome.over(film(fraction))
+        // The sheen is part of this surface, not a thing laid over it: bare glass
+        // is a ground the app no longer draws anywhere. Every row is measured
+        // under the WORST sheen the panel can put on ink rather than under the
+        // fraction that actually reaches it — the stops move with the panel's
+        // size and its rows do not, and an over-approximation costs a little
+        // headroom while a per-row model would have to be re-derived every time a
+        // row changed height.
+        fun panelAt(fraction: Float) =
+            FlickColor.ChromeSheenOverInk.over(FlickColor.GlassChrome.over(film(fraction)))
         assertReadable("now-playing eyebrow", FlickColor.SparkBright, panelAt(transportEyebrow))
         assertReadable("syncing eyebrow", FlickColor.Spark, panelAt(transportEyebrow))
         assertReadable("spec chip", FlickColor.OnChrome, panelAt(transportEyebrow))
@@ -198,8 +209,55 @@ class PlaybackContrastTest {
         assertReadable("position", Color.White, panelAt(transportScrub))
         assertReadable("remaining", FlickColor.OnSurfaceDim, panelAt(transportScrub))
         assertReadable("seek target", FlickColor.Spark, panelAt(transportScrub))
-        assertReadable("card state line", FlickColor.OnSurfaceDim, panelAt(transportControls))
+        // The control row’s own ink is the two named keys’ words, white at rest.
+        // It carried an OnSurfaceDim state line until those keys became one line
+        // each; asserting that colour here now measures nothing on screen.
+        assertReadable("control key word", Color.White, panelAt(transportControls))
         assertReadable("±10 s marks", FlickColor.OnChrome, panelAt(transportControls))
+        // The captions key inverts to the play key’s own gold when subtitles are
+        // running, and its ink then stands on that fill rather than on the glass.
+        // Opaque, so no film composites into it — which is the point of inverting
+        // rather than tinting: this pair reads the same over every frame.
+        assertReadable("lit captions key", FlickColor.OnSpark, FlickColor.Spark)
+    }
+
+    @Test fun theSheensLipIsSpentBeforeThePanelsOwnPaddingEnds() {
+        // The naive read of the stop, and the one a future editor will make: the
+        // panel's top 8.4 % is padding by construction, and the lip ends well
+        // inside it. True, and not sufficient on its own — see below.
+        assertTrue(CHROME_SHEEN_LIP_END < PANEL_TOP_PADDING_DP / PANEL_HEIGHT_DP)
+    }
+
+    @Test fun theSheensBrightStopsNeverReachTheInkTheyWouldWashOut() {
+        // The claim that matters, and the one the fraction above does not make.
+        // The sheen is raked at 168° over a panel [PANEL_WIDTH_DP] wide and
+        // [PANEL_HEIGHT_DP] tall, so
+        // its gradient line runs corner to corner along that direction and is
+        // |W·sinθ| + |H·cosθ| long — nearly half of which is the horizontal term.
+        // A stop fraction is therefore a distance from the TOP-LEFT CORNER along
+        // that rake, not a fraction of the panel's height, and the two differ by
+        // enough to matter: 6 % of the height clears the padding, 6 % of this line
+        // does not.
+        //
+        // Ink is everything inside the 21 / 18 dp panel padding. The lip must be
+        // spent before its nearest corner, and the foot may not begin before its
+        // farthest one.
+        assertTrue(CHROME_SHEEN_LIP_END <= sheenAxis(PANEL_SIDE_PADDING_DP, PANEL_TOP_PADDING_DP))
+        assertTrue(
+            CHROME_SHEEN_FOOT_START >= sheenAxis(
+                PANEL_WIDTH_DP - PANEL_SIDE_PADDING_DP,
+                PANEL_HEIGHT_DP - PANEL_TOP_PADDING_DP,
+            ),
+        )
+    }
+
+    /** Where a point on the transport panel falls along the 168° sheen's own axis. */
+    private fun sheenAxis(x: Float, y: Float): Float {
+        val radians = Math.toRadians(SHEEN_DEGREES.toDouble())
+        val dx = sin(radians).toFloat()
+        val dy = -cos(radians).toFloat()
+        val length = abs(PANEL_WIDTH_DP * dx) + abs(PANEL_HEIGHT_DP * dy)
+        return (x * dx + y * dy) / length
     }
 
     // ── The model ───────────────────────────────────────────────────────────
@@ -269,9 +327,23 @@ class PlaybackContrastTest {
 
         /**
          * Top edge of a full three-row transport panel: 21 dp × 2 padding, a 59 dp
-         * header, a 24 dp scrub row, a 62 dp control row and two 16 dp gaps, hung
+         * header, a 24 dp scrub row, a 56 dp control row — the play key, its
+         * tallest child — and two 16 dp gaps, hung
          * off the bottom safe-area inset.
          */
-        const val TRANSPORT_PANEL_TOP = 300f / 540f
+        const val TRANSPORT_PANEL_TOP = 306f / 540f
+
+        /** That same panel's height, from the arithmetic above. */
+        const val PANEL_HEIGHT_DP = 207f
+
+        /** And its width: it fills, so the canvas less two overscan insets. */
+        const val PANEL_WIDTH_DP = 864f
+
+        /** `FlickDimens.PanelPadding` — what holds ink inside the panel's bounds. */
+        const val PANEL_TOP_PADDING_DP = 18f
+        const val PANEL_SIDE_PADDING_DP = 21f
+
+        /** The angle `chromeSheenBrush` rakes at. */
+        const val SHEEN_DEGREES = 168f
     }
 }
