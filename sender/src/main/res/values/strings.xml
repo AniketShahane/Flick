@@ -720,6 +720,11 @@
     <!-- ===== Devices — the live link ===== -->
     <!-- S1 · the device row that is the live link, not a place to go. -->
     <string name="connect_device_connected">Connected</string>
+    <!-- S1 · the live link's row once the TV advertises that Flick has left its screen. The
+         socket stays open then, but the TV refuses every new cast until Flick is opened
+         again. Kept near the asleep line's length: it shares a two-line clamp with the
+         model and the address the user reads off this row. -->
+    <string name="connect_device_closed">Flick is closed · open it on the TV</string>
 
     <!-- ===== Pairing scanner ===== -->
     <string name="scan_reader_unavailable">Flick can\'t start the QR reader on this phone. Type the code shown on your TV.</string>

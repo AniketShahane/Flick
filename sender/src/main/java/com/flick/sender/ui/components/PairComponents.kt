@@ -56,15 +56,33 @@ import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 
+/** What a device row claims about its TV — see [deviceRowFace]. */
+internal enum class DeviceRowFace { LIVE, CLOSED_ON_TV, ASLEEP, AVAILABLE }
+
 /**
- * A discovered-TV row (design §5.1.4) in one of four states: the [connected] TV wears
- * the filled card and a contrasting accent ring, the featured TV is the same filled
- * action-coloured card without one, other ready TVs are tonal, and a sleeping TV is a flat
- * outline that cannot be tapped — selecting it would only fail at the handshake.
+ * The claim a row makes, from the link and the TV's own advertisement together.
  *
- * [connected] outranks both of the others. Featured is a recommendation of where to
- * go next and a sleeping advertisement is stale the moment the TV answers a control
- * frame; a live link is neither, so it decides the row on its own.
+ * A live link does not overrule a sleeping advertisement. The receiver keeps the control
+ * socket open when its app leaves the screen and advertises `sleeping` from that moment,
+ * refusing every new cast, so the two together are a TV on which Flick has been closed —
+ * not a healthy connection. The advertisement is only a hint and may be stale, which is
+ * why this changes what the row says and nothing about what a cast may try.
+ */
+internal fun deviceRowFace(state: TvAvailability, connected: Boolean): DeviceRowFace = when {
+    state == TvAvailability.SLEEPING -> if (connected) DeviceRowFace.CLOSED_ON_TV else DeviceRowFace.ASLEEP
+    connected -> DeviceRowFace.LIVE
+    else -> DeviceRowFace.AVAILABLE
+}
+
+/**
+ * A discovered-TV row (design §5.1.4) in one of five states: the live TV wears the
+ * filled card and a contrasting accent ring, the featured TV is the same filled
+ * action-coloured card without one, other ready TVs are tonal, and a sleeping TV — or the
+ * connected one whose Flick has been closed — is a flat outline that cannot be tapped.
+ *
+ * [connected] outranks featured: a recommendation of where to go next means nothing
+ * beside the TV already carrying the link. It no longer outranks a sleeping
+ * advertisement; see [deviceRowFace].
  */
 @Composable
 fun DeviceRow(
@@ -77,7 +95,8 @@ fun DeviceRow(
     val colors = LocalFlickColors.current
     val shape = RoundedCornerShape(FlickCorners.deviceRow)
     val connectedLabel = stringResource(R.string.connect_device_connected)
-    val asleep = tv.state == TvAvailability.SLEEPING && !connected
+    val face = deviceRowFace(tv.state, connected)
+    val asleep = face == DeviceRowFace.ASLEEP || face == DeviceRowFace.CLOSED_ON_TV
     val primary = (featured || connected) && !asleep
     // Tapping a known TV does not open the pairing sheet — selectDevice resumes its
     // stored pairing, which closes and re-dials the control link and routes to Library.
@@ -159,18 +178,21 @@ fun DeviceRow(
                 },
             )
             .then(
-                when {
+                when (face) {
                     // Nothing merges this row once it stops being clickable, so without
                     // this the reader walks a name and an address and never says which
                     // TV is the live one.
-                    connected -> Modifier.semantics(mergeDescendants = true) {
+                    DeviceRowFace.LIVE -> Modifier.semantics(mergeDescendants = true) {
                         stateDescription = connectedLabel
                     }
+                    // Merged for the same reason, and the closed line below is already in
+                    // the merged text, so a state description would say it twice.
+                    DeviceRowFace.CLOSED_ON_TV -> Modifier.semantics(mergeDescendants = true) {}
                     // The wash that used to say "not now" took the instruction down to
                     // 2.65:1 with it — and said nothing at all to a reader. The flat
                     // outline carries it visually; this is what carries it aloud.
-                    asleep -> Modifier.semantics(mergeDescendants = true) { disabled() }
-                    else -> Modifier
+                    DeviceRowFace.ASLEEP -> Modifier.semantics(mergeDescendants = true) { disabled() }
+                    DeviceRowFace.AVAILABLE -> Modifier
                 },
             )
             .heightIn(min = 48.dp)
@@ -199,7 +221,7 @@ fun DeviceRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (connected) ConnectedBadge(connectedLabel)
+            if (face == DeviceRowFace.LIVE) ConnectedBadge(connectedLabel)
             Text(
                 // The live endpoint is shown here so the user reads the address off the
                 // phone rather than transcribing it from across the room — which means
@@ -207,9 +229,13 @@ fun DeviceRow(
                 // host:port does not fit one 12.5 sp line on a 412 dp frame.
                 text = listOfNotNull(
                     tv.model,
-                    // The badge above already says it, and an advertisement that still
-                    // claims READY or SLEEPING is the stale half of the row.
-                    if (connected) null else stateLabel(tv.state),
+                    when (face) {
+                        // The badge above already says it, and a READY advertisement
+                        // beside a live link adds nothing.
+                        DeviceRowFace.LIVE -> null
+                        DeviceRowFace.CLOSED_ON_TV -> stringResource(R.string.connect_device_closed)
+                        DeviceRowFace.ASLEEP, DeviceRowFace.AVAILABLE -> stateLabel(tv.state)
+                    },
                     "${tv.host}:${tv.port}",
                 ).joinToString(" · "),
                 style = FlickText.bodyMedium.copy(color = subtitle),

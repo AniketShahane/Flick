@@ -14,6 +14,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -75,6 +76,57 @@ class ControlClient(private val scope: CoroutineScope) {
     private var session: DefaultClientWebSocketSession? = null
     private var reader: Job? = null
     private var endpoint: AuthenticatedEndpoint? = null
+    private var line: Line? = null
+
+    /**
+     * One authenticated socket, as the identity every liveness judgement is bound to.
+     *
+     * A verdict reached about one socket must never be applied to its successor — a check
+     * that straddles a reconnect would otherwise hang up the line that replaced the dead
+     * one — so callers hold this and hand it back to [retire], which acts only while it is
+     * still the current line.
+     *
+     * Its fields are written by the reader and read by the coordinator, and both run on the
+     * application scope's main dispatcher, as the rest of this class's state does.
+     */
+    internal class Line(internal val socket: DefaultClientWebSocketSession, installedAtMs: Long) {
+        /**
+         * The newest inbound frame, seeded at install: the handshake that authenticated
+         * this socket is itself the peer answering, moments ago.
+         */
+        internal var lastInboundAtMs: Long = installedAtMs
+            private set
+
+        /** Inbound frames so far. A change across an interval is the peer having spoken in it. */
+        var heard: Long = 0L
+            private set
+
+        internal val budget = PingBudget()
+        internal var outstanding: OutstandingPing? = null
+        internal var ended = false
+            private set
+
+        internal fun onInbound(atMs: Long) {
+            lastInboundAtMs = atMs
+            heard += 1
+        }
+
+        internal fun onPong(id: String) {
+            val ping = outstanding?.takeIf { it.id == id } ?: return
+            outstanding = null
+            ping.answered.complete(true)
+        }
+
+        internal fun end() {
+            ended = true
+            outstanding?.answered?.complete(false)
+        }
+    }
+
+    /** A ping on the wire; [answered] is true for its pong and false for its socket ending. */
+    internal class OutstandingPing(val id: String, val sentAtMs: Long) {
+        val answered = CompletableDeferred<Boolean>()
+    }
 
     /**
      * What phase 1 of a first-time pairing produced — the negotiated nonce pair, or
@@ -347,6 +399,81 @@ class ControlClient(private val scope: CoroutineScope) {
     }
     fun shutdown() { close(); client.close() }
     fun authenticatedEndpoint(): AuthenticatedEndpoint? = endpoint
+    internal fun line(): Line? = line
+
+    /** Whether [line] has spoken recently enough to be trusted without asking. */
+    internal fun heardRecently(line: Line): Boolean =
+        !line.ended && ControlLiveness.heardRecently(line.lastInboundAtMs, SystemClock.elapsedRealtime())
+
+    /**
+     * Whether anything still answers on [line], asked with the wire's own authenticated
+     * `ping` — which the receiver answers from its socket worker rather than its main
+     * thread, so a TV busy decoding still answers and one whose app is frozen does not.
+     *
+     * The pong is matched by the reader itself rather than through [frames]: that flow
+     * has no replay, and a pong that beat a subscriber to it would be a live TV judged
+     * dead. The ping is registered on the line before it is handed over for the same
+     * reason. Pings stay sequential and budgeted — see [ControlLiveness.step] — because
+     * the receiver closes the socket on its sixth inside ten seconds.
+     */
+    internal suspend fun confirmAlive(line: Line): Liveness {
+        if (line.ended || this.line !== line) return Liveness.DEAD
+        val nowMs = SystemClock.elapsedRealtime()
+        val step = ControlLiveness.step(
+            lastInboundAtMs = line.lastInboundAtMs,
+            outstandingSentAtMs = line.outstanding?.sentAtMs,
+            budgetAvailable = line.budget.available(nowMs),
+            nowMs = nowMs,
+        )
+        val ping = when (step) {
+            ControlLiveness.Step.TRUST -> return Liveness.ALIVE
+            ControlLiveness.Step.OVERDUE -> {
+                FlickLog.w("ws", "ping overdue sinceMs=${nowMs - (line.outstanding?.sentAtMs ?: nowMs)}")
+                return Liveness.DEAD
+            }
+            ControlLiveness.Step.UNBUDGETED -> {
+                FlickLog.w("ws", "ping skipped reason=budget")
+                return Liveness.UNKNOWN
+            }
+            ControlLiveness.Step.AWAIT -> line.outstanding ?: return Liveness.UNKNOWN
+            ControlLiveness.Step.PING -> {
+                val id = ControlProtocolV2.randomId()
+                val sent = OutstandingPing(id, nowMs)
+                line.outstanding = sent
+                line.budget.tryAcquire(nowMs)
+                if (!send(ControlProtocolV2.command("ping", null).put("id", id))) {
+                    line.outstanding = null
+                    return Liveness.UNKNOWN
+                }
+                sent
+            }
+        }
+        val remainingMs = ping.sentAtMs + ControlLiveness.PONG_TIMEOUT_MS - SystemClock.elapsedRealtime()
+        val answered = withTimeoutOrNull(remainingMs.coerceAtLeast(1L)) { ping.answered.await() }
+        val waitedMs = SystemClock.elapsedRealtime() - ping.sentAtMs
+        return when (answered) {
+            true -> {
+                FlickLog.i("ws", "pong rttMs=$waitedMs")
+                Liveness.ALIVE
+            }
+            false -> Liveness.DEAD
+            null -> {
+                FlickLog.w("ws", "ping unanswered waitedMs=$waitedMs")
+                Liveness.DEAD
+            }
+        }
+    }
+
+    /**
+     * Hang up [line] because it has proven it carries nothing, answering whether it was
+     * still the current line. The same teardown a transport failure performs, and bound
+     * the same way: a successor installed since is not this caller's to judge.
+     */
+    internal fun retire(line: Line): Boolean {
+        if (this.line !== line) return false
+        dropAuthenticated(line.socket)
+        return true
+    }
 
     /**
      * Dials [host]:[port] and runs [action] on the session.
@@ -427,6 +554,8 @@ class ControlClient(private val scope: CoroutineScope) {
 
     private fun installAuthenticated(socket: DefaultClientWebSocketSession, value: AuthenticatedEndpoint) {
         endpoint = value
+        val installed = Line(socket, SystemClock.elapsedRealtime())
+        line = installed
         _connection.value = ConnectionStatus.CONNECTED
         reader = scope.launch(transportFailures(socket)) {
             // A peer that stops answering does not end this loop: Ktor closes
@@ -438,6 +567,9 @@ class ControlClient(private val scope: CoroutineScope) {
                 always = { dropAuthenticated(socket) },
             ) {
                 for (incoming in socket.incoming) {
+                    // Before anything else is decided about the frame: whatever it turns
+                    // out to be, the peer's app produced it just now.
+                    installed.onInbound(SystemClock.elapsedRealtime())
                     if (incoming !is Frame.Text || !incoming.fin) {
                         closeBad(socket, CloseReason.Codes.CANNOT_ACCEPT)
                         break
@@ -451,6 +583,7 @@ class ControlClient(private val scope: CoroutineScope) {
                         closeBad(socket, CloseReason.Codes.VIOLATED_POLICY)
                         break
                     }
+                    if (frame.optString("t") == "pong") installed.onPong(frame.optString("id"))
                     frames.emit(frame)
                 }
             }
@@ -552,7 +685,14 @@ class ControlClient(private val scope: CoroutineScope) {
         }
     }
 
-    private fun closeInternal() { reader?.cancel(); reader = null; val old = session; session = null; endpoint = null; if (old != null) scope.launch { runCatching { old.close() } } }
+    private fun closeInternal() {
+        // Detached before it is ended: end() can resume a waiting liveness check inline, and
+        // that check must already see this line gone rather than tear it down a second time.
+        val ended = line; line = null
+        reader?.cancel(); reader = null; val old = session; session = null; endpoint = null
+        ended?.end()
+        if (old != null) scope.launch { runCatching { old.close() } }
+    }
 
     private suspend fun closeBad(socket: DefaultClientWebSocketSession, code: CloseReason.Codes) {
         runCatching { socket.close(CloseReason(code, "invalid")) }

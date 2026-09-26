@@ -288,6 +288,11 @@ private fun FlickRoot(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
+            // A TV app backed out of while this phone was away keeps the control socket
+            // open until the platform freezes it, and nothing on this side notices for up
+            // to 45 s. Coming back is the moment the Connect screen and the next cast both
+            // need the truth.
+            if (event == Lifecycle.Event.ON_START) controller.onForeground()
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryExempt = isIgnoringBatteryOptimizations(context)
                 // Both permissions are settable from outside the app, so both are re-read

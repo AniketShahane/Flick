@@ -66,6 +66,7 @@ import com.flick.sender.util.FlickLog
 import kotlin.random.Random
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -495,6 +496,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var subtitleJob: Job? = null
     private var progressResolutionJob: Job? = null
     private var subtitleRecallJob: Job? = null
+    private var heldLineCheck: Job? = null
+
+    /**
+     * The pairing attempt a pre-cast liveness check is running under, or null. Held as the
+     * attempt rather than as a flag because [invalidatePairingAttempt] is how Cancel reaches
+     * the check, and a flag cleared by the check's own teardown would lag that by a dispatch.
+     */
+    private var castProbeAttempt: Long? = null
     private val _subtitleOwnerKey = MutableStateFlow<String?>(null)
 
     /**
@@ -853,6 +862,16 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * costs; what it saves them is the film.
      */
     private fun onControlLost(castId: String) {
+        // A cast queued behind a liveness check is replacing this one, so the loss ends it
+        // here and nothing more: a recovery would re-cast the film the viewer just walked
+        // away from over the one they chose, and a terminal would raise a face for it in
+        // between. The socket is gone, so no remote stop is sent.
+        if (castProbeRunning()) {
+            FlickLog.w("cast", "control lost castIdFp=${FlickLog.fp(castId)} superseded=true")
+            castJob?.cancel()
+            cleanup(castId, stopRemoteIfLoaded = false)
+            return
+        }
         val nowMs = SystemClock.elapsedRealtime()
         val serving = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, nowMs)
         val request = currentRequest
@@ -1189,7 +1208,49 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         )
     }
 
-    fun onStart() { nsd.start() }
+    fun onStart() {
+        nsd.start()
+        checkHeldLine()
+    }
+
+    /** The app came back in front of the viewer; the socket held while it was away may not have survived that. */
+    fun onForeground() = checkHeldLine()
+
+    /**
+     * Ask the held control socket whether anything still answers on it, and hang it up
+     * quietly if nothing does.
+     *
+     * Quietly is the whole contract: no route, no face, no haptic, and no re-dial. The
+     * phone was not asked to do anything, so the only honest outcome is a Connect screen
+     * that stops calling the TV connected and a next cast that dials afresh rather than
+     * handing its load to a socket nobody reads. It runs once per foregrounding and never
+     * on a timer — a router block (research/03) is not repaired by asking it more often.
+     */
+    private fun checkHeldLine() {
+        val line = control.line()
+        val allowed = ControlLiveness.checksHeldLine(
+            held = line != null,
+            castLive = currentCastId != null,
+            castQueued = castProbeRunning(),
+            dialing = pairingJob?.isActive == true,
+            checking = heldLineCheck?.isActive == true,
+        )
+        if (!allowed || line == null) return
+        heldLineCheck = scope.launch {
+            if (control.confirmAlive(line) != Liveness.DEAD) return@launch
+            // Asked again: a cast, a queued cast or a dial begun while the ping was out owns
+            // what happens to this socket now, and each of them has its own answer to a
+            // dead one.
+            val stillIdle = ControlLiveness.checksHeldLine(
+                held = true,
+                castLive = currentCastId != null,
+                castQueued = castProbeRunning(),
+                dialing = pairingJob?.isActive == true,
+                checking = false,
+            )
+            if (stillIdle && control.retire(line)) FlickLog.w("ws", "line retired reason=idle_unanswered")
+        }
+    }
     fun selectSimplifiedVideoNames(simplified: Boolean) =
         videoNamePreference.select(simplified)
 
@@ -2027,7 +2088,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             openConnect()
             return
         }
-        if (control.authenticatedEndpoint() == null) {
+        // One check answers for every tap made while it runs. The latest request is the one
+        // cast, and a second ping behind the first would spend budget the receiver closes
+        // the socket over.
+        if (castProbeRunning()) {
+            pendingCast = request
+            return
+        }
+        val line = control.line()
+        if (control.authenticatedEndpoint() == null || line == null) {
             val pairing = store.get(tv.tvId)
             if (pairing == null || pairing.needsRepair) {
                 _pairError.value =
@@ -2039,7 +2108,58 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             resume(pairing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
             return
         }
-        startCast(request)
+        // A live cast's own state feed has already answered for the socket, so replacing a
+        // film costs nothing it did not cost before.
+        if (control.heardRecently(line)) {
+            startCast(request)
+            return
+        }
+        confirmThenCast(line, request)
+    }
+
+    /**
+     * Ask [line] whether anything still answers before a cast is trusted to it.
+     *
+     * A TV whose app was backed out of keeps this socket open, and once the platform
+     * freezes or kills that app nothing reads it; a load handed to it is queued and never
+     * delivered, and the cast used to fail two seconds later as a startup timeout — every
+     * retry on the same dead socket until the ping watchdog noticed, up to 45 s on.
+     *
+     * The check runs as a pairing attempt with the cast queued behind it, exactly as a
+     * resume does, so Cancel and every other dial reach it through the same invalidation.
+     * A dead verdict hangs the line up and re-enters [flickToTv], which then takes the
+     * resume path with the pairing checks it has always made. Any live cast is ended here
+     * first: it is being replaced, and the teardown of its socket must not be read as a
+     * loss to recover from.
+     */
+    private fun confirmThenCast(line: ControlClient.Line, request: CastRequest) {
+        pendingCast = request
+        val attempt = beginPairingAttempt()
+        castProbeAttempt = attempt
+        // Assigned before it runs: the dispatcher is immediate, so a verdict that needs no
+        // wait would otherwise re-enter the resume below and have its pairingJob overwritten
+        // by this one on the way out.
+        val probe = scope.launch(start = CoroutineStart.LAZY) {
+            val verdict = control.confirmAlive(line)
+            if (!pairingGate.isCurrent(attempt)) return@launch
+            castProbeAttempt = null
+            val queued = pendingCast ?: return@launch
+            val held = control.line() === line
+            if (verdict != Liveness.DEAD && held) {
+                startCast(queued)
+                return@launch
+            }
+            FlickLog.w("cast", "control line unusable before cast verdict=${verdict.name.lowercase()} held=$held redial=true")
+            pendingCast = null
+            currentCastId?.let { live ->
+                castJob?.cancel()
+                cleanup(live, stopRemoteIfLoaded = false)
+            }
+            control.retire(line)
+            flickToTv(queued)
+        }
+        pairingJob = probe
+        probe.start()
     }
     private fun startCast(request: CastRequest) {
         val item = request.item
@@ -2066,6 +2186,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         _castingItem.value = item; _route.value = Route.Connecting; publishCastStart(CastStartState.ConnectingControl(castId))
         castJob = scope.launch {
             var readyCommit = false
+            // What the control socket was asked to carry, for the failures that indict it.
+            var stage = StartupStage.PREPARING
+            var loadLine: ControlClient.Line? = null
+            var heardBeforeLoad = 0L
             try {
                 // Proof, not a guess: `getSiteLocalIpv4` returns null only when this phone
                 // holds no site-local address at all. It is also the commonest no-LAN case
@@ -2137,6 +2261,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // cast, so it may not hold one up. A memory missed on the one cast that
                 // outran the disk is a memory the viewer re-dials in one gesture.
                 val rememberedDelayMs = rememberedAudioDelayMs(audioDelayStore.state.value, fingerprint)
+                loadLine = control.line()
+                heardBeforeLoad = loadLine?.heard ?: 0L
+                stage = StartupStage.AWAITING_ACCEPTANCE
                 // A false here is certainty: the frame provably never left this phone.
                 // Letting the two-second `accepted` wait below expire instead would file
                 // that certainty as the TV having stayed silent.
@@ -2155,6 +2282,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     rememberedDelayMs ?: AudioDelayPolicy.IN_SYNC_MS,
                 )
                 withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
+                stage = StartupStage.AWAITING_FIRST_FRAME
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
                 withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
@@ -2173,7 +2301,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 _unplayableFiles.value = unplayableMemory.clear(item.uriKey)
                 decoderFaults.forget(item.uriKey)
                 _decoderSuspects.value = decoderFaults.suspects()
-            } catch (failure: CastStartupFailure) { terminal(castId, failure.code) }
+            } catch (failure: CastStartupFailure) {
+                // Read before the terminal, which clears it: a failure that surfaces after
+                // this cast was superseded may not judge the socket its successor is using.
+                val owned = currentCastId == castId
+                terminal(castId, failure.code)
+                // After the terminal and never before it: cleanup has nulled the current
+                // cast by now, so the teardown below reads as no loss to recover from.
+                val silentLine = loadLine
+                if (owned && silentLine != null) {
+                    hangUpSilentLine(silentLine, heardBeforeLoad, failure.code, stage)
+                }
+            }
               catch (e: Exception) {
                   // The only cast terminal that used to leave no diagnostic trace at all.
                   // The class name and nothing else: a message can carry a URI or a path.
@@ -2182,6 +2321,19 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
               }
             finally { if (!readyCommit) cleanup(castId) }
         }
+    }
+
+    /**
+     * Hang up a control socket a cast startup has just proved dead, so the next tap dials
+     * afresh instead of handing its load to the same socket until the ping watchdog fires.
+     *
+     * Only the connection goes: the paired TV stays named everywhere and its pairing stays
+     * trusted, because silence is evidence about this socket and not about the key.
+     */
+    private fun hangUpSilentLine(line: ControlClient.Line, heardBeforeLoad: Long, code: String, stage: StartupStage) {
+        val heardSinceLoad = line.heard != heardBeforeLoad
+        if (!ControlLiveness.hangsUpAfterStartupFailure(code, stage, heardSinceLoad)) return
+        if (control.retire(line)) FlickLog.w("ws", "line retired reason=$code heardSinceLoad=false")
     }
 
     private fun displayedVideoName(rawName: String): String {
@@ -2220,6 +2372,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         currentCastId?.let { castId ->
             control.send(ControlProtocolV2.command("stop", castId))
             completeCastToLibrary(castId)
+            // A film queued behind a liveness check must not start after the viewer said
+            // stop, for the same reason as the dial below.
+            if (pendingCast != null) {
+                pendingCast = null
+                invalidatePairingAttempt()
+            }
         } ?: run {
             // Stop during a control recovery finds no cast to command — the dial is still
             // in flight — and the film it would start must not arrive after the viewer
@@ -2527,6 +2685,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     private val _pairCodeRevision = MutableStateFlow(0L); val pairCodeRevision = _pairCodeRevision.asStateFlow()
     private fun clearEnteredCode() { _pairCodeRevision.value = pairCodeReset.clear() }
+    private fun castProbeRunning(): Boolean = castProbeAttempt?.let(pairingGate::isCurrent) == true
     private fun beginPairingAttempt(): Long { invalidatePairingAttempt(); return pairingGate.begin() }
     private fun beginManualPairAttempt(): Long = manualPairAttemptLedger.begin().also {
         _manualPairAttempt.value = manualPairAttemptLedger.event
@@ -2546,6 +2705,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      */
     private fun invalidatePairingAttempt() {
         if (!blockDialing) endBlockWait()
+        // A cast queued behind a liveness check dies with the check. Left set, it would read
+        // as a cast still on its way to every idle test that asks after [pendingCast].
+        if (castProbeRunning()) pendingCast = null
+        castProbeAttempt = null
         pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; control.cancelUnauthenticated()
     }
     private class CastStartupFailure(val code: String) : RuntimeException()

@@ -73,8 +73,9 @@ committed.
 ## Working agreements
 
 - **Orchestration pattern (user-mandated):** substantial implementation work fans out as
-  a multi-agent workflow — **Opus (xhigh) sub-agents implement, Fable verifies
-  adversarially, Opus sub-agents implement fixes** for confirmed findings. Partition
+  a multi-agent workflow — **Opus (medium) sub-agents implement, Opus (xhigh) verifies
+  adversarially, Opus (medium) sub-agents implement fixes** for confirmed findings. Fable
+  is brought in only when repeated Opus rounds have failed. Partition
   parallel implementers by module (`:sender` vs `:receiver`) so they never edit the same
   files, and let only ONE agent run Gradle (concurrent builds clash).
 - **This repo is PUBLIC** (github.com/AniketShahane/Flick). Never commit secrets, real
