@@ -880,6 +880,10 @@
     <string name="error_notsent_body">Flick couldn\'t put the play command on the link to %1$s, so the TV was never asked to start anything.</string>
     <string name="error_notsent_pill">Command not sent</string>
 
+    <string name="error_unanswered_title">%1$s didn\'t answer in time</string>
+    <string name="error_unanswered_body">It was reachable a moment ago but didn\'t take the film. It may have been busy — try again.</string>
+    <string name="error_unanswered_pill">No reply from the TV</string>
+
     <!-- The floor for a reachable-not-serving terminal with no more specific code. It may
          name neither party, because at this point the phone knows only that its own server
          was implicated and not which of its four refusals fired. -->

@@ -95,7 +95,9 @@ fun ConnectingScreen(
 ) {
     val castStart by controller.castStart.collectAsState()
     val tv by controller.connectedTv.collectAsState()
-    val item by controller.castingItem.collectAsState()
+    val castingItem by controller.castingItem.collectAsState()
+    val retryItem by controller.startupRetryItem.collectAsState()
+    val item = castingItem ?: retryItem
     val context = LocalContext.current
     val cancelDescription = stringResource(R.string.a11y_cancel_connecting)
     val connectingDescription = stringResource(R.string.a11y_pairing_status, stringResource(R.string.connecting_status))
@@ -115,10 +117,10 @@ fun ConnectingScreen(
     // that answer was about is over.
     var keptWaitingFor by rememberSaveable { mutableStateOf<String?>(null) }
     val film = item
-    // AwaitingFirstFrame alone: acceptance upstream is given 2 s, which cannot outlast the
-    // 2 s warm-up and 6 s window a Starved verdict costs, so naming that state too would
-    // only claim one this can never be reached in. A file with no name has no sentence to
-    // put in the body, and nothing here is guessed.
+    // AwaitingFirstFrame alone: acceptance comes before the TV requests its first byte, so
+    // no Starved verdict can exist while awaiting it, and naming that state too would only
+    // claim one this can never be reached in. A file with no name has no sentence to put
+    // in the body, and nothing here is guessed.
     val starting = castStart as? CastStartState.AwaitingFirstFrame
     val showSlowLink = starvedLink && film != null &&
         starting != null && starting.castId != keptWaitingFor

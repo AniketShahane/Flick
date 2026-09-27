@@ -569,6 +569,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var lastServedByteAtMs = 0L
     private var controlRecoveries = 0
     private var lastControlRecoveryAtMs = 0L
+    // Spent by [beginStartupRetry] and returned only by [beginUserCast]: a recovery re-cast
+    // or a block-wait dial is still the viewer's one cast, and may not buy it a second retry.
+    private var startupRetries = 0
+    // Set while a retry's dial is on its way to an accept: what it met there is still the
+    // original failure's to explain. See [CastStartupPolicy.busyFaceCode].
+    private var startupRetrying: StartupRetryReason? = null
 
     /**
      * The window this phone spends waiting a router block out, and the film it is holding.
@@ -659,6 +665,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     internal val manualPairAttempt: StateFlow<ManualPairAttemptEvent> = _manualPairAttempt.asStateFlow()
     private val _connectFromLibrary = MutableStateFlow(false); val connectFromLibrary = _connectFromLibrary.asStateFlow()
     private val _castingItem = MutableStateFlow<MediaItem?>(null); val castingItem = _castingItem.asStateFlow()
+    // The film a startup retry is re-dialing, for the connecting screen alone: between the
+    // retry's teardown and the new cast there is no cast, and [castingItem] must say so to
+    // everything that reads it as one — the dock, the busy face.
+    private val _startupRetryItem = MutableStateFlow<MediaItem?>(null); val startupRetryItem = _startupRetryItem.asStateFlow()
     private val _castStart = MutableStateFlow<CastStartState>(CastStartState.Idle); val castStart = _castStart.asStateFlow()
     private val _castFailure = MutableStateFlow<CastFailure?>(null); val castFailure = _castFailure.asStateFlow()
     // The failed cast's item outlives the cast record the terminal tears down: the error
@@ -885,6 +895,16 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             attempt = attempt,
         )
         FlickLog.w("cast", "control lost castIdFp=${FlickLog.fp(castId)} serving=$serving attempt=$attempt recovering=$recovers")
+        // A startup whose socket dropped under it is the other half of a stalled TV: one
+        // that missed its own adoption budget answers the load by closing this socket. It
+        // gets the one quiet re-dial before any face, from where it started.
+        val startupLoss = CastStartupPolicy.reasonForControlLoss(reachedActive)
+        if (request != null && startupLoss != null && startupRetryAllowed(startupLoss)) {
+            castJob?.cancel()
+            beginStartupRetry(castId, startupLoss, stopRemoteIfLoaded = false)
+            flickToTv(request)
+            return
+        }
         if (!recovers || request == null) {
             // Captured HERE, above the terminal: cleanup() nulls currentRequest and
             // retryCast() spends retryItem, so nothing below this line still names the film
@@ -1946,6 +1966,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     // the app stating this same diagnosis to itself.
                     _pairError.value = PairErrorKind.REPAIR_NEEDED
                     _route.value = Route.Connect
+                    endStartupDial()
                 } else if (sawTransportFailure) {
                     val fault = lastFault
                     // Asked before the face composes and only where the answer changes it:
@@ -2077,6 +2098,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         endBlockWait()
         controlRecoveries = 0
         lastControlRecoveryAtMs = 0L
+        startupRetries = 0
+        startupRetrying = null
+        _startupRetryItem.value = null
         flickToTv(request)
     }
 
@@ -2085,6 +2109,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // Bounced to Connect with nothing said. The Connect screen already draws
             // PairErrorCard from this flow, so naming the reason is one assignment.
             _pairError.value = PairErrorKind.PAIRING_REQUIRED
+            endStartupDial()
             openConnect()
             return
         }
@@ -2101,6 +2126,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             if (pairing == null || pairing.needsRepair) {
                 _pairError.value =
                     if (pairing == null) PairErrorKind.PAIRING_REQUIRED else PairErrorKind.REPAIR_NEEDED
+                endStartupDial()
                 openConnect()
                 return
             }
@@ -2190,6 +2216,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             var stage = StartupStage.PREPARING
             var loadLine: ControlClient.Line? = null
             var heardBeforeLoad = 0L
+            // Dialed only once the finally below has run, so the dead cast is gone in full
+            // before the resume that replaces it assumes this coordinator holds none.
+            var redial: CastRequest? = null
+            var redialHoldMs = 0L
             try {
                 // Proof, not a guess: `getSiteLocalIpv4` returns null only when this phone
                 // holds no site-local address at all. It is also the commonest no-LAN case
@@ -2265,7 +2295,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 heardBeforeLoad = loadLine?.heard ?: 0L
                 stage = StartupStage.AWAITING_ACCEPTANCE
                 // A false here is certainty: the frame provably never left this phone.
-                // Letting the two-second `accepted` wait below expire instead would file
+                // Letting the `accepted` wait below expire instead would file
                 // that certainty as the TV having stayed silent.
                 if (!session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)) {
                     throw CastStartupFailure("load_not_sent")
@@ -2281,10 +2311,16 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     fingerprint,
                     rememberedDelayMs ?: AudioDelayPolicy.IN_SYNC_MS,
                 )
-                withTimeoutOrNull(2_000) { accepted?.await() } ?: throw CastStartupFailure("startup_timeout")
+                val acceptWaitStartedAtMs = SystemClock.elapsedRealtime()
+                withTimeoutOrNull(CastStartupPolicy.ACCEPT_TIMEOUT_MS) { accepted?.await() }
+                    ?: throw CastStartupFailure(CastStartupPolicy.ACCEPT_TIMEOUT_CODE)
+                val acceptWaitedMs = SystemClock.elapsedRealtime() - acceptWaitStartedAtMs
+                if (CastStartupPolicy.acceptWasSlow(acceptWaitedMs)) FlickLog.w("cast", "accept waitedMs=$acceptWaitedMs")
+                startupRetrying = null; _startupRetryItem.value = null
                 stage = StartupStage.AWAITING_FIRST_FRAME
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
-                withTimeoutOrNull(18_000) { ready?.await() } ?: throw CastStartupFailure("startup_timeout")
+                withTimeoutOrNull(CastStartupPolicy.FIRST_FRAME_TIMEOUT_MS) { ready?.await() }
+                    ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
                 readyCommit = true
                 supportPromptStore.recordSuccess()
@@ -2305,10 +2341,22 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 // Read before the terminal, which clears it: a failure that surfaces after
                 // this cast was superseded may not judge the socket its successor is using.
                 val owned = currentCastId == castId
-                terminal(castId, failure.code)
-                // After the terminal and never before it: cleanup has nulled the current
-                // cast by now, so the teardown below reads as no loss to recover from.
                 val silentLine = loadLine
+                val heardSinceLoad = silentLine != null && silentLine.heard != heardBeforeLoad
+                val retry = CastStartupPolicy.reasonForFailure(failure.code, stage, heardSinceLoad)
+                    ?.takeIf { owned && startupRetryAllowed(it) }
+                if (retry != null) {
+                    beginStartupRetry(castId, retry, stopRemoteIfLoaded = true)
+                    redial = request
+                    redialHoldMs = CastStartupPolicy.redialHoldMs(retry)
+                } else {
+                    // The accept wait is the one local timeout a second tap is honestly
+                    // likely to fix: the TV was reachable and did not get to the load.
+                    terminal(castId, failure.code, retryable = failure.code == CastStartupPolicy.ACCEPT_TIMEOUT_CODE)
+                }
+                // After the terminal or the retry's teardown and never before either:
+                // cleanup has nulled the current cast by now, so the teardown below reads as
+                // no loss to recover from.
                 if (owned && silentLine != null) {
                     hangUpSilentLine(silentLine, heardBeforeLoad, failure.code, stage)
                 }
@@ -2320,7 +2368,60 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                   terminal(castId, "unknown")
               }
             finally { if (!readyCommit) cleanup(castId) }
+            redial?.let { redialStartup(it, redialHoldMs) }
         }
+    }
+
+    /**
+     * The retry's dial, after [holdMs] behind the connecting screen. The hold is a pairing
+     * attempt with the film queued behind it, as [confirmThenCast] is, so Cancel, Stop and
+     * a new film all end it through the same invalidation instead of being overtaken by it.
+     */
+    private fun redialStartup(request: CastRequest, holdMs: Long) {
+        if (holdMs <= 0L) { flickToTv(request); return }
+        pendingCast = request
+        val attempt = beginPairingAttempt()
+        pairingJob = scope.launch {
+            delay(holdMs)
+            if (!pairingGate.isCurrent(attempt)) return@launch
+            val queued = pendingCast ?: return@launch
+            pendingCast = null
+            flickToTv(queued)
+        }
+    }
+
+    /**
+     * Whether a startup that failed for [reason] may be re-dialed once without a face.
+     *
+     * Every path that ends a cast on the viewer's word — Cancel, Stop, a new film — nulls
+     * the current cast before it touches the socket, so neither caller of this is reached
+     * from one of those, and nothing here has to ask.
+     */
+    private fun startupRetryAllowed(reason: StartupRetryReason): Boolean =
+        CastStartupPolicy.retries(
+            reason = reason,
+            retriesSpent = startupRetries,
+            canDial = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair } != null,
+            phoneOnLan = ownLanIpv4() != null,
+            foregroundAllowed = foregroundStartAllowed(Build.VERSION.SDK_INT, currentProcessImportance()),
+        )
+
+    /**
+     * Tear [castId] down behind the connecting screen, for the caller to re-dial the same
+     * request. The face stays the one this startup was already wearing: the retry is this
+     * phone's business, and a face that flashed an error and withdrew it would be worse
+     * than the error.
+     */
+    private fun beginStartupRetry(castId: String, reason: StartupRetryReason, stopRemoteIfLoaded: Boolean) {
+        startupRetries += 1
+        FlickLog.w("cast", "startup retry reason=${reason.logName} castIdFp=${FlickLog.fp(castId)}")
+        val item = _castingItem.value
+        publishCastStart(CastStartState.ConnectingControl(castId))
+        _route.value = Route.Connecting
+        cleanup(castId, clearStart = false, stopRemoteIfLoaded = stopRemoteIfLoaded)
+        // After the cleanup, which ends the retry state of any cast it tears down.
+        startupRetrying = reason
+        _startupRetryItem.value = item
     }
 
     /**
@@ -2366,6 +2467,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (live != null) { castJob?.cancel(); cleanup(live, stopRemoteIfLoaded = true) }
         if (queued) invalidatePairingAttempt()
         if (!silent && (queued || live != null)) _route.value = Route.Library
+        if (!silent) endStartupDial()
+    }
+
+    /**
+     * A dial that ended without starting a cast. A startup retry or a control recovery left
+     * the connecting face on a cast id it had already torn down, and nothing after this
+     * point would ever move it.
+     */
+    private fun endStartupDial() {
+        startupRetrying = null
+        _startupRetryItem.value = null
+        if (CastStartupPolicy.orphanedStart(_castStart.value, currentCastId)) publishCastStart(CastStartState.Idle)
     }
     fun stopCast() {
         endBlockWait()
@@ -2401,6 +2514,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             audioDelayRecorder.finish(castId, session.audioDelayTargetMs)?.let(::enqueueAudioDelay)
             subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
             currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
+            // Whatever ended this cast, a retry of it is over: a later busy is not its own.
+            startupRetrying = null; _startupRetryItem.value = null
             // Nothing one cast's socket proved may be read as evidence about the next.
             lastServedByteAtMs = 0L
             if (clearStart) publishCastStart(CastStartState.Idle)
@@ -2459,6 +2574,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         reportedBeforeStart: Boolean = true,
     ) {
         if (currentCastId != castId) return
+        startupRetrying = null
         val reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId
         // `streamSlice` is the only place in the system that knows why a body stopped, so
         // where it recorded a reason for THIS cast it outranks the receiver's guess about
@@ -2526,7 +2642,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // busy is deliberately session-level and has no castId. It must win before
         // stale-cast filtering so a second controller never appears to prepare.
         if (frame.optString("t") == "busy") {
-            currentCastId?.let { terminal(it, "active_cast_busy", retryable = true) } ?: run {
+            currentCastId?.let { terminal(it, CastStartupPolicy.busyFaceCode(startupRetrying), retryable = true) } ?: run {
                 publishBusyFailure()
             }
             return
@@ -2655,6 +2771,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 ?: fault?.let { pairErrorForFault(it, _failureSameSubnet.value == true, offNetwork()) }
                 ?: PairErrorKind.UNREACHABLE
         }
+        endStartupDial()
     }
     private fun persistPaired(
         key: String,
@@ -2672,11 +2789,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         return null
     }
     private fun publishBusyFailure() {
+        val code = CastStartupPolicy.busyFaceCode(startupRetrying)
+        if (startupRetrying != null) FlickLog.w("cast", "startup retry met busy face=$code")
         retryItem = pendingCast
         _failureItem.value = pendingCast?.item ?: _castingItem.value
         pendingCast = null
-        _castFailure.value = CastFailure("active_cast_busy", retryable = retryItem != null)
-        _route.value = Route.Failure(errorKind("active_cast_busy"), _castFailure.value!!)
+        _castFailure.value = CastFailure(code, retryable = retryItem != null)
+        _route.value = Route.Failure(errorKind(code), _castFailure.value!!)
+        endStartupDial()
     }
     private fun canRestoreNowPlaying(): Boolean {
         val active = _castStart.value as? CastStartState.Active ?: return false

@@ -817,40 +817,79 @@ class ControlServer(
                 } else {
                     null
                 }
-                val outcome = synchronized(serverLock) {
+                // Decided under [serverLock], waited on WITHOUT it: the main thread takes
+                // that lock itself (terminal results, a local stop, a forget), so waiting
+                // for it while holding the lock could only ever end at the deadline.
+                val adoption = synchronized(serverLock) {
                     if (active?.token !== connection.token || active?.generation != connection.generation) return reject("ownership")
-                    when (ownership.adoptCast(connection.token, connection.generation, cast)) {
+                    ownership.adoptCast(connection.token, connection.generation, cast).also {
+                        if (it == ControlOwnership.CastAdoption.NEW) pairing.closeSurface()
+                    }
+                }
+                val reload = when (adoption) {
+                    ControlOwnership.CastAdoption.STALE_LEASE -> return reject("stale_lease")
+                    ControlOwnership.CastAdoption.DUPLICATE -> true
+                    ControlOwnership.CastAdoption.NEW -> false
+                }
+                val postedAtMs = SystemClock.elapsedRealtime()
+                // A reload that misses the deadline still runs when the main thread
+                // reaches it, as it always has: it is answered `loadAccepted` either way,
+                // and abandoning it would drop the subtitle the viewer just chose.
+                val adopted = onMainAdoption(connection, cast, abandonOnTimeout = !reload) {
+                    if (reload) {
                         // A repeat for the live cast is how the phone attaches or
                         // removes an external subtitle mid-watch. Replaying the
                         // retained result unconditionally would discard the
                         // validated frame and silently drop the selection.
-                        ControlOwnership.CastAdoption.DUPLICATE -> onMainResult {
-                            commands.onReloadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle)
-                                ?: commands.replayResult(cast)
-                        } ?: ControlCastResult.Accepted(cast)
-                        ControlOwnership.CastAdoption.NEW -> {
-                            pairing.closeSurface()
-                            onMainResult { commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle) }
-                                ?: run {
-                                    ownership.clearCast(connection.token, connection.generation, cast)
-                                    // Deliberately NOT one of the six sender-side
-                                    // validation rejects above. Those are the phone's
-                                    // frame being wrong; this is THIS TV's main thread
-                                    // failing to answer inside a second, which is the
-                                    // stall the heartbeat instrumentation exists to
-                                    // catch — so it gets its own tag and its own count
-                                    // rather than hiding among faults that belong to
-                                    // the other device.
-                                    FlickLog.w(
-                                        "main",
-                                        "loadMedia stalled budgetMs=$MAIN_ADOPTION_TIMEOUT_MS " +
-                                            "n=${mainThreadStalls.incrementAndGet()} castIdFp=${FlickLog.fp(cast)}",
-                                    )
-                                    return false
-                                }
-                        }
-                        ControlOwnership.CastAdoption.STALE_LEASE -> return reject("stale_lease")
+                        commands.onReloadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle)
+                            ?: commands.replayResult(cast)
+                    } else {
+                        commands.onLoadMedia(connection.generation, cast, url!!, title!!, duration, start, subtitle)
                     }
+                }
+                val adoptMs = SystemClock.elapsedRealtime() - postedAtMs
+                if (adopted is MainHandoff.Outcome.TimedOut && !reload) {
+                    // Abandoned, so the main thread will never start this cast; the
+                    // ownership it was adopted under is handed back before the refusal.
+                    synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, cast) }
+                    // Deliberately NOT one of the six sender-side validation rejects
+                    // above. Those are the phone's frame being wrong; this is THIS TV's
+                    // main thread failing to answer inside its budget, which is the stall
+                    // the heartbeat instrumentation exists to catch — so it gets its own
+                    // tag and its own count rather than hiding among faults that belong
+                    // to the other device.
+                    FlickLog.w(
+                        "main",
+                        "loadMedia stalled budgetMs=$MAIN_ADOPTION_TIMEOUT_MS " +
+                            "n=${mainThreadStalls.incrementAndGet()} castIdFp=${FlickLog.fp(cast)}",
+                    )
+                    return false
+                }
+                if (mainAdoptionSlow(adoptMs)) {
+                    FlickLog.w(
+                        "main",
+                        "loadMedia slow adoptMs=$adoptMs budgetMs=$MAIN_ADOPTION_TIMEOUT_MS " +
+                            "kind=${if (reload) "reload" else "new"} castIdFp=${FlickLog.fp(cast)}",
+                    )
+                }
+                val outcome = (adopted as? MainHandoff.Outcome.Done)?.value
+                    ?: if (reload) ControlCastResult.Accepted(cast) else null
+                // Re-read under the lock the adoption was decided under, against the
+                // same token, generation and cast. Anything that took the lease away
+                // meanwhile — revoke, forget, teardown — has already closed this socket
+                // and posted the control loss that ends a session the main thread did
+                // start; anything that ended only the cast has sent its own terminal
+                // frame. Neither is owed a `loadAccepted`.
+                val stillOwned = synchronized(serverLock) {
+                    // A new cast with no session behind it must not keep the lease
+                    // busy: every other phone would be refused until this one hung up.
+                    if (outcome == null) ownership.clearCast(connection.token, connection.generation, cast)
+                    holdsLease(connection) && ownership.isCurrent(connection.token, connection.generation, cast)
+                }
+                if (outcome == null && adopted !is MainHandoff.Outcome.Refused) return reject("adopt_failed")
+                if (outcome == null || !stillOwned) {
+                    FlickLog.i("cast", "loadMedia drop reason=ownership_changed castIdFp=${FlickLog.fp(cast)}")
+                    return true
                 }
                 FlickLog.i("cast", "loadMedia accept castIdFp=${FlickLog.fp(cast)} src=${FlickLog.endpoint(url)} durationMs=$duration startMs=$start extSub=${subtitle != null} extSubLang=${subtitle?.language ?: "none"}")
                 sendResult(outcome)
@@ -953,6 +992,26 @@ class ControlServer(
      * device, and a rate is what separates a one-off from a TV that is wedged.
      */
     private val mainThreadStalls = AtomicLong(0L)
+
+    private fun holdsLease(connection: Connection) =
+        active?.token === connection.token && active?.generation == connection.generation && generation == connection.generation
+
+    /**
+     * A `loadMedia` adoption on the main thread, waited for by a worker that holds no
+     * lock — see [MainHandoff]. The ownership read it runs under is [post]'s, taken on
+     * the main thread for the same reason.
+     */
+    private fun onMainAdoption(
+        connection: Connection,
+        castId: String,
+        abandonOnTimeout: Boolean,
+        block: () -> ControlCastResult?,
+    ): MainHandoff.Outcome<ControlCastResult> {
+        val handoff = MainHandoff<ControlCastResult>(abandonOnTimeout)
+        val owned = { generation == connection.generation && ownership.isCurrent(connection.token, connection.generation, castId) }
+        if (Looper.myLooper() == Looper.getMainLooper()) handoff.run(owned, block) else main.post { handoff.run(owned, block) }
+        return handoff.await(MAIN_ADOPTION_TIMEOUT_MS)
+    }
 
     /** Ktor calls on a worker; compose/player ownership stays on the main thread. */
     private fun onMainResult(block: () -> ControlCastResult?): ControlCastResult? {
@@ -1125,7 +1184,6 @@ class ControlServer(
         // A socket accepted between listen() and the binding being published waits
         // rather than being rejected; it can never outlive the auth deadline.
         private const val BIND_PUBLISH_TIMEOUT_MS = 2_000L
-        private const val MAIN_ADOPTION_TIMEOUT_MS = 1_000L
         private val ID = Regex("^[A-Za-z0-9_-]{22}$")
         private val PROOF = Regex("^[A-Za-z0-9_-]{43}$")
         private val CODE = Regex("^[0-9]{4}$")

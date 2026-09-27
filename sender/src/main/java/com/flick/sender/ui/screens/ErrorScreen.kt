@@ -81,6 +81,9 @@ internal enum class CastErrorFace {
     RECEIVER_TURNED_AWAY, MEDIA_PATH_BLOCKED, PHONE_LEFT_NETWORK,
     // A dial that fully succeeded and a write to this phone's storage that did not.
     PAIRING_NOT_SAVED,
+    // A load the TV never accepted, which the first-frame timeout's face used to claim it
+    // had. Only ever this phone's verdict, reached after its own silent retry.
+    LOAD_UNANSWERED,
 }
 
 /** The moves a face may offer. Each one is a thing this phone can actually do. */
@@ -175,6 +178,7 @@ internal fun castErrorFace(
     "source_lost" -> CastErrorFace.SOURCE_LOST
     "source_start_timeout" -> CastErrorFace.PHONE_SLOW_START
     "load_not_sent" -> CastErrorFace.COMMAND_NOT_SENT
+    "load_unanswered" -> CastErrorFace.LOAD_UNANSWERED
     "control_refused" -> CastErrorFace.RECEIVER_NOT_OPEN
     "control_no_route" -> CastErrorFace.ROUTER_BLOCKING
     "control_no_answer" -> CastErrorFace.NO_ANSWER
@@ -245,6 +249,9 @@ private fun CastErrorFace.moves(): Pair<CastErrorAction, CastErrorAction?> = whe
     CastErrorFace.SOURCE_LOST,
     CastErrorFace.PHONE_SLOW_START,
     CastErrorFace.COMMAND_NOT_SENT,
+    // A TV that was reachable and busy: the retry that leads is the move, and the file is
+    // not in question, so the phone is no better an offer than the library.
+    CastErrorFace.LOAD_UNANSWERED,
     // Its own copy names the move: play the film again from a screen that is in front of
     // the user, which is the state Android refused this start for want of.
     CastErrorFace.SERVER_NOT_ALLOWED,
@@ -511,6 +518,7 @@ private fun CastErrorFace.tone(): StatusKind = when (this) {
     CastErrorFace.COMMAND_NOT_SENT,
     CastErrorFace.SERVER_NOT_ALLOWED,
     CastErrorFace.PAIRING_NOT_SAVED,
+    CastErrorFace.LOAD_UNANSWERED,
     -> StatusKind.CAUTION
     CastErrorFace.TV_APP_CLOSED,
     CastErrorFace.UPDATE_REQUIRED,
@@ -579,6 +587,7 @@ private fun CastErrorFace.title(
     CastErrorFace.MEDIA_PATH_BLOCKED -> stringResource(R.string.error_mediablocked_title, tvName)
     CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_title)
     CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_title)
+    CastErrorFace.LOAD_UNANSWERED -> stringResource(R.string.error_unanswered_title, tvName)
 }
 
 /**
@@ -699,6 +708,7 @@ private fun CastErrorFace.body(
     }
     CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_body, tvName)
     CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_body, tvName)
+    CastErrorFace.LOAD_UNANSWERED -> stringResource(R.string.error_unanswered_body)
 }
 
 /** [sameSubnet] reaches the one pill that would otherwise name a culprit its body will not. */
@@ -740,6 +750,7 @@ private fun CastErrorFace.pill(sameSubnet: Boolean?): String = when (this) {
     CastErrorFace.MEDIA_PATH_BLOCKED -> stringResource(R.string.error_mediablocked_pill)
     CastErrorFace.PHONE_LEFT_NETWORK -> stringResource(R.string.error_phonewifi_pill)
     CastErrorFace.PAIRING_NOT_SAVED -> stringResource(R.string.error_pairstore_pill)
+    CastErrorFace.LOAD_UNANSWERED -> stringResource(R.string.error_unanswered_pill)
 }
 
 /**

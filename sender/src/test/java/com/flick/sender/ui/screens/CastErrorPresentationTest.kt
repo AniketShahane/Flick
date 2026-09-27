@@ -401,7 +401,7 @@ class CastErrorPresentationTest {
             "source_lost", "no_lan_address", "source_start_timeout", "load_not_sent",
             "control_refused", "control_no_route", "control_no_answer", "control_no_network",
             "control_rejected", "control_disconnected_no_lan", "pairing_store_failed",
-            "media_start_refused",
+            "media_start_refused", "load_unanswered",
         )
 
         /** Verbatim `ControlFrameSchema.failureCodes`, which is the wire's own list. */

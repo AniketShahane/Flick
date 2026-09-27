@@ -19,9 +19,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.unit.dp
@@ -201,6 +204,49 @@ fun Modifier.flickGlass(
     underlay: Color = Color.Transparent,
     showSheen: Boolean = true,
     backdropEffect: Modifier? = null,
+): Modifier = flickGlassLayers(
+    colors = colors,
+    shape = shape,
+    fillLayer = Modifier.background(color = fill, shape = shape),
+    underlay = underlay,
+    showSheen = showSheen,
+    backdropEffect = backdropEffect,
+)
+
+/**
+ * The same material with a fill that moves. [fill] is read in the draw scope, so a fill
+ * that animates repaints this one node rather than recomposing the surface it paints, and
+ * it lands in the fill's own seat — under the sheen and the rim, never over them.
+ */
+fun Modifier.flickGlass(
+    colors: FlickColors,
+    shape: Shape,
+    fill: ColorProducer,
+    underlay: Color = Color.Transparent,
+    showSheen: Boolean = true,
+    backdropEffect: Modifier? = null,
+): Modifier = flickGlassLayers(
+    colors = colors,
+    shape = shape,
+    fillLayer = Modifier.drawWithCache {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        onDrawBehind {
+            val color = fill()
+            if (color.alpha > 0f) drawOutline(outline, color)
+        }
+    },
+    underlay = underlay,
+    showSheen = showSheen,
+    backdropEffect = backdropEffect,
+)
+
+private fun Modifier.flickGlassLayers(
+    colors: FlickColors,
+    shape: Shape,
+    fillLayer: Modifier,
+    underlay: Color,
+    showSheen: Boolean,
+    backdropEffect: Modifier?,
 ): Modifier = this
     .shadow(
         elevation = 20.dp,
@@ -219,7 +265,7 @@ fun Modifier.flickGlass(
     .then(
         if (underlay.alpha > 0f) Modifier.background(color = underlay, shape = shape) else Modifier,
     )
-    .background(color = fill, shape = shape)
+    .then(fillLayer)
     .then(
         if (showSheen) {
             Modifier.background(

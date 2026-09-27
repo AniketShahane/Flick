@@ -10,6 +10,7 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Indication
@@ -28,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -154,20 +156,31 @@ object Motion {
 
     /**
      * Retime the Material scheme spring used by the dock/remote shared bounds and its
-     * dissolve. The damping ratio and visibility threshold come from the active scheme;
-     * only stiffness changes. A future non-spring scheme passes through unchanged rather
-     * than making this product token a source of a runtime cast failure.
+     * dissolve. The damping ratio comes from the active scheme and only stiffness changes.
+     * A future non-spring scheme passes through unchanged rather than making this product
+     * token a source of a runtime cast failure.
+     *
+     * [visibilityThreshold] replaces the scheme's own, which names none: a bounds spring
+     * left without one runs down to a hundredth of a pixel per edge, and the shared copy is
+     * handed back to the bar only when the spring ENDS — long after the card has visibly
+     * landed. The travel names [cardMorphTravelThreshold] so the hand-back is the landing.
      */
     @Suppress("UNCHECKED_CAST")
-    fun <T> cardMorphSpec(base: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> {
+    fun <T> cardMorphSpec(
+        base: FiniteAnimationSpec<T>,
+        visibilityThreshold: T? = null,
+    ): FiniteAnimationSpec<T> {
         val baseSpring = base as? SpringSpec<T> ?: return base
         return SpringSpec(
             dampingRatio = baseSpring.dampingRatio,
             stiffness = baseSpring.stiffness /
                 (CardMorphDurationFraction * CardMorphDurationFraction),
-            visibilityThreshold = baseSpring.visibilityThreshold,
+            visibilityThreshold = visibilityThreshold ?: baseSpring.visibilityThreshold,
         )
     }
+
+    /** Where the card's travel counts as landed: one pixel on every edge. */
+    val cardMorphTravelThreshold: Rect = Rect.VisibilityThreshold
 
     /** Snap instead of animating when the platform's animators are off. */
     fun <T> orSnap(reduceMotion: Boolean, spec: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> =

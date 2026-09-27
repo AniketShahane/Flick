@@ -2,8 +2,10 @@ package com.flick.sender.ui.theme
 
 import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -40,6 +42,21 @@ class MotionTest {
         assertEquals(450, Motion.CardMorphHoldMs)
         assertEquals(675L, Motion.CardMorphLatchMs)
         assertEquals(135L, Motion.CardMorphBarHandoffMs)
+    }
+
+    @Test
+    fun cardMorphTravelLandsWhenItVisiblyLands() {
+        // The scheme's spatial spring names no threshold, so a bounds spring left with it
+        // runs down to a hundredth of a pixel and the dock is handed back long after the
+        // card looks home. The travel names one pixel per edge instead.
+        val base = spring<Rect>(dampingRatio = 0.8f, stiffness = 380f)
+
+        val travel = Motion.cardMorphSpec(base, Motion.cardMorphTravelThreshold) as SpringSpec<Rect>
+
+        assertEquals(Rect.VisibilityThreshold, travel.visibilityThreshold)
+        assertEquals(Rect(1f, 1f, 1f, 1f), Motion.cardMorphTravelThreshold)
+        assertEquals(base.dampingRatio, travel.dampingRatio, 0f)
+        assertEquals(380f / (0.75f * 0.75f), travel.stiffness, 0.001f)
     }
 
     @Test

@@ -118,7 +118,7 @@ internal object ControlLiveness {
         if (heardSinceLoad) return false
         return when (code) {
             "load_not_sent" -> true
-            "startup_timeout" -> stage == StartupStage.AWAITING_ACCEPTANCE
+            CastStartupPolicy.ACCEPT_TIMEOUT_CODE, "startup_timeout" -> stage == StartupStage.AWAITING_ACCEPTANCE
             else -> false
         }
     }

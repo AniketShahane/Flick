@@ -9,6 +9,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -40,6 +42,9 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,6 +90,9 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
+import kotlinx.coroutines.flow.dropWhile
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** The dock's own height and the air it keeps between itself and the nav pill. */
 private val DockHeight = 66.dp
@@ -129,6 +137,9 @@ private const val RemoteCardKey = "remote-card"
  * remote". When it is, the bar neither rises nor falls: its own bounds become the card,
  * and any enter/exit of its own would be a second motion fighting that one.
  *
+ * [flight] is the shell's identity for the route flip in progress. [morphing] stays true
+ * across back-to-back flights, so it cannot say when a new one has begun; this can.
+ *
  * [hazeState] is the shell's one haze source, taken at the route boundary. The dock is a
  * sibling of the nav pill in the same bottom stack, so the route it blurs is already in
  * there and this surface needs no source of its own.
@@ -139,6 +150,7 @@ internal fun NowPlayingDock(
     controller: FlickController,
     allowed: Boolean,
     morphing: Boolean,
+    flight: Any,
     hazeState: HazeState,
     sharedScope: SharedTransitionScope?,
     onOpen: () -> Unit,
@@ -178,6 +190,8 @@ internal fun NowPlayingDock(
                 playback = playback,
                 hazeState = hazeState,
                 morphing = morphing,
+                flight = flight,
+                sharedScope = sharedScope,
                 // The bar is the surface being left only when it is on its way out INTO
                 // the remote; every other departure is the cast itself ending.
                 morphBounds = Modifier.remoteCardBounds(
@@ -220,7 +234,10 @@ internal fun Modifier.remoteCardBounds(
 ): Modifier {
     if (sharedScope == null || animatedScope == null) return this
     val reduceMotion = rememberReduceMotion()
-    val travel = Motion.cardMorphSpec(MaterialTheme.motionScheme.defaultSpatialSpec<Rect>())
+    val travel = Motion.cardMorphSpec(
+        MaterialTheme.motionScheme.defaultSpatialSpec<Rect>(),
+        visibilityThreshold = Motion.cardMorphTravelThreshold,
+    )
     val dissolve = Motion.cardMorphSpec(MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
     val bounds = remember(reduceMotion, travel) {
         BoundsTransform { _, _ -> if (reduceMotion) snap<Rect>() else travel }
@@ -314,6 +331,7 @@ private fun rememberDeparting(item: MediaItem?): MediaItem? {
     return item ?: held.value
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun DockBar(
     item: MediaItem,
@@ -321,6 +339,8 @@ private fun DockBar(
     playback: State<PlaybackUiState>,
     hazeState: HazeState,
     morphing: Boolean,
+    flight: Any,
+    sharedScope: SharedTransitionScope?,
     morphBounds: Modifier,
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
@@ -351,9 +371,15 @@ private fun DockBar(
             fallbackTint = HazeTint(glassFallbackTint(colors, DockBackdropVisibility)),
         )
     }
+    val blurAvailable = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
+    val glass = rememberDockGlass(morphing, flight, blurAvailable, sharedScope)
     val backdropEffect = Modifier.hazeEffect(state = hazeState, style = hazeStyle) {
         // Same floor as the nav's, and for the same reason — see [navBackdropBlurEnabled].
-        blurEnabled = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
+        blurEnabled = blurAvailable
+        // Read here rather than in composition: this block is observed by the effect node
+        // itself, so the fade repaints the blur layer it already has — never a new node,
+        // never a new RenderEffect, never a recomposition of the bar.
+        alpha = glass.value.coerceIn(DockGlassFlat, DockGlassBlurred)
     }
     // The material the bar is painted with while the container transform runs, and the
     // reason the blur stands down for it. A hazeEffect node samples the source through its
@@ -365,7 +391,7 @@ private fun DockBar(
     // corner to the card's square edge for the whole flight.
     //
     // The flat tint is the style's own fallbackTint — the colour Haze itself paints where
-    // there is no blur — so the swap changes only whether the backdrop is blurred, never the
+    // there is no blur — so the fade changes only whether the backdrop is blurred, never the
     // hue or the weight of the material. A different colour here would be a pop at the one
     // moment the bar has to read as the same object as the card it is becoming.
     val flatTint = remember(colors) { glassFallbackTint(colors, DockBackdropVisibility) }
@@ -386,9 +412,14 @@ private fun DockBar(
             .flickGlass(
                 colors = colors,
                 shape = shape,
-                fill = if (morphing) flatTint else glassBackdropFill(colors),
+                // Read in the draw scope, and the other half of the same fade: the blur layer
+                // carries its own tints, so the flat tint only makes up what it has not yet
+                // brought in. At rest this is the transparent fill [glassBackdropFill] names.
+                fill = {
+                    flatTint.copy(alpha = dockFlatTintAlpha(flatTint.alpha, glass.value))
+                },
                 showSheen = navShowsGlassSheen(colors),
-                backdropEffect = if (morphing) null else backdropEffect,
+                backdropEffect = backdropEffect,
             )
             .clip(shape)
             .drawBehind {
@@ -465,6 +496,90 @@ private fun DockBar(
             DockKey(playing = playing, onClick = onPlayPause)
         }
     }
+}
+
+/**
+ * How far the dock's material has come back from the flat slab it flies as (0) to the
+ * blurred glass it rests as (1).
+ *
+ * It goes flat quickly as the bar lifts into the card, and comes back only once the
+ * transform has handed the bar back to its own seat: before then the blur would be sampled
+ * where the bar lives rather than where it is drawn. The shell's latch is the fallback for
+ * a flight whose end is never observed, and it can only ever be later than the hand-back.
+ * Seeded from [morphing] so a bar that is born mid-flight starts flat instead of fading
+ * out; a flip mid-fade carries on from wherever the material has got to.
+ *
+ * Restarted per [flight], never per [morphing]: the shell holds that true across a second
+ * flight launched before the first one's latch, which must still go flat, and the latch
+ * releasing is only ever the end of a wait — restarting on it would cancel a fade-in in
+ * flight and start its spring again from rest. The fades run in the composition's scope
+ * for the same reason, so a restart that leaves the target unchanged leaves them running.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun rememberDockGlass(
+    morphing: Boolean,
+    flight: Any,
+    blurEnabled: Boolean,
+    sharedScope: SharedTransitionScope?,
+): Animatable<Float, AnimationVector1D> {
+    val motionScheme = MaterialTheme.motionScheme
+    val reduceMotion = rememberReduceMotion()
+    val glass = remember { Animatable(dockGlassTarget(morphing, blurEnabled)) }
+    val fades = rememberCoroutineScope()
+    val morphingNow = rememberUpdatedState(morphing)
+    val fadeOut = rememberUpdatedState(Motion.orSnap(reduceMotion, motionScheme.fastEffectsSpec<Float>()))
+    val fadeIn = rememberUpdatedState(Motion.orSnap(reduceMotion, motionScheme.defaultEffectsSpec<Float>()))
+    LaunchedEffect(flight, blurEnabled, sharedScope) {
+        if (dockGlassTarget(morphingNow.value, blurEnabled) == DockGlassFlat) {
+            // Launched, not awaited: the hand-back is watched from the flight's first frame,
+            // and the fade-in that answers it takes over from wherever this has got to.
+            fades.launch { glass.animateTo(DockGlassFlat, fadeOut.value) }
+            // Waits for the flight to BEGIN before waiting for it to end: on the frame the
+            // route flips, nothing is in the air yet.
+            snapshotFlow { (sharedScope?.isTransitionActive == true) to morphingNow.value }
+                .dropWhile { (active, morph) -> dockAwaitingFlight(active, morph) }
+                .first { (active, morph) -> dockHandedBack(active, morph) }
+        }
+        if (!(glass.isRunning && glass.targetValue == DockGlassBlurred)) {
+            fades.launch { glass.animateTo(DockGlassBlurred, fadeIn.value) }
+        }
+    }
+    return glass
+}
+
+/** The flight this bar is flat for has not left the ground, and the latch still holds it. */
+internal fun dockAwaitingFlight(transitionActive: Boolean, morphing: Boolean): Boolean =
+    !transitionActive && morphing
+
+/** Once the flight has begun: it has landed, or the shell's latch has let the bar go. */
+internal fun dockHandedBack(transitionActive: Boolean, morphing: Boolean): Boolean =
+    !transitionActive || !morphing
+
+internal const val DockGlassFlat = 0f
+internal const val DockGlassBlurred = 1f
+
+/**
+ * Where the dock's material is headed. Below the blur floor the style paints its fallback
+ * tint, which is already the flat slab's colour and samples nothing, so there the bar never
+ * has anything to stand down.
+ */
+internal fun dockGlassTarget(morphing: Boolean, blurEnabled: Boolean): Float =
+    if (morphing && blurEnabled) DockGlassFlat else DockGlassBlurred
+
+/**
+ * Opacity of the flat tint painted over a blur layer that is itself at [glass] opacity.
+ *
+ * The layer already carries the same tint at [tintAlpha], so painting the flat tint at
+ * `tintAlpha * (1 - glass)` would double-count the overlap and thin the material through
+ * the middle of the fade. This is the share that keeps the tint's total coverage at
+ * [tintAlpha] for every [glass] — so the fade changes only how blurred the backdrop is,
+ * which is the whole of what it is for.
+ */
+internal fun dockFlatTintAlpha(tintAlpha: Float, glass: Float): Float {
+    val g = glass.coerceIn(DockGlassFlat, DockGlassBlurred)
+    val remaining = 1f - g * tintAlpha
+    return if (remaining <= 0f) 0f else tintAlpha * (1f - g) / remaining
 }
 
 /** The remote's amber FAB, shrunk to one key. Same glyph, same morph, same ink. */
