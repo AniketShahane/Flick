@@ -5,9 +5,9 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -67,7 +67,10 @@ import com.flick.receiver.net.PairedPhone
 import com.flick.receiver.summon.OpenForCastsRow
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
+import com.flick.receiver.ui.components.FlickSwap
 import com.flick.receiver.ui.components.FocusBeaconHost
+import com.flick.receiver.ui.components.InkText
+import com.flick.receiver.ui.components.LocalShellRetained
 import com.flick.receiver.ui.components.TvOriginReveal
 import com.flick.receiver.ui.components.flickPlate
 import com.flick.receiver.ui.components.landTvFocus
@@ -201,6 +204,36 @@ private fun Modifier.settingsStage(
         translationY = (1f - stage) * SettingsStageRise.toPx()
     }
 }
+
+/**
+ * A row that appears after the column has. Alpha only, for the same reason as
+ * [settingsStage]: the rows it serves sit under or own `bringIntoViewRequester`s.
+ */
+private class SettingsArrival(arrive: Boolean) {
+    val alpha: Animatable<Float, AnimationVector1D> = Animatable(if (arrive) 0f else 1f)
+    var settled by mutableStateOf(!arrive)
+}
+
+/**
+ * [arrive] is read once per [key]: a row composed as part of the column's own
+ * entrance is already carried by that entrance, and a second fade under it would
+ * only hold it back.
+ */
+@Composable
+private fun rememberSettingsArrival(key: Any?, arrive: Boolean): SettingsArrival {
+    val spec = FlickMotion.orSnap(LocalReducedMotion.current, FlickMotion.stateEffects<Float>())
+    val arrival = remember(key) { SettingsArrival(arrive) }
+    LaunchedEffect(arrival) {
+        if (arrival.settled) return@LaunchedEffect
+        arrival.alpha.animateTo(1f, spec)
+        arrival.settled = true
+    }
+    return arrival
+}
+
+/** The layer is dropped once the row has arrived. */
+private fun Modifier.settingsArrival(arrival: SettingsArrival): Modifier =
+    if (arrival.settled) this else graphicsLayer { alpha = arrival.alpha.value }
 
 /**
  * Everything that moves the rows Clear and Done sit under. [pairedPhones] is
@@ -392,6 +425,9 @@ fun SettingsScreen(
     // pair screen, so no phones paired is a real state here, not a theoretical one.
     val managePhones = pairedPhones.isNotEmpty()
     val reducedMotion = LocalReducedMotion.current
+    // A retained face is on its way out under the curtain: it takes no focus and
+    // scrolls nothing, whatever arrives while it is still drawn.
+    val retainedNow = rememberUpdatedState(LocalShellRetained.current)
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
     var entranceSettled by remember { mutableStateOf(false) }
@@ -400,6 +436,12 @@ fun SettingsScreen(
         entranceSettled = true
     }
     val stage = { entrance.value }
+    // Held at screen level for the same reason as the diagnostics latch below: a
+    // LazyColumn item that scrolls out, or a pane the drill disposes, loses its
+    // `remember`, and an arrival kept there would replay whenever the row came back.
+    // Keyed on the state that creates each row, so only a real appearance fades.
+    val forgetAllArrival = rememberSettingsArrival(showForgetAll, arrive = showForgetAll && entranceSettled)
+    val clearArrival = rememberSettingsArrival(diagnosticsVisible, arrive = diagnosticsVisible)
     // The diagnostics log is summoned by one row and appears directly under it,
     // so it is born there — and pulled back into the same row when the toggle
     // goes off. The latch is held at screen level rather than inside the list
@@ -464,6 +506,7 @@ fun SettingsScreen(
     // the same frame it starts the outgoing one leaving, and a requester can only
     // be honoured once its node is attached AND placed.
     LaunchedEffect(pane) {
+        if (retainedNow.value) return@LaunchedEffect
         when (pane) {
             SettingsPane.Column -> if (returningFromList) {
                 returningFromList = false
@@ -488,6 +531,7 @@ fun SettingsScreen(
     // [landTvFocus] then repeats the request until the replacement row is attached
     // and placed, and falls back to the pane's Back key, which it always has.
     LaunchedEffect(pairedPhones) {
+        if (retainedNow.value) return@LaunchedEffect
         when (val target = focusReturn) {
             null -> return@LaunchedEffect
             // Still the neighbour's landing, unless that row has itself gone in
@@ -511,6 +555,7 @@ fun SettingsScreen(
         if (openForCasts == OpenForCastsRow.Hidden) landTvFocus(metricsFocus, renameFocus) { metricsFocused }
     }
     LaunchedEffect(layoutEpoch, clearPlacedEpoch, donePlacedEpoch, clearFocused, doneFocused) {
+        if (retainedNow.value) return@LaunchedEffect
         when {
             clearFocused && clearPlacedEpoch == layoutEpoch -> clearBringIntoView.bringIntoView()
             doneFocused && donePlacedEpoch == layoutEpoch -> doneBringIntoView.bringIntoView()
@@ -539,7 +584,7 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = interactive }
+                .focusProperties { if (!interactive) canFocus = false }
                 .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { }),
         ) {
             SettingsHeader(
@@ -745,6 +790,7 @@ fun SettingsScreen(
                                             // disarm differently.
                                             .onFocusChanged { if (!it.isFocused) confirmForget = false }
                                             .settingsStage(stage, index = forgetAllRow, settled = entranceSettled)
+                                            .settingsArrival(forgetAllArrival)
                                             .testTag("settings-forget-row"),
                                         contentPadding = RowPadding,
                                     ) {
@@ -851,7 +897,16 @@ fun SettingsScreen(
                                                 )
                                             } else {
                                                 val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
-                                                diagnostics.forEach { entry ->
+                                                // Newest first. The line the log opened
+                                                // on arrives with the reveal; only a line
+                                                // logged while it is open fades in.
+                                                val newestAtMs = diagnostics.first().atMs
+                                                val openedOn = remember { newestAtMs }
+                                                val newest = rememberSettingsArrival(
+                                                    newestAtMs,
+                                                    arrive = newestAtMs != openedOn,
+                                                )
+                                                diagnostics.forEachIndexed { index, entry ->
                                                     Text(
                                                         text = stringResource(
                                                             R.string.settings_diagnostics_entry,
@@ -872,6 +927,11 @@ fun SettingsScreen(
                                                         color = FlickColor.OnSurfaceDim,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis,
+                                                        modifier = if (index == 0) {
+                                                            Modifier.settingsArrival(newest)
+                                                        } else {
+                                                            Modifier
+                                                        },
                                                     )
                                                 }
                                             }
@@ -891,9 +951,10 @@ fun SettingsScreen(
                                         // No entrance stage on this row: it owns a
                                         // BringIntoViewRequester, and that machinery
                                         // must never measure a row that is still
-                                        // moving.
+                                        // moving. Its arrival is alpha only.
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .settingsArrival(clearArrival)
                                             .bringIntoViewRequester(clearBringIntoView)
                                             .onGloballyPositioned {
                                                 if (currentLayoutEpoch == layoutEpoch) clearPlacedEpoch = layoutEpoch
@@ -964,6 +1025,11 @@ private fun PairedPhonesPane(
     onControlFocus: (token: String, focused: Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
+    // Null under reduced motion, which removes and places a row in the same frame.
+    val reducedMotion = LocalReducedMotion.current
+    val rowFadeIn: FiniteAnimationSpec<Float>? = if (reducedMotion) null else FlickMotion.stateEffects()
+    val rowPlacement: FiniteAnimationSpec<IntOffset>? = if (reducedMotion) null else FlickMotion.panelSpatial()
+    val rowFadeOut: FiniteAnimationSpec<Float>? = if (reducedMotion) null else FlickMotion.fastStateEffects()
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -976,6 +1042,11 @@ private fun PairedPhonesPane(
                 val armed = armedForget == phone.keyId
                 Row(
                     modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = rowFadeIn,
+                            placementSpec = rowPlacement,
+                            fadeOutSpec = rowFadeOut,
+                        )
                         .fillMaxWidth()
                         .testTag("settings-paired-phone-row")
                         .clip(FlickShape.Md)
@@ -1032,10 +1103,10 @@ private fun PairedPhonesPane(
                             .testTag("settings-phone-forget"),
                         contentPadding = FlickDimens.ControlPadding,
                     ) {
-                        Text(
+                        InkText(
                             text = stringResource(R.string.settings_paired_forget),
-                            style = FlickType.body(sizeSp = 16),
                             color = if (armed) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                            style = FlickType.body(sizeSp = 16),
                         )
                     }
                 }
@@ -1043,7 +1114,13 @@ private fun PairedPhonesPane(
         }
 
         item(key = SettingsPairedBackKey) {
-            Box(Modifier.padding(top = 10.dp)) {
+            // Placement only: Back lives exactly as long as the pane, but it must
+            // move on the rows' spring or it lands on a row still gliding up.
+            Box(
+                Modifier
+                    .animateItem(fadeInSpec = null, placementSpec = rowPlacement, fadeOutSpec = null)
+                    .padding(top = 10.dp),
+            ) {
                 FlickTvButton(
                     onClick = onBack,
                     focusRequester = backFocus,
@@ -1097,23 +1174,24 @@ private fun SettingsHeader(
  * which arrives from the right — the same direction and the same sixth-of-axis
  * travel the shell uses to enter Settings itself, so a drill inside Settings
  * reads as that gesture one level down. Geometry takes the spatial springs;
- * alpha keeps the chrome fade tokens, which never overshoot.
+ * alpha takes the effects springs, and the outgoing pane's is the faster one so
+ * two pane headings are never legible on top of each other.
  */
 @Composable
 private fun settingsPaneTransform(reducedMotion: Boolean, forward: Boolean): ContentTransform =
     if (reducedMotion) {
-        fadeIn(tween(durationMillis = 0)).togetherWith(fadeOut(tween(durationMillis = 0)))
+        FlickMotion.cut()
     } else {
         val sign = if (forward) 1 else -1
         val travelIn: FiniteAnimationSpec<IntOffset> = FlickMotion.panelSpatial()
         val travelOut: FiniteAnimationSpec<IntOffset> = FlickMotion.flickSettleSpatial()
         (
-            fadeIn(FlickMotion.chromeFadeIn()) + slideInHorizontally(
+            fadeIn(FlickMotion.stateEffects()) + slideInHorizontally(
                 animationSpec = travelIn,
                 initialOffsetX = { sign * it / SettingsPaneTravelDivisor },
             )
             ).togetherWith(
-            fadeOut(FlickMotion.chromeFadeOut()) + slideOutHorizontally(
+            fadeOut(FlickMotion.fastStateEffects()) + slideOutHorizontally(
                 animationSpec = travelOut,
                 targetOffsetX = { -sign * it / SettingsPaneTravelDivisor },
             ),
@@ -1211,11 +1289,13 @@ private fun LabeledColumn(
             style = FlickType.body(sizeSp = 18, weight = FontWeight.Bold),
             color = FlickColor.OnSurface,
         )
-        Text(
-            text = summary,
-            style = FlickType.body(sizeSp = 15, weight = FontWeight.Medium),
-            color = summaryColor,
-        )
+        FlickSwap(target = summary, label = "settingsSummary") { s ->
+            InkText(
+                text = s,
+                color = summaryColor,
+                style = FlickType.body(sizeSp = 15, weight = FontWeight.Medium),
+            )
+        }
     }
 }
 
@@ -1230,24 +1310,24 @@ private fun ToggleGlyph(enabled: Boolean) {
     // frame for the length of the throw.
     val fill = animateColorAsState(
         targetValue = if (enabled) FlickColor.SelectedFill else FlickColor.ControlFill,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleFill",
     )
     val border = animateColorAsState(
         targetValue = if (enabled) FlickColor.SelectedBorder else FlickColor.Outline,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleBorder",
     )
     // The knob is geometry, so it takes the spatial spring and is allowed to
     // arrive with a settle at the end of its travel.
     val knobTravel = animateFloatAsState(
         targetValue = if (enabled) 1f else 0f,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.flickSettleSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.flickSettleSpatial()),
         label = "toggleKnob",
     )
     val knobColor = animateColorAsState(
         targetValue = if (enabled) FlickColor.Spark else FlickColor.OnSurfaceFaint,
-        animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleKnobColor",
     )
     Box(

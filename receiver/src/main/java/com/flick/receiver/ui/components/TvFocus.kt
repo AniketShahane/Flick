@@ -5,7 +5,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -42,7 +41,9 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusEventModifierNode
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusState
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -86,6 +87,7 @@ import com.flick.receiver.ui.theme.LocalReducedMotion
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlin.math.min
 
 /**
  * The detached ring's stroke (receiver-expressive-spec.md §3). It came down with
@@ -247,6 +249,10 @@ suspend fun landTvFocus(
  * clip cannot eat it). [ringColor] must be [FlickColor.FocusRingOnSpark] on an
  * amber fill — amber on amber vanishes.
  *
+ * [visible] means this control draws its own ring — false inside a
+ * [FocusBeaconHost], which draws one for the group. It is not the focus state:
+ * [progress] alone gates presence, so a ring leaving focus fades out where it was.
+ *
  * [progress] is the arrival bloom: 0 draws nothing, 1 draws the settled ring, and
  * between the two the ring fades up while expanding from [RING_BLOOM_FLOOR] of its
  * offset. It is invoked in the draw phase, so pass a lambda that reads an animated
@@ -364,6 +370,8 @@ internal data class FocusBeacon(
     val bounds: Rect,
     val shape: Shape,
     val ringColor: Color,
+    /** [shape]'s uniform corner at [bounds]' size, or NaN for a non-corner shape. */
+    val cornerPx: Float,
 )
 
 /**
@@ -378,7 +386,18 @@ private data class FocusBeaconTravel(val owner: Any, val bounds: Rect)
 @Stable
 internal class FocusBeaconState {
     var beacon: FocusBeacon? by mutableStateOf(null)
+
+    /**
+     * The beacon the ring is drawing. It trails [beacon] while a ring fades out, so
+     * the leaving ring keeps the shape and colour of the control it is leaving.
+     */
+    var shown: FocusBeacon? by mutableStateOf(null)
     var origin: Offset by mutableStateOf(Offset.Zero)
+}
+
+/** Whether the host's corner Animatable is the one being drawn. Written only by its collector. */
+private class BeaconCornerFlight {
+    var flying = false
 }
 
 /**
@@ -409,6 +428,15 @@ internal fun focusRingPreScaleInset(offsetPx: Float, bloom: Float, lift: Float):
     offsetPx * bloom / lift
 
 /**
+ * The corner `shape.grownBy(inset).createOutline(ringSize)` paints for a uniform
+ * corner of [baseCornerPx], so a flight can ease one Float instead of rebuilding an
+ * outline per frame. The clamp is `CornerBasedShape`'s own, which is what makes a
+ * percent pill come out exact.
+ */
+internal fun ringCornerPx(baseCornerPx: Float, insetPx: Float, ringMinDimPx: Float): Float =
+    min(baseCornerPx + insetPx, ringMinDimPx / 2f)
+
+/**
  * Installs a single traveling focus ring for the focus group inside [content].
  *
  * One ring exists for the whole group and glides between its members instead of
@@ -430,18 +458,27 @@ fun FocusBeaconHost(
     val reducedMotion = LocalReducedMotion.current
     val bounds = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
     val presence = remember { Animatable(0f) }
+    val corner = remember { Animatable(0f) }
+    val cornerFlight = remember { BeaconCornerFlight() }
     // The scheme specs are rebuilt on every recomposition, so they are read
     // through a holder rather than keyed into the effect below, which would
     // restart the ring's flight each time the group recomposed.
     val travelSpec = rememberUpdatedState(FlickMotion.focusSpatial<Rect>())
     val presenceSpec = rememberUpdatedState(FlickMotion.stateEffects<Float>())
+    val cornerTravel = rememberUpdatedState(FlickMotion.focusSpatial<Float>())
     val travelCapPx = with(LocalDensity.current) { FocusBeaconTravelCap.toPx() }
     // Derived so the host recomposes when the ring changes colour — a white ring
-    // on the amber play key — and not on every position tick a member reports.
-    val tint = remember(state) { derivedStateOf { state.beacon?.ringColor ?: FlickColor.FocusRing } }
+    // on the amber play key — and not on every position tick a member reports. It
+    // follows the ring being drawn, so a fading ring never tints toward its successor.
+    val tint = remember(state) {
+        derivedStateOf {
+            (state.beacon?.takeIf { it.owner === state.shown?.owner } ?: state.shown)?.ringColor
+                ?: FlickColor.FocusRing
+        }
+    }
     val ringColor = animateColorAsState(
         targetValue = tint.value,
-        animationSpec = FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "focusBeaconTint",
     )
 
@@ -456,7 +493,9 @@ fun FocusBeaconHost(
             if (target == null) {
                 previous = null
                 traveling = false
+                cornerFlight.flying = false
                 presence.animateTo(0f, presenceSpec.value)
+                state.shown = null
                 return@collectLatest
             }
             val entering = previous == null
@@ -477,11 +516,21 @@ fun FocusBeaconHost(
                 traveling
             }
             if (!flies) {
+                cornerFlight.flying = false
+                // The old ring fades out in its own place and shape before the new
+                // one blooms, because [FocusBeaconState.shown] still names the
+                // control it left.
                 if (movedControl && presence.value > 0f) presence.animateTo(0f, presenceSpec.value)
+                state.shown = state.beacon
                 bounds.snapTo(target.bounds)
                 if (movedControl) presence.snapTo(0f)
                 traveling = false
             }
+            val fromCorner = state.shown?.cornerPx ?: Float.NaN
+            if (flies) state.shown = state.beacon
+            val toCorner = state.shown?.cornerPx ?: Float.NaN
+            val morphs = flies && fromCorner.isFinite() && toCorner.isFinite()
+            if (flies && !morphs) cornerFlight.flying = false
             coroutineScope {
                 if (flies) {
                     traveling = true
@@ -491,6 +540,16 @@ fun FocusBeaconHost(
                         // slide instead of one ring per row.
                         bounds.animateTo(target.bounds, travelSpec.value)
                         traveling = false
+                        cornerFlight.flying = false
+                    }
+                }
+                if (morphs) {
+                    launch {
+                        // From the corner actually on screen: an interrupted flight
+                        // resumes from where its corner had reached.
+                        corner.snapTo(if (cornerFlight.flying) corner.value else fromCorner)
+                        cornerFlight.flying = true
+                        corner.animateTo(toCorner, cornerTravel.value)
                     }
                 }
                 // Re-entered on every republish, so an arrival interrupted by a
@@ -506,7 +565,9 @@ fun FocusBeaconHost(
                 .onGloballyPositioned { state.origin = it.positionInRoot() }
                 .drawWithContent {
                     drawContent()
-                    val target = state.beacon ?: return@drawWithContent
+                    val target = state.beacon?.takeIf { it.owner === state.shown?.owner }
+                        ?: state.shown
+                        ?: return@drawWithContent
                     val lit = presence.value.coerceIn(0f, 1f)
                     if (lit <= 0f) return@drawWithContent
                     val local = bounds.value.translate(-state.origin.x, -state.origin.y)
@@ -523,27 +584,51 @@ fun FocusBeaconHost(
                     val bloom = RING_BLOOM_FLOOR + (1f - RING_BLOOM_FLOOR) * lit
                     val inset = focusRingPreScaleInset(FlickFocusRingOffset.toPx(), bloom, lift)
                     val ringSize = Size(local.width + inset * 2f, local.height + inset * 2f)
-                    val outline = target.shape
-                        .grownBy(inset.toDp())
-                        .createOutline(ringSize, layoutDirection, this)
                     val stroke = FlickFocusRingWidth.toPx() / lift
                     val contour = FlickFocusRingContourWidth.toPx() / lift
                     // The lift is centred on the member, and the published rect's
                     // centre is invariant under it — see [FocusBeaconNode].
                     scale(lift, lift, pivot = local.center) {
-                        translate(left = local.left - inset, top = local.top - inset) {
-                            drawOutline(
-                                outline = outline,
+                        if (target.cornerPx.isFinite()) {
+                            val base = if (cornerFlight.flying) corner.value else target.cornerPx
+                            val radius = CornerRadius(
+                                ringCornerPx(base, inset, min(ringSize.width, ringSize.height)),
+                            )
+                            val topLeft = Offset(local.left - inset, local.top - inset)
+                            drawRoundRect(
                                 color = FlickColor.FocusRingContour,
+                                topLeft = topLeft,
+                                size = ringSize,
+                                cornerRadius = radius,
                                 alpha = lit,
                                 style = Stroke(width = stroke + contour * 2f),
                             )
-                            drawOutline(
-                                outline = outline,
+                            drawRoundRect(
                                 color = ringColor.value,
+                                topLeft = topLeft,
+                                size = ringSize,
+                                cornerRadius = radius,
                                 alpha = lit,
                                 style = Stroke(width = stroke),
                             )
+                        } else {
+                            val outline = target.shape
+                                .grownBy(inset.toDp())
+                                .createOutline(ringSize, layoutDirection, this)
+                            translate(left = local.left - inset, top = local.top - inset) {
+                                drawOutline(
+                                    outline = outline,
+                                    color = FlickColor.FocusRingContour,
+                                    alpha = lit,
+                                    style = Stroke(width = stroke + contour * 2f),
+                                )
+                                drawOutline(
+                                    outline = outline,
+                                    color = ringColor.value,
+                                    alpha = lit,
+                                    style = Stroke(width = stroke),
+                                )
+                            }
                         }
                     }
                 }
@@ -627,7 +712,11 @@ private class FocusBeaconNode(
 
     private fun publish() {
         val rect = bounds ?: return
-        host?.beacon = FocusBeacon(this, rect, shape, ringColor)
+        // Resolved against the pre-scale size, the space the host builds the ring in.
+        val cornerPx = (shape as? CornerBasedShape)?.topStart
+            ?.toPx(rect.size, currentValueOf(LocalDensity))
+            ?: Float.NaN
+        host?.beacon = FocusBeacon(this, rect, shape, ringColor, cornerPx)
     }
 
     private fun release() {
@@ -682,6 +771,7 @@ fun FlickTvButton(
     val pressed by interaction.collectIsPressedAsState()
     val reducedMotion = LocalReducedMotion.current
     val hosted = beaconHosted()
+    val shellInteractive = LocalShellInteractive.current
     val ringVisible = focused && enabled
     // Held as State and read inside the layer / draw lambdas below: a lift or a
     // bloom may repaint this control, but it may not recompose it once a frame
@@ -689,18 +779,23 @@ fun FlickTvButton(
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f
-            pressed && ringVisible -> 1.02f
+            pressed && ringVisible -> FlickMotion.PRESS_FOCUSED_SCALE
             pressed -> FlickMotion.PRESS_SCALE
             ringVisible -> FlickMotion.FOCUS_SCALE
             else -> 1f
         },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "buttonFeedbackScale",
     )
     val ringPresence = animateFloatAsState(
         targetValue = if (ringVisible) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "buttonRingPresence",
+    )
+    val enabledAlpha = animateFloatAsState(
+        targetValue = if (enabled) 1f else FlickMotion.DISABLED_ALPHA,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "buttonEnabledAlpha",
     )
     // Corners open up while focused. Held as State and resolved by [flickPlate] in
     // the draw phase: read here it produced a NEW shape object every frame, and
@@ -709,7 +804,7 @@ fun FlickTvButton(
     // and republished the beacon, once a frame, for four dp of radius.
     val cornerGrowth = animateDpAsState(
         targetValue = if (ringVisible && !reducedMotion) FocusCornerGrowth else 0.dp,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "buttonFocusCorner",
     )
     // The ring is concentric with the SETTLED focused corner rather than with
@@ -728,12 +823,12 @@ fun FlickTvButton(
     // inside the caller's overscan reserve. Both are read in the draw phase.
     val fill = animateColorAsState(
         targetValue = if (pressed && !selected && containerColor == null) FlickColor.ControlFillStrong else baseFill,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "buttonFill",
     )
     val stroke = animateColorAsState(
         targetValue = baseStroke,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "buttonSelectionStroke",
     )
 
@@ -756,10 +851,10 @@ fun FlickTvButton(
                 val lift = scale.value
                 scaleX = lift
                 scaleY = lift
-                alpha = if (enabled) 1f else 0.38f
+                alpha = enabledAlpha.value
             }
             .flickFocusRing(
-                visible = ringVisible && !hosted,
+                visible = !hosted,
                 shape = ringShape,
                 ringColor = ringColor,
                 progress = { ringPresence.value },
@@ -775,6 +870,9 @@ fun FlickTvButton(
                 strokeWidth = borderWidth,
                 cornerGrowth = cornerGrowth,
             )
+            // A retained or exiting shell stays composed; its controls must not take
+            // focus, or D-pad centre lands on a row the viewer can no longer see.
+            .focusProperties { if (!shellInteractive) canFocus = false }
             .clickable(
                 interactionSource = interaction,
                 indication = null,

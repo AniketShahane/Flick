@@ -11,6 +11,7 @@ import com.flick.receiver.ui.theme.FlickShape
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.min
 
 /**
  * What the traveling ring is painted at (spec §3a).
@@ -129,5 +130,33 @@ class FocusBeaconRingGeometryTest {
         val documented = lift * (offsetPx + edge) + (lift - 1f) * 0.5f * side
         assertTrue(extent < documented)
         assertTrue(documented <= with(density) { FlickDimens.FocusRingReserve.toPx() })
+    }
+
+    @Test fun theRoundRectCornerMatchesTheGrownOutline() {
+        // The flight draws a round rect off one eased Float; settled, it must be the
+        // corner the outline path painted, 22.52 dp on the Settings row.
+        val inset = focusRingPreScaleInset(offsetPx, 1f, lift)
+        val ringSize = Size(rowWidth + 2 * inset, rowHeight + 2 * inset)
+        assertEquals(
+            paintedCorner(rowShape, rowWidth, rowHeight),
+            ringCornerPx(
+                cornerPx(rowShape, Size(rowWidth, rowHeight)),
+                inset,
+                min(ringSize.width, ringSize.height),
+            ) * lift,
+            0.01f,
+        )
+    }
+
+    @Test fun aPillRingClampsToHalfItsHeight() {
+        val pill = FlickShape.Pill
+        val inset = focusRingPreScaleInset(offsetPx, 1f, lift)
+        val ringSize = Size(rowWidth + 2 * inset, rowHeight + 2 * inset)
+        val corner = ringCornerPx(
+            cornerPx(pill, Size(rowWidth, rowHeight)),
+            inset,
+            min(ringSize.width, ringSize.height),
+        )
+        assertEquals(ringSize.height / 2f, corner, 0.01f)
     }
 }

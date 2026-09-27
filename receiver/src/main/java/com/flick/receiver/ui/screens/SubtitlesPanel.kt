@@ -35,17 +35,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.SubtitleTrackFocusIdentity
 import com.flick.receiver.player.SubtitleTrackInfo
+import com.flick.receiver.ui.components.CrossfadeIcon
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
+import com.flick.receiver.ui.components.InkText
 import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
@@ -283,7 +284,7 @@ fun SubtitlesPanel(
                         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 9.dp),
                         horizontalArrangement = Arrangement.Center,
                     ) {
-                        Text(
+                        InkText(
                             text = stringResource(option.labelRes),
                             style = FlickType.body(sizeSp = 16),
                             color = if (on) FlickColor.OnLight else FlickColor.OnSurfaceDim,
@@ -402,17 +403,19 @@ private fun TrackRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
     ) {
-        Icon(
-            imageVector = if (selected) FlickIcons.CheckCircle else FlickIcons.RadioButtonUnchecked,
-            contentDescription = null,
-            tint = if (selected) FlickColor.Spark else FlickColor.OnSurfaceFaint,
+        CrossfadeIcon(
+            on = selected,
+            onVector = FlickIcons.CheckCircle,
+            offVector = FlickIcons.RadioButtonUnchecked,
+            onTint = FlickColor.Spark,
+            offTint = FlickColor.OnSurfaceFaint,
             modifier = Modifier.size(FlickDimens.GlyphSmall),
         )
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(
+            InkText(
                 text = label,
                 style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
                 color = if (selected) FlickColor.SparkLight else FlickColor.OnChrome,
@@ -420,7 +423,7 @@ private fun TrackRow(
                 overflow = TextOverflow.Ellipsis,
             )
             if (meta != null) {
-                Text(
+                InkText(
                     text = meta,
                     style = FlickType.monoEyebrow(trackingEm = 0.1f),
                     color = if (selected) FlickColor.SparkLightDim else FlickColor.OnSurfaceFaint,

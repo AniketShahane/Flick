@@ -4,22 +4,21 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
@@ -40,6 +39,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -53,12 +53,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -85,11 +84,15 @@ import com.flick.receiver.player.TurnNote
 import com.flick.receiver.player.VideoRotation
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.FlickOutlinedChromeBorderWidth
+import com.flick.receiver.ui.components.FlickPresence
+import com.flick.receiver.ui.components.FlickSwap
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.GlassPill
+import com.flick.receiver.ui.components.InkIcon
+import com.flick.receiver.ui.components.InkText
 import com.flick.receiver.ui.components.PlayPauseGlyph
 import com.flick.receiver.ui.components.PrimaryTransportGlyphSize
 import com.flick.receiver.ui.components.PrimaryTransportTargetSize
@@ -105,6 +108,7 @@ import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
 import com.flick.receiver.ui.theme.BOTTOM_SCRIM_FRACTION
 import com.flick.receiver.ui.theme.BrandMark
+import com.flick.receiver.ui.theme.DimCause
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
@@ -115,8 +119,12 @@ import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.TOP_SCRIM_FRACTION
 import com.flick.receiver.ui.theme.bottomScrimBrush
+import com.flick.receiver.ui.theme.dimEase
+import com.flick.receiver.ui.theme.dimSpec
 import com.flick.receiver.ui.theme.glassPanel
 import com.flick.receiver.ui.theme.glassState
+import com.flick.receiver.ui.theme.playbackDimCause
+import com.flick.receiver.ui.theme.playbackDimTarget
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.ui.theme.seekAccentIntensity
 import com.flick.receiver.ui.theme.seekBurstWash
@@ -152,10 +160,13 @@ private val TimecodeStyle = FlickType.monoTabular(sizeSp = 16, weight = FontWeig
 private val TimecodeMinWidth = 60.dp
 
 /**
- * Chrome leaves along half the path it arrived on, on the same faster spring
- * `glassPanelExit` uses. A surface that retraces its whole entrance reads as being
- * dragged off screen; half the travel, quicker, reads as dismissal — which is what
- * it is. The translation is a `graphicsLayer` transform rather than the placement
+ * Each chrome group leaves by sinking this fraction of `TvRise` toward its own
+ * edge, on the same faster spring `glassPanelExit` uses. A surface that retraces
+ * its whole entrance reads as being dragged off screen; a short sink, quicker,
+ * reads as dismissal — which is what it is. It is a fixed distance rather than a
+ * share of the group's height because the 250 ms film-exit fade leaves the travel
+ * visible, and at a 24 Hz window pin a long one strobes. The translation is a
+ * `graphicsLayer` transform rather than the placement
  * offset `glassPanelEnter`/`glassPanelExit` use, because this chrome sits over a
  * live decoder and may not trigger a placement pass while it moves.
  */
@@ -164,17 +175,9 @@ private const val CHROME_EXIT_TRAVEL = 0.5f
 /**
  * Any panel ↔ any other is one panel changing anchor and width, not two panels
  * swapping places. Damping 0.8 at the medium-low stiffness is the TV bias: enough
- * settle to carry weight, too little overshoot to wobble at 55 inches. This is a
- * `Rect` spec, which the scheme accessors cannot type without an explicit argument,
- * so it is the one hand-written spring in this file.
+ * settle to carry weight, too little overshoot to wobble at 55 inches.
  */
-private val PanelTravel = BoundsTransform { _, _ ->
-    spring(
-        dampingRatio = 0.8f,
-        stiffness = Spring.StiffnessMediumLow,
-        visibilityThreshold = Rect.VisibilityThreshold,
-    )
-}
+private val PanelTravel = BoundsTransform { _, _ -> FlickMotion.panelTravelRect() }
 
 /** The ±10 s burst occupies the design's 38 %-wide column on the seeked side. */
 private const val SEEK_BURST_WIDTH_FRACTION = 0.38f
@@ -182,13 +185,6 @@ private const val SEEK_BURST_WIDTH_FRACTION = 0.38f
 /** Design `tvBurst` (§6): the glyph enters at 0.7 and leaves at 1.14. */
 private const val SEEK_BURST_ENTER_SCALE = 0.7f
 private const val SEEK_BURST_EXIT_SCALE = 1.14f
-
-/**
- * Burst fade-out, shorter than `tvBurst`'s own 0.72 s tail: the app clears the
- * accumulated delta 200 ms after it hides the burst, and a longer exit would
- * redraw the label as "+0s" halfway through the fade.
- */
-private const val SEEK_BURST_EXIT_MS = 180
 
 /**
  * Each accepted step lands as an impulse: the glyph column snaps to this scale and
@@ -339,6 +335,7 @@ fun PlaybackScreen(
     onSelectVideoRotation: (VideoRotation) -> Unit = {},
     onEndSession: (() -> Unit)? = null,
     onReplay: (() -> Unit)? = null,
+    dimReading: com.flick.receiver.ui.components.FilmDimReading? = null,
     videoContent: @Composable () -> Unit,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
@@ -423,23 +420,23 @@ fun PlaybackScreen(
         // Dim while paused / seeking / buffering — the frame stays visible.
         // Ended goes deepest and is the one state where that is not a compromise:
         // the film is over, so the last frame is a still, not the content.
-        val targetDim = when {
-            phase == PlaybackPhase.Ended -> 0.50f
-            phase == PlaybackPhase.Paused -> 0.34f
-            seeking -> 0.30f
-            phase == PlaybackPhase.Buffering -> 0.38f
-            else -> 0f
-        }
+        val dimCause = playbackDimCause(phase, seeking)
+        val dimMemory = remember { DimMemory(dimCause) }
         val reducedMotion = LocalReducedMotion.current
         // The three layers over the film — one dim and two scrims — are composed
         // unconditionally and their alphas are read in the DRAW phase. Branching
         // on the animated value at composition time rebuilt the whole playback
         // stack, and both gradients, once a frame while the decoder was running.
+        //
+        // The curve is chosen from the change of cause, never from the animated
+        // value: blind ±10 taps lift slowly off a seek rather than pulsing the whole
+        // picture once per press.
         val dim = animateFloatAsState(
-            targetValue = targetDim,
-            animationSpec = if (reducedMotion) tween(durationMillis = 0) else FlickMotion.chromeFadeIn(),
+            targetValue = playbackDimTarget(dimCause),
+            animationSpec = FlickMotion.orSnap(reducedMotion, dimSpec(dimEase(dimMemory.last, dimCause))),
             label = "playbackStateDim",
         )
+        SideEffect { dimMemory.last = dimCause }
         // This is a UI-only layer above the decoded SurfaceView. The video is
         // never placed inside a transition or graphics layer.
         Box(
@@ -447,6 +444,7 @@ fun PlaybackScreen(
                 .fillMaxSize()
                 .drawBehind {
                     val shade = dim.value
+                    dimReading?.drawn = shade
                     if (shade > 0.01f) drawRect(FlickColor.CanvasPlayback, alpha = shade)
                 },
         )
@@ -456,11 +454,17 @@ fun PlaybackScreen(
         // 200 ms fade token while the chrome above it is still travelling in on a
         // settling spring, so the panel lands on a surface that is already dark —
         // and on the way out the chrome is gone long before the film brightens.
-        val scrimAlpha = animateFloatAsState(
-            targetValue = if (chromeVisible) 1f else 0f,
-            animationSpec = if (chromeVisible) FlickMotion.chromeFadeIn() else FlickMotion.chromeFadeOut(),
-            label = "scrimAlpha",
-        )
+        // Seeded at 0 so the chrome up at the first frame still arrives.
+        val scrimAlpha = remember { Animatable(0f) }
+        LaunchedEffect(chromeVisible, reducedMotion) {
+            scrimAlpha.animateTo(
+                if (chromeVisible) 1f else 0f,
+                FlickMotion.orSnap(
+                    reducedMotion,
+                    if (chromeVisible) FlickMotion.chromeFadeIn<Float>() else FlickMotion.chromeFadeOut(),
+                ),
+            )
+        }
         // Pure functions of their stops, so one instance each serves every size.
         val topScrim = remember { topScrimBrush() }
         val bottomScrim = remember { bottomScrimBrush() }
@@ -485,13 +489,15 @@ fun PlaybackScreen(
                 },
         )
 
-        // T7 buffering
-        if (phase == PlaybackPhase.Buffering) {
-            BufferingOverlay(
-                plate = diagnostics.bufferingPlate,
-                deviceLabel = deviceLabel,
-                modifier = Modifier.align(Alignment.Center),
-            )
+        // T7 buffering. The last plate shown is what fades out, so a STALLED plate
+        // never reads TOPPING UP on its way off the film.
+        FlickPresence(
+            value = diagnostics.bufferingPlate.takeIf { phase == PlaybackPhase.Buffering },
+            overFilm = true,
+            modifier = Modifier.align(Alignment.Center),
+            label = "bufferingPlate",
+        ) { plate ->
+            BufferingOverlay(plate = plate, deviceLabel = deviceLabel)
         }
 
         // T5. Only FINISHED still announces itself in the middle of the frame.
@@ -499,12 +505,17 @@ fun PlaybackScreen(
         // "the film is over" is the one playback state that carries information
         // nobody can infer from a still frame, so it keeps its chip — and the
         // resting key below is what says "paused" instead.
-        if (phase == PlaybackPhase.Ended) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.fillMaxHeight(STATE_CHIP_TOP_FRACTION))
+            FlickPresence(
+                value = Unit.takeIf { phase == PlaybackPhase.Ended },
+                overFilm = true,
+                rise = FlickMotion.TvRiseCard,
+                label = "finishedChip",
             ) {
-                Spacer(Modifier.fillMaxHeight(STATE_CHIP_TOP_FRACTION))
                 PlaybackFinishedChip()
             }
         }
@@ -518,8 +529,8 @@ fun PlaybackScreen(
         // long as the key is down, so visibility stays owned by the gesture.
         AnimatedVisibility(
             visible = remoteSeekVisible && remoteSeekDeltaMs != null,
-            enter = fadeIn(tween(FlickMotion.TV_BURST_PEAK_MS, easing = FlickMotion.ChromeFade)),
-            exit = fadeOut(tween(SEEK_BURST_EXIT_MS, easing = FlickMotion.ChromeFade)),
+            enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.tvBurstFadeIn())),
+            exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.tvBurstExit())),
             modifier = Modifier.matchParentSize(),
         ) {
             SeekBurst(
@@ -535,22 +546,28 @@ fun PlaybackScreen(
         // `transitionSpec` is NOT a composable lambda, so the scheme specs are
         // resolved here and captured. Every AnimatedContent in this module does
         // the same.
+        //
+        // No size transform: the default one grows the box from nothing, which
+        // wipe-clips the card in and drags the outgoing one toward the end edge.
         val qualityTransform = if (reducedMotion) {
-            fadeIn(tween(durationMillis = 0)).togetherWith(fadeOut(tween(durationMillis = 0)))
+            FlickMotion.cut()
         } else {
-            (fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
-                initialScale = 0.96f,
-                animationSpec = FlickMotion.flickSettleSpatial(),
-            )).togetherWith(
-                fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
+            ContentTransform(
+                targetContentEnter = fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
+                    initialScale = 0.96f,
+                    animationSpec = FlickMotion.flickSettleSpatial(),
+                ),
+                initialContentExit = fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
                     targetScale = 1.02f,
                     animationSpec = FlickMotion.flickSettleSpatial(),
                 ),
+                sizeTransform = null,
             )
         }
         AnimatedContent(
             targetState = quality,
             transitionSpec = { qualityTransform },
+            contentAlignment = Alignment.TopEnd,
             contentKey = { it?.qualityLabel ?: "none" },
             label = "qualityFlourish",
             modifier = Modifier
@@ -589,7 +606,7 @@ fun PlaybackScreen(
             // are `graphicsLayer` properties, so nothing here is ever re-laid-out
             // while it moves.
             enter = if (reducedMotion) {
-                fadeIn(tween(durationMillis = 0))
+                EnterTransition.None
             } else {
                 fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
                     initialScale = 0.96f,
@@ -597,7 +614,7 @@ fun PlaybackScreen(
                 )
             },
             exit = if (reducedMotion) {
-                fadeOut(tween(durationMillis = 0))
+                ExitTransition.None
             } else {
                 fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
                     targetScale = 1.02f,
@@ -636,7 +653,7 @@ fun PlaybackScreen(
             // The hint's vocabulary exactly: the two cards share a band and a queue,
             // so arriving differently would make them read as different kinds of thing.
             enter = if (reducedMotion) {
-                fadeIn(tween(durationMillis = 0))
+                EnterTransition.None
             } else {
                 fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
                     initialScale = 0.96f,
@@ -644,7 +661,7 @@ fun PlaybackScreen(
                 )
             },
             exit = if (reducedMotion) {
-                fadeOut(tween(durationMillis = 0))
+                ExitTransition.None
             } else {
                 fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
                     targetScale = 1.02f,
@@ -669,7 +686,7 @@ fun PlaybackScreen(
         AnimatedVisibility(
             visible = bandNotice != null,
             enter = if (reducedMotion) {
-                fadeIn(tween(durationMillis = 0))
+                EnterTransition.None
             } else {
                 fadeIn(FlickMotion.chromeFadeIn()) + scaleIn(
                     initialScale = 0.96f,
@@ -677,7 +694,7 @@ fun PlaybackScreen(
                 )
             },
             exit = if (reducedMotion) {
-                fadeOut(tween(durationMillis = 0))
+                ExitTransition.None
             } else {
                 fadeOut(FlickMotion.chromeFadeOut()) + scaleOut(
                     targetScale = 1.02f,
@@ -694,12 +711,14 @@ fun PlaybackScreen(
             retainedBandNotice?.let { BandNoticeCard(notice = it) }
         }
 
+        // Both chrome surfaces start hidden, so chrome that is already up at the
+        // first frame still arrives rather than appearing in place.
         AnimatedVisibility(
-            visible = chromeVisible,
-            enter = fadeIn(FlickMotion.chromeFadeIn()),
-            // Alpha on the effects spec, not the 500 ms chrome fade: the chrome
-            // must be off the film before the scrim behind it lifts.
-            exit = fadeOut(FlickMotion.fastStateEffects()),
+            visibleState = remember { MutableTransitionState(false) }.apply { targetState = chromeVisible },
+            enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
+            // Alpha on the 250 ms film exit, not the 500 ms chrome fade: the chrome
+            // is still off the film well before the scrim behind it has lifted.
+            exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.filmExit())),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
             TopChrome(
@@ -717,9 +736,9 @@ fun PlaybackScreen(
         }
 
         AnimatedVisibility(
-            visible = transportVisible,
-            enter = fadeIn(FlickMotion.chromeFadeIn()),
-            exit = fadeOut(FlickMotion.fastStateEffects()),
+            visibleState = remember { MutableTransitionState(false) }.apply { targetState = transportVisible },
+            enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
+            exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.filmExit())),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             BottomChrome(
@@ -826,25 +845,28 @@ fun PlaybackScreen(
         // SubtitleView lives inside videoContent's AndroidView, while the seek,
         // chrome and side-panel overlays are later Compose siblings; zIndex makes
         // the ordering explicit instead of relying on their source order.
-        if (phase == PlaybackPhase.Paused) {
-            val restPresence = animateFloatAsState(
-                targetValue = if (chromeVisible) 0f else 1f,
-                animationSpec = if (reducedMotion) tween(durationMillis = 0) else {
-                    FlickMotion.chromeFadeIn()
-                },
-                label = "pausedRestPresence",
-            )
+        //
+        // On resume the key stays long enough to morph to the pause bars, so it is
+        // seen to play before it goes.
+        FlickPresence(
+            value = Unit.takeIf { phase == PlaybackPhase.Paused && !chromeVisible },
+            overFilm = true,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(safeArea)
+                .zIndex(1f),
+            label = "restingPauseKey",
+        ) {
             RestingPauseKey(
-                presence = { restPresence.value },
-                announced = !chromeVisible,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(safeArea)
-                    .zIndex(1f),
+                playing = phase == PlaybackPhase.Playing,
+                announced = true,
             )
         }
     }
 }
+
+/** The previous dim cause, written after composition so the next change can see where it came from. */
+private class DimMemory(var last: DimCause)
 
 /**
  * The paused key at rest (§5.3, T5).
@@ -854,17 +876,19 @@ fun PlaybackScreen(
  * by `TvRemoteKeyPolicy`, and centre/up/down all bring the full chrome back — this
  * only has to be the thing on screen that says the TV is paused and not frozen.
  *
- * [presence] is the chrome handover, invoked in the layer block rather than read
- * at the call site: it animates every time the chrome comes and goes, and this
- * sits over a live decoder. `ModulateAlpha` is explicit because the default
- * strategy would buy an offscreen buffer for a 56 dp key the moment its alpha left
- * 1 — and because modulating per draw op is what keeps the composite at rest
- * exactly what [PAUSED_REST_FILL_ALPHA] describes: an 80 %-strength fill under
- * solid ink, not 80 % applied to the entire key.
+ * Its presence is the parent's: the fade that brings it and takes it away is a
+ * `ModulateAlpha` layer, never a default-strategy one. The default would buy an
+ * offscreen buffer for a 56 dp key over a live decoder — and modulating per draw
+ * op is what keeps the composite mid-fade exactly what [PAUSED_REST_FILL_ALPHA]
+ * describes: an 80 %-strength fill under solid ink, not 80 % applied to the
+ * entire key.
+ *
+ * [playing] is passed through to the glyph so that on resume the key visibly
+ * plays while it leaves.
  */
 @Composable
 private fun RestingPauseKey(
-    presence: () -> Float,
+    playing: Boolean,
     announced: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -872,10 +896,6 @@ private fun RestingPauseKey(
     Box(
         modifier = modifier
             .size(PrimaryTransportTargetSize)
-            .graphicsLayer {
-                alpha = presence()
-                compositingStrategy = CompositingStrategy.ModulateAlpha
-            }
             .sparkShadow(FlickShape.Play)
             .clip(FlickShape.Play)
             .background(PausedRestFill)
@@ -892,7 +912,7 @@ private fun RestingPauseKey(
         // Substituting a pause glyph here would invent a second vocabulary for a
         // state the amber key already carries.
         PlayPauseGlyph(
-            playing = false,
+            playing = playing,
             size = PrimaryTransportGlyphSize,
             tint = FlickColor.OnSpark,
         )
@@ -912,35 +932,47 @@ private fun AnimatedVisibilityScope.TopChrome(
     endSessionFocusRequester: FocusRequester,
     scrubFocusRequester: FocusRequester,
 ) {
-    // The top chrome arrives from beyond the panel edge and retreats halfway back
-    // the way it came. The travel is parent-owned so enter and exit are one
+    // The top chrome arrives from beyond the panel edge and leaves on a short
+    // sink toward it. The travel is parent-owned so enter and exit are one
     // vocabulary, and it is a graphicsLayer transform so nothing over the decoder
     // is ever re-laid-out while it moves.
+    //
+    // The exit is an absolute distance, not a fraction of the row: under the
+    // 250 ms film-exit fade, half this ~130 dp row sampled at a 24 Hz window pin
+    // lands as ~50 px steps drawn at high opacity. Arrival and sink are separate
+    // values because one value remapped by state would jump whenever a hide
+    // interrupts an entrance or a show interrupts an exit.
     //
     // Held as State and read INSIDE the layer block. Delegating it into a local
     // (`by`) reads the animated value in composition, which recomposed this whole
     // subtree once per frame for the length of every reveal — the transform was
     // already free, the recomposition was not.
-    val slide = transition.animateFloat(
+    val arrive = transition.animateFloat(
+        transitionSpec = { FlickMotion.panelSpatial() },
+        label = "topChromeArrive",
+    ) { state -> if (state == EnterExitState.PreEnter) 1f else 0f }
+    val sink = transition.animateFloat(
         transitionSpec = {
             if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
             else FlickMotion.focusSpatial()
         },
-        label = "topChromeSlide",
-    ) { state ->
-        when (state) {
-            EnterExitState.PreEnter -> 1f
-            EnterExitState.Visible -> 0f
-            EnterExitState.PostExit -> CHROME_EXIT_TRAVEL
-        }
+        label = "topChromeSink",
+    ) { state -> if (state == EnterExitState.PostExit) 1f else 0f }
+    // Telemetry already known while the chrome is still arriving rides its
+    // entrance instead of replaying its own pop.
+    val chromeEntering: () -> Boolean = remember(transition) {
+        { transition.currentState == EnterExitState.PreEnter }
     }
     Row(
         modifier = Modifier
-            .graphicsLayer { translationY = -slide.value * size.height }
+            .graphicsLayer {
+                translationY = -arrive.value * size.height -
+                    sink.value * CHROME_EXIT_TRAVEL * FlickMotion.TvRise.toPx()
+            }
             // AnimatedVisibility retains this subtree for its fade-out; its
             // descendants leave the focus graph and the accessibility tree the
             // moment chrome hides.
-            .focusProperties { canFocus = interactive }
+            .focusProperties { if (!interactive) canFocus = false }
             .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
             .fillMaxWidth()
             .padding(safeArea)
@@ -1016,18 +1048,19 @@ private fun AnimatedVisibilityScope.TopChrome(
             // No band read means no pill — the receiver never guesses a radio. The
             // pill resolves in the frame the band is first read; the dBm number
             // inside it then SNAPS between values, because a tweened measurement is
-            // a fabricated measurement.
+            // a fabricated measurement. A band change dissolves inside the pill
+            // rather than disposing it.
             val band = diagnostics.wifiBand
             if (band != null) {
-                key(band) {
-                    TelemetryReveal {
+                TelemetryReveal(initiallyVisible = remember { chromeEntering() }) {
+                    FlickSwap(target = band, label = "netPill") { b ->
                         GlassPill(
                             text = if (diagnostics.wifiRssiDbm != 0) {
-                                stringResource(R.string.net_pill, band, diagnostics.wifiRssiDbm)
+                                stringResource(R.string.net_pill, b, diagnostics.wifiRssiDbm)
                             } else {
-                                stringResource(R.string.net_pill_band_only, band)
+                                stringResource(R.string.net_pill_band_only, b)
                             },
-                            dotColor = netHealthColor(band, diagnostics.wifiRssiDbm),
+                            dotColor = netHealthColor(b, diagnostics.wifiRssiDbm),
                         )
                     }
                 }
@@ -1119,7 +1152,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
     // The transport rises the design's `tvRise` distance and sinks half of it back
     // out. Both are the parent's, and both are graphicsLayer transforms: nothing
     // over the decoder is re-laid-out while the chrome moves. Read inside the
-    // layer block — see the note on `topChromeSlide`.
+    // layer block — see the note on `topChromeArrive`.
     val rise = transition.animateFloat(
         transitionSpec = {
             if (targetState == EnterExitState.Visible) FlickMotion.panelSpatial()
@@ -1133,6 +1166,9 @@ private fun AnimatedVisibilityScope.BottomChrome(
             EnterExitState.PostExit -> CHROME_EXIT_TRAVEL
         }
     }
+    val chromeEntering: () -> Boolean = remember(transition) {
+        { transition.currentState == EnterExitState.PreEnter }
+    }
 
     Column(
         modifier = Modifier
@@ -1142,7 +1178,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
             // own: adding one here would terminate the property walk the controls
             // inside make, and the `canFocus` gate below would stop reaching them.
             .onFocusChanged { chromeHasFocus = it.hasFocus }
-            .focusProperties { canFocus = interactive }
+            .focusProperties { if (!interactive) canFocus = false }
             .then(if (interactive) Modifier else Modifier.clearAndSetSemantics { })
             .fillMaxWidth()
             .padding(safeArea),
@@ -1166,6 +1202,7 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 seeking = seeking,
                 hdr = hdr,
                 diagnostics = diagnostics,
+                chromeEntering = chromeEntering,
             )
             TransportScrubRow(
                 positionMs = positionMs,
@@ -1209,7 +1246,6 @@ private fun AnimatedVisibilityScope.BottomChrome(
                 subtitlesRevealOrigin = subtitlesRevealOrigin,
                 orientationRevealOrigin = orientationRevealOrigin,
                 metricsRevealOrigin = metricsRevealOrigin,
-                interactive = interactive,
             )
         }
     }
@@ -1290,7 +1326,7 @@ private fun PlaybackSidePanel(
             // Inside the group, so it reaches the panel's contents and stops
             // there: a retreating panel leaves the focus graph without the veto
             // above following its children down.
-            .focusProperties { canFocus = open }
+            .focusProperties { if (!open) canFocus = false }
             .then(if (open) Modifier else Modifier.clearAndSetSemantics { }),
     ) {
         // The panel's glass is born at the card that summoned it and pulled back
@@ -1361,6 +1397,7 @@ private fun TransportHeaderRow(
     seeking: Boolean,
     hdr: HdrType,
     diagnostics: DiagnosticsSnapshot,
+    chromeEntering: () -> Boolean,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1373,17 +1410,22 @@ private fun TransportHeaderRow(
         ) {
             // The eyebrow is the transport's own tense. Left at "NOW PLAYING" past
             // the end of the film it is the chrome asserting something untrue.
-            Text(
-                text = when {
-                    seeking -> stringResource(R.string.syncing_with_phone)
-                    phase == PlaybackPhase.Ended -> stringResource(R.string.playback_finished_eyebrow)
-                    else -> stringResource(R.string.now_playing_eyebrow)
-                },
-                style = FlickType.monoEyebrow(trackingEm = 0.2f),
-                color = if (seeking) FlickColor.Spark else FlickColor.SparkBright,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // The word dissolves and never slides: the landing ring is a seek's
+            // only spatial motion.
+            val eyebrowRes = when {
+                seeking -> R.string.syncing_with_phone
+                phase == PlaybackPhase.Ended -> R.string.playback_finished_eyebrow
+                else -> R.string.now_playing_eyebrow
+            }
+            FlickSwap(target = eyebrowRes, label = "transportEyebrow") { res ->
+                Text(
+                    text = stringResource(res),
+                    style = FlickType.monoEyebrow(trackingEm = 0.2f),
+                    color = if (res == R.string.syncing_with_phone) FlickColor.Spark else FlickColor.SparkBright,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = title.orEmpty(),
                 style = FlickType.display(sizeSp = 27),
@@ -1411,14 +1453,18 @@ private fun TransportHeaderRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                chips.forEach { chip ->
-                    key(chip) {
-                        TelemetryReveal {
-                            SpecChip(
-                                text = chip,
-                                style = FlickType.monoEyebrow(trackingEm = 0.06f),
-                                contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
-                            )
+                // Keyed on the slot, not the text: a refined reading dissolves
+                // inside its chip rather than disposing it and popping a new one.
+                chips.forEach { entry ->
+                    key(entry.slot) {
+                        TelemetryReveal(initiallyVisible = remember { chromeEntering() }) {
+                            FlickSwap(target = entry.text, label = "specChip") { t ->
+                                SpecChip(
+                                    text = t,
+                                    style = FlickType.monoEyebrow(trackingEm = 0.06f),
+                                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -1455,10 +1501,11 @@ private fun TransportScrubRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
+        // The digits snap between target and position; only the ink eases.
+        InkText(
             text = clock(shownMs),
-            style = TimecodeStyle,
             color = if (seeking) FlickColor.Spark else Color.White,
+            style = TimecodeStyle,
             modifier = Modifier.widthIn(min = TimecodeMinWidth),
             maxLines = 1,
             softWrap = false,
@@ -1548,7 +1595,6 @@ private fun TransportControlRow(
     subtitlesRevealOrigin: TvRevealOrigin,
     orientationRevealOrigin: TvRevealOrigin,
     metricsRevealOrigin: TvRevealOrigin,
-    interactive: Boolean,
 ) {
     // Past the end of the film the primary key stops being a play key. It only
     // says so when the caller actually gave it a restart to run: a key relabelled
@@ -1557,6 +1603,11 @@ private fun TransportControlRow(
     // traversal simply steps over it.
     val replay = if (phase == PlaybackPhase.Ended) onReplay else null
     val primaryLive = primaryTransportLive(phase, onReplay)
+    // No key here takes `enabled` from the bar's visibility. The chrome Column
+    // above already drops a hiding bar from focus and semantics, and a key's eased
+    // disabled dim, multiplied into the 250 ms film-exit fade, would take the row
+    // off the film a frame ahead of the glass it sits on. Only a key that really
+    // cannot act dims: the primary key past the end with no replay.
     FocusBeaconHost(modifier = Modifier.fillMaxWidth()) {
         // Exactly three children, and the two outer ones carry the SAME weight:
         // that is what puts [TransportCluster] on the row's centre line. The
@@ -1586,7 +1637,6 @@ private fun TransportControlRow(
                 ) {
                     SubtitlesKey(
                         on = subtitlesOn,
-                        enabled = interactive,
                         focusRequester = subtitlesCardFocusRequester,
                         onClick = {
                             onOpenPanel(
@@ -1603,7 +1653,6 @@ private fun TransportControlRow(
                         degrees = rotationLabel,
                         auto = rotationIsAuto,
                         turnDegrees = rotationTurnDegrees,
-                        enabled = interactive,
                         focusRequester = orientationCardFocusRequester,
                         onClick = {
                             onOpenPanel(
@@ -1622,7 +1671,6 @@ private fun TransportControlRow(
                 onPlayPause = replay ?: onPlayPause,
                 onForward10 = onForward10,
                 playFocusRequester = playFocusRequester,
-                enabled = interactive,
                 primaryEnabled = primaryLive,
                 back10ContentDescription = stringResource(R.string.transport_back_10),
                 playPauseContentDescription = stringResource(
@@ -1645,7 +1693,6 @@ private fun TransportControlRow(
                     VolumeCells(
                         level = volume,
                         onChange = onSetVolume,
-                        enabled = interactive,
                         contentDescription = stringResource(R.string.volume),
                         stateDescription = stringResource(
                             R.string.volume_state,
@@ -1666,7 +1713,6 @@ private fun TransportControlRow(
                             metricsSubLabel,
                         ),
                         open = openPanel == PlaybackPanel.Metrics,
-                        enabled = interactive,
                         focusRequester = metricsCardFocusRequester,
                         onClick = {
                             onOpenPanel(
@@ -1740,15 +1786,10 @@ private val ControlGlyphSize = 24.dp
  * a screen reader reads and what a viewer who cannot separate amber from white still
  * gets. Colour is the only VISUAL channel here, and that is a deliberate cost paid for
  * a one-line key — it is bought back in the semantics rather than waived.
- *
- * The plate crossfades and the ink cuts. At the effects spring's speed the two read
- * as one event, and an `Icon` cannot take its tint in the draw phase without becoming
- * a custom draw — which is not worth buying for a glyph that changes twice a film.
  */
 @Composable
 private fun SubtitlesKey(
     on: Boolean,
-    enabled: Boolean,
     focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1773,7 +1814,6 @@ private fun SubtitlesKey(
         // No `selected`: with the container and border passed explicitly it changes
         // no pixel, and all it would still do is make a screen reader append
         // "selected" to a button that OPENS A PANEL rather than holding a choice.
-        enabled = enabled,
         containerColor = plate,
         borderColor = plate,
         ringColor = if (on) FlickColor.FocusRingOnSpark else FlickColor.FocusRing,
@@ -1788,16 +1828,15 @@ private fun SubtitlesKey(
         contentPadding = ControlKeyPadding,
         horizontalArrangement = Arrangement.spacedBy(ControlKeyGap),
     ) {
-        Icon(
+        InkIcon(
             imageVector = FlickIcons.ClosedCaption,
-            contentDescription = null,
             tint = ink,
             modifier = Modifier.size(ControlGlyphSize),
         )
-        Text(
+        InkText(
             text = stringResource(R.string.subtitles_card_title),
-            style = controlKeyLabelStyle(),
             color = ink,
+            style = controlKeyLabelStyle(),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -1831,7 +1870,6 @@ private fun OrientationKey(
     degrees: String,
     auto: Boolean,
     turnDegrees: Int,
-    enabled: Boolean,
     focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1861,7 +1899,6 @@ private fun OrientationKey(
     FlickTvButton(
         onClick = onClick,
         modifier = modifier.defaultMinSize(minHeight = ControlKeyMinHeight),
-        enabled = enabled,
         // The merged children would announce "AUTO", which is where the turn came
         // from and not what it is. This names the control and the reading both.
         contentDescription = stringResource(R.string.video_rotation_card_description, readout),
@@ -1878,16 +1915,17 @@ private fun OrientationKey(
                 .size(OrientationGlyphSize)
                 .graphicsLayer { rotationZ = turn.value },
         )
-        Text(
-            text = if (auto) {
-                stringResource(R.string.video_rotation_card_auto)
-            } else {
-                degrees
-            },
-            style = controlKeyLabelStyle(),
-            color = Color.White,
-            maxLines = 1,
-        )
+        FlickSwap(
+            target = if (auto) stringResource(R.string.video_rotation_card_auto) else degrees,
+            label = "orientationKeyLabel",
+        ) {
+            Text(
+                text = it,
+                style = controlKeyLabelStyle(),
+                color = Color.White,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -1920,7 +1958,6 @@ private fun GlyphKey(
     glyph: ImageVector,
     contentDescription: String,
     open: Boolean,
-    enabled: Boolean,
     focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1929,7 +1966,6 @@ private fun GlyphKey(
         onClick = onClick,
         modifier = modifier.defaultMinSize(minWidth = GlyphKeySide, minHeight = GlyphKeySide),
         selected = open,
-        enabled = enabled,
         contentDescription = contentDescription,
         focusRequester = focusRequester,
         shape = FlickShape.Md,
@@ -1969,13 +2005,24 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
         impulse.animateTo(0f, animationSpec = impulseSpec)
     }
 
+    // The speed level eases between steps and is read only in the wash's draw, so
+    // a level change neither steps the brightness nor rebuilds the brushes.
+    val intensity = animateFloatAsState(
+        targetValue = seekAccentIntensity(speedLevel),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "seekAccentIntensity",
+    )
+    val readIntensity = remember(intensity) { { intensity.value } }
+
     Box(Modifier.fillMaxSize()) {
         // The wash is drawn separately from the glyph column so the impulse can
         // move the glyph without sliding an edge-anchored gradient. It carries NO
         // graphicsLayer: the speed level is the amber accent's alpha inside the
         // wash, not the whole box's, and a layer alpha here would thin the dark
         // bed the glyph is read against — and buy an offscreen buffer the width of
-        // a third of the screen over a live decoder to do it.
+        // a third of the screen over a live decoder to do it. The enclosing
+        // AnimatedVisibility fade already composites the whole burst offscreen
+        // during its in/out; what this avoids is a second, steady-state layer.
         Box(
             modifier = Modifier
                 .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
@@ -1983,7 +2030,7 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
                 .fillMaxHeight()
                 .seekBurstWash(
                     fromRight = forward,
-                    accentIntensity = seekAccentIntensity(speedLevel),
+                    accentIntensity = readIntensity,
                 ),
         )
         Column(
@@ -2003,17 +2050,11 @@ private fun AnimatedVisibilityScope.SeekBurst(deltaMs: Long, speedLevel: Int, he
                     } else {
                         Modifier.animateEnterExit(
                             enter = scaleIn(
-                                animationSpec = tween(
-                                    durationMillis = FlickMotion.TV_BURST_PEAK_MS,
-                                    easing = FlickMotion.FlickSettle,
-                                ),
+                                animationSpec = FlickMotion.tvBurstScaleIn(),
                                 initialScale = SEEK_BURST_ENTER_SCALE,
                             ),
                             exit = scaleOut(
-                                animationSpec = tween(
-                                    durationMillis = SEEK_BURST_EXIT_MS,
-                                    easing = FlickMotion.ChromeFade,
-                                ),
+                                animationSpec = FlickMotion.tvBurstExit(),
                                 targetScale = SEEK_BURST_EXIT_SCALE,
                             ),
                             label = "seekBurstScale",
@@ -2347,9 +2388,10 @@ private fun BufferingOverlay(
         contentPadding = PaddingValues(horizontal = 30.dp, vertical = 22.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        // A rebuffer is the frame with the least GPU headroom in the whole app.
-        // The shared entrance would add two animators and a compositing layer to
-        // exactly that frame; the plate arrives as a cut, which is also calmer.
+        // A rebuffer is the frame with the least GPU headroom in the whole app, so
+        // the shared entrance — a rise and a default-strategy fade — is off. The
+        // fade the parent owns is `ModulateAlpha` with no transform: no offscreen
+        // buffer, and nothing moving over the film.
         animateEntrance = false,
     ) {
         FlickLoader(
@@ -2363,9 +2405,41 @@ private fun BufferingOverlay(
             // 10-foot default.
             size = BufferingLoaderSize,
         )
+        // A width change over a film may only cut, never animate, so the plate is
+        // measured once against both plates' words and holds the wider width from
+        // its first frame. The two sizers are measured and never placed: they draw
+        // nothing and carry no semantics.
+        Layout(
+            content = {
+                BufferingWords(BufferingPlate.TOPPING_UP, device, Modifier.clearAndSetSemantics { })
+                BufferingWords(BufferingPlate.STALLED, device, Modifier.clearAndSetSemantics { })
+                FlickSwap(target = plate, contentAlignment = Alignment.Center, label = "bufferingWords") { p ->
+                    BufferingWords(p, device)
+                }
+            },
+        ) { measurables, constraints ->
+            val placeables = measurables.map { it.measure(constraints) }
+            val w = placeables.maxOf { it.width }
+            val h = placeables.maxOf { it.height }
+            layout(w, h) {
+                val swap = placeables.last()
+                swap.place((w - swap.width) / 2, (h - swap.height) / 2)
+            }
+        }
+    }
+}
+
+/** Renders only from its arguments, so the outgoing swap copy keeps what it showed. */
+@Composable
+private fun BufferingWords(p: BufferingPlate, device: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
         Text(
             text = stringResource(
-                when (plate) {
+                when (p) {
                     BufferingPlate.TOPPING_UP -> R.string.buffering_title
                     BufferingPlate.STALLED -> R.string.buffering_stalled_title
                 },
@@ -2375,7 +2449,7 @@ private fun BufferingOverlay(
             maxLines = 1,
         )
         Text(
-            text = when (plate) {
+            text = when (p) {
                 BufferingPlate.TOPPING_UP -> stringResource(R.string.buffering_detail)
                 BufferingPlate.STALLED -> stringResource(R.string.buffering_stalled_detail, device)
             },
@@ -2496,6 +2570,11 @@ private fun QualityRow(label: String, value: String) {
 
 // ── Real-telemetry labels (spec §7 — omit, never fabricate) ─────────────────
 
+/** One chip per telemetry slot, so a refined reading replaces its slot's text in place. */
+private enum class SpecChipSlot { Video, Audio, VideoCodec }
+
+private data class SpecChipEntry(val slot: SpecChipSlot, val text: String)
+
 /**
  * The spec's three chips: resolution + HDR class, audio codec + channel count,
  * video codec. Each half is dropped when its source value is unknown, and a chip
@@ -2504,30 +2583,35 @@ private fun QualityRow(label: String, value: String) {
  * length.
  */
 @Composable
-private fun specChips(diagnostics: DiagnosticsSnapshot, hdr: HdrType): List<String> {
-    val chips = mutableListOf<String>()
+private fun specChips(diagnostics: DiagnosticsSnapshot, hdr: HdrType): List<SpecChipEntry> {
+    val chips = mutableListOf<SpecChipEntry>()
 
     val resolution = resolutionChipRes(diagnostics.width, diagnostics.height)?.let { stringResource(it) }
     val hdrLabel = hdrChipRes(hdr, diagnostics.videoMimeType != null)?.let { stringResource(it) }
-    when {
-        resolution != null && hdrLabel != null ->
-            chips += stringResource(R.string.chip_video, resolution, hdrLabel)
-        resolution != null -> chips += resolution
-        hdrLabel != null -> chips += hdrLabel
+    val video = when {
+        resolution != null && hdrLabel != null -> stringResource(R.string.chip_video, resolution, hdrLabel)
+        resolution != null -> resolution
+        hdrLabel != null -> hdrLabel
+        else -> null
     }
+    if (video != null) chips += SpecChipEntry(SpecChipSlot.Video, video)
 
     val codec = audioCodecRes(diagnostics.audioMimeType)?.let { stringResource(it) }
     val channels = channelsChipLabel(diagnostics.audioChannelCount)
-    when {
-        codec != null && channels != null -> chips += stringResource(R.string.chip_audio, codec, channels)
-        codec != null -> chips += codec
-        channels != null -> chips += channels
+    val audio = when {
+        codec != null && channels != null -> stringResource(R.string.chip_audio, codec, channels)
+        codec != null -> codec
+        channels != null -> channels
+        else -> null
     }
+    if (audio != null) chips += SpecChipEntry(SpecChipSlot.Audio, audio)
 
     // A Dolby Vision stream carries the same name in its HDR class and its video
     // MIME; one chip is a spec, two is a stutter.
     val videoCodec = videoCodecRes(diagnostics.videoMimeType)?.let { stringResource(it) }
-    if (videoCodec != null && chips.none { it.contains(videoCodec) }) chips += videoCodec
+    if (videoCodec != null && chips.none { it.text.contains(videoCodec) }) {
+        chips += SpecChipEntry(SpecChipSlot.VideoCodec, videoCodec)
+    }
 
     return chips
 }

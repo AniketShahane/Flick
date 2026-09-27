@@ -2,7 +2,6 @@ package com.flick.receiver.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -125,33 +124,38 @@ private fun TransportPlayKey(
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f
-            pressed && ringVisible -> 1.02f
+            pressed && ringVisible -> FlickMotion.PRESS_FOCUSED_SCALE
             pressed -> FlickMotion.PRESS_SCALE
             ringVisible -> FlickMotion.FOCUS_SCALE
             else -> 1f
         },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "transportFeedbackScale",
     )
     val ringPresence = animateFloatAsState(
         targetValue = if (ringVisible) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "transportRingPresence",
+    )
+    val enabledAlpha = animateFloatAsState(
+        targetValue = if (enabled) 1f else FlickMotion.DISABLED_ALPHA,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "transportEnabledAlpha",
     )
     Box(
         modifier = modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .focusProperties { canFocus = enabled }
+            .focusProperties { if (!enabled) canFocus = false }
             .size(PrimaryTransportTargetSize)
             .focusBeacon(shape, FlickColor.FocusRingOnSpark)
             .graphicsLayer {
                 val lift = scale.value
                 scaleX = lift
                 scaleY = lift
-                alpha = if (enabled) 1f else 0.38f
+                alpha = enabledAlpha.value
             }
             .flickFocusRing(
-                visible = ringVisible && !hosted,
+                visible = !hosted,
                 shape = shape,
                 ringColor = FlickColor.FocusRingOnSpark,
                 progress = { ringPresence.value },
@@ -210,32 +214,37 @@ private fun TransportSecondaryKey(
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f
-            pressed && ringVisible -> 1.02f
+            pressed && ringVisible -> FlickMotion.PRESS_FOCUSED_SCALE
             pressed -> FlickMotion.PRESS_SCALE
             ringVisible -> FlickMotion.FOCUS_SCALE
             else -> 1f
         },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "secondaryTransportScale",
     )
     val ringPresence = animateFloatAsState(
         targetValue = if (ringVisible) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "secondaryTransportRing",
+    )
+    val enabledAlpha = animateFloatAsState(
+        targetValue = if (enabled) 1f else FlickMotion.DISABLED_ALPHA,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "secondaryTransportEnabledAlpha",
     )
     Box(
         modifier = Modifier
             .size(SecondaryTransportTargetSize)
-            .focusProperties { canFocus = enabled }
+            .focusProperties { if (!enabled) canFocus = false }
             .focusBeacon(shape)
             .graphicsLayer {
                 val lift = scale.value
                 scaleX = lift
                 scaleY = lift
-                alpha = if (enabled) 1f else 0.38f
+                alpha = enabledAlpha.value
             }
             .flickFocusRing(
-                visible = ringVisible && !hosted,
+                visible = !hosted,
                 shape = shape,
                 progress = { ringPresence.value },
             )
@@ -303,7 +312,7 @@ fun PlayPauseGlyph(
     val reducedMotion = LocalReducedMotion.current
     val morph = animateFloatAsState(
         targetValue = if (playing) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.flickSettleSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.flickSettleSpatial()),
         label = "playPauseMorph",
     )
     // This is the control the remote hammers, and the glyph is rebuilt on every
@@ -336,7 +345,10 @@ fun PlayPauseGlyph(
  * All three are focus targets, traversed left to right the way they are drawn,
  * and focus lands on the play key at entry via [playFocusRequester].
  *
- * [enabled] is the chrome's gate on the whole cluster. [primaryEnabled] is
+ * [enabled] disables the whole cluster. The playback chrome leaves it `true`: a
+ * hiding bar is already dropped from focus and semantics by the chrome Column,
+ * and this dim, stacked on the film-exit fade, would take the keys off the film
+ * before their glass. [primaryEnabled] is
  * narrower and belongs to the play key alone: the ±10 s keys stay live in states
  * where pressing play would do nothing — see `primaryTransportLive` — and with it
  * false the play key is skipped by focus search, which the flanking keys close
@@ -454,18 +466,23 @@ fun VolumeCells(
     val scale = animateFloatAsState(
         targetValue = when {
             reducedMotion -> 1f
-            pressed && ringVisible -> 1.02f
+            pressed && ringVisible -> FlickMotion.PRESS_FOCUSED_SCALE
             pressed -> FlickMotion.PRESS_SCALE
             ringVisible -> FlickMotion.FOCUS_SCALE
             else -> 1f
         },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "volumeFeedbackScale",
     )
     val ringPresence = animateFloatAsState(
         targetValue = if (ringVisible) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "volumeRingPresence",
+    )
+    val enabledAlpha = animateFloatAsState(
+        targetValue = if (enabled) 1f else FlickMotion.DISABLED_ALPHA,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "volumeEnabledAlpha",
     )
     // Painted by [flickPlate] rather than read here: engaging the control used to
     // recompose a row of ten cells once a frame, over a live decoder, to cross-fade
@@ -476,28 +493,28 @@ fun VolumeCells(
             pressed -> FlickColor.ControlFill
             else -> FlickColor.ControlFillStrong
         },
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "volumeStateFill",
     )
     val stroke = animateColorAsState(
         targetValue = if (engaged && enabled) FlickColor.SelectedBorder else FlickColor.Outline,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "volumeStateStroke",
     )
 
     Row(
         modifier = modifier
             .defaultMinSize(minHeight = SecondaryTransportTargetSize)
-            .focusProperties { canFocus = enabled }
+            .focusProperties { if (!enabled) canFocus = false }
             .focusBeacon(shape)
             .graphicsLayer {
                 val lift = scale.value
                 scaleX = lift
                 scaleY = lift
-                alpha = if (enabled) 1f else 0.38f
+                alpha = enabledAlpha.value
             }
             .flickFocusRing(
-                visible = ringVisible && !hosted,
+                visible = !hosted,
                 shape = shape,
                 progress = { ringPresence.value },
             )
@@ -554,9 +571,8 @@ fun VolumeCells(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(
+        InkIcon(
             imageVector = FlickIcons.Volume,
-            contentDescription = null,
             tint = if (engaged) FlickColor.Spark else Color.White,
             modifier = Modifier.size(FlickDimens.GlyphMedium),
         )
@@ -574,7 +590,7 @@ fun VolumeCells(
                         i < filled -> FlickColor.SparkLight
                         else -> FlickColor.TrackBase
                     },
-                    animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+                    animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
                     label = "volumeCellFill",
                 )
                 Box(

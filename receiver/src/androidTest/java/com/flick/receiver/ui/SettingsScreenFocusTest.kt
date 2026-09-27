@@ -1,5 +1,12 @@
 package com.flick.receiver.ui
 
+import android.view.KeyEvent
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.isFocused
+import androidx.test.platform.app.InstrumentationRegistry
+import com.flick.receiver.ui.components.LocalShellInteractive
+import com.flick.receiver.ui.components.ShellGate
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
@@ -762,5 +769,40 @@ class SettingsScreenFocusTest {
         composeRule.onNodeWithTag("settings-open-row")
             .assertTextContains("didn’t let Flick open", substring = true)
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.ToggleableState, ToggleableState.Off))
+    }
+
+    /**
+     * A cast arriving while Settings is open retains the shell for its exit, so it
+     * stays composed: the host revokes [LocalShellInteractive], and then no row may
+     * keep or take focus, or DPAD_CENTER would fire a row the viewer no longer sees.
+     */
+    @Test
+    fun settings_rows_let_go_of_focus_once_a_cast_stage_takes_the_shell() {
+        val interactive = mutableStateOf(true)
+        var renamed = 0
+        composeRule.setContent {
+            FlickTvTheme {
+                val live = interactive.value
+                ShellGate(live) {
+                    SettingsScreen(
+                        tvName = "Living Room TV",
+                        pairedSummary = "2 paired",
+                        pairedPhones = pairedPhones,
+                        metricsEnabled = false,
+                        onRename = { renamed++ },
+                        onToggleMetrics = {},
+                        onForgetAll = {},
+                        onDone = {},
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithText("Device name").assertIsFocused()
+        composeRule.runOnIdle { interactive.value = false }
+        composeRule.waitForIdle()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+        composeRule.waitForIdle()
+        composeRule.onAllNodes(isFocused()).assertCountEquals(0)
+        assertEquals("DPAD_CENTER reached a row of a shell that had handed over", 0, renamed)
     }
 }

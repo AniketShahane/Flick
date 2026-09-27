@@ -677,6 +677,36 @@ fun Modifier.errorAmbientBackground(accent: Color): Modifier = this
     }
 
 /**
+ * [errorAmbientBackground] moving between its two accents: [FlickColor.Trouble] at a
+ * [troubleWeight] of 1 and [FlickColor.Caution] at 0. Both washes are built once per
+ * size with the same geometry and blended by draw-time alpha, so a fault changing
+ * face repaints without a new gradient.
+ */
+fun Modifier.errorAmbientBlend(troubleWeight: () -> Float): Modifier = this
+    .background(FlickColor.Canvas)
+    .drawWithCache {
+        val center = Offset(size.width * 0.5f, size.height * 0.14f)
+        val radius = max(size.width, size.height) * 0.68f
+        val trouble = ambientWash(
+            color = FlickColor.Trouble.copy(alpha = 0.20f),
+            center = center,
+            radius = radius,
+            panel = size,
+        )
+        val caution = ambientWash(
+            color = FlickColor.Caution.copy(alpha = 0.20f),
+            center = center,
+            radius = radius,
+            panel = size,
+        )
+        onDrawBehind {
+            val w = troubleWeight().coerceIn(0f, 1f)
+            if (w > 0.004f) drawWash(trouble, alpha = w)
+            if (w < 0.996f) drawWash(caution, alpha = 1f - w)
+        }
+    }
+
+/**
  * How forcefully the burst's amber accent reads, from the speed level the key
  * policy actually reached (1×/2×/3×), so a long hold is visibly more forceful
  * than a tap without inventing a number.
@@ -722,7 +752,14 @@ internal fun seekWashReach(width: Float, height: Float): Float = max(width * 0.6
  * a draw lambda regenerates its platform shader every frame. The intensity is a
  * draw-time alpha for the same reason — it must not force a new gradient.
  */
-fun Modifier.seekBurstWash(fromRight: Boolean, accentIntensity: Float): Modifier = this.drawWithCache {
+fun Modifier.seekBurstWash(fromRight: Boolean, accentIntensity: Float): Modifier =
+    seekBurstWash(fromRight) { accentIntensity }
+
+/**
+ * [seekBurstWash] with the accent's intensity read at draw time, so an animated
+ * intensity repaints without rebuilding either gradient or recomposing the caller.
+ */
+fun Modifier.seekBurstWash(fromRight: Boolean, accentIntensity: () -> Float): Modifier = this.drawWithCache {
     val reach = seekWashReach(size.width, size.height)
     val bed = ambientWash(
         color = FlickColor.SeekWashBed,
@@ -739,6 +776,6 @@ fun Modifier.seekBurstWash(fromRight: Boolean, accentIntensity: Float): Modifier
     )
     onDrawBehind {
         drawWash(bed)
-        drawWash(accent, alpha = accentIntensity)
+        drawWash(accent, alpha = accentIntensity())
     }
 }

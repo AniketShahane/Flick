@@ -2,8 +2,8 @@ package com.flick.receiver.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,15 +71,23 @@ fun LiveDot(
     size: Dp = 6.dp,
     pulsing: Boolean = false,
 ) {
-    val phase = rememberPulsePhase(pulsing)
     val reducedMotion = LocalReducedMotion.current
+    // The breath grows out of the static dot and settles back into it: the loop
+    // keeps running until the envelope has drawn it back to rest, then is disposed.
+    val envelope = animateFloatAsState(
+        targetValue = if (pulsing && !reducedMotion) 1f else 0f,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "liveDotEnvelope",
+    )
+    val quiet by remember { derivedStateOf { envelope.value <= 0f } }
+    val phase = rememberPulsePhase(pulsing || !quiet)
     // Health is a state, so a change of health dissolves rather than cuts — on
     // the effects spec, which never overshoots: a colour that rang past its
     // target would report a health this dot has never measured. Read in the draw
     // phase so the transition costs a repaint, not a recomposition.
     val ink = animateColorAsState(
         targetValue = color,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "liveDotColor",
     )
     Box(
@@ -85,11 +96,12 @@ fun LiveDot(
             .then(
                 if (phase != null) {
                     Modifier.graphicsLayer {
+                        val e = envelope.value
                         val p = phase.value
-                        val s = lerp(FlickMotion.PULSE_SCALE_MIN, FlickMotion.PULSE_SCALE_MAX, p)
+                        val s = lerp(1f, lerp(FlickMotion.PULSE_SCALE_MIN, FlickMotion.PULSE_SCALE_MAX, p), e)
                         scaleX = s
                         scaleY = s
-                        alpha = lerp(FlickMotion.PULSE_ALPHA_MIN, FlickMotion.PULSE_ALPHA_MAX, p)
+                        alpha = lerp(1f, lerp(FlickMotion.PULSE_ALPHA_MIN, FlickMotion.PULSE_ALPHA_MAX, p), e)
                     }
                 } else {
                     Modifier

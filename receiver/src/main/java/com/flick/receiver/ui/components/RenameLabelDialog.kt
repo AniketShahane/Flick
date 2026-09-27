@@ -1,5 +1,8 @@
 package com.flick.receiver.ui.components
 
+import android.view.WindowManager
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -15,23 +18,29 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
@@ -43,14 +52,19 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.net.normalizeLabel
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalReducedMotion
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 internal const val RENAME_LABEL_MAX_CODE_POINTS = 80
 
@@ -140,30 +154,103 @@ fun RenameLabelDialog(
     var saveFailed by remember(currentName) { mutableStateOf(false) }
     val normalized = normalizedRenameLabel(input.text)
 
+    // The dialog stays composed until its exit has drawn: every way out routes
+    // through [close], and only the exit's end hands control back to the host.
+    // `settled` drops the card's layer once the entrance lands, so the resting
+    // dialog paints exactly as a plain one would.
+    val reducedMotion = LocalReducedMotion.current
+    val fadeInSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects<Float>())
+    val riseSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.panelSpatial<Float>())
+    val fadeOutSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.fastStateEffects<Float>())
+    val sinkSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial<Float>())
+    val scrim = remember { Animatable(0f) }
+    val cardAlpha = remember { Animatable(0f) }
+    val cardRise = remember { Animatable(1f) }
+    val cardSink = remember { Animatable(0f) }
+    var settled by remember { mutableStateOf(false) }
+    var closing by remember { mutableStateOf(false) }
+    val dismiss by rememberUpdatedState(onDismiss)
+
+    LaunchedEffect(Unit) {
+        coroutineScope {
+            launch { scrim.animateTo(1f, fadeInSpec) }
+            launch { cardAlpha.animateTo(1f, fadeInSpec) }
+            launch { cardRise.animateTo(0f, riseSpec) }
+        }
+        // An exit that interrupted the entrance ends these animations without
+        // cancelling this scope, and the layer it needs must not be dropped.
+        if (!closing) settled = true
+    }
+
+    fun close() {
+        closing = true
+    }
+
+    LaunchedEffect(closing) {
+        if (!closing) return@LaunchedEffect
+        settled = false
+        // The sink outlives the fade; waiting on it would hold an invisible card.
+        launch { cardSink.animateTo(1f, sinkSpec) }
+        coroutineScope {
+            launch { scrim.animateTo(0f, fadeOutSpec) }
+            launch { cardAlpha.animateTo(0f, fadeOutSpec) }
+        }
+        dismiss()
+    }
+
     fun submit() {
+        if (closing) return
         val next = normalized ?: return
         saveFailed = !onCommit(next)
-        if (!saveFailed) onDismiss()
+        if (!saveFailed) close()
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = ::close,
         properties = DialogProperties(
             dismissOnBackPress = true,
             dismissOnClickOutside = false,
             usePlatformDefaultWidth = false,
         ),
     ) {
+        // The platform's own entrance would run on top of the one drawn here. The
+        // exit keeps a window fade: a cast arriving removes the dialog from
+        // composition outright, and only the window can still fade out then.
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        DisposableEffect(dialogWindow, reducedMotion) {
+            dialogWindow?.setWindowAnimations(
+                if (reducedMotion) 0 else R.style.Animation_Flick_RenameDialog,
+            )
+            // The floating dialog theme adds a platform dim that the window manager
+            // releases on its own clock, only after the window leaves, so it would
+            // outlast the drawn exit. The drawn scrim is the only darkening layer.
+            dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            onDispose { }
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.78f))
+                // 0.91 is the darkness the 0.78 scrim over the theme's 0.6 dim gave.
+                .drawBehind { drawRect(Color.Black, alpha = 0.91f * scrim.value) }
                 .padding(top = 44.dp),
             contentAlignment = Alignment.TopCenter,
         ) {
             Column(
                 modifier = Modifier
                     .width(560.dp)
+                    .then(
+                        if (settled) {
+                            Modifier
+                        } else {
+                            Modifier.graphicsLayer {
+                                alpha = cardAlpha.value
+                                translationY = (cardRise.value + 0.5f * cardSink.value) *
+                                    FlickMotion.TvRiseCard.toPx()
+                                compositingStrategy = CompositingStrategy.ModulateAlpha
+                            }
+                        },
+                    )
+                    .focusProperties { if (closing) canFocus = false }
                     .background(FlickColor.SurfaceRaisedAlt, FlickShape.Hero)
                     .border(1.dp, FlickColor.GlassBorder, FlickShape.Hero)
                     .padding(28.dp),
@@ -253,45 +340,51 @@ fun RenameLabelDialog(
                         unfocusedContainerColor = Color.Transparent,
                     ),
                 )
-                if (saveFailed) {
+                AnimatedVisibility(
+                    visible = saveFailed,
+                    enter = flickRevealEnter(),
+                    exit = flickRevealExit(),
+                ) {
                     Text(
                         text = stringResource(R.string.rename_save_failed),
                         style = FlickType.body(sizeSp = 16),
                         color = FlickColor.Caution,
                     )
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // Inherited by both buttons: up returns to the editor, which
-                        // is the one focusable above this row. Left and right inside
-                        // the row are ordinary focus search.
-                        .focusProperties { up = focusRequester },
-                    horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md, Alignment.End),
-                ) {
-                    FlickTvButton(
-                        onClick = onDismiss,
-                        contentPadding = FlickDimens.ControlPadding,
-                        focusRequester = cancelFocusRequester,
-                        modifier = Modifier.testTag("rename-cancel"),
+                FocusBeaconHost(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // Inherited by both buttons: up returns to the editor, which
+                            // is the one focusable above this row. Left and right inside
+                            // the row are ordinary focus search.
+                            .focusProperties { up = focusRequester },
+                        horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md, Alignment.End),
                     ) {
-                        Text(
-                            text = stringResource(R.string.rename_cancel),
-                            style = FlickType.body(sizeSp = 16),
-                            color = FlickColor.OnSurfaceDim,
-                        )
-                    }
-                    FlickTvButton(
-                        onClick = ::submit,
-                        enabled = normalized != null,
-                        contentPadding = FlickDimens.ControlPadding,
-                        modifier = Modifier.testTag("rename-save"),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.rename_save),
-                            style = FlickType.body(sizeSp = 16),
-                            color = FlickColor.OnSurface,
-                        )
+                        FlickTvButton(
+                            onClick = ::close,
+                            contentPadding = FlickDimens.ControlPadding,
+                            focusRequester = cancelFocusRequester,
+                            modifier = Modifier.testTag("rename-cancel"),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.rename_cancel),
+                                style = FlickType.body(sizeSp = 16),
+                                color = FlickColor.OnSurfaceDim,
+                            )
+                        }
+                        FlickTvButton(
+                            onClick = ::submit,
+                            enabled = normalized != null,
+                            contentPadding = FlickDimens.ControlPadding,
+                            modifier = Modifier.testTag("rename-save"),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.rename_save),
+                                style = FlickType.body(sizeSp = 16),
+                                color = FlickColor.OnSurface,
+                            )
+                        }
                     }
                 }
             }

@@ -2,10 +2,12 @@ package com.flick.receiver.ui.screens
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -23,21 +25,25 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Icon
+import androidx.compose.ui.unit.isSpecified
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.TurnNote
 import com.flick.receiver.player.VideoRotation
+import com.flick.receiver.ui.components.CrossfadeIcon
+import com.flick.receiver.ui.components.FlickSwap
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
+import com.flick.receiver.ui.components.InkText
 import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
@@ -150,23 +156,39 @@ fun OrientationPanel(
             // a turn could not do to the picture is legible from nowhere else,
             // and it is the answer to the question the viewer just asked.
             val noteRes = turnNoteLabelRes(turnNote)
-            if (noteRes != null) {
-                Text(
-                    text = stringResource(noteRes),
-                    style = FlickType.monoEyebrow(trackingEm = 0.1f),
-                    color = FlickColor.OnSurfaceFaint,
-                    maxLines = 2,
-                )
-            } else if (rotation == VideoRotation.Auto) {
-                Text(
-                    text = stringResource(
+            val slotText: String? = noteRes?.let { stringResource(it) }
+                ?: if (rotation == VideoRotation.Auto) {
+                    stringResource(
                         R.string.video_rotation_auto_applied,
                         stringResource(rotationLabelRes(shownVideoRotation(rotation, autoRotationDegrees))),
-                    ),
-                    style = FlickType.monoEyebrow(trackingEm = 0.1f),
-                    color = FlickColor.OnSurfaceFaint,
-                    maxLines = 1,
-                )
+                    )
+                } else {
+                    null
+                }
+            val eyebrowStyle = FlickType.monoEyebrow(trackingEm = 0.1f)
+            val eyebrowLine = if (eyebrowStyle.lineHeight.isSpecified) {
+                eyebrowStyle.lineHeight
+            } else {
+                eyebrowStyle.fontSize * 1.25f
+            }
+            // Two lines held open whether or not anything is said: the note lands
+            // mid-turn, and a slot that grew then would reflow the rows and resize
+            // the glass while the decoder reconfigures under it.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = with(LocalDensity.current) { (eyebrowLine * 2).toDp() }),
+            ) {
+                FlickSwap(target = slotText, label = "orientationEyebrow") { text ->
+                    if (text != null) {
+                        Text(
+                            text = text,
+                            style = eyebrowStyle,
+                            color = FlickColor.OnSurfaceFaint,
+                            maxLines = 2,
+                        )
+                    }
+                }
             }
 
             Column(
@@ -214,13 +236,15 @@ private fun RotationRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm),
     ) {
-        Icon(
-            imageVector = if (selected) FlickIcons.CheckCircle else FlickIcons.RadioButtonUnchecked,
-            contentDescription = null,
-            tint = if (selected) FlickColor.Spark else FlickColor.OnSurfaceFaint,
+        CrossfadeIcon(
+            on = selected,
+            onVector = FlickIcons.CheckCircle,
+            offVector = FlickIcons.RadioButtonUnchecked,
+            onTint = FlickColor.Spark,
+            offTint = FlickColor.OnSurfaceFaint,
             modifier = Modifier.size(FlickDimens.GlyphSmall),
         )
-        Text(
+        InkText(
             text = label,
             style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
             color = if (selected) FlickColor.SparkLight else FlickColor.OnChrome,

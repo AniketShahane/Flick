@@ -338,12 +338,43 @@ The four-digit code stays on screen regardless. The QR is an addition to manual
 entry, never a replacement for it — a camera that cannot read the plate is the
 case the card exists for.
 
-### 5.2 Connecting / handshake (`ReceiverApp.ConnectingScreen`)
+### 5.2 Connecting / handshake (`HouseLights`)
 
-Full-bleed `Canvas` @ 82 % over the (covered) player surface. Centred card:
-560 dp wide, `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
-`GlassBorder` hairline, entering on `FlickMotion.panelSpatial()` with a 23 dp rise
-(`FlickMotion.TvRiseCard`).
+`ReceiverApp.ConnectingScreen` is now a bare box around the player surface. The veil
+and the card belong to `HouseLights` (`ui/components/HouseLights.kt`), the one root
+sibling that owns every stage seam, drawn above the unmoved surface. At rest the
+handshake is what it was: full-bleed `Canvas` @ 82 % (`VEIL_DENSITY` =
+`ScrimVeil.alpha`) over the covered surface, and a centred card 560 dp wide
+(`HANDSHAKE_CARD_WIDTH`), `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
+`GlassBorder` hairline.
+
+How it arrives and leaves is the room's light:
+
+- **Lights down** (from Idle, Pair, Settings or Error). The outgoing face stays,
+  frozen and non-interactive, while a dithered radial aperture closes on the centre
+  over `lightsDown()` (560 ms): the corner buttons go first, the clock at ~420–480 ms,
+  the mark last. The card enters only once the aperture is at `p ≤ 0.12` (~425 ms),
+  into the last light — alpha on `stateEffects()`, a 23 dp rise (`TvRiseCard`) and
+  0.97 → 1 scale on `panelSpatial()` — because the glass is 88 % opaque and the last
+  pool holds the lit mark and the clock. At full dark the retained face is dropped and
+  the curtain snaps to the 82 % veil, invisibly over the black shutter. The aperture's
+  edge is a smoothstep ramp from its clear core to full density (8 dithered steps), so
+  neither end of the ramp shows a Mach band. A fault while Act I is still closing holds
+  the aperture where it reached and dissolves its density uniformly; the aperture never
+  moves for a fault.
+- **Picture up** (first frame). The card leaves at once and never waits: its semantics
+  clear on the first frame, alpha on `crossDissolve()` (400 ms), an 11.5 dp sink on
+  `focusSpatial()`; the loader goes with it. After the resync wait (§6.1) and a 120 ms
+  lag, the veil lifts uniformly on `filmReveal()` (720 ms).
+- **Veil in** (a re-cast over a running film). The veil is seeded at
+  `d = max(the dim drawn over the last Active frame, a mid-lift veil)`, so a paused,
+  seeking or ended frame never brightens, and rises to 82 % on
+  `filmReveal()`; the card enters once 60 % of that travel has landed, alpha on
+  `crossDissolve()`.
+
+The headline is a `FlickSwap` (resize on), so it dissolves rather than flips when the
+phone's and the film's names resolve. Checking ↔ Preparing and startup retries are
+one house stage, so the card and loader keep their phase through them.
 
 Contents: `FlickLoader` — the Material 3 Expressive shape-morph loading indicator
 in `Spark`, at `FlickLoaderDefaults.Size` — then `connecting_title` Bricolage 800 /
@@ -428,7 +459,10 @@ the same row. It keeps its `Volume` `contentDescription`.
 
 **Overlays** (unchanged behaviour, restyled):
 - Seek burst: 38 % width side wash, radial `Spark` @ 16 %, **48 dp** glyph +
-  `±10s` Bricolage 800 **20 sp**, on `tvBurst` (0.72 s scale-and-fade).
+  `±10s` Bricolage 800 **20 sp**, on `tvBurst`'s envelope: 0.7 → 1 in on
+  `tvBurstFadeIn()` / `tvBurstScaleIn()` (158 ms), 1 → 1.14 with a fade out on
+  `tvBurstExit()` (180 ms, under `SEEK_DELTA_CLEAR_MS`); visibility is owned by the
+  held seek (§6).
 - Paused chip: at 28 % height, `Glass` pill, **20 dp** `Spark` pause glyph + "Paused"
   Bricolage 800 **20 sp**.
 - Buffering: keep the existing calm treatment, restyled to the new tokens.
@@ -448,6 +482,59 @@ entry.
 > (Left/Right scrubs the timeline, Up/Down moves between control groups). Within
 > the transport cluster, back10 / play / fwd10 are reached by remote seek and by
 > DPAD-centre on play, not by horizontal focus movement.
+
+**Motion over the film.** Everything here is designed for the 24 Hz pin (§6.1).
+
+- **First arrival.** At the first frame the scrims and both chrome groups start from
+  invisible and fade in on `chromeFadeIn()` as the veil lifts, rather than being
+  present on frame 0. Telemetry chips already present when the chrome starts entering
+  ride its entrance instead of replaying their own pop.
+- **Exits into bare film** are `filmExit()`, 250 ms of pure alpha — six vsyncs at
+  24 Hz, where `fastStateEffects()` is two and reads as a cut. The top chrome's exit
+  is a 10.5 dp sink (`CHROME_EXIT_TRAVEL` × `TvRise`), mirroring the bottom chrome's
+  10.5 dp sink, not half its ~130 dp row height: under a 250 ms fade at 24 Hz the
+  half-row travel strobes in ~50 px steps. Its fade still clears the film before the
+  500 ms scrim lift.
+- **The dev HUD hands over to the pills.** The opt-in `MetricsOverlay` leaves on
+  `filmExit()` (250 ms). The pills arrive from above and do not cover the plate's
+  lower rows.
+- **Transport keys do not dim with the bar.** They take no `enabled` from the bar's
+  visibility, because the chrome Column's `canFocus` / `clearAndSetSemantics` gate
+  already handles a hiding bar. In the transport row only the Ended-without-replay
+  play key eases to `DISABLED_ALPHA`.
+- **The resting key plays out.** The paused key is a `FlickPresence`; on resume the
+  exiting key draws the play state and morphs its glyph while it fades on
+  `filmExit()`, instead of vanishing on the frame playback resumes.
+- **FINISHED and the buffering plate** are `FlickPresence` overlays: they fade in on
+  `chromeFadeIn()`, fade out on `filmExit()`, keep drawing their last value while they
+  leave (a STALLED plate stays STALLED), and leave focus and semantics on the first
+  exit frame. The plate's two lines are a `FlickSwap`.
+- **Words dissolve, numbers snap.** The eyebrow is a `FlickSwap` whose colour follows
+  its word; the position timecode is `InkText`, so its digits snap and only the ink
+  eases. The same holds for the net pill's band, the spec chips and the metrics
+  panel's stat cells.
+- **The heard ring** (built). When a seek lands, one amber ring radiates from the
+  playhead: born at 11 dp at alpha 0, about 13 dp and lit by 158 ms, reaching 17 dp
+  as it goes by 720 ms on `tvBurstAlpha()`, radius on `tvBurstReach()` (720 ms,
+  `chromeFade`), still growing as it fades, a 2 dp `Spark` stroke over a
+  `FocusRingContour` edge. It fires only when the confirmed clock reached the target
+  latched while the seek was in flight (`seekLandingConfirmed`); the 1.5 s deadline
+  and teardown draw nothing. Around an unfocused knob it runs 11 → 17 dp; 17 dp stays
+  inside the timecodes and clear of the control row's focus rings below. It must also
+  clear the bar's own §3 ring, which around a focused knob occupies out to 14.5 dp
+  (8 dp knob + 4.5 dp offset + 1 dp half-stroke + 1 dp contour): a ring fired around a
+  focused knob starts at 16.5 dp (`FocusedLandingRingStart`), so its contour begins where
+  the §3 ring's contour ends, and travels the same 6 dp to 22.5 dp. No row-below ring can
+  be lit while the bar holds focus. At the very ends of the bar it may overhang the
+  timecode gap while it fades (a few dp unfocused, about 10 dp focused). It is the only
+  spatial motion this pass adds at a landing; three non-spatial ones start on the same
+  frame: the eyebrow's dissolve (`FlickSwap`), the position timecode's Spark → White ink
+  ease (`InkText`), and, when the seek lands during playback, the dim's slow lift on
+  `chromeFadeOut()` (§6.1). Two older spatial motions also move there: when
+  the seek was driven with the bar unfocused (from the phone, say) the knob and halo
+  collapse on `focusSpatial()` (radius 8 → 6 dp and 13 → 9 dp), and the wave's swing
+  rises again on `panelSpatial()` once the clock resumes. Reduced motion draws no ring,
+  snaps the knob and keeps the wave flat.
 
 ### 5.4 Subtitles panel (new — `ui/screens/SubtitlesPanel.kt`)
 
@@ -582,19 +669,39 @@ same argument that hides `Forget all phones` at zero.
 
 ## 6. Motion
 
-TV motion is **settling**: things arrive and come to rest with weight. The specs come
-from `MaterialTheme.motionScheme`, reached by wrapping `FlickTvTheme`'s content in
-material3's `MaterialExpressiveTheme` *outside* `androidx.tv.material3.MaterialTheme`, so
-tv-material's locals still win for everything actually drawn. **No call site outside
-`Motion.kt` writes a `spring(...)` or a duration** — see `design-tokens.md` §6 for the
-shared vocabulary and the sender/receiver damping bias.
+TV motion is **settling**: things arrive and come to rest with weight. `FlickTvTheme`
+is `androidx.tv.material3.MaterialTheme` only — no `MaterialExpressiveTheme` wraps it.
+The Expressive motion scheme's spring stiffnesses are transcribed once into
+`FlickMotion` (`ui/theme/Motion.kt`) and every spec comes from there. **No call site
+outside `Motion.kt` writes a `spring(...)`, `tween(...)`, `keyframes {}`, `snap()` or an
+animation duration**. The one sanctioned exception is `RollingGlyphs`'
+`SizeTransform(clip = true) { _, _ -> snap() }`: a size transform that must never
+animate, because the monospaced cell keeps its width and the clip cuts the outgoing
+glyph at the cell edge. A `delay` that times motion — a hold before an exit, a lag
+behind a veil — takes a named `FlickMotion` constant. Dwell timers (the quality
+flourish, the seek-delta hold, the chrome auto-hide, the pairing success hold, the
+clock and countdown ticks) are UI policy, not motion specs, and live where their state
+lives. See `design-tokens.md` §6 for the shared vocabulary and the sender/receiver damping bias.
+
+The one reduced-motion idiom is `FlickMotion.orSnap(reducedMotion, spec)`, mirroring the
+sender's `Motion.orSnap`. The reduced branch of an `AnimatedContent` is
+`FlickMotion.cut()` (`fadeIn(snap())` / `fadeOut(snap())`), not `EnterTransition.None` /
+`ExitTransition.None`: AnimatedContent composes and draws the incoming and outgoing
+children together for one frame, so the incoming child must hold at alpha 0 for that
+frame, and a `None` / `None` swap would draw both at full opacity. It takes no size
+transform, except `RollingGlyphs`' clipping cell, which passes the snapping
+`SizeTransform(clip = true)` sanctioned above. The reduced branch of an
+`AnimatedVisibility`, which has a single child, is `EnterTransition.None` /
+`ExitTransition.None`, or `fadeIn` / `fadeOut` over `orSnap(reducedMotion, spec)` where the
+visible spec is a plain fade (the chrome, the HUD, the seek burst). Specs used inside a `transitionSpec` are resolved in composition and
+captured, because the `@Composable` accessors cannot be called there.
 
 | Design / use | Token |
 |---|---|
 | `tvRise` (panel entrance) | `panelSpatial()` + a `graphicsLayer` rise of `FlickMotion.TvRise` (21 dp) |
-| chrome / panel exit | `focusSpatial()` over half the entrance travel, alpha on `fastStateEffects()` — `glassPanelExit()` defines it once |
+| chrome / panel exit | playback chrome: alpha on `filmExit()` (250 ms), and both chrome groups sink `CHROME_EXIT_TRAVEL` × `TvRise` (10.5 dp) toward their own edge on `focusSpatial()` (the top group's entrance is still its full row height on `panelSpatial()`); other glass panels: `glassPanelExit()` — `focusSpatial()` over half the entrance travel, alpha on `fastStateEffects()` |
 | panel reveal / retreat | `TvOriginReveal` — `panelSpatial()` in, `focusSpatial()` back out, the SAME wipe run backwards onto the same origin |
-| `tvBurst` (seek flash, 0.72 s) | scale 0.7→1→1.14 with fade, `flickSettle` easing (the keyframes are the design) |
+| `tvBurst` (the design's seek flash) | its 0.7 → 1 → 1.14 scale-and-fade shape, but not its fixed 0.72 s lifetime: the held seek owns visibility, so the seek burst runs on the "seek burst in / out" row below; the 720 ms keyframes live on only as the heard ring's `tvBurstAlpha()` |
 | seek-step impulse | snap to 1 → `flickSettleSpatial()` back to 0, one kick per accepted protocol step |
 | `tvPulse` (live dot, 1.9 s) | infinite pulse in `LiveDot`, bound to real state only |
 | indeterminate loading (handshake, rebuffer) | `FlickLoader` — material3's Expressive shape morph. `tvSpin` is retired with the arcs it drove |
@@ -602,11 +709,46 @@ shared vocabulary and the sender/receiver damping bias.
 | focus ring / scale / beacon travel | `focusSpatial()` |
 | colour, alpha, selection fill | `stateEffects()` |
 | seek reconcile | `syncSpring()` — now a real spring, so a held D-pad seek retargets instead of stuttering |
-| D-pad centre/Enter press confirmation | `pressConfirm()` — 90 ms `ChromeFade`; scale 0.98 when unfocused or 1.02 while focused, with pressed fill feedback |
+| D-pad centre/Enter press confirmation | `pressConfirm()` — 90 ms `ChromeFade`; scale 0.98 when unfocused or `PRESS_FOCUSED_SCALE` 1.02 while focused, with pressed fill feedback |
+| the room's light closing (Act I) | `lightsDown()` — 560 ms `CrossDissolve`, aperture only, no film visible; rest rate |
+| the room's light opening (launch, lights up) | `pictureUp()` — 640 ms `CrossDissolve`, aperture only, no film visible; rest rate unless the resync hold is cut short (lights up) or the panel is not at rest (launch, never held) |
+| the house-lights veil over a film | `filmReveal()` — 720 ms `CrossDissolve`, at most 10.0 % of its span per 24 Hz frame |
+| the playback state dim | `PlaybackDim.dimSpec` — `chromeFadeIn()` to darken or lift promptly, `crossDissolve()` to settle on Ended, `chromeFadeOut()` to lift off a seek (§6.1) |
+| card-sized alpha over a film (the handshake card's entrance on a re-cast, its exit at the first frame); the fault dissolve | `crossDissolve()` — 400 ms |
+| the handshake card's exit on a cancel, a fault or a Rest seam | `fastStateEffects()` — it leaves over the closed curtain, not a film |
+| an overlay leaving into bare film | `filmExit()` — 250 ms `ChromeFade`, six vsyncs at 24 Hz |
+| a small overlay's presence | `presenceIn(overFilm)` / `presenceOut(overFilm)` — `chromeFadeIn()` / `filmExit()` over a film, `stateEffects()` / `fastStateEffects()` elsewhere |
+| the heard ring's envelope | `tvBurstAlpha()` — 0 → 1 by 158 ms → 0 by 720 ms; radius on `tvBurstReach()` (720 ms, `chromeFade`), still growing as it fades — about 13 dp by 158 ms |
+| seek burst in / out | `tvBurstFadeIn()` / `tvBurstScaleIn()` (158 ms) and `tvBurstExit()` (180 ms, below `SEEK_DELTA_CLEAR_MS`) |
+| reduced motion | `orSnap(reducedMotion, spec)` around every finite spec; `cut()` for an `AnimatedContent` swap |
 
-`chromeFadeOut`'s 500 ms is now **indicative**: it still governs the scrim, which
-deliberately lags the chrome out, but the chrome's own exit is a spring and has no fixed
-duration.
+The helpers that carry these, all in `ui/components/`:
+
+- `HouseLights` — the curtain and the handshake card for every stage seam (§5.2, §6.1).
+- `DisplayCadence` — passive observation of the HDMI mode switch the refresh-rate pin
+  causes, and the bounded resync wait (`stageHold`, `awaitStageWindow`).
+- `FlickPresence` — an overlay shown while a value is non-null: rises in, sinks half
+  as far out, keeps drawing its last value while leaving, per-draw alpha with the layer
+  dropped once settled, focus and semantics gone on the first exit frame.
+  `flickRevealEnter()` / `flickRevealExit()` are its expanding standby-only sibling for
+  warning lines.
+- `FlickSwap` — an in-place word or glyph exchange; the exit leads so two words are never
+  legible together for more than one 24 Hz frame.
+- `InkText`, `InkIcon`, `CrossfadeIcon` — colour eased in the draw phase, so a tint
+  change repaints without recomposing.
+- `RollingGlyphs` — the pairing code's per-glyph roll, shared by the idle clock.
+- `LocalShellRetained` — true while a standby or error face is retained under the
+  lights-down curtain; the face freezes its loops and requests no focus.
+- `LocalShellInteractive` — false while a shell face is retained or on its way out.
+  Every focusable control on a face reads it where it takes focus, because the host's
+  `canFocus = false` does not cross a scroll container's focus group; `FlickTvButton`
+  (and so `FlickTvRow` and `FlickTvIconButton`) already does.
+- `PlaybackDim` (`ui/theme/`) — the single source of the playback dim, its cause and
+  which ease a change takes.
+
+`chromeFadeOut`'s 500 ms still governs the scrim, which deliberately lags the chrome
+out. The playback chrome's own fade is `filmExit()`, 250 ms, so it has cleared the film
+before the scrim lifts; its 10.5 dp sink stays a spring.
 
 `focusPop`'s curve is retired — focus is a spring so that a held D-pad retargets it
 mid-flight.
@@ -624,6 +766,66 @@ The TV is decoding 4K Dolby Vision while this UI composes. Inside `:receiver`:
 - chrome motion is `graphicsLayer` transforms, never layout offsets — the full-screen dim
   plus the two scrims are the entire animated-layer budget over the video;
 - `sparkShadow` elevation and colour are never animated.
+
+**The 24 Hz step budget.** While a film is on screen the window is pinned to the film's
+cadence, so a frame is 41.67 ms and anything composed in `PlaybackScreen` or drawn over
+the film is sized for that:
+
+- a full-screen veil over a film (the `HouseLights` veil) uses `filmReveal()` (at most
+  10 % of its span per frame); card-sized alpha uses `crossDissolve()`. Exception,
+  deliberately kept: the playback state dim (`PlaybackDim.dimSpec`) darkens fast so a
+  pause or seek reads at once. Darken and LiftPrompt use `chromeFadeIn()` (200 ms, up to
+  ~44 % of its span in one 24 Hz frame, about 0.15 alpha toward the 0.34 paused dim);
+  Ended settles on `crossDissolve()` (400 ms, ~18 %), and a lift off a seek uses
+  `chromeFadeOut()` (500 ms, ~19 %). It is one uniform alpha rect with no edge, and every
+  dim change already ran on `chromeFadeIn()` before this motion pass;
+- an overlay leaving into bare film uses `filmExit()`; an in-place swap whose
+  replacement fades up in the same spot may exit on `fastStateEffects()`. Exceptions:
+  the blind-seek burst exits on `tvBurstExit()` (180 ms, under `SEEK_DELTA_CLEAR_MS`),
+  and the band cards on `chromeFadeOut()` (500 ms) plus their scale-out;
+- no new moving edge, wipe or aperture over a film, and no new layout-phase animation —
+  size transforms are null there, except `clip = false` on the handshake card above the
+  veil. Known pre-existing exceptions, deliberately kept and each checked in the 24 Hz
+  review: the side panel's `TvOriginReveal` circle wipe (§5.4/§5.5) and its
+  `animateBounds(PanelTravel)` glide and resize on a panel swap;
+  `animateContentSize(panelSpatial())` on the top net-pill/clock row and on the transport
+  spec-chip row; and the band cards' (quality flourish, orientation hint, silent-audio
+  notice, band notice) `scaleIn` 0.96 / `scaleOut` 1.02 on `flickSettleSpatial()`; and
+  the chrome groups' `TvRise` rise and top slide (graphicsLayer transforms). Moves added
+  on purpose by the motion pass, each also checked at 24 Hz: the FINISHED chip's
+  `FlickPresence` rise (`TvRiseCard`, 23 dp on `panelSpatial()` in, an 11.5 dp sink on
+  `focusSpatial()` out, a `ModulateAlpha` layer dropped once settled), and the heard
+  ring's radius, 11 → 17 dp on `tvBurstReach()` (16.5 dp start around a focused knob,
+  same travel), a 2 dp stroke inside the transport glass (§5.3);
+- alpha on new overlays larger than a small control (`FlickPresence`, the resting key)
+  is per draw op (`CompositingStrategy.ModulateAlpha`) with the layer dropped once
+  settled. Exception: the two chrome groups (TopChrome and the 864 dp BottomChrome), the
+  band cards and the blind-seek burst fade through `AnimatedVisibility` `fadeIn` /
+  `fadeOut`, whose layer uses the default strategy and so composites offscreen while
+  alpha < 1. The seek burst's layer is `matchParentSize` on the playback root, so it is
+  the one full-screen offscreen layer over the film: pre-existing, and alive only for its
+  `tvBurstFadeIn()` (158 ms) and `tvBurstExit()` (180 ms). No blur, `RenderEffect` or
+  shader over the film.
+
+**Stage covers are siblings.** The film surface is never moved, faded, clipped or
+wrapped: both `playerSurface()` call sites sit inside unchanged `when (stage)` branches,
+and every cover — the veil, the aperture, the handshake card, the retained standby — is
+drawn by `HouseLights` or the non-video shell, composed after them. The aperture is
+drawn only with no film visible (launch, Act I, lights up), and lights up opens it only
+after the resync hold, so it normally runs at the rest rate. A key, the cap or an unseen
+switch that ends that hold first lets it run at the film's cadence or into the switch's
+blank; launch is never held and runs at whatever rate the panel is in. Over a film the
+veil is always uniform.
+
+**The resync wait is bounded.** The only wait anywhere is `HouseLights` holding its
+pixels while a non-seamless HDMI mode switch resyncs: until the observed change + 500 ms,
+or 500 ms for a change not yet seen, never past `STAGE_HOLD_CAP_MS` (2.5 s) from the
+seam, and any key ends it. The pin does not land on the `Active` frame: the film's rate
+reaches the stage up to one 2 Hz snapshot period later, so a reveal first waits up to
+`RATE_KNOWN_WAIT_MS` (600 ms, key-cancellable) for a known rate, the 500 ms expect window
+runs from when it is known, and the 2.5 s cap includes that wait. It never holds state — the stage, the first frame, `loadReady`,
+the 18 s deadline and every key are untouched — and it logs `[stage] hold kind=…
+rateWaitMs=… waitedMs=… reason=…` each time.
 
 At most **one** `rememberInfiniteTransition` per screen, and none on a surface an
 instrumentation test mounts and waits for idle on.

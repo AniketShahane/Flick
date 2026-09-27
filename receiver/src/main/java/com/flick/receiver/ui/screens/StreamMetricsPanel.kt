@@ -1,9 +1,9 @@
 package com.flick.receiver.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animate
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +23,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,10 +54,14 @@ import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.player.DiagnosticsSnapshot
 import com.flick.receiver.player.ThroughputSnapshot
+import com.flick.receiver.ui.components.FlickPresence
+import com.flick.receiver.ui.components.FlickSwap
 import com.flick.receiver.ui.components.FlickTvIconButton
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
+import com.flick.receiver.ui.components.InkText
 import com.flick.receiver.ui.components.LiveDot
+import com.flick.receiver.ui.components.LocalTvRevealHandedOff
 import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickIcons
@@ -65,6 +70,7 @@ import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
+import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
 
 /**
@@ -222,8 +228,6 @@ fun StreamMetricsPanel(
 ) {
     val unavailable = stringResource(R.string.metrics_unavailable)
     val health = streamHealth(diagnostics)
-    val healthAccent = if (health == StreamHealth.Healthy) FlickColor.Live else FlickColor.Caution
-    val healthWash = if (health == StreamHealth.Healthy) FlickColor.LiveWash else FlickColor.CautionWash
 
     // Focus enters on the close button, so the panel reads as entered and its own
     // Back handling below is reachable — `onKeyEvent` only sees keys while the
@@ -243,12 +247,15 @@ fun StreamMetricsPanel(
     val entranceSpec: FiniteAnimationSpec<Float> = FlickMotion.panelSpatial()
     val entrance = remember { Animatable(0f) }
     var entranceSettled by remember { mutableStateOf(false) }
+    val handedOff = LocalTvRevealHandedOff.current
     LaunchedEffect(entryKey, reducedMotion) {
         entranceSettled = false
         if (reducedMotion) {
             entrance.snapTo(1f)
         } else {
             entrance.snapTo(0f)
+            // Under the reveal's opaque wash the cascade would play unseen.
+            snapshotFlow { handedOff.value }.first { it }
             entrance.animateTo(1f, entranceSpec)
         }
         entranceSettled = true
@@ -295,17 +302,17 @@ fun StreamMetricsPanel(
                     overflow = TextOverflow.Ellipsis,
                 )
                 // Nothing measured yet means no claim at all (§7).
-                if (health != null) {
+                FlickPresence(value = health, overFilm = true, label = "healthPill") { h ->
                     HealthPill(
                         text = stringResource(
-                            if (health == StreamHealth.Healthy) {
+                            if (h == StreamHealth.Healthy) {
                                 R.string.metrics_health_healthy
                             } else {
                                 R.string.metrics_health_degraded
                             },
                         ),
-                        accent = healthAccent,
-                        wash = healthWash,
+                        accent = healthAccent(h),
+                        wash = healthWash(h),
                     )
                 }
             }
@@ -355,24 +362,37 @@ private fun streamHealth(s: DiagnosticsSnapshot): StreamHealth? = when {
     else -> StreamHealth.Healthy
 }
 
+private fun healthAccent(health: StreamHealth): Color =
+    if (health == StreamHealth.Healthy) FlickColor.Live else FlickColor.Caution
+
+private fun healthWash(health: StreamHealth): Color =
+    if (health == StreamHealth.Healthy) FlickColor.LiveWash else FlickColor.CautionWash
+
 @Composable
 private fun HealthPill(text: String, accent: Color, wash: Color, modifier: Modifier = Modifier) {
+    val washInk = animateColorAsState(
+        targetValue = wash,
+        animationSpec = FlickMotion.orSnap(LocalReducedMotion.current, FlickMotion.stateEffects()),
+        label = "healthWash",
+    )
     Row(
         modifier = modifier
             .clip(FlickShape.Pill)
-            .background(wash)
+            .drawBehind { drawRect(washInk.value) }
             .padding(horizontal = 9.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         LiveDot(color = accent, size = 6.dp)
-        Text(
-            text = text,
-            style = FlickType.monoEyebrow(trackingEm = 0.08f),
-            color = accent,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        FlickSwap(target = text to accent, label = "healthLabel") { (label, ink) ->
+            Text(
+                text = label,
+                style = FlickType.monoEyebrow(trackingEm = 0.08f),
+                color = ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -655,7 +675,8 @@ private fun StatCellView(cell: StatCell, modifier: Modifier = Modifier) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
+        // The number snaps; only its tint eases across a threshold.
+        InkText(
             text = cell.value,
             style = FlickType.monoTabular(sizeSp = 16, weight = FontWeight.SemiBold)
                 .copy(lineHeight = 18.sp),

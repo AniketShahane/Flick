@@ -2,7 +2,6 @@ package com.flick.receiver.ui.components
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.focusable
@@ -34,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -41,12 +41,15 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.flick.receiver.R
+import com.flick.receiver.session.SeekReconciler
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.playheadBrush
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.min
@@ -105,6 +108,67 @@ private val TwoPi = (2.0 * PI).toFloat()
  * ~650 stroked segments across an ~864 dp span, every frame the chrome is up.
  */
 private const val WAVE_SAMPLES_PER_WAVELENGTH = 6
+
+/**
+ * The landing ring's radius travel around an unfocused knob. It stays inside the
+ * timecodes on either side and clear of a focused control's ring in the row below;
+ * at the very ends of the bar it may overhang the timecode gap by a few dp while it
+ * fades.
+ */
+private val LandingRingStart = 11.dp
+private val LandingRingReach = 17.dp
+internal val LandingRingStroke = 2.dp
+
+/**
+ * Where the landing ring starts when it fires around a focused knob — the only
+ * knob a chrome-up D-pad seek can land on. The bar's own §3 ring is drawn on top
+ * of it there and occupies out to 8 dp knob + [FlickFocusRingOffset] +
+ * [FlickFocusRingWidth]/2 + [FlickFocusRingContourWidth]; adding half of
+ * [LandingRingStroke] and the landing ring's own contour gives 16.5 dp, so the
+ * landing contour begins exactly where the §3 contour ends. Starting any closer
+ * hides the ring's brightest phase under the focus ring. No row-below ring can be
+ * lit while the bar holds focus, so the shifted travel only has the timecode gap
+ * to clear.
+ */
+internal val FocusedLandingRingStart = 16.5.dp
+
+/**
+ * The landing ring's radius at travel [q], carried outward by [lift] (0 = fired
+ * around an unfocused knob, 1 = a focused one). The travel length is the same
+ * either way, so the per-frame step at the film's cadence does not change.
+ */
+internal fun landingRingRadius(
+    startPx: Float,
+    reachPx: Float,
+    focusedStartPx: Float,
+    q: Float,
+    lift: Float,
+): Float = lerp(startPx, reachPx, q) + lift * (focusedStartPx - startPx)
+
+/**
+ * Whether the falling edge of `seeking` was a real landing: the local mirror of
+ * [SeekReconciler]'s private `reported` predicate. The reconciler's deadline and a
+ * session teardown also end `seeking` without the player ever reporting the
+ * target, and neither may be acknowledged as heard.
+ */
+internal fun seekLandingConfirmed(targetMs: Long, originMs: Long, confirmedMs: Long): Boolean =
+    abs(confirmedMs - targetMs) <= SeekReconciler.TOLERANCE_MS ||
+        (if (targetMs >= originMs) confirmedMs >= targetMs else confirmedMs <= targetMs)
+
+/** One of the two landing rings, alternated so a quick second landing never cuts a live one. */
+private class RingSlot {
+    val q = Animatable(0f)
+    val a = Animatable(0f)
+
+    /** Fixed when the ring fires, so a focus change mid-ring cannot make its radius jump. */
+    var lift = 0f
+    var qJob: Job? = null
+    var aJob: Job? = null
+}
+
+private class RingCursor {
+    var next = 0
+}
 
 /**
  * The TV scrub bar (receiver-expressive-spec.md §5.3 row 2). One session clock
@@ -273,19 +337,69 @@ fun TvScrubBar(
     // — is the one moment the knob grows to meet the viewer.
     val swell = animateFloatAsState(
         targetValue = if (seeking || focused) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.focusSpatial(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.focusSpatial()),
         label = "scrubSeekSwell",
     )
     val ringPresence = animateFloatAsState(
         targetValue = if (focused) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "scrubFocusRing",
     )
     val ghost = animateFloatAsState(
         targetValue = if (lagging) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "scrubGhostFade",
     )
+
+    // The TV's acknowledgement that a seek landed. `seekTargetMs` is overwritten
+    // with the position on the same tick that ends `seeking`, so the target that
+    // counts is the one latched while the seek was still in flight.
+    val liveTarget = rememberUpdatedState(targetMs)
+    val ringSlots = remember { arrayOf(RingSlot(), RingSlot()) }
+    val ringCursor = remember { RingCursor() }
+    val ringRetireSpec = rememberUpdatedState(FlickMotion.fastStateEffects<Float>())
+    LaunchedEffect(reducedMotion) {
+        if (reducedMotion) {
+            // Switching mid-ring cancelled its fade with the old effect; it may not
+            // stay frozen on screen.
+            ringSlots.forEach { it.a.snapTo(0f) }
+            return@LaunchedEffect
+        }
+        suspend fun fire() {
+            val incoming = ringSlots[ringCursor.next]
+            val outgoing = ringSlots[1 - ringCursor.next]
+            // A ring still on screen keeps growing and only its fade is retargeted,
+            // so a second landing never makes the first one vanish in a frame.
+            if (outgoing.a.value > 0.01f) {
+                outgoing.aJob?.cancel()
+                outgoing.aJob = launch { outgoing.a.animateTo(0f, ringRetireSpec.value) }
+            }
+            incoming.qJob?.cancel()
+            incoming.aJob?.cancel()
+            incoming.q.snapTo(0f)
+            incoming.a.snapTo(0f)
+            incoming.lift = ringPresence.value
+            incoming.qJob = launch { incoming.q.animateTo(1f, FlickMotion.tvBurstReach()) }
+            incoming.aJob = launch { incoming.a.animateTo(0f, FlickMotion.tvBurstAlpha()) }
+            ringCursor.next = 1 - ringCursor.next
+        }
+        var was = currentSeeking.value
+        var origin = liveConfirmed.value
+        var target = liveTarget.value
+        snapshotFlow { Triple(currentSeeking.value, liveTarget.value, liveConfirmed.value) }
+            .collect { (s, t, c) ->
+                if (s && !was) origin = c
+                if (s) target = t
+                if (was && !s && seekLandingConfirmed(target, origin, c)) fire()
+                was = s
+            }
+    }
+    val landingStrokes = with(LocalDensity.current) {
+        remember(this) {
+            Stroke(width = LandingRingStroke.toPx() + FlickFocusRingContourWidth.toPx() * 2f) to
+                Stroke(width = LandingRingStroke.toPx())
+        }
+    }
 
     // Hoisted: the played fill redraws on every position tick, and a gradient
     // rebuilt inside the draw lambda would allocate on each one. The brush
@@ -300,7 +414,7 @@ fun TvScrubBar(
             // The seeking halo is deliberately NOT budgeted for — see the swell.
             .height(20.dp)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .focusProperties { canFocus = interactive }
+            .focusProperties { if (!interactive) canFocus = false }
             .focusable(interactionSource = interaction)
             .semantics {
                 contentDescription = accessibilityLabel
@@ -408,6 +522,32 @@ fun TvScrubBar(
 
         drawCircle(FlickColor.FocusRingSoft, radius = haloR, center = Offset(head, cy))
         drawCircle(Color.White, radius = knobR, center = Offset(head, cy))
+
+        for (slot in ringSlots) {
+            val a = slot.a.value
+            if (a <= 0.01f) continue
+            val ringR = landingRingRadius(
+                startPx = LandingRingStart.toPx(),
+                reachPx = LandingRingReach.toPx(),
+                focusedStartPx = FocusedLandingRingStart.toPx(),
+                q = slot.q.value,
+                lift = slot.lift,
+            )
+            drawCircle(
+                color = FlickColor.FocusRingContour,
+                radius = ringR,
+                center = Offset(head, cy),
+                alpha = a,
+                style = landingStrokes.first,
+            )
+            drawCircle(
+                color = FlickColor.Spark,
+                radius = ringR,
+                center = Offset(head, cy),
+                alpha = a,
+                style = landingStrokes.second,
+            )
+        }
 
         // The §3 ring, concentric with the knob and read in the draw phase like
         // everything else here. It carries the same dark contour the detached ring

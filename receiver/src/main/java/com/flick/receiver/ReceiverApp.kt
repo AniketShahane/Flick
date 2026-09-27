@@ -20,8 +20,8 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -33,13 +33,12 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -47,25 +46,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.res.ResourcesCompat
 import androidx.lifecycle.Lifecycle
@@ -114,12 +111,24 @@ import com.flick.receiver.player.reducedSubtitleTextSizeSp
 import com.flick.receiver.player.silentAudioNoticePhase
 import com.flick.receiver.player.surfaceTurnTransform
 import com.flick.receiver.session.MediaStage
+import com.flick.receiver.session.ReceiverErrorFace
 import com.flick.receiver.session.SessionController
 import com.flick.receiver.summon.ForegroundSummoner
 import com.flick.receiver.summon.SummonPolicy
+import com.flick.receiver.ui.components.FilmDimReading
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
+import com.flick.receiver.ui.components.HouseLights
+import com.flick.receiver.ui.components.LocalShellRetained
+import com.flick.receiver.ui.components.RateSample
+import com.flick.receiver.ui.components.RETAINED_SHELL_LIMIT_MS
+import com.flick.receiver.ui.components.REVEAL_SETTLE_FALLBACK_MS
+import com.flick.receiver.ui.components.ShellGate
+import com.flick.receiver.ui.components.freshRevealRate
+import com.flick.receiver.ui.components.houseStageFor
+import com.flick.receiver.ui.components.rememberDisplayCadence
+import com.flick.receiver.ui.components.standbySurfaceInteractive
 import com.flick.receiver.ui.screens.ErrorScreen
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.MetricsOverlay
@@ -136,14 +145,13 @@ import com.flick.receiver.ui.screens.rememberDiagnosticsLines
 import com.flick.receiver.ui.screens.videoResolutionClass
 import com.flick.receiver.ui.screens.videoResolutionLines
 import com.flick.receiver.ui.theme.FlickColor
-import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
-import com.flick.receiver.ui.theme.FlickShape
-import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.components.RenameLabelDialog
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
+import com.flick.receiver.ui.theme.idleAmbientBackground
+import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
@@ -152,6 +160,7 @@ import com.flick.receiver.util.keepScreenOnWhilePresenting
 import com.flick.receiver.util.preferredWindowRefreshRate
 import com.flick.receiver.util.refreshRateHintDelayMs
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
@@ -302,13 +311,63 @@ internal fun receiverPlaybackGesturesEnabled(
     panelOpen: Boolean,
 ): Boolean = playbackActive && !panelOpen
 
+/** The still face the non-video shell shows: standby, or a fault. */
+internal sealed interface ShellFace {
+    data object Standby : ShellFace
+    data class Fault(val face: ReceiverErrorFace, val beforeReady: Boolean) : ShellFace
+}
+
+internal fun shellFaceFor(stage: MediaStage): ShellFace? = when (stage) {
+    MediaStage.None -> ShellFace.Standby
+    is MediaStage.Error -> ShellFace.Fault(stage.face, stage.beforeReady)
+    else -> null
+}
+
+private enum class ShellKind { Standby, Fault }
+
+private fun ShellFace.kind(): ShellKind = when (this) {
+    ShellFace.Standby -> ShellKind.Standby
+    is ShellFace.Fault -> ShellKind.Fault
+}
+
 /**
- * Handshake card width (receiver-expressive-spec.md §5.2). Set by the headline it carries:
- * at 380 dp "<device> is flicking <film> (year)" wrapped and left the year alone on the
- * second line. This leaves ~518 dp of text column, which holds a film name and year of
- * roughly thirty characters on one line; longer ones wrap inside the name instead.
+ * One face in the shell. [epoch] changes whenever a face returns after a stage
+ * without one, so a return to standby composes fresh rather than reviving the face
+ * that was left under the curtain.
  */
-private val HANDSHAKE_CARD_WIDTH = 560.dp
+private data class ShellSlot(
+    val face: ShellFace,
+    val standby: StandbyState?,
+    val epoch: Int,
+    val interactive: Boolean,
+)
+
+/**
+ * Written only from a SideEffect and ON_STOP, and never observed: the edge frame is detected by
+ * comparing it against the live stage, which is what lets the outgoing face be
+ * retained on the very frame its stage ends.
+ */
+private class ShellMemory {
+    var lastLiveFace: ShellFace? = null
+    var lastStandby: StandbyState? = null
+    var epoch = 0
+    var retained: ShellSlot? = null
+
+    /**
+     * Set at ON_STOP, cleared by the first composition made while started. Frames
+     * are paused in between but composition is not, so a transition started then
+     * would freeze on its first frame and replay on resume.
+     */
+    var offstage = false
+
+    /**
+     * Rebuilds the shell with no transition; bumped only when the face, its epoch or
+     * the standby surface changed while offstage, so an unchanged face keeps its
+     * state and focus across a stop/start.
+     */
+    var shellKey = 0
+    var keyedIdentity: Any? = null
+}
 
 /** Hoisted so the ordinal↔enum round trip does not allocate on every recomposition. */
 private val SUBTITLE_SIZES = SubtitleSize.values()
@@ -388,6 +447,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // lifts, so the notice never outlives the state it describes.
     var resumeFailed by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf(DiagnosticsSnapshot.EMPTY) }
+    var rateSample by remember { mutableStateOf<RateSample?>(null) }
     // Fed from the existing ~2 Hz diagnostics arm below — the histogram never
     // adds a timer of its own.
     val throughputHistory = remember { ThroughputHistory() }
@@ -450,6 +510,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // goes dead (no focusable → key events would otherwise be unrouted).
     val rootFocus = remember { FocusRequester() }
 
+    val cadence = rememberDisplayCadence(window)
+    // Any key-down ends a stage's resync wait; the key itself is dispatched as normal.
+    val houseKeys = remember { MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
+    // Read here because this sits above FlickTvTheme, where LocalReducedMotion is not provided.
+    val shellReducedMotion = rememberReducedMotion()
+    val shellMemory = remember { ShellMemory() }
+    val filmDimReading = remember { FilmDimReading() }
+    var shellRelease by remember { mutableIntStateOf(0) }
+    var pictureUpEpoch by remember { mutableIntStateOf(0) }
+    var pictureSettledCastId by remember { mutableStateOf<String?>(null) }
+
     // Player lifecycle (preserved): create on ON_START, release decoder on ON_STOP,
     // terminal release + control server + NSD teardown on dispose (no leaks).
     DisposableEffect(lifecycleOwner) {
@@ -501,6 +572,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     bindingGate.onBackground()
                     pairing.onBackground()
                     val teardown = session.forceLocalTeardown()
+                    shellMemory.offstage = true
                     // The socket is NOT closed below any more, so this terminal
                     // actually reaches the phone instead of racing the close.
                     teardown.castId?.let { server.sendTerminal(it, com.flick.receiver.net.CastFailureCode.TV_BACKGROUNDED, false, beforeReady = teardown.beforeReady) }
@@ -669,6 +741,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 if (frame.phase == PlaybackPhase.Error) session.onFatalPlaybackError()
                 if (tick % 5 == 0) {
                     snapshot = controller.snapshot()
+                    // Tagged in the same tick: the player resets the rate as the
+                    // stage turns Preparing, so a reading under a cast's own ID is
+                    // never the previous film's.
+                    rateSample = RateSample(
+                        castId = when (val s = session.stage) {
+                            is MediaStage.Preparing -> s.castId
+                            is MediaStage.Active -> s.castId
+                            else -> null
+                        },
+                        frameRate = snapshot.frameRate,
+                    )
                     // Two ticks per histogram bar, so 40 bars really do span the
                     // 40 s the metrics panel's eyebrow promises.
                     throughputHistory.append(snapshot.bitrateEstimateBps)
@@ -692,6 +775,27 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val frame by playbackFlow.collectAsState()
     val stage = session.stage
     val surfaceMode = playerSurfaceMode(stage)
+
+    // A film is on screen only once the house lights have lifted off it: until then
+    // the clocks below would run behind the veil or inside the resync blank.
+    val activeCastId = (stage as? MediaStage.Active)?.castId
+    val pictureSettled = activeCastId != null && activeCastId == pictureSettledCastId
+    val filmVisible = stage is MediaStage.Active &&
+        surfaceMode == PlayerSurfaceMode.VisiblePlayback &&
+        pictureSettled
+    val onPictureUp = remember { { pictureUpEpoch++; Unit } }
+    val onPictureSettled = remember {
+        { pictureSettledCastId = (session.stage as? MediaStage.Active)?.castId }
+    }
+    LaunchedEffect(activeCastId) {
+        if (activeCastId != null) {
+            delay(REVEAL_SETTLE_FALLBACK_MS)
+            if (pictureSettledCastId != activeCastId) {
+                FlickLog.i("stage", "reveal settle fallback")
+                pictureSettledCastId = activeCastId
+            }
+        }
+    }
 
     // Let the session push TV→phone `error` frames through the live control
     // socket (preflight/backgrounded/fatal → phone S12 instead of a frozen UI).
@@ -730,7 +834,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // do nothing about — the tile the hint points at can still be found later.
     val silentAudioPhase = silentAudioNoticePhase(
         mimeType = controller.silentAudioMimeType,
-        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        filmVisible = filmVisible,
         qualityShowing = showQuality,
         panelOpen = openPanel != PlaybackPanel.None,
         alreadyShown = silentAudioNoticeShown,
@@ -769,7 +873,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // end of the notice's life. Reading the live phase here and latching only the
     // part that has to outlive it leaves no frame where the band is unclaimed.
     val silentAudioShowing = silentAudioPhase == SilentAudioNoticePhase.Showing
-    val bandHandoverMs = if (LocalReducedMotion.current) 0L else FlickMotion.BAND_HANDOVER_MS.toLong()
+    val bandHandoverMs = if (shellReducedMotion) 0L else FlickMotion.BAND_HANDOVER_MS.toLong()
     var silentAudioBandClaim by remember { mutableStateOf(false) }
     LaunchedEffect(silentAudioShowing, bandHandoverMs) {
         if (silentAudioShowing) {
@@ -793,7 +897,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     )
     val bandSlotPhase = bandNoticePhase(
         notice = bandNotice,
-        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        filmVisible = filmVisible,
         qualityShowing = showQuality,
         bandClaimed = silentAudioHoldsBand,
         panelOpen = openPanel != PlaybackPanel.None,
@@ -832,7 +936,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         hint = controller.orientationHint,
         // Not merely Active: the reading lands while the cast is still starting,
         // and the clock may not run behind the connecting screen.
-        filmVisible = stage is MediaStage.Active && surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        filmVisible = filmVisible,
         qualityShowing = showQuality,
         // The band's occupancy, not any card's phase: a card that is still fading
         // out is still on the glass, and this is the only surface where all three
@@ -875,9 +979,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         }
     }
 
-    // Quality flourish (T8): show briefly whenever a fresh session becomes active.
-    LaunchedEffect(stage) {
+    // Quality flourish (T8): show briefly once a fresh session's picture is up.
+    LaunchedEffect(stage, pictureSettled) {
         if (stage is MediaStage.Active) {
+            if (!pictureSettled) return@LaunchedEffect
             showQuality = true
             delay(4500L)
             showQuality = false
@@ -898,7 +1003,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         if (!remoteSeekGestureActive && remoteSeekDeltaMs != null) {
             delay(700L)
             remoteSeekVisible = false
-            delay(200L)
+            delay(FlickMotion.SEEK_DELTA_CLEAR_MS)
             if (remoteSeekGestureActive) return@LaunchedEffect
             remoteSeekDeltaMs = null
             remoteSeekHeld = false
@@ -941,7 +1046,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // spans 40 s and a track list has to be scannable — and now it must: the panel
     // has replaced the transport, so a countdown firing underneath it would take
     // away the bar the viewer expects to come back to.
-    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel, chromeVisible) {
+    //
+    // Re-armed once more when the picture comes up, so a countdown begun under the
+    // veil or the resync blank does not take the chrome away as the film appears.
+    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel, chromeVisible, pictureUpEpoch) {
         if (!chromeVisible) return@LaunchedEffect
         val resting = frame.phase == PlaybackPhase.Playing || frame.phase == PlaybackPhase.Paused
         if (!resting || session.seeking || openPanel != PlaybackPanel.None) return@LaunchedEffect
@@ -1006,6 +1114,19 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         onDispose { ScreenWakeHelper.release(window) }
     }
 
+    val revealRate = remember {
+        { freshRevealRate((session.stage as? MediaStage.Active)?.castId, rateSample) }
+    }
+    // Read from state, not from [requestedRefreshRate], so it cannot lag a composition.
+    val pinnedRate = remember {
+        {
+            preferredWindowRefreshRate(
+                presentingVideo = playerSurfaceMode(session.stage) == PlayerSurfaceMode.VisiblePlayback,
+                contentFrameRate = snapshot.frameRate,
+            )
+        }
+    }
+
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
 
     // Every %1$s on the connecting, playback, buffering and error surfaces is about the
@@ -1050,6 +1171,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
+        if (event.action == AndroidKeyEvent.ACTION_DOWN) houseKeys.tryEmit(Unit)
         val button = event.toTvRemoteButton()
         val eventType = when (event.action) {
             AndroidKeyEvent.ACTION_DOWN -> TvRemoteEventType.Down
@@ -1229,6 +1351,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         onSelectVideoRotation = { controller.setVideoRotation(it) },
                         // Same terminal path as Back on the playback surface.
                         onEndSession = { if (!server.stopLocalCast()) session.backToStandby() },
+                        dimReading = filmDimReading,
                     ) { playerSurface() }
                     // The dev HUD may only paint over bare film. The chrome now owns
                     // the top-left corner (source pill above the focusable END
@@ -1238,8 +1361,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     // Stream metrics panel is the read (spec §5.5).
                     AnimatedVisibility(
                         visible = metricsEnabled && !chromeVisible,
-                        enter = fadeIn(FlickMotion.chromeFadeIn()),
-                        exit = fadeOut(FlickMotion.chromeFadeOut()),
+                        enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
+                        // The pills slide in from above the frame and cover only the plate's top rows,
+                        // so the HUD leaves into bare film like any other overlay (FILM_EXIT_MS). The
+                        // brief overlap mirrors the hide, where this plate's fade-in already crosses the
+                        // pills' exit.
+                        exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.filmExit())),
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(safeArea),
@@ -1249,244 +1376,355 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 }
 
                 is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) {
-                    ConnectingScreen(
-                        deviceLabel = castDeviceLabel,
-                        title = session.title,
-                    ) { playerSurface() }
+                    ConnectingScreen { playerSurface() }
                 }
 
-                // The screen offers no retry: a failed v2 cast must get a fresh
-                // cast ID and media token, and only the sender can mint those.
-                is MediaStage.Error -> ErrorScreen(
-                    face = stage.face,
-                    deviceLabel = castDeviceLabel,
-                    onDismiss = { session.backToStandby() },
-                    beforeReady = stage.beforeReady,
-                )
+                else -> Unit
+            }
 
-                MediaStage.None -> {
-                    // Shared with the foreground gate above, so what the app is
-                    // willing to open a code for and what it actually draws can
-                    // never be two different answers — see [standbySurfaceFor].
-                    val standbySurface = standbySurfaceFor(
+            // The still faces: standby, and the fault card. They live outside
+            // `when (stage)` so the face a cast arrives over is retained — frozen,
+            // unfocusable and silent — under the closing house lights until they
+            // report it dark, instead of being cut on the stage's first frame. A
+            // retained pair face keeps drawing its frozen code and QR after
+            // pairingSurfaceRendered has gone false: until onLightsDown (LIGHTS_DOWN_MS
+            // on an uninterrupted close) and never longer than RETAINED_SHELL_LIMIT_MS.
+            val liveFace = shellFaceFor(stage)
+            // Shared with the foreground gate above, so what the app is willing to
+            // open a code for and what it actually draws can never be two different
+            // answers — see [standbySurfaceFor].
+            val standbyState = if (stage is MediaStage.None) {
+                StandbyState(
+                    surface = standbySurfaceFor(
                         showSettings = showSettings,
                         surface = pairingSnapshot.surface,
                         pairedCount = pairingSnapshot.pairedCount,
+                    ),
+                    code = pairCode,
+                    codeExpiresAtElapsedMs =
+                        (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
+                    qrPayload = qrPayload,
+                    confirming = pairingSnapshot.surface as? PairingSurface.Confirming,
+                )
+            } else {
+                null
+            }
+            // Read so that releasing the retained face recomposes the shell; the
+            // memory itself is not observable.
+            @Suppress("UNUSED_VARIABLE")
+            val releaseTick = shellRelease
+            // Observed so ON_START always recomposes the shell and clears [ShellMemory.offstage].
+            val started = lifecycleStarted
+            val offstage = shellMemory.offstage
+            val epochNow = if (liveFace != null && shellMemory.lastLiveFace == null) {
+                shellMemory.epoch + 1
+            } else {
+                shellMemory.epoch
+            }
+            val retainedNow: ShellSlot? = when {
+                liveFace != null -> null
+                offstage -> null
+                shellMemory.retained != null -> shellMemory.retained
+                else -> shellMemory.lastLiveFace?.let {
+                    ShellSlot(it, shellMemory.lastStandby, shellMemory.epoch, interactive = false)
+                }
+            }
+            val slot = liveFace?.let { ShellSlot(it, standbyState, epochNow, interactive = true) } ?: retainedNow
+            val slotIdentity = slot?.let { Triple(it.face.kind(), it.epoch, it.standby?.surface) }
+            val shellKeyNow = if (offstage && slotIdentity != shellMemory.keyedIdentity) {
+                shellMemory.shellKey + 1
+            } else {
+                shellMemory.shellKey
+            }
+            SideEffect {
+                if (liveFace != null) {
+                    shellMemory.lastLiveFace = liveFace
+                    if (standbyState != null) shellMemory.lastStandby = standbyState
+                    shellMemory.retained = null
+                } else {
+                    shellMemory.lastLiveFace = null
+                    shellMemory.retained = retainedNow
+                }
+                shellMemory.epoch = epochNow
+                shellMemory.shellKey = shellKeyNow
+                shellMemory.keyedIdentity = slotIdentity
+                if (offstage && started) shellMemory.offstage = false
+                // After this frame's seam was planned, so one film's dim never seeds a later one.
+                if (stage !is MediaStage.Active) filmDimReading.drawn = 0f
+            }
+            val onLightsDown = remember {
+                {
+                    shellMemory.retained = null
+                    shellRelease++
+                    Unit
+                }
+            }
+            // A curtain interrupted before it reports dark must not leave a frozen face
+            // composed for the rest of the cast.
+            LaunchedEffect(retainedNow != null) {
+                if (retainedNow != null) {
+                    delay(RETAINED_SHELL_LIMIT_MS)
+                    onLightsDown()
+                }
+            }
+            if (slot != null) key(shellKeyNow) {
+                val shellSwap = if (reducedMotion) {
+                    FlickMotion.cut()
+                } else {
+                    ContentTransform(
+                        targetContentEnter = fadeIn(FlickMotion.stateEffects()),
+                        initialContentExit = fadeOut(FlickMotion.fastStateEffects()),
+                        sizeTransform = null,
                     )
-                    val standbyState = StandbyState(
-                        surface = standbySurface,
-                        code = pairCode,
-                        codeExpiresAtElapsedMs =
-                            (pairingSnapshot.surface as? PairingSurface.Open)?.expiresAtElapsedMs,
-                        qrPayload = qrPayload,
-                        confirming = pairingSnapshot.surface as? PairingSurface.Confirming,
-                    )
-                    // Only non-video standby surfaces animate. The outgoing subtree
-                    // is immediately removed from focus/semantics while it finishes
-                    // its exit, so D-pad input cannot reach stale controls.
-                    //
-                    // `contentKey` is the surface alone: a code rotation must update
-                    // the visible pair screen in place rather than cross-fade the
-                    // screen with itself.
-                    val standbyMotion = rememberStandbyMotion()
-                    AnimatedContent(
-                        targetState = standbyState,
-                        contentKey = { it.surface },
-                        transitionSpec = {
-                            if (reducedMotion) {
-                                fadeIn(tween(durationMillis = 0))
-                                    .togetherWith(fadeOut(tween(durationMillis = 0)))
-                            } else {
-                                standbyTransform(
-                                    from = initialState.surface,
-                                    to = targetState.surface,
-                                    motion = standbyMotion,
-                                )
-                            }
-                        },
-                        label = "standbySurface",
-                    ) { rendered ->
-                        val renderedSurface = rendered.surface
-                        val interactive = renderedSurface == standbySurface
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .focusProperties { canFocus = interactive }
-                                .then(
-                                    if (interactive) Modifier
-                                    else Modifier.clearAndSetSemantics { },
-                                ),
-                        ) {
-                            when (renderedSurface) {
-                                StandbySurface.Settings -> SettingsScreen(
-                                    tvName = tvName,
-                                    pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
-                                        else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
-                                    pairedPhones = pairingSnapshot.devices,
-                                    // Through the server, not straight to the
-                                    // manager: forgetting the phone that is
-                                    // connected right now must also end its
-                                    // session, and only the server owns that.
+                }
+                AnimatedContent(
+                    targetState = slot,
+                    contentKey = { it.face.kind() to it.epoch },
+                    transitionSpec = { shellSwap },
+                    label = "shell",
+                ) { shown ->
+                    val hostInteractive = shown.interactive &&
+                        transition.targetState == EnterExitState.Visible
+                    ShellGate(hostInteractive) {
+                        CompositionLocalProvider(LocalShellRetained provides !shown.interactive) {
+                            when (val face = shown.face) {
+                                ShellFace.Standby -> {
+                                    // Only non-video standby surfaces animate. The outgoing subtree
+                                    // is immediately removed from focus/semantics while it finishes
+                                    // its exit, so D-pad input cannot reach stale controls.
                                     //
-                                    // Reaching zero phones closes this screen for
-                                    // the same reason Forget all does. It is not
-                                    // only that there is no list left to show:
-                                    // `PairingManager.forget` takes the Forget-all
-                                    // path when the store empties, which opens a
-                                    // live pairing code, and Settings outranks Pair
-                                    // in the surface router above — so leaving it open
-                                    // would leave a code that is valid, rotating
-                                    // and accepting attempts while nothing on
-                                    // screen renders it. Closing hands the router
-                                    // to `pairedCount == 0 -> Pair`, which does.
-                                    // The count is read from the store rather than
-                                    // from `pairingSnapshot`, which is a frame
-                                    // behind this press.
-                                    onForgetPhone = { keyId ->
-                                        val forgotten = server.forget(keyId)
-                                        if (forgotten && pairing.pairedCount() == 0) leaveSettings()
-                                        forgotten
-                                    },
-                                    // Straight to the manager, NOT through the
-                                    // server: a rename changes the label and
-                                    // nothing else, so there is no session to
-                                    // revoke — and `ControlServer.forget` takes the
-                                    // manager monitor before `serverLock`, so
-                                    // routing a manager write back through the
-                                    // server is the lock order that deadlocks. The
-                                    // server is TOLD the new name once that write
-                                    // has returned, by a call that takes no lock;
-                                    // see the commit below.
-                                    //
-                                    onRenamePhone = { keyId ->
-                                        pairing.pairedDevices()
-                                            .firstOrNull { it.keyId == keyId }
-                                            ?.let {
-                                                reopenPairingAfterRename = false
-                                                renameTarget = RenameTarget.Phone(keyId, it.label)
+                                    // `contentKey` is the surface alone: a code rotation must update
+                                    // the visible pair screen in place rather than cross-fade the
+                                    // screen with itself.
+                                    val standbyMotion = rememberStandbyMotion()
+                                    // One bed under both surfaces: each paints its own opaque
+                                    // bed inside its fading layer, and with nothing beneath
+                                    // them the crossfade dips toward bare Canvas mid-swap.
+                                    AnimatedContent(
+                                        targetState = shown.standby!!,
+                                        modifier = Modifier.fillMaxSize().idleAmbientBackground(),
+                                        contentKey = { it.surface },
+                                        transitionSpec = {
+                                            if (reducedMotion) {
+                                                FlickMotion.cut()
+                                            } else {
+                                                standbyTransform(
+                                                    from = initialState.surface,
+                                                    to = targetState.surface,
+                                                    motion = standbyMotion,
+                                                )
                                             }
-                                    },
-                                    metricsEnabled = metricsEnabled,
-                                    onRename = {
-                                        reopenPairingAfterRename = false
-                                        renameTarget = RenameTarget.Tv(tvName)
-                                    },
-                                    onToggleMetrics = { metricsEnabled = !metricsEnabled },
-                                    onForgetAll = {
-                                        if (server.forgetAllPairings()) leaveSettings()
-                                    },
-                                    onDone = leaveSettings,
-                                    diagnosticsVisible = showDiagnostics,
-                                    // Subscribed inside this lambda, not at the root
-                                    // of this composable — see [rememberDiagnosticsLines].
-                                    diagnostics = rememberDiagnosticsLines(showDiagnostics),
-                                    onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
-                                    openForCasts = openRow,
-                                    onOpenForCasts = { activity?.let(summoner::onRowPressed) },
-                                    onClearDiagnostics = { FlickLog.clear() },
-                                )
+                                        },
+                                        label = "standbySurface",
+                                    ) { rendered ->
+                                        val renderedSurface = rendered.surface
+                                        val interactive = standbySurfaceInteractive(
+                                            renderedSurface,
+                                            standbyState?.surface,
+                                            hostInteractive,
+                                        )
+                                        ShellGate(interactive) {
+                                            when (renderedSurface) {
+                                                StandbySurface.Settings -> SettingsScreen(
+                                                    tvName = tvName,
+                                                    pairedSummary = if (pairingSnapshot.pairedCount == 0) stringResource(R.string.settings_paired_none)
+                                                        else stringResource(R.string.settings_paired_count, pairingSnapshot.pairedCount),
+                                                    pairedPhones = pairingSnapshot.devices,
+                                                    // Through the server, not straight to the
+                                                    // manager: forgetting the phone that is
+                                                    // connected right now must also end its
+                                                    // session, and only the server owns that.
+                                                    //
+                                                    // Reaching zero phones closes this screen for
+                                                    // the same reason Forget all does. It is not
+                                                    // only that there is no list left to show:
+                                                    // `PairingManager.forget` takes the Forget-all
+                                                    // path when the store empties, which opens a
+                                                    // live pairing code, and Settings outranks Pair
+                                                    // in the surface router above — so leaving it open
+                                                    // would leave a code that is valid, rotating
+                                                    // and accepting attempts while nothing on
+                                                    // screen renders it. Closing hands the router
+                                                    // to `pairedCount == 0 -> Pair`, which does.
+                                                    // The count is read from the store rather than
+                                                    // from `pairingSnapshot`, which is a frame
+                                                    // behind this press.
+                                                    onForgetPhone = { keyId ->
+                                                        val forgotten = server.forget(keyId)
+                                                        if (forgotten && pairing.pairedCount() == 0) leaveSettings()
+                                                        forgotten
+                                                    },
+                                                    // Straight to the manager, NOT through the
+                                                    // server: a rename changes the label and
+                                                    // nothing else, so there is no session to
+                                                    // revoke — and `ControlServer.forget` takes the
+                                                    // manager monitor before `serverLock`, so
+                                                    // routing a manager write back through the
+                                                    // server is the lock order that deadlocks. The
+                                                    // server is TOLD the new name once that write
+                                                    // has returned, by a call that takes no lock;
+                                                    // see the commit below.
+                                                    //
+                                                    onRenamePhone = { keyId ->
+                                                        pairing.pairedDevices()
+                                                            .firstOrNull { it.keyId == keyId }
+                                                            ?.let {
+                                                                reopenPairingAfterRename = false
+                                                                renameTarget = RenameTarget.Phone(keyId, it.label)
+                                                            }
+                                                    },
+                                                    metricsEnabled = metricsEnabled,
+                                                    onRename = {
+                                                        reopenPairingAfterRename = false
+                                                        renameTarget = RenameTarget.Tv(tvName)
+                                                    },
+                                                    onToggleMetrics = { metricsEnabled = !metricsEnabled },
+                                                    onForgetAll = {
+                                                        if (server.forgetAllPairings()) leaveSettings()
+                                                    },
+                                                    onDone = leaveSettings,
+                                                    diagnosticsVisible = showDiagnostics,
+                                                    // Subscribed inside this lambda, not at the root
+                                                    // of this composable — see [rememberDiagnosticsLines].
+                                                    diagnostics = rememberDiagnosticsLines(showDiagnostics),
+                                                    onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
+                                                    openForCasts = openRow,
+                                                    onOpenForCasts = { activity?.let(summoner::onRowPressed) },
+                                                    onClearDiagnostics = { FlickLog.clear() },
+                                                )
 
-                                StandbySurface.Pair -> PairScreen(
-                                    tvName = tvName,
-                                    code = rendered.code,
-                                    qrPayload = rendered.qrPayload,
-                                    host = boundHost ?: "",
-                                    port = boundPort,
-                                    networkFace = pairNetworkFace(
-                                        hasSiteLocalIpv4 = lanHost != null,
-                                        hasAnyIpv4 = anyIpv4,
-                                        boundPort = boundPort,
-                                    ),
-                                    discoverable = nsd.advertising,
-                                    bindUptimeSec = bindUptimeSec,
-                                    rebindCount = rebindCount,
-                                    lastTeardown = lastTeardown,
-                                    codeExpiresAtElapsedMs = rendered.codeExpiresAtElapsedMs,
-                                    // Read from the live snapshot rather than the
-                                    // captured `rendered`, exactly as the Settings
-                                    // branch above reads its paired count: the seal
-                                    // has to show on the frame it lands.
-                                    pairingSealed = pairingSnapshot.surface is PairingSurface.Sealed,
-                                    // The physical-presence half of the ceiling.
-                                    // Nothing reachable over the LAN can call this;
-                                    // it takes a button press in the room.
-                                    // The Boolean was discarded, which left the one key
-                                    // a sealed surface offers inert forever while the
-                                    // seal promised pairing would reopen here. False is
-                                    // always the refused durable write: `!surfaceSealed`
-                                    // is unreachable from a key only a seal draws.
-                                    onResumePairing = { resumeFailed = !pairing.resumePairing() },
-                                    resumeFailed = resumeFailed,
-                                    saveFailedLabel = pairingSnapshot.saveFailedLabel,
-                                    lockedRetryAtElapsedMs =
-                                        (pairingSnapshot.surface as? PairingSurface.Locked)?.retryAtElapsedMs,
-                                    // Snapshotted, so the card finishes its exit
-                                    // still naming the phone it was asking about.
-                                    confirmDeviceLabel = rendered.confirming?.deviceLabel,
-                                    confirmExpiresAtElapsedMs = rendered.confirming?.expiresAtElapsedMs,
-                                    // Straight to the manager, NOT through the
-                                    // server: there is no lease to revoke or install
-                                    // here — the socket that asked is waiting on the
-                                    // decision itself — and `ControlServer.forget`
-                                    // takes the manager monitor before `serverLock`,
-                                    // so routing a manager write back through the
-                                    // server is the lock order that deadlocks.
-                                    //
-                                    // Nothing on the LAN can reach either of these.
-                                    // That is the whole point: the QR carries the
-                                    // live code, so being able to read the screen is
-                                    // enough to submit a correct one — and pressing a
-                                    // button on the television is not.
-                                    onAllowPair = { pairing.allowPendingPair() },
-                                    onDenyPair = { pairing.denyPendingPair() },
-                                    onRename = {
-                                        reopenPairingAfterRename = true
-                                        pairing.closeSurface()
-                                        renameTarget = RenameTarget.Tv(tvName)
-                                    },
-                                    // With nothing paired the router never reaches
-                                    // Idle, so this is the only route into Settings
-                                    // on a factory-fresh TV.
-                                    //
-                                    // The pairing surface comes down on the way in
-                                    // and goes back up on the way out. The latch is
-                                    // unconditional because every state that renders
-                                    // this screen is owed one back: an Open code, a
-                                    // Locked countdown that must resume showing
-                                    // itself, and the standby-with-no-phones case
-                                    // this screen exists to resolve. Which of them
-                                    // it is, is the manager's decision, not this
-                                    // lambda's — `requestOpen` republishes the
-                                    // lockout if one is still running, and refuses
-                                    // outright while the surface is sealed.
-                                    onOpenSettings = {
-                                        reopenPairingOnExit = true
-                                        pairing.closeSurface()
-                                        showSettings = true
-                                    },
-                                )
+                                                StandbySurface.Pair -> PairScreen(
+                                                    tvName = tvName,
+                                                    code = rendered.code,
+                                                    qrPayload = rendered.qrPayload,
+                                                    host = boundHost ?: "",
+                                                    port = boundPort,
+                                                    networkFace = pairNetworkFace(
+                                                        hasSiteLocalIpv4 = lanHost != null,
+                                                        hasAnyIpv4 = anyIpv4,
+                                                        boundPort = boundPort,
+                                                    ),
+                                                    discoverable = nsd.advertising,
+                                                    bindUptimeSec = bindUptimeSec,
+                                                    rebindCount = rebindCount,
+                                                    lastTeardown = lastTeardown,
+                                                    codeExpiresAtElapsedMs = rendered.codeExpiresAtElapsedMs,
+                                                    // Read from the live snapshot rather than the
+                                                    // captured `rendered`, exactly as the Settings
+                                                    // branch above reads its paired count: the seal
+                                                    // has to show on the frame it lands.
+                                                    pairingSealed = pairingSnapshot.surface is PairingSurface.Sealed,
+                                                    // The physical-presence half of the ceiling.
+                                                    // Nothing reachable over the LAN can call this;
+                                                    // it takes a button press in the room.
+                                                    // The Boolean was discarded, which left the one key
+                                                    // a sealed surface offers inert forever while the
+                                                    // seal promised pairing would reopen here. False is
+                                                    // always the refused durable write: `!surfaceSealed`
+                                                    // is unreachable from a key only a seal draws.
+                                                    onResumePairing = { resumeFailed = !pairing.resumePairing() },
+                                                    resumeFailed = resumeFailed,
+                                                    saveFailedLabel = pairingSnapshot.saveFailedLabel,
+                                                    lockedRetryAtElapsedMs =
+                                                        (pairingSnapshot.surface as? PairingSurface.Locked)?.retryAtElapsedMs,
+                                                    // Snapshotted, so the card finishes its exit
+                                                    // still naming the phone it was asking about.
+                                                    confirmDeviceLabel = rendered.confirming?.deviceLabel,
+                                                    confirmExpiresAtElapsedMs = rendered.confirming?.expiresAtElapsedMs,
+                                                    // Straight to the manager, NOT through the
+                                                    // server: there is no lease to revoke or install
+                                                    // here — the socket that asked is waiting on the
+                                                    // decision itself — and `ControlServer.forget`
+                                                    // takes the manager monitor before `serverLock`,
+                                                    // so routing a manager write back through the
+                                                    // server is the lock order that deadlocks.
+                                                    //
+                                                    // Nothing on the LAN can reach either of these.
+                                                    // That is the whole point: the QR carries the
+                                                    // live code, so being able to read the screen is
+                                                    // enough to submit a correct one — and pressing a
+                                                    // button on the television is not.
+                                                    onAllowPair = { pairing.allowPendingPair() },
+                                                    onDenyPair = { pairing.denyPendingPair() },
+                                                    onRename = {
+                                                        reopenPairingAfterRename = true
+                                                        pairing.closeSurface()
+                                                        renameTarget = RenameTarget.Tv(tvName)
+                                                    },
+                                                    // With nothing paired the router never reaches
+                                                    // Idle, so this is the only route into Settings
+                                                    // on a factory-fresh TV.
+                                                    //
+                                                    // The pairing surface comes down on the way in
+                                                    // and goes back up on the way out. The latch is
+                                                    // unconditional because every state that renders
+                                                    // this screen is owed one back: an Open code, a
+                                                    // Locked countdown that must resume showing
+                                                    // itself, and the standby-with-no-phones case
+                                                    // this screen exists to resolve. Which of them
+                                                    // it is, is the manager's decision, not this
+                                                    // lambda's — `requestOpen` republishes the
+                                                    // lockout if one is still running, and refuses
+                                                    // outright while the surface is sealed.
+                                                    onOpenSettings = {
+                                                        reopenPairingOnExit = true
+                                                        pairing.closeSurface()
+                                                        showSettings = true
+                                                    },
+                                                )
 
-                                StandbySurface.PairSuccess -> Box(
-                                    Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = stringResource(R.string.pair_success),
-                                        style = FlickType.display(sizeSp = 34),
-                                        color = FlickColor.OnSurface,
-                                    )
+                                                StandbySurface.PairSuccess -> Box(
+                                                    Modifier.fillMaxSize().background(FlickColor.Canvas),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Text(
+                                                        text = stringResource(R.string.pair_success),
+                                                        style = FlickType.display(sizeSp = 34),
+                                                        color = FlickColor.OnSurface,
+                                                    )
+                                                }
+
+                                                StandbySurface.Idle -> IdleScreen(
+                                                    pairedLabel = deviceLabel,
+                                                    onPairAnother = { pairing.requestOpen() },
+                                                    onOpenSettings = { showSettings = true },
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
 
-                                StandbySurface.Idle -> IdleScreen(
-                                    pairedLabel = deviceLabel,
-                                    onPairAnother = { pairing.requestOpen() },
-                                    onOpenSettings = { showSettings = true },
+                                // The screen offers no retry: a failed v2 cast must get a fresh
+                                // cast ID and media token, and only the sender can mint those.
+                                is ShellFace.Fault -> ErrorScreen(
+                                    face = face.face,
+                                    deviceLabel = castDeviceLabel,
+                                    onDismiss = { session.backToStandby() },
+                                    beforeReady = face.beforeReady,
                                 )
                             }
                         }
                     }
                 }
             }
+
+            HouseLights(
+                stage = houseStageFor(stage),
+                // The last Active frame's dim: beginLoad has already cleared the seek
+                // by the time the new cast's first stage composes.
+                filmDimNow = { filmDimReading.drawn },
+                offstage = offstage,
+                freshRate = revealRate,
+                pinnedRate = pinnedRate,
+                turnedFilm = controller.surfaceTurn.onTexture,
+                deviceLabel = castDeviceLabel,
+                title = session.title,
+                cadence = cadence,
+                keyPresses = houseKeys,
+                onLightsDown = onLightsDown,
+                onPictureUp = onPictureUp,
+                onPictureSettled = onPictureSettled,
+            )
 
             // Gated on the stage, and composed outside the router only because it may
             // cover any standby surface. A cast arriving under it used to leave a
@@ -1591,8 +1829,8 @@ private fun rememberStandbyMotion(): StandbyMotion = StandbyMotion(
     travelOut = FlickMotion.flickSettleSpatial(),
     punchIn = FlickMotion.panelSpatial(),
     punchOut = FlickMotion.flickSettleSpatial(),
-    fadeIn = FlickMotion.chromeFadeIn(),
-    fadeOut = FlickMotion.chromeFadeOut(),
+    fadeIn = FlickMotion.stateEffects(),
+    fadeOut = FlickMotion.fastStateEffects(),
 )
 
 /**
@@ -1601,7 +1839,8 @@ private fun rememberStandbyMotion(): StandbyMotion = StandbyMotion(
  * Settings is a drill-in and comes from the right; Pair and Idle are two states of
  * one standby and exchange vertically; the pairing confirmation punches in, because
  * it reports an event rather than presenting a place. Geometry takes the spatial
- * springs; alpha keeps the chrome fade tokens, which never overshoot.
+ * springs; alpha takes the effects springs, and the exit leads so two surfaces are
+ * never legible over each other.
  */
 private fun standbyTransform(
     from: StandbySurface,
@@ -1654,58 +1893,13 @@ private fun standbyTransform(
 }
 
 /**
- * The handshake (spec §5.2): a veil over the still-covered player surface and one
- * glass card. [deviceLabel] and [title] are the live session's own values — the
- * personalised headline only appears once both are actually known.
+ * The handshake's film slot: the still-covered player surface, alone. Its veil and
+ * card are drawn by [HouseLights] above the whole stage, so nothing here ever
+ * becomes an ancestor of the surface.
  */
 @Composable
-private fun ConnectingScreen(
-    deviceLabel: String?,
-    title: String?,
-    videoContent: @Composable () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-    ) {
-        videoContent()
-        Box(
-            modifier = Modifier.fillMaxSize().background(FlickColor.ScrimVeil),
-            contentAlignment = Alignment.Center,
-        ) {
-            GlassPanel(
-                modifier = Modifier.width(HANDSHAKE_CARD_WIDTH),
-                shape = FlickShape.Hero,
-                tone = GlassPanelTone.Panel,
-                contentPadding = FlickDimens.PanelPadding,
-                verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                riseDistance = FlickMotion.TvRiseCard,
-            ) {
-                // Liveness, not progress. The handshake sits in one stage for as long
-                // as the TV takes to answer, so a determinate shape would hold still
-                // for the whole wait and read as a hang. It must never imply
-                // transcoding, of which this project does none.
-                FlickLoader()
-                Text(
-                    text = if (deviceLabel != null && title != null) {
-                        stringResource(R.string.connecting_device_title, deviceLabel, title)
-                    } else {
-                        stringResource(R.string.connecting_title)
-                    },
-                    style = FlickType.display(sizeSp = 22),
-                    color = FlickColor.OnSurface,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = stringResource(R.string.connecting_detail),
-                    style = FlickType.body(sizeSp = 16),
-                    color = FlickColor.OnSurfaceDim,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-    }
+private fun ConnectingScreen(videoContent: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize()) { videoContent() }
 }
 
 /**

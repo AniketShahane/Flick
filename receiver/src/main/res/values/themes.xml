@@ -31,4 +31,10 @@
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:backgroundDimEnabled">false</item>
     </style>
+
+    <!-- No window entrance (the dialog draws its own); a short fade on exit. -->
+    <style name="Animation.Flick.RenameDialog" parent="">
+        <item name="android:windowEnterAnimation">@null</item>
+        <item name="android:windowExitAnimation">@anim/rename_dialog_window_exit</item>
+    </style>
 </resources>

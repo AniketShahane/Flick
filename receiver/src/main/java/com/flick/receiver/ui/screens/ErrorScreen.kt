@@ -1,7 +1,7 @@
 package com.flick.receiver.ui.screens
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,7 @@ import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.LiveDot
+import com.flick.receiver.ui.components.LocalShellRetained
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
@@ -42,7 +44,7 @@ import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
-import com.flick.receiver.ui.theme.errorAmbientBackground
+import com.flick.receiver.ui.theme.errorAmbientBlend
 import com.flick.receiver.ui.theme.tvOverscanSafeArea
 
 /**
@@ -63,7 +65,9 @@ import com.flick.receiver.ui.theme.tvOverscanSafeArea
  * NOTHING on this screen moves after the single fade that brings it in. A
  * diagnosed fault is presented still: a card that springs into place and a status
  * light that breathes over it read as an app being playful about a failure, and
- * the fade is on an effects spring precisely so the arrival cannot overshoot.
+ * the fade is on an effects spring precisely so the arrival cannot overshoot. A
+ * fault that changes while the screen is up fades out and back in, still with no
+ * geometry.
  */
 @Composable
 fun ErrorScreen(
@@ -78,30 +82,46 @@ fun ErrorScreen(
     beforeReady: Boolean = true,
 ) {
     val actionFocus = remember { FocusRequester() }
-    LaunchedEffect(face) { runCatching { actionFocus.requestFocus() } }
+    // A retained face is on its way out under the curtain, and focus belongs to
+    // whatever is arriving.
+    val retained = LocalShellRetained.current
+    LaunchedEffect(face) { if (!retained) runCatching { actionFocus.requestFocus() } }
 
     // The whole entrance: one fade, no geometry. Read inside the layer block so
-    // even that costs no recomposition.
+    // even that costs no recomposition. The card shows [shownFace], not [face]: a
+    // fault replaced in place must finish fading out on the words it was showing,
+    // or the new diagnosis would flash in at full opacity before the fade began.
     val reducedMotion = LocalReducedMotion.current
-    var entered by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { entered = true }
-    val fade = animateFloatAsState(
-        targetValue = if (entered) 1f else 0f,
-        animationSpec = if (reducedMotion) snap() else FlickMotion.stateEffects(),
-        label = "errorCardFade",
+    var shownFace by remember { mutableStateOf(face) }
+    var shownBeforeReady by remember { mutableStateOf(beforeReady) }
+    val fade = remember { Animatable(0f) }
+    val fadeInSpec = rememberUpdatedState(FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects<Float>()))
+    val fadeOutSpec = rememberUpdatedState(FlickMotion.orSnap(reducedMotion, FlickMotion.fastStateEffects<Float>()))
+    LaunchedEffect(face, beforeReady) {
+        if ((shownFace != face || shownBeforeReady != beforeReady) && fade.value > 0f) {
+            fade.animateTo(0f, fadeOutSpec.value)
+        }
+        shownFace = face
+        shownBeforeReady = beforeReady
+        fade.animateTo(1f, fadeInSpec.value)
+    }
+    val trouble = animateFloatAsState(
+        targetValue = if (shownFace.blamesTheLink()) 1f else 0f,
+        animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
+        label = "errorTroubleWeight",
     )
 
-    val accent = if (face.blamesTheLink()) FlickColor.Trouble else FlickColor.Caution
+    val accent = if (shownFace.blamesTheLink()) FlickColor.Trouble else FlickColor.Caution
     val device = deviceLabel ?: stringResource(R.string.device_fallback)
-    val copy = errorCopyFor(face, beforeReady, device)
+    val copy = errorCopyFor(shownFace, shownBeforeReady, device)
     val actionLabel = stringResource(
-        if (face.endsTheSession(beforeReady)) R.string.error_end_session else R.string.error_back_to_standby,
+        if (shownFace.endsTheSession(shownBeforeReady)) R.string.error_end_session else R.string.error_back_to_standby,
     )
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .errorAmbientBackground(accent)
+            .errorAmbientBlend { trouble.value }
             // After the wash, so the gradient still runs to the panel edge while
             // the card inside it stops at the overscan inset.
             .tvOverscanSafeArea(),
@@ -121,7 +141,7 @@ fun ErrorScreen(
             // The emblem names the party the copy names. A phone with a fault light
             // over "This TV can't decode this video" would be the same misattribution
             // the faces exist to end.
-            if (face.namesThePhone()) PhoneGlyph(accent = accent) else TvGlyph(accent = accent)
+            if (shownFace.namesThePhone()) PhoneGlyph(accent = accent) else TvGlyph(accent = accent)
             Text(
                 text = copy.title,
                 style = FlickType.display(sizeSp = 27),

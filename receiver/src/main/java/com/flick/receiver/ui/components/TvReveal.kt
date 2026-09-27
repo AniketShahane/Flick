@@ -4,14 +4,18 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusEventModifierNode
@@ -45,6 +49,17 @@ import kotlin.math.max
  * of the wipe is still travelling into the far corner.
  */
 private const val HANDOFF_AT = 0.62f
+
+/**
+ * True once the enclosing [TvOriginReveal]'s wash has started to clear, so a
+ * cascade inside the panel can wait to be seen instead of playing under the
+ * opaque colour. Always true outside a reveal.
+ */
+val LocalTvRevealHandedOff = staticCompositionLocalOf<State<Boolean>> { AlwaysHandedOff }
+
+private object AlwaysHandedOff : State<Boolean> {
+    override val value = true
+}
 
 /**
  * Where a panel was summoned from, in root coordinates.
@@ -188,6 +203,10 @@ fun TvOriginReveal(
         }
     }
 
+    // One holder for the reveal's life, so the static local never invalidates;
+    // readers observe the flip, which happens once per open.
+    val handedOff = remember { derivedStateOf { reach.value >= HANDOFF_AT } }
+
     // The origin is published in root coordinates by controls that know nothing
     // about this surface, so the surface resolves it against its own position.
     var rootPosition by remember { mutableStateOf(Offset.Zero) }
@@ -237,8 +256,9 @@ fun TvOriginReveal(
             // display list and never an offscreen buffer, and `clip` stays false so
             // a focused child's detached ring still paints outside its bounds.
             .graphicsLayer(),
-        content = content,
-    )
+    ) {
+        CompositionLocalProvider(LocalTvRevealHandedOff provides handedOff) { content() }
+    }
 }
 
 /** Distance from [centre] to the farthest corner, for a centre that may sit outside [size]. */

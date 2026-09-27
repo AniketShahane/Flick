@@ -1,6 +1,8 @@
 package com.flick.receiver.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,6 +30,7 @@ import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalReducedMotion
 
 /** A chip enters slightly small; it settles out to full size, never past it. */
 private const val TELEMETRY_ENTER_SCALE = 0.9f
@@ -101,10 +104,14 @@ fun SpecChip(
 /**
  * The entrance a measured fact makes when the receiver finally learns it.
  *
- * Wrap one chip or pill per fact and key the call site on the fact's own text: the
- * row then resolves one reading at a time as telemetry lands, instead of the whole
+ * Wrap one chip or pill per fact and key the call site on the fact's slot: the row
+ * then resolves one reading at a time as telemetry lands, instead of the whole
  * group materialising complete. It changes WHEN a value appears, never WHETHER —
  * a value the receiver cannot measure is still omitted upstream.
+ *
+ * [initiallyVisible] is for a fact that is already known when its surface starts
+ * arriving: it rides that surface's own entrance instead of replaying a pop on
+ * every reveal.
  *
  * Geometry takes the spatial spring; opacity takes the effects spec, which never
  * overshoots — a chip flashing past full opacity would read as a rendering fault
@@ -113,18 +120,24 @@ fun SpecChip(
 @Composable
 fun TelemetryReveal(
     modifier: Modifier = Modifier,
+    initiallyVisible: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val entered = remember { MutableTransitionState(false) }
+    val entered = remember { MutableTransitionState(initiallyVisible) }
     entered.targetState = true
+    val reducedMotion = LocalReducedMotion.current
     AnimatedVisibility(
         visibleState = entered,
         modifier = modifier,
-        enter = fadeIn(FlickMotion.stateEffects()) + scaleIn(
-            initialScale = TELEMETRY_ENTER_SCALE,
-            animationSpec = FlickMotion.flickSettleSpatial(),
-        ),
-        exit = fadeOut(FlickMotion.stateEffects()),
+        enter = if (reducedMotion) {
+            EnterTransition.None
+        } else {
+            fadeIn(FlickMotion.stateEffects()) + scaleIn(
+                initialScale = TELEMETRY_ENTER_SCALE,
+                animationSpec = FlickMotion.flickSettleSpatial(),
+            )
+        },
+        exit = if (reducedMotion) ExitTransition.None else fadeOut(FlickMotion.fastStateEffects()),
         label = "telemetryReveal",
     ) {
         content()

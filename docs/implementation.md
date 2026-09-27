@@ -165,6 +165,26 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :sender:generateReleaseBaseline
 JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./gradlew :receiver:generateReleaseBaselineProfile
 ```
 
+The generator cannot reach a cast, so the receiver's playback and stage motion
+(`PlaybackScreenKt`, `TvScrubBarKt`, `TransportKt`, `GlassPanelKt`, `FlickLoaderKt`, and the
+house lights, display-cadence, presence, swap and ink helpers, plus the stream-metrics,
+subtitles and orientation side panels) had no profile entries. Those are hand rules in
+`receiver/src/main/baselineProfiles/flick-motion-rules.txt`, merged with the generated profile
+at build time, so the first cast after install runs AOT on the MediaTek CPU instead of JIT.
+Every rule carries a method part (`HSPL…;->**(**)**`): a bare class rule only preloads the
+class and compiles none of its methods. The nested coroutine and lambda classes of
+`HouseLightsKt`, `DisplayCadenceKt`, `PlaybackScreenKt`, `TvScrubBarKt`, `PresenceKt`,
+`TransportKt`, `GlassPanelKt` and `InkKt` (the stage-move state machine and its resync waits,
+the playback effects) are covered by `…Kt$*;->**(**)**` rules, and the display-mode listener
+`DisplayModeCadence`, a top-level class of its own, by its own method rule; one `*` also
+matches deeper `$` nesting. Nothing is added for a benchmark-only activity or a debug cast
+intent. After a change to the stage or playback motion, regenerate the receiver's profile on
+the TV with `:receiver:generateReleaseBaselineProfile`, check that the rules are present (still
+as wildcards) in `receiver/build/intermediates/merged_art_profile/release/mergeReleaseArtProfile/baseline-prof.txt`,
+and see them expanded in
+`receiver/build/intermediates/r8_art_profile/release/expandReleaseArtProfileWildcards/baseline-prof.txt`
+— the nested classes must appear there with method (`->`) entries, not as class lines alone.
+
 `dexLayoutOptimization = true` is set on both consumers so R8 lays startup classes
 contiguously. The sibling `baselineProfileRulesRewrite` flag is deliberately left unset:
 it writes the `android.experimental.art-profile-r8-rewriting` module property, which AGP
@@ -484,7 +504,7 @@ Before adopting media, `ControlServer` strictly validates `loadMedia` and the ca
 
 For playback, each Media3 `DataSpec` creates one `HttpURLConnection` with `instanceFollowRedirects=false`; every 3xx is rejected before any second request. The video codec selector filters software codecs and extension renderers are disabled. It filters on Media3's own `MediaCodecInfo.hardwareAccelerated`, which carries a usable verdict at **every** API level: on 29+ it is the platform's `isHardwareAccelerated()` flag, and below that Media3 derives it by naming the software/reference namespaces (`OMX.google.*`, `OMX.ffmpeg.*`, `OMX.SEC.*.sw.*`, `omx.qcom.video.decoder.hevcswvdec`, `c2.android.*`, `c2.google.*`, and anything outside `omx.`/`c2.` entirely, with `arc.*` excepted as hardware). `HardwareDecoderPolicy` mirrors that inversion as its fallback for a caller with no `MediaCodecInfo` to ask. An earlier `>= 29` gate discarded the pre-29 verdict and fell back to a MediaTek-only allow-list, which refused to play at all on the Amlogic, Realtek, Broadcom, Qualcomm and Samsung silicon that most of the API 26-28 Android TV installed base runs. An empty filtered list still deliberately makes Media3 report an unsupported video format rather than dropping to software.
 
-The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind an opaque Connecting overlay, then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
+The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind the house-lights veil (see [Stage motion](#stage-motion-house-lights-and-the-resync-wait)), then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
 
 The budget answers exactly one question — can this link carry this file — and `StartupDeadlinePolicy` names the one thing it does not charge for. A picture-orientation re-prepare (see [Picture orientation](#picture-orientation)) is the receiver deciding on its own initiative to configure the decoder a second time; it discards the fill and re-fetches it, and charging that to the link would fail a sideways-filed film on a marginal link with `startup_timeout` — identically on every retry, because the automatic verdict recomputes the same, turning "the film looks sideways" into "the film will not cast". The grant is **6 seconds, at most once per cast**, sized on what the re-prepare has to buy back: `bufferForPlaybackMs`, which `BufferBudgetPolicy` caps at 2.5 s on every device tier, plus a codec teardown/configure and one byte-range round trip. That covers the re-fetch down to about half the file's bitrate, and a link delivering less than half cannot direct-play the file at all — so a genuinely slow link still fails, at 24 s rather than 18. A cast with no correction is untouched: same deadline, same timing, same failure. The grant is unchanged in size by the move to a view turn, and it is now charged strictly less often: `onRotationRePrepare` fires from `rePrepareForRotation` alone, so it is spent only by the films whose container declares a rotation and whose codec therefore has to be taken back to 0 — a film that merely earns a turn on a container of 0 issues no re-prepare and asks for nothing. The more expensive thing this used to cover as well, a whole new `ExoPlayer` instance to start the effects graph, no longer exists, so six seconds buys a strictly smaller piece of work than it was sized against. Extending re-arms the **timer**, not merely the timestamp `startPlayer` and `StartupRetryPolicy` read — a `delay(18_000)` job left running would otherwise still tear the cast down on the original schedule — and the grant is cleared with the rest of the startup transaction, so a re-target starts from a clean budget. `startupMs` is deliberately left alone: the real time to first frame from the single epoch is the honest number.
 
@@ -670,7 +690,166 @@ Panel capability is recorded, never enforced. `DisplayCapabilityPolicy` compares
 
 Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. The one state that neither pins nor releases at once is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
 
-Playback chrome is a glass transport panel anchored inside the 5% TV-safe inset, not a full-width bottom bar: the media title is a single ellipsized 34sp line, timecode is 20sp tabular mono, transport targets are 52dp/66dp with 26dp/35dp seek and play glyphs, and the movie frame stays visible behind lighter pause/seek/buffering dimming. The top and bottom scrims are gradients that fade in and out with the chrome rather than permanently overlaying the film. The panel is **glass without a blur**: the film is on a `SurfaceView`, which no backdrop effect can sample, and a live blur over 4K on the verified MediaTek GPU is exactly the frame budget direct-play exists to protect — so `glassChrome` keeps the 34% fill and buys the other three things that make the phone's chrome read as glass, a 168° raking sheen, an 18dp uncoloured drop shadow (black lifts the pane off a bright frame and costs nothing over a dark one) and the cool hairline. The sheen's stops are fractions of **its own axis**, not of the panel's height: `angledSheen` lays its gradient line corner to corner along the 168° direction, so on a panel 864dp wide and ~207dp tall the horizontal term is nearly half that line's length and a stop is a distance from the top-left corner. `CHROME_SHEEN_LIP_END` and `CHROME_SHEEN_FOOT_START` are what hold the two bright stops inside the panel's own 21/18dp padding under that reading; what is left to fall on ink is the single constant `ChromeSheenOverInk`, which `PlaybackContrastTest` composites over every row of the panel before measuring it. Focus is a detached amber ring drawn outside the element bounds, so focusing a control never reflows its row; the play key takes the white ring because amber on amber would vanish, and the scrub bar draws its ring around the knob rather than around a 700dp span. **The play key sits on the screen's exact centre line**: the control row is three children — a weighted box holding the subtitles card and the orientation tile, the transport cluster, and an equally weighted box holding volume and the glyph-only stream-metrics key — so the two equal weights put the internally symmetric cluster on the row's centre, which the symmetric panel padding and safe area make the screen's. It is the same centre the resting pause key is drawn on, so summoning the chrome does not slide the key sideways; nothing unweighted may sit beside the cluster again. The metrics key carries no lockup at all — the throughput figure it used to print is not something a viewer reads from across a room mid-film, so it moves into the key's content description and into the panel the key opens, and dropping it is what buys the width that centring needs. **The control row is traversed the way it is drawn**: left/right step through `subtitles → orientation → back-10 → play → forward-10 → volume → stream metrics`, up from any of them reaches the scrub bar, down from the scrub bar returns to the row, and up from the scrub bar reaches `END SESSION`. Revealing the chrome still lands focus on play; after a side panel closes it lands on the card that opened it. Because both handoffs compose the arriving surface in the same frame that removes the departing one, entry focus is requested across several frames (`landTvFocus`) rather than once — a `FocusRequester` whose node has not been placed yet throws, and there would be nothing else on screen to steer with.
+### Stage motion: house lights and the resync wait
+
+Every stage seam — launch, a cast arriving, the first frame, a cast ending, a fault — is
+drawn as the light of a projection room, by overlays above a film surface that never moves.
+`ReceiverApp`'s root box stacks, bottom to top:
+
+1. `when (stage)`, which keeps only the two video branches: `Active` → `PlaybackScreen { playerSurface() }`
+   plus the metrics overlay, and `Checking`/`Preparing` → `ConnectingScreen { playerSurface() }`,
+   now a bare `Box` around the surface. Both `playerSurface()` call sites are unchanged, and
+   nothing animated is an ancestor of either.
+2. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
+   crossfades, no travel), composed only while a live or retained face exists — never during
+   playback.
+3. `HouseLights` (`ui/components/HouseLights.kt`): a draw-only curtain plus the handshake card.
+4. The rename dialog, in its own window. A cast arriving removes it from composition outright,
+   so its own drawn exit never runs, and Act I is seeded fully open and draws nothing dark for
+   about its first 150 ms, so the lights-down does not hide the cut either. The dialog window
+   therefore keeps a platform exit animation (`Animation.Flick.RenameDialog`: no enter, a 150 ms
+   alpha-only `decelerate_quad` fade out); under reduced motion it has none.
+
+**The curtain** is two numbers per move: aperture `p` (1 = open, nothing drawn; 0 = closed)
+and density `d`, the alpha of `FlickColor.Canvas`. With `d ≤ 0.004` or `p ≥ 0.999` nothing is
+drawn; with `p ≤ 0.001` it is one uniform rect at `d`; in between it is a screen-shaped radial
+hole — a framework `RadialGradient` with a clear core to `APERTURE_CORE` 0.35 and then a
+smoothstep ramp (`3t² − 2t³`, 8 even steps) from the core to full density at 1, drawn scaled by
+`apertureScale(p) = 4.2 p` and painted with `isDither = true`, because a dark gradient that wide
+bands; the smoothstep leaves no Mach-band knee at the core or the rim, which linear stops did. At full open the core reaches the corners (0.35 × 4.2 ≥ √2); as `p → 0` the lit pool
+shrinks to nothing rather than popping. `houseMove(from, to, …)` seeds every stage's curtain
+from wherever the outgoing one actually is, so an interrupted move continues instead of
+restarting:
+
+| Seam | Move | What is seen |
+| --- | --- | --- |
+| first composition at Room | Launch | seeded closed (identical to the window background), opens from the centre on `pictureUp()` 640 ms |
+| Room/Fault → Handshake | LightsDown (Act I) | the outgoing face is retained, frozen and non-interactive; `p` 1 → 0 on `lightsDown()` 560 ms, dark closing from the edges to the centre; the card enters into the last light at `p ≤ CARD_ENTER_APERTURE` 0.12 (~425 ms); at `p = 0` `onLightsDown` drops the retained face and `d` snaps to the 82 % veil under full dark. From a fault still dissolving, the move seeds at the outgoing `(p, d)` and `d` rises to 1 on the same `lightsDown()` curve (alongside `p → 0` if a pool is open); with the aperture already closed the card waits for `d ≥ 0.88`, and `onLightsDown` still fires only at `d = 1` |
+| Handshake → Film | PictureUp (Act II) | the card exits at once on `crossDissolve()`; a still-closing Act I finishes on `fastStateEffects`; the resync wait; then 120 ms (`REVEAL_VEIL_LAG_MS`) later `d` → 0 on `filmReveal()` 720 ms |
+| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card enters once 60 % of that travel has landed |
+| Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the resync wait; `p` 0 → 1 on `pictureUp()`. From Handshake it seeds from the live aperture, so a cancel on Act I's first frame starts at `p` ≈ 1 and draws nothing |
+| Handshake/Film → Fault | LightsUpFault | same seeding and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault. A fault that lands while Act I is still closing keeps the aperture where it reached (`p` held, `d` = 1) and dissolves `d` uniformly from there; one that lands at rest or over a film seeds closed |
+| Room ↔ Fault | Rest | none; the shell crossfades |
+
+The aperture is drawn only with no film visible, and lights-up opens it only after the resync
+hold, so it normally runs at the rest rate. It can still run at the film's cadence, or into the
+switch's blank, when a key, `STAGE_HOLD_CAP_MS` or an unseen switch (`NoChangeSeen`) ends that
+hold first. Launch is never held and runs at whatever rate the panel is in. Over a film the veil is always a uniform
+alpha on `filmReveal()`, whose steepest CrossDissolve step is 1.724 × 41.67 / 720 = 10.0 % of its
+span per 24 Hz frame: a soft edge sweeping 230–400 px per film frame judders and bands. Under
+reduced motion every move is a snap to `houseRest(stage)` and the callbacks the destination
+needs fire at once — `onLightsDown` for Handshake; `onLightsDown`, `onPictureUp` and
+`onPictureSettled` for Film; none for Room or Fault — exactly the old cut.
+
+**The resync wait.** Pinning the film's cadence can make the panel blank for an HDMI mode
+switch; revealing into that blank throws the lift away. `rememberDisplayCadence(window)` is a
+passive `DisplayListener` that reports the physical mode (`display.mode.refreshRate`, never
+`getRefreshRate()`), the unpinned rest rate, and each mode change; it never writes a hint and
+never polls. A reveal is pending when a change landed within `RESYNC_GRACE_MS` 500 of the seam,
+or when the display cannot show the content cadence as it stands and `switchBlanks` says the
+switch to one that can is not seamless (the user's match-content preference of *never* or
+*seamless only*, or a seamless alternative mode, all mean no blank). A lights-up is pending when a
+change landed within `RESYNC_GRACE_MS` of the seam, or while the physical rate differs from the
+rest rate. The film's rate reaches the stage up to one 2 Hz snapshot period after `Active`, so
+a reveal whose rate is still unknown first waits up to `RATE_KNOWN_WAIT_MS` 600 (key-cancellable)
+for a known rate before it decides whether to hold; a rate that never arrives reveals at the end
+of that wait. The rate the reveal decides on is a `RateSample` — the cast id under
+`Preparing`/`Active` plus the frame rate, written in the same 2 Hz tick as the snapshot — read
+through `freshRevealRate`, so a rate left over from the previous film, or sampled before this
+cast went `Active`, counts as unknown. A re-cast whose rate never arrives still holds over a
+switch made at the seam (the old pin released): with no rate, a change within
+`RESYNC_GRACE_MS` of the seam is still pending. A reveal whose rate was unknown at the seam
+also holds when the release made at the seam (the panel was still pinned off its rest rate)
+has not been reported by the time the rate lands, and likewise when the pin is given up on the
+first tick after the seam, because the snapshot at the seam still held the previous film's rate
+and the new film reports none. Whether the seam released the pin is keyed on the pin actually
+requested of the window (HouseLights' `pinnedRate`, read once at the edge and again after the
+rate wait), not on the cast-tagged rate being unknown: a same-cadence re-cast whose window
+stays pinned releases nothing, so a late rate reveals at once. When the pin was released, the
+release is treated as pending, so the
+`Settled` → `switchStillOwed` → `awaitOwedSwitch` chain waits out both the release and the
+re-pin, within the cap. `stageHold` then waits until the observed change
++ `RESYNC_GRACE_MS`, or `SWITCH_EXPECT_WINDOW_MS` 500 — counted from when the rate became known,
+because that is when the pin is written — for a change that has not been seen yet, and never
+past `STAGE_HOLD_CAP_MS` 2 500 from the seam, which includes the rate wait. Any remote key ends it at once (the key
+is still dispatched as normal). Only pixels wait: the stage, the first frame, `loadReady`, the
+18 s deadline and every key are untouched. A re-cast can switch twice — release the old pin
+at the seam, re-pin once the rate lands — so a hold that ends `Settled` checks again
+(`switchStillOwed`): while the panel still cannot show the film's rate and the pin would blank,
+`awaitOwedSwitch` waits once more, up to `SWITCH_EXPECT_WINDOW_MS` for a newer switch and then
+out its `RESYNC_GRACE_MS`, all within the cap and ended by any key; the whole wait logs as one
+line. `NoChangeSeen`, `Cap` and `KeyPressed` holds are never extended. Each hold logs one line:
+
+```
+[stage] hold kind=Reveal rateWaitMs=0 waitedMs=512 reason=Settled requestedHz=23.976 physicalHz=24.0 restHz=60.0
+```
+
+`kind` is `Reveal` or `Rest`; `reason` is `NoSwitch`, `Settled`, `NoChangeSeen`, `Cap` or
+`KeyPressed`; `rateWaitMs` is how long the reveal waited for the film's rate before that. To tune the constants, film the TV at 240 fps through a cast start and a cast end
+and step it against the log: `RESYNC_GRACE_MS` must cover the gap between the mode-change
+callback and the panel's first stable frame, and `SWITCH_EXPECT_WINDOW_MS` the gap between the
+seam and the callback. A `Cap` or `NoChangeSeen` reason on a switch that did happen means one of
+them is short.
+
+**Accepted cuts**, named so nobody fixes them by touching the surface. At cast end and on a
+fault the film cuts to Canvas on the first frame, because the surface is dropped with the
+stage; the curtain then holds the room dark through the wait and lights it. At a re-cast over a
+running film the old chrome and scrims dispose on the first frame while the veil fades in from
+the outgoing dim.
+
+**The picture settles before the chrome speaks.** `onPictureUp` bumps `pictureUpEpoch`, which
+re-arms the 4-second auto-hide so the chrome's countdown starts as the picture appears rather
+than while it was still veiled. `onPictureSettled` marks the cast's picture settled (with a
+`REVEAL_SETTLE_FALLBACK_MS` 4 000 fallback), and only then does the quality flourish run and
+the silent-audio notice, band notice and orientation hint become eligible (`filmVisible`).
+
+**The retained face.** During Act I the outgoing Idle, Pair, Settings or Error face stays
+composed under the closing curtain so the room darkens around it instead of vanishing. It is
+provided `LocalShellRetained = true`: its loops freeze in place, it issues no focus request,
+and its host has `canFocus = false` and cleared semantics. The host's `canFocus` stops at the
+first focus group beneath it: a `LazyColumn` or any scroll container is one, so rows inside it
+would still take focus and DPAD_CENTER would fire a control the viewer no longer sees. So the
+host also provides `LocalShellInteractive = false`, both to a retained face and to any face whose
+exit transition is running, and every focusable control on a shell face must read it where it
+takes focus, and may only ever clear it: read the local during composition
+(`val shellInteractive = LocalShellInteractive.current`, since the `focusProperties` lambda is
+not composable), then gate with `Modifier.focusProperties { if (!shellInteractive) canFocus = false }`.
+focusProperties blocks run from the focus target outward and the outermost assignment wins, so
+a `canFocus = true` write, including `canFocus = LocalShellInteractive.current`, would undo an
+inner guard's `false`, such as a disabled key's or the outgoing Pair action row's. `FlickTvButton`
+uses this clear-only form, and `FlickTvRow` and `FlickTvIconButton` inherit it; a control that
+bypasses them must do it itself (see
+`SettingsScreenFocusTest.settings_rows_let_go_of_focus_once_a_cast_stage_takes_the_shell` and
+`StandbyExitFocusTest`).
+`onLightsDown` releases the retained face at full dark,
+with `RETAINED_SHELL_LIMIT_MS` 1 500 as a safety net, so a pairing code on screen at the seam
+is exposed for at most that long, dimming, and is never interactive. A return to standby always
+composes a fresh face.
+
+**Offstage compositions.** A composition made while the app is stopped (`ON_STOP` until the
+first composition after `ON_START`) is offstage: nothing is on screen to carry across, and
+frames are paused, so a transition started then would freeze at its first frame. The shell
+retains no face and rebuilds without a transition, keyed so a crossfade begun while stopped is
+thrown away. A cast planned offstage — a summoned one — opens dark: the curtain is seeded closed
+and fully dense, `onLightsDown` fires at once, and the handshake card rises in while the veil
+eases to 82 %.
+
+**The heard ring.** When `seeking` falls on the scrub bar, one amber ring radiates from the
+playhead — born at 11 dp at alpha 0, about 13 dp and lit by 158 ms, gone by 720 ms on
+`tvBurstAlpha()`; its radius runs 11 → 17 dp on `tvBurstReach()` (720 ms, `chromeFade`), so it
+is still growing as it fades — but only if the seek really landed. `seekLandingConfirmed(target,
+origin, confirmed)` is a local mirror of `SeekReconciler`'s private predicate: the confirmed
+clock is within `SeekReconciler.TOLERANCE_MS` of the target latched while the seek was in
+flight, or has passed it in the seek's direction. The 1.5 s deadline and teardown also end
+`seeking` without a report, and they draw nothing. Two alternating slots mean a quick second
+landing retires the first ring on `fastStateEffects` instead of cutting it. Reduced motion
+draws no ring. When the scrub bar holds focus its own §3 ring occupies out to 14.5 dp, so a
+ring fired then starts at 16.5 dp (`FocusedLandingRingStart` = 8 dp knob +
+`FlickFocusRingOffset` 4.5 + ring half-width 1 + contour 1 + landing half-stroke 1 + landing
+contour 1) and travels the same 6 dp, 16.5 → 22.5 dp. The offset is fixed per ring when it
+fires, so a focus change mid-ring cannot make its radius jump.
+
+Playback chrome is a glass transport panel anchored inside the 5% TV-safe inset, not a full-width bottom bar: the media title is a single ellipsized 34sp line, timecode is 20sp tabular mono, transport targets are 52dp/66dp with 26dp/35dp seek and play glyphs, and the movie frame stays visible behind lighter pause/seek/buffering dimming. The top and bottom scrims are gradients that fade in and out with the chrome rather than permanently overlaying the film. The panel is **glass without a blur**: the film is on a `SurfaceView`, which no backdrop effect can sample, and a live blur over 4K on the verified MediaTek GPU is exactly the frame budget direct-play exists to protect — so `glassChrome` keeps the 34% fill and buys the other three things that make the phone's chrome read as glass, a 168° raking sheen, an 18dp uncoloured drop shadow (black lifts the pane off a bright frame and costs nothing over a dark one) and the cool hairline. The sheen's stops are fractions of **its own axis**, not of the panel's height: `angledSheen` lays its gradient line corner to corner along the 168° direction, so on a panel 864dp wide and ~207dp tall the horizontal term is nearly half that line's length and a stop is a distance from the top-left corner. `CHROME_SHEEN_LIP_END` and `CHROME_SHEEN_FOOT_START` are what hold the two bright stops inside the panel's own 21/18dp padding under that reading; what is left to fall on ink is the single constant `ChromeSheenOverInk`, which `PlaybackContrastTest` composites over every row of the panel before measuring it. Focus is a detached amber ring drawn outside the element bounds, so focusing a control never reflows its row; the play key takes the white ring because amber on amber would vanish, and the scrub bar draws its ring around the knob rather than around a 700dp span. **The play key sits on the screen's exact centre line**: the control row is three children — a weighted box holding the subtitles card and the orientation tile, the transport cluster, and an equally weighted box holding volume and the glyph-only stream-metrics key — so the two equal weights put the internally symmetric cluster on the row's centre, which the symmetric panel padding and safe area make the screen's. It is the same centre the resting pause key is drawn on, so summoning the chrome does not slide the key sideways; nothing unweighted may sit beside the cluster again. The metrics key carries no lockup at all — the throughput figure it used to print is not something a viewer reads from across a room mid-film, so it moves into the key's content description and into the panel the key opens, and dropping it is what buys the width that centring needs. **The control row is traversed the way it is drawn**: left/right step through `subtitles → orientation → back-10 → play → forward-10 → volume → stream metrics`, up from any of them reaches the scrub bar, down from the scrub bar returns to the row, and up from the scrub bar reaches `END SESSION`. Revealing the chrome still lands focus on play; after a side panel closes it lands on the card that opened it. Because both handoffs compose the arriving surface in the same frame that removes the departing one, entry focus is requested across several frames (`landTvFocus`) rather than once — a `FocusRequester` whose node has not been placed yet throws, and there would be nothing else on screen to steer with. **The chrome's first arrival is an entrance, not a cut**: at `Active` the scrims and both chrome groups start from invisible under the house-lights veil and fade in on `chromeFadeIn()`, so the chrome is already arriving as the picture comes up. The chrome groups, the resting key, the buffering plate and the FINISHED chip leave into bare film on `filmExit()`, 250 ms: the shortest pure-alpha exit that still spans six vsyncs at the 24 Hz pin, where `fastStateEffects` is two frames and reads as a cut. The metrics panel's health pill uses the same `presenceOut(overFilm)` but leaves into the panel's glass, not bare film. Two overlays keep their own exits: the blind-seek burst on `tvBurstExit()` (180 ms, so it has cleared before `SEEK_DELTA_CLEAR_MS`), and the band cards on `chromeFadeOut()` plus a 1.02 scale-out. The chrome's 250 ms exit clears the film before the 500 ms scrim lift.
 
 Only **FINISHED** still draws a centred state chip. The paused chip was cut: a viewer who has just pressed pause is being told what they did themselves, over the frame they paused to look at. Paused instead auto-hides the chrome on the same 4-second countdown as playing, and leaves the amber play key resting at the foot of the frame. That key is a state signal, not a control — not focusable, no click action, and DPAD center/up/down restore the full chrome. Left and right stay the blind seek they are under any hidden chrome: the paused-rest state does not get its own key model, and a paused film is exactly when stepping through it without a panel in the way is wanted. Its bright amber gradient carries **80% opacity**, its ink stays solid, and it reuses the primary key's small amber shadow. An explicit top sibling z-index keeps the state signal above Media3 subtitles and every playback overlay without adding a full-screen layer or per-frame effect.
 
