@@ -45,7 +45,7 @@ change and say so.
 | `Film surface` | playback video surface `contentDescription` |
 | `confirmed %s` / `target %s · snap on release` | `TvScrubBar` semantics |
 | `Pair another phone`, `Rename TV`, `Settings`, `Done` | pair/idle screens |
-| `Playback metrics overlay`, `Diagnostics`, `Forget all phones` | settings |
+| `Open when you cast`, `Playback metrics overlay`, `Diagnostics`, `Forget all phones` | settings |
 | `Paired phones`, `Manage`, `Rename`, `Forget`, `Back` | settings + the paired-phones drill-in |
 | `End session` | error screen |
 

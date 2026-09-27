@@ -9,6 +9,27 @@
          would, and are never read). -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!-- "Open when you cast" (opt-in). The connectedDevice foreground service keeps
+         the paired phone's control connection reachable while Flick is in the
+         background; CHANGE_NETWORK_STATE is that service type's prerequisite (a
+         normal permission). SYSTEM_ALERT_WINDOW is what lets a cast bring Flick to
+         the front from the background on Android 10+; no overlay is ever drawn.
+         WAKE_LOCK keeps the CPU up between the pre-flight probe and the Activity
+         reaching the front. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Package visibility (Android 11+): whether this TV has a "Display over other
+         apps" screen decides if the Settings row is shown at all. -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+        </intent>
+    </queries>
+
     <!-- Android TV: Leanback UI is required, touchscreen is not. -->
     <uses-feature
         android:name="android.software.leanback"
@@ -47,6 +68,26 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Started only while MainActivity is in front and never restarted by the
+             system: a process brought back without its composition has no control
+             server to keep reachable. -->
+        <service
+            android:name=".summon.CastReadyService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Translucent trampoline for a cast that opens Flick from the background.
+             Its own affinity gives it a throwaway task, the only task ever cleared
+             on the way in. No screenOrientation: on API 26 a translucent activity
+             with a fixed orientation crashes. -->
+        <activity
+            android:name=".summon.WakeActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity="com.flick.receiver.wake"
+            android:theme="@style/Theme.Flick.Wake" />
     </application>
 
 </manifest>

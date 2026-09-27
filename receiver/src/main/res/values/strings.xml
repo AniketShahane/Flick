@@ -354,6 +354,15 @@
     <string name="rename_cancel">Cancel</string>
     <string name="rename_save">Save</string>
     <string name="rename_save_failed">Couldn\'t save the name. Try again.</string>
+    <string name="settings_open_title">Open when you cast</string>
+    <!-- Ship gate G1: if the asleep-TV runs fail, this becomes "Casting opens Flick here". -->
+    <string name="settings_open_summary">Casting opens Flick here, even if the TV is asleep</string>
+    <!-- The Google TV Streamer ignores the package in the request and opens the whole
+         list, so the summary names what to turn on there. -->
+    <string name="settings_open_needs_access">Turn on Flick in Display over other apps</string>
+    <string name="settings_open_blocked">This TV didn’t let Flick open · press to try again</string>
+    <string name="ready_channel_name">Ready for your phone</string>
+    <string name="ready_notification_title">Flick is ready for your phone</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>

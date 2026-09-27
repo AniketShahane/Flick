@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.net.PairedPhone
+import com.flick.receiver.summon.OpenForCastsRow
 import com.flick.receiver.ui.components.FlickTvButton
 import com.flick.receiver.ui.components.FlickTvRow
 import com.flick.receiver.ui.components.FocusBeaconHost
@@ -108,6 +109,7 @@ private const val SettingsRenameKey = "rename"
 private const val SettingsPairedHeaderKey = "pairedPhones"
 private const val SettingsPairedRowPrefix = "paired:"
 private const val SettingsPairedBackKey = "pairedBack"
+private const val SettingsOpenForCastsKey = "openForCasts"
 private const val SettingsMetricsKey = "metrics"
 private const val SettingsForgetKey = "forgetAll"
 private const val SettingsDiagnosticsKey = "diagnostics"
@@ -143,8 +145,8 @@ private const val SettingsPaneTravelDivisor = 6
 
 /**
  * The first-appearance stagger. It covers the first five RENDERED rows of the
- * settings column — the row count still moves, because "Forget all phones" and
- * the diagnostics rows come and go — and never carries the two that own
+ * settings column — the row count still moves, because the open-for-casts,
+ * forget-all and diagnostics rows come and go — and never carries the two that own
  * `bringIntoViewRequester`s: that machinery reads layout coordinates, and it must
  * not see anything moving. A sixth of the entrance run is ~40 ms on the spring,
  * the gap at which a column reads as arriving in order.
@@ -204,13 +206,16 @@ private fun Modifier.settingsStage(
  * Everything that moves the rows Clear and Done sit under. [pairedPhones] is
  * still in it even though the per-phone rows have moved to their own pane: the
  * count is the "Paired phones" summary, and crossing two phones adds or removes
- * the whole "Forget all phones" row above them. The two confirm latches are
- * deliberately out: each swaps one summary for another on the same line.
+ * the whole "Forget all phones" row above them. [openForCasts] is in because
+ * that row comes and goes with the TV's access, and its summaries differ in
+ * length. The two confirm latches are deliberately out: each swaps one summary
+ * for another on the same line.
  */
 private data class SettingsLayoutEpoch(
     val diagnosticsVisible: Boolean,
     val diagnostics: List<FlickLog.Entry>,
     val pairedPhones: List<PairedPhone>,
+    val openForCasts: OpenForCastsRow,
     val density: Float,
     val fontScale: Float,
 )
@@ -261,8 +266,9 @@ private const val BackToken = "back"
 /**
  * T10a · Settings. The old always-on developer HUD survives here as one row —
  * "Playback metrics overlay", off by default, phrased for the curious. Focus
- * begins on Device name, then moves through Paired phones, metrics, forget-all,
- * diagnostics, and Done along the D-pad path `SettingsScreenFocusTest` walks.
+ * begins on Device name, then moves through Paired phones, Open when you cast,
+ * metrics, forget-all, diagnostics, and Done along the D-pad path
+ * `SettingsScreenFocusTest` walks.
  *
  * Paired phones is a drill-in: the row reports the count and opens a pane listing
  * the phones, one Rename and one Forget key each. See [SettingsPane] for why that
@@ -291,6 +297,9 @@ fun SettingsScreen(
     diagnostics: List<FlickLog.Entry> = emptyList(),
     onToggleDiagnostics: () -> Unit = {},
     onClearDiagnostics: () -> Unit = {},
+    /** [OpenForCastsRow.Hidden] renders no row at all. */
+    openForCasts: OpenForCastsRow = OpenForCastsRow.Hidden,
+    onOpenForCasts: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
@@ -321,6 +330,7 @@ fun SettingsScreen(
         diagnosticsVisible = diagnosticsVisible,
         diagnostics = diagnostics,
         pairedPhones = pairedPhones,
+        openForCasts = openForCasts,
         density = density.density,
         fontScale = density.fontScale,
     )
@@ -334,6 +344,11 @@ fun SettingsScreen(
     var confirmForget by remember { mutableStateOf(false) }
     var renameFocused by remember { mutableStateOf(false) }
     var pairedRowFocused by remember { mutableStateOf(false) }
+    val metricsFocus = remember { FocusRequester() }
+    var metricsFocused by remember { mutableStateOf(false) }
+    // Set by a press on the open-for-casts row: a TV that turns out unable to open
+    // its overlay settings hides that row from under the focus.
+    var openRowPressed by remember { mutableStateOf(false) }
 
     // ── The drill-in ────────────────────────────────────────────────────────
     var pane by remember { mutableStateOf(SettingsPane.Column) }
@@ -489,6 +504,11 @@ fun SettingsScreen(
                 landTvFocus(listBackFocus, listBackFocus) { focusedListControl == BackToken }
         }
         focusReturn = null
+    }
+    LaunchedEffect(openForCasts) {
+        if (!openRowPressed) return@LaunchedEffect
+        openRowPressed = false
+        if (openForCasts == OpenForCastsRow.Hidden) landTvFocus(metricsFocus, renameFocus) { metricsFocused }
     }
     LaunchedEffect(layoutEpoch, clearPlacedEpoch, donePlacedEpoch, clearFocused, doneFocused) {
         when {
@@ -665,16 +685,35 @@ fun SettingsScreen(
                                 }
                             }
 
+                            if (openForCasts != OpenForCastsRow.Hidden) {
+                                val openRow = row++
+                                item(key = SettingsOpenForCastsKey) {
+                                    OpenForCastsItem(
+                                        state = openForCasts,
+                                        onClick = {
+                                            openRowPressed = true
+                                            onOpenForCasts()
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .settingsStage(stage, index = openRow, settled = entranceSettled)
+                                            .testTag("settings-open-row"),
+                                    )
+                                }
+                            }
+
                             val metricsRow = row++
                             item(key = SettingsMetricsKey) {
                                 FlickTvRow(
                                     onClick = onToggleMetrics,
+                                    focusRequester = metricsFocus,
                                     checked = metricsEnabled,
                                     stateDescription = stringResource(
                                         if (metricsEnabled) R.string.settings_metrics_on else R.string.settings_metrics_off,
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .onFocusChanged { metricsFocused = it.isFocused }
                                         .settingsStage(stage, index = metricsRow, settled = entranceSettled)
                                         .testTag("settings-metrics-row"),
                                     contentPadding = RowPadding,
@@ -1080,6 +1119,57 @@ private fun settingsPaneTransform(reducedMotion: Boolean, forward: Boolean): Con
             ),
         )
     }
+
+/**
+ * "Open when you cast". NeedsAccess is the one state whose press leaves Flick
+ * for the TV's own settings, so it carries the disclosure mark instead of a
+ * toggle, and no checked state: announcing "off" there would describe a switch
+ * the press does not flip. Blocked shows the toggle off because the feature is
+ * effectively off until the press clears it.
+ */
+@Composable
+private fun OpenForCastsItem(
+    state: OpenForCastsRow,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val toggle = when (state) {
+        OpenForCastsRow.On -> true
+        OpenForCastsRow.Off, OpenForCastsRow.Blocked -> false
+        OpenForCastsRow.NeedsAccess, OpenForCastsRow.Hidden -> null
+    }
+    FlickTvRow(
+        onClick = onClick,
+        checked = toggle,
+        stateDescription = toggle?.let {
+            stringResource(if (it) R.string.settings_metrics_on else R.string.settings_metrics_off)
+        },
+        modifier = modifier,
+        contentPadding = RowPadding,
+    ) {
+        LabeledColumn(
+            modifier = Modifier.weight(1f),
+            title = stringResource(R.string.settings_open_title),
+            summary = stringResource(
+                when (state) {
+                    OpenForCastsRow.NeedsAccess -> R.string.settings_open_needs_access
+                    OpenForCastsRow.Blocked -> R.string.settings_open_blocked
+                    else -> R.string.settings_open_summary
+                },
+            ),
+            summaryColor = if (state == OpenForCastsRow.Blocked) FlickColor.Caution else FlickColor.OnSurfaceDim,
+        )
+        if (toggle == null) {
+            Text(
+                text = stringResource(R.string.settings_disclosure),
+                style = FlickType.body(sizeSp = 18),
+                color = FlickColor.OnSurfaceFaint,
+            )
+        } else {
+            ToggleGlyph(enabled = toggle)
+        }
+    }
+}
 
 /**
  * A focused row may scale and paint a detached ring outside its layout bounds.

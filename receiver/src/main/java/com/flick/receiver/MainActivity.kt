@@ -3,7 +3,6 @@ package com.flick.receiver
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.KeyEvent
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.flick.receiver.net.NsdAdvertiser
@@ -14,8 +13,9 @@ import com.flick.receiver.util.FlickLog
  * Single leanback Activity for the Phase 0 receiver spike. Hosts the entire
  * Compose-for-TV UI (URL entry, Play/Stop, ExoPlayer surface, live debug
  * overlay). Player lifecycle is driven from Compose via [ReceiverApp] using the
- * Activity's Lifecycle, so there is nothing player-related to manage here beyond
- * keeping the screen awake during playback.
+ * Activity's Lifecycle, so there is nothing player-related to manage here. The
+ * keep-screen-on flag is not set here either: it depends on the cast stage, so
+ * [ReceiverApp] applies [com.flick.receiver.util.keepScreenOnWhilePresenting].
  */
 class MainActivity : ComponentActivity() {
     private val remoteKeys = TvRemoteKeyDispatcher()
@@ -51,15 +51,6 @@ class MainActivity : ComponentActivity() {
         Thread({ warmBundledTypefaces(applicationContext) }, "flick-font-warm")
             .apply { isDaemon = true }
             .start()
-
-        // Unconditional for the Activity's whole life, which is WRONG for the resting
-        // surfaces: idle, pairing and settings are where the TV sits for hours between
-        // casts, and the flag denies an OLED panel its dimming and every screensaver
-        // there too. [keepScreenOnWhilePresenting] is the scoped answer, but applying
-        // it needs the cast stage, which lives in ReceiverApp — until it is wired
-        // there this stays, because a panel that never sleeps is a lesser fault than
-        // one that sleeps over a film.
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {
             ReceiverApp(window = window, remoteKeys = remoteKeys)

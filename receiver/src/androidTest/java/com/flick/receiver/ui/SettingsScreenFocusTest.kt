@@ -8,9 +8,16 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -22,6 +29,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
 import com.flick.receiver.net.PairedPhone
+import com.flick.receiver.summon.OpenForCastsRow
 import com.flick.receiver.ui.screens.SettingsScreen
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickTvTheme
@@ -99,6 +107,7 @@ class SettingsScreenFocusTest {
         "settings-phone-rename",
         "settings-phone-forget",
         "settings-paired-back-row",
+        "settings-open-row",
         "settings-metrics-row",
         "settings-forget-row",
         "settings-diagnostics-row",
@@ -615,5 +624,143 @@ class SettingsScreenFocusTest {
         assertTitleInsideSafeArea()
         assertFocusedTargetIsRingSafe()
 
+    }
+    private fun setOpenForCastsContent(
+        state: OpenForCastsRow,
+        fontScale: Float = 1f,
+        onOpenForCasts: () -> Unit = {},
+    ) {
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = fontScale)) {
+                FlickTvTheme {
+                    SettingsScreen(
+                        tvName = "Living Room TV",
+                        pairedSummary = "2 paired",
+                        pairedPhones = pairedPhones,
+                        metricsEnabled = false,
+                        onRename = {},
+                        onToggleMetrics = {},
+                        onForgetAll = {},
+                        onDone = {},
+                        openForCasts = state,
+                        onOpenForCasts = onOpenForCasts,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun runOpenForCastsTraversal() {
+        val rename = composeRule.onNodeWithText("Device name")
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
+        val open = composeRule.onNodeWithTag("settings-open-row")
+        val metrics = composeRule.onNodeWithText("Playback metrics overlay")
+        val forgetAll = composeRule.onNodeWithText("Forget all phones")
+        val diagnostics = composeRule.onNodeWithText("Diagnostics")
+        val done = composeRule.onNodeWithText("Done")
+        rename.assertIsFocused().assertIsDisplayed()
+        rename.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        paired.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        paired.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        open.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        open.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        metrics.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        metrics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        forgetAll.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        forgetAll.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        diagnostics.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        diagnostics.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        done.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        assertTitleInsideSafeArea()
+
+        done.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        diagnostics.assertIsFocused()
+        diagnostics.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        forgetAll.assertIsFocused()
+        forgetAll.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        metrics.assertIsFocused()
+        metrics.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        open.assertIsFocused().assertIsDisplayed()
+        assertFocusedTargetIsRingSafe()
+        open.performKeyInput { keyDown(Key.DirectionUp); keyUp(Key.DirectionUp) }
+        paired.assertIsFocused()
+    }
+
+    /** The row sits between Paired phones and metrics, on the same D-pad path both ways. */
+    @Test
+    fun open_for_casts_row_joins_the_dpad_path_between_paired_and_metrics() {
+        setOpenForCastsContent(OpenForCastsRow.Off)
+        runOpenForCastsTraversal()
+    }
+
+    @Test
+    fun open_for_casts_row_joins_the_dpad_path_at_supported_max_font_scale() {
+        setOpenForCastsContent(OpenForCastsRow.Off, fontScale = 2f)
+        runOpenForCastsTraversal()
+    }
+
+    /** Hidden renders no row at all, so the walk below Paired phones goes straight to metrics. */
+    @Test
+    fun hidden_open_for_casts_leaves_the_dpad_path_unchanged() {
+        setOpenForCastsContent(OpenForCastsRow.Hidden)
+        composeRule.onAllNodesWithTag("settings-open-row").assertCountEquals(0)
+        composeRule.onNodeWithText("Open when you cast").assertDoesNotExist()
+        val paired = composeRule.onNodeWithTag("settings-paired-row")
+        composeRule.onNodeWithText("Device name")
+            .performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        paired.assertIsFocused()
+        paired.performKeyInput { keyDown(Key.DirectionDown); keyUp(Key.DirectionDown) }
+        composeRule.onNodeWithText("Playback metrics overlay").assertIsFocused()
+    }
+
+    @Test
+    fun open_for_casts_off_and_on_read_as_a_toggle_and_report_the_press() {
+        var presses = 0
+        setOpenForCastsContent(OpenForCastsRow.Off, onOpenForCasts = { presses++ })
+        val open = composeRule.onNodeWithTag("settings-open-row")
+        open.assertTextContains("Open when you cast", substring = true)
+            .assertTextContains("Casting opens Flick here", substring = true)
+            .assertIsOff()
+        open.performClick()
+        composeRule.runOnIdle { assertEquals(1, presses) }
+    }
+
+    @Test
+    fun open_for_casts_on_reads_as_on() {
+        setOpenForCastsContent(OpenForCastsRow.On)
+        composeRule.onNodeWithTag("settings-open-row")
+            .assertTextContains("Casting opens Flick here", substring = true)
+            .assertIsOn()
+    }
+
+    /**
+     * The press leaves Flick for the TV's own settings, so the row carries the
+     * disclosure mark and no toggle state.
+     */
+    @Test
+    fun open_for_casts_needs_access_shows_the_disclosure_and_where_to_go() {
+        var presses = 0
+        setOpenForCastsContent(OpenForCastsRow.NeedsAccess, onOpenForCasts = { presses++ })
+        val open = composeRule.onNodeWithTag("settings-open-row")
+        open.assertTextContains("Turn on Flick in Display over other apps", substring = true)
+            .assertTextContains("›", substring = true)
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.ToggleableState))
+        open.performClick()
+        composeRule.runOnIdle { assertEquals(1, presses) }
+    }
+
+    @Test
+    fun open_for_casts_blocked_shows_the_caution_summary_with_the_toggle_off() {
+        setOpenForCastsContent(OpenForCastsRow.Blocked)
+        composeRule.onNodeWithTag("settings-open-row")
+            .assertTextContains("didn’t let Flick open", substring = true)
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.ToggleableState, ToggleableState.Off))
     }
 }

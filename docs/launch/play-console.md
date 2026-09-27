@@ -221,6 +221,31 @@ Play asks why `mediaPlayback` is used. Answer:
 battery-exemption declaration is needed. The app routes users to the OS battery settings
 screen instead, which needs no permission.
 
+### TV — `connectedDevice` (`com.flick.receiver`)
+
+The TV app declares one foreground service, `CastReadyService`, of type `connectedDevice`,
+for the opt-in "Open when you cast" setting. Play asks why. Answer:
+
+> The service keeps the TV receiver reachable by the user's paired phone over the local
+> network, so a cast the user starts on the phone can open the app. It is opt-in in the
+> app's Settings, is started only while the app is open, and stops when the setting is
+> turned off.
+
+- **A demo video is required** for the foreground-service declaration. The shot list is in
+  [reviewer-video-prompt.md](reviewer-video-prompt.md) under *TV foreground service demo*.
+- **`SYSTEM_ALERT_WINDOW`** is used only so that a cast the user starts from a paired phone
+  may bring the app to the front. No overlay is ever drawn. Check this against the current
+  Google TV / Play TV guidelines before release. If the `connectedDevice` type is challenged,
+  the fallback is `specialUse` with a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` of "cast receiver
+  standby".
+- **No notification permission.** `POST_NOTIFICATIONS` is not requested, so on Android 13+
+  the service's notification is not shown; the Settings row is the visible state.
+- **Receiver permissions (eight).** `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`,
+  and, for "Open when you cast": `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`,
+  `CHANGE_NETWORK_STATE` (the `connectedDevice` type's prerequisite, a normal permission),
+  `SYSTEM_ALERT_WINDOW` and `WAKE_LOCK`. None of them collects data, so no Data safety row
+  changes.
+
 ---
 
 ## 6. Privacy policy

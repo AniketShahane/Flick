@@ -18,4 +18,17 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
     </style>
+
+    <!--
+      WakeActivity: fully transparent with no window animation, so no starting
+      window, splash or blank frame stands between the app that was in front and
+      Flick. Not NoDisplay: that activity never gets a window, so it could neither
+      turn the screen on nor take focus.
+    -->
+    <style name="Theme.Flick.Wake" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

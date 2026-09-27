@@ -16,6 +16,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.accessibility.CaptioningManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
@@ -114,6 +115,8 @@ import com.flick.receiver.player.silentAudioNoticePhase
 import com.flick.receiver.player.surfaceTurnTransform
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.SessionController
+import com.flick.receiver.summon.ForegroundSummoner
+import com.flick.receiver.summon.SummonPolicy
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
@@ -144,10 +147,13 @@ import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.RefreshRateHelper
+import com.flick.receiver.util.ScreenWakeHelper
+import com.flick.receiver.util.keepScreenOnWhilePresenting
 import com.flick.receiver.util.preferredWindowRefreshRate
 import com.flick.receiver.util.refreshRateHintDelayMs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -330,6 +336,19 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
     }
     val bindingGate = remember { ReceiverBindingGate(lifecycleStarted) }
+    var boundHost by remember { mutableStateOf<String?>(null) }
+    var boundPort by remember { mutableStateOf(-1) }
+    val summoner = remember {
+        ForegroundSummoner(
+            appContext = context.applicationContext,
+            lifecycle = lifecycleOwner.lifecycle,
+            scope = scope,
+            // A fresh sample, the same one ON_START's reconcile takes, rather than
+            // the monitor's cached value: a monitor lagging a wake-time Wi-Fi
+            // re-association must not refuse a cast whose socket evidently works.
+            addressCurrent = { LanAddress.current() == boundHost },
+        )
+    }
     val session = remember {
         SessionController(
             controller = controller,
@@ -337,12 +356,18 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             lifecycleStarted = {
                 lifecycleStarted
             },
+            foreground = summoner,
         )
     }
     val server = remember { ControlServer(pairing, session, { playbackFlow.value }) }
     val portStore = remember { ControlPortStore(context) }
-    var boundHost by remember { mutableStateOf<String?>(null) }
-    var boundPort by remember { mutableStateOf(-1) }
+    val activity = LocalActivity.current
+    val summonArmed by summoner.armed.collectAsState()
+    val summonIdleMayRest by summoner.idleMayRest.collectAsState()
+    val openRow by summoner.row.collectAsState()
+    // What the TV advertised at its last ON_STOP or background change, cleared at
+    // ON_START. Null while started.
+    var stoppedAdvert by remember { mutableStateOf<String?>(null) }
     // The address the reconcile last RESOLVED, which is not the address it managed to
     // bind — see [pairNetworkFace].
     var lanHost by remember { mutableStateOf<String?>(null) }
@@ -432,12 +457,23 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // Scoped to the composition rather than to STARTED, like the LAN monitor
         // beside it: the registration is passive, so listening through a
         // screensaver costs nothing and covers the hours that matter most. It
-        // still dies with the Activity — the receiver has no Service, so a TV in
-        // standby records no association at all.
+        // still dies with the Activity, and the only Service is the opt-in "Open
+        // when you cast" one — with that off, a TV in standby records no
+        // association at all.
         wifiAssociations.start()
+        summoner.start()
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> {
+                    // First: it clears the background latch before anything below
+                    // can read a stale one.
+                    summoner.onForeground()
+                    // A summoned cast is mid-flight when this ON_START lands, and
+                    // re-registering a `ready` the TV already advertised would
+                    // churn NSD under it. `nsd.advertising` still re-arms a retry
+                    // ladder that gave up while stopped.
+                    val advertisedReady = stoppedAdvert == NsdAdvertiser.STATE_READY && nsd.advertising
+                    stoppedAdvert = null
                     lifecycleStarted = true
                     bindingGate.onForeground()
                     controller.onStart()
@@ -454,7 +490,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             pairedCount = live.pairedCount,
                         ),
                     )
-                    if (boundPort > 0) {
+                    if (boundPort > 0 && !advertisedReady) {
                         FlickLog.i("nsd", "readvertise trigger=on_start port=$boundPort state=${NsdAdvertiser.STATE_READY}")
                         nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
                     }
@@ -468,6 +504,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     // The socket is NOT closed below any more, so this terminal
                     // actually reaches the phone instead of racing the close.
                     teardown.castId?.let { server.sendTerminal(it, com.flick.receiver.net.CastFailureCode.TV_BACKGROUNDED, false, beforeReady = teardown.beforeReady) }
+                    summoner.onBackground(castLive = teardown.castId != null, beforeReady = teardown.beforeReady)
                     controller.onStop()
                     // Publish a terminal sample so the phone stops rendering a
                     // healthy, playing, frozen playhead while the decoder is
@@ -478,13 +515,22 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     // change, not a network event. Tearing the socket down here
                     // rebound a NEW port on every resume, so the number on the pair
                     // screen and every persisted phone-side port died with it.
-                    // ReceiverBindingGate already refuses loadMedia while
-                    // backgrounded, so the posture is unchanged: the socket simply
-                    // stops accepting new casts instead of vanishing.
+                    // ReceiverBindingGate only stops rebinding and advertising while
+                    // backgrounded; a cast that still arrives is refused by the check
+                    // after the probe, or brings Flick forward when the TV is armed.
                     if (boundPort > 0) {
                         lastTeardown = "on_stop"
-                        FlickLog.i("nsd", "sleeping trigger=on_stop port=$boundPort")
-                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_SLEEPING, pairing.tvId)
+                        val state = SummonPolicy.stoppedAdvertState(
+                            summoner.backgroundReady.value,
+                            lanMonitor.address.value == boundHost,
+                        )
+                        stoppedAdvert = state
+                        if (state == NsdAdvertiser.STATE_SLEEPING) {
+                            FlickLog.i("nsd", "sleeping trigger=on_stop port=$boundPort")
+                        } else {
+                            FlickLog.i("nsd", "readvertise trigger=on_stop port=$boundPort state=$state")
+                        }
+                        nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", state, pairing.tvId)
                     }
                 }
                 else -> Unit
@@ -503,7 +549,29 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             nsd.unregister()
             lanMonitor.stop()
             wifiAssociations.stop()
+            summoner.stop(changingConfigurations = activity?.isChangingConfigurations == true)
         }
+    }
+
+    // The ON_STOP advert is re-decided while stopped: arming, a latch, the screen
+    // or Low Power Standby, and the LAN address all move it. Not frame-bound, so it
+    // runs while the composition's frame clock is paused.
+    LaunchedEffect(summoner, lanMonitor, lifecycleOwner) {
+        combine(
+            summoner.backgroundReady,
+            lanMonitor.address,
+            lifecycleOwner.lifecycle.currentStateFlow,
+        ) { ready, address, state -> Triple(ready, address, state) }
+            .collect { (ready, address, state) ->
+                // The live state as well as the sampled one: an emission queued
+                // while stopped can be delivered after ON_START has already run.
+                if (state.isAtLeast(Lifecycle.State.STARTED) || lifecycleStarted || boundPort <= 0) return@collect
+                val next = SummonPolicy.stoppedAdvertState(ready, address == boundHost)
+                if (next == stoppedAdvert) return@collect
+                stoppedAdvert = next
+                FlickLog.i("nsd", "readvertise trigger=background_change port=$boundPort state=$next")
+                nsd.register(tvName, boundPort, Build.MODEL ?: "Android TV", next, pairing.tvId)
+            }
     }
 
     // The single owner of bind state. The LAN monitor only WAKES it — a capability
@@ -921,6 +989,23 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         onDispose { RefreshRateHelper.releaseWindow(window) }
     }
 
+    val keepScreenOn = keepScreenOnWhilePresenting(
+        presentingVideo = surfaceMode == PlayerSurfaceMode.VisiblePlayback,
+        castHandshakeInFlight = surfaceMode == PlayerSurfaceMode.CoveredConnecting,
+        pairingRendered = renameTarget == null && pairingSurfaceRendered(
+            stage = stage,
+            showSettings = showSettings,
+            surface = pairingSnapshot.surface,
+            pairedCount = pairingSnapshot.pairedCount,
+        ),
+        // Ship gate G2: `false` here restores the always-on screen.
+        idleMayRest = summonIdleMayRest,
+    )
+    LaunchedEffect(window, keepScreenOn) { ScreenWakeHelper.applyToWindow(window, keepScreenOn) }
+    DisposableEffect(window) {
+        onDispose { ScreenWakeHelper.release(window) }
+    }
+
     val deviceLabel = pairingSnapshot.mostRecentDeviceLabel
 
     // Every %1$s on the connecting, playback, buffering and error surfaces is about the
@@ -1047,11 +1132,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
     // TV Back convention: dismiss the top surface rather than kill the app + the
     // whole cast (finish() would release the player and tear down the servers).
-    BackHandler(
-        enabled = showSettings || pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked ||
-            pairingSnapshot.surface is PairingSurface.Confirming ||
-            stage is MediaStage.Checking || stage is MediaStage.Preparing || stage is MediaStage.Active || stage is MediaStage.Error,
-    ) {
+    val standbyBackConsumed = showSettings || pairingSnapshot.surface is PairingSurface.Open ||
+        pairingSnapshot.surface is PairingSurface.Locked || pairingSnapshot.surface is PairingSurface.Confirming ||
+        stage is MediaStage.Checking || stage is MediaStage.Preparing || stage is MediaStage.Active || stage is MediaStage.Error
+    BackHandler(enabled = standbyBackConsumed) {
         when {
             showSettings -> leaveSettings()
             // Back over a prompt is a refusal, not a dismissal: it is above the
@@ -1070,6 +1154,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             stage is MediaStage.Error -> session.backToStandby()
         }
     }
+    // Back at the root of an armed TV keeps the Activity alive. From 12 the platform
+    // only moves a root task back when the home app launched it; a voice, store or
+    // `am start` launch would finish() it, taking the server and the arming with it.
+    BackHandler(enabled = summonArmed && !standbyBackConsumed) { activity?.moveTaskToBack(true) }
 
     FlickTvTheme {
         // Keep diagnostics inside the same viewport-relative overscan contract as
@@ -1293,6 +1381,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                     // of this composable — see [rememberDiagnosticsLines].
                                     diagnostics = rememberDiagnosticsLines(showDiagnostics),
                                     onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
+                                    openForCasts = openRow,
+                                    onOpenForCasts = { activity?.let(summoner::onRowPressed) },
                                     onClearDiagnostics = { FlickLog.clear() },
                                 )
 

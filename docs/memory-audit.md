@@ -91,6 +91,26 @@ Matches the sender's existing `repeatOnLifecycle` ticker pattern. Changes no mem
 
 ---
 
+### 3.5 — Armed background: "Open when you cast" (measure, then decide)
+
+With "Open when you cast" on, the TV process no longer drops to cached when Flick goes to the background: `CastReadyService` (a `connectedDevice` foreground service) keeps it at foreground-service priority so the paired phone's control connection stays reachable. So whatever the receiver still holds after `ON_STOP` is now held for as long as the TV sits in the background, where before the platform would have frozen or killed it.
+
+Recomposition and `LaunchedEffect` restarts keep running while the Activity is stopped (only the composition frame clock pauses), so the existing `LaunchedEffect(surfaceMode) { playerView = null }` and the telemetry clears still run after the `ON_STOP` teardown. No extra `ON_STOP` nulling was added; the measurement below is what decides whether one is needed.
+
+`dumpsys meminfo com.flick.receiver` (Java Heap, Native Heap, Graphics, TOTAL PSS) in five states:
+
+| State | Java Heap | Native Heap | Graphics | TOTAL PSS |
+| --- | --- | --- | --- | --- |
+| (a) foreground idle | _pending_ | _pending_ | _pending_ | _pending_ |
+| (b) armed, backgrounded 5 min | _pending_ | _pending_ | _pending_ | _pending_ |
+| (c) armed, 4K cast → Stop → Home → 5 min | _pending_ | _pending_ | _pending_ | _pending_ |
+| (d) as (c), feature off (record if cached, frozen or gone) | _pending_ | _pending_ | _pending_ | _pending_ |
+| (e) armed, turned (portrait) 4K cast → Home during playback → 5 min | _pending_ | _pending_ | _pending_ | _pending_ |
+
+**Threshold.** A trim follow-up is owed if, in (c) or (e), Native Heap is more than 15 % above (b), or Graphics more than 8 MB above (b), or TOTAL PSS more than 64 MB above (b). §4's rule still applies: a high Java Heap alone is the `largeHeap` reserve, not a leak. The feature stays opt-in whatever the numbers are.
+
+**Outcome:** _to be recorded from the device run_.
+
 ## 4. Appendix — Measurement & acceptance-test protocol
 
 ```markdown

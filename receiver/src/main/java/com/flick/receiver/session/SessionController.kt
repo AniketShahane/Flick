@@ -14,6 +14,7 @@ import com.flick.receiver.net.PreflightProbe
 import com.flick.receiver.net.ProbeResult
 import com.flick.receiver.player.PlaybackFailureClassifier
 import com.flick.receiver.player.SessionPlayer
+import com.flick.receiver.summon.SummonWaitPolicy
 import com.flick.receiver.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -187,6 +188,8 @@ class SessionController(
     private val lifecycleStarted: () -> Boolean,
     /** Injectable because it is the one step of a load that touches the LAN. */
     private val probe: suspend (String) -> ProbeResult = { url -> PreflightProbe.probe(url) },
+    private val foreground: ForegroundRequest = ForegroundRequest.None,
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() },
 ) : ControlCommands {
     var stage by mutableStateOf<MediaStage>(MediaStage.None)
         private set
@@ -374,36 +377,60 @@ class SessionController(
         startupDeadlineExtended = false
         armStartupDeadline(castId, generation, STARTUP_DEADLINE_MS)
         FlickLog.i("cast", "stage=checking castIdFp=${FlickLog.fp(castId)} src=${FlickLog.endpoint(url)} startMs=$startMs durationMs=$durationMs")
-        val started = SystemClock.elapsedRealtime()
+        val started = clock()
         probeJob = scope.launch {
-            val probeStarted = SystemClock.elapsedRealtime()
-            when (val result = probe(url)) {
-                is ProbeResult.Ok -> {
-                    FlickLog.i("probe", "result=Ok latencyMs=${result.latencyMs}")
-                    if (!gate.isCurrent(castId, generation)) return@launch
-                    if (!lifecycleStarted()) {
-                        fail(castId, generation, CastFailureCode.TV_BACKGROUNDED, retryable = false, beforeReady = true)
-                    } else {
+            val hold = if (!lifecycleStarted()) foreground.holdAwake() else 0L
+            try {
+                val probeStarted = clock()
+                when (val result = probe(url)) {
+                    is ProbeResult.Ok -> {
+                        FlickLog.i("probe", "result=Ok latencyMs=${result.latencyMs}")
+                        if (!gate.isCurrent(castId, generation)) return@launch
+                        if (!lifecycleStarted()) {
+                            val budgetMs = SummonWaitPolicy.budgetMs(clock(), startupDeadlineElapsedMs)
+                            if (budgetMs <= 0L || !foreground.request()) {
+                                fail(castId, generation, CastFailureCode.TV_BACKGROUNDED, retryable = false, beforeReady = true)
+                                return@launch
+                            }
+                            // Not the verdict: STARTED can land in the same main-thread turn as
+                            // the timeout, so only lifecycleStarted() below decides.
+                            foreground.awaitStarted(budgetMs)
+                            if (!gate.isCurrent(castId, generation)) return@launch
+                            if (!lifecycleStarted()) {
+                                foreground.missed()
+                                fail(
+                                    castId,
+                                    generation,
+                                    CastFailureCode.TV_BACKGROUNDED,
+                                    retryable = false,
+                                    beforeReady = true,
+                                    rendered = false,
+                                )
+                                return@launch
+                            }
+                        }
                         controller.recordProbeLatency(result.latencyMs)
                         startPlayer(castId, generation, result.latencyMs, started)
                     }
+                    ProbeResult.Unreachable -> {
+                        FlickLog.w("probe", "result=Unreachable latencyMs=${clock() - probeStarted}")
+                        fail(castId, generation, CastFailureCode.MEDIA_UNREACHABLE, true, beforeReady = true)
+                    }
+                    ProbeResult.ConnectionRefused -> {
+                        FlickLog.w("probe", "result=ConnectionRefused latencyMs=${clock() - probeStarted}")
+                        fail(castId, generation, CastFailureCode.SENDER_NOT_SERVING, true, beforeReady = true)
+                    }
+                    is ProbeResult.HttpError -> {
+                        FlickLog.w("probe", "result=HttpError status=${result.status ?: -1} latencyMs=${clock() - probeStarted}")
+                        fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, result.status, true)
+                    }
+                    ProbeResult.BadResponse -> {
+                        FlickLog.w("probe", "result=BadResponse latencyMs=${clock() - probeStarted}")
+                        fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, beforeReady = true)
+                    }
                 }
-                ProbeResult.Unreachable -> {
-                    FlickLog.w("probe", "result=Unreachable latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
-                    fail(castId, generation, CastFailureCode.MEDIA_UNREACHABLE, true, beforeReady = true)
-                }
-                ProbeResult.ConnectionRefused -> {
-                    FlickLog.w("probe", "result=ConnectionRefused latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
-                    fail(castId, generation, CastFailureCode.SENDER_NOT_SERVING, true, beforeReady = true)
-                }
-                is ProbeResult.HttpError -> {
-                    FlickLog.w("probe", "result=HttpError status=${result.status ?: -1} latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
-                    fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, result.status, true)
-                }
-                ProbeResult.BadResponse -> {
-                    FlickLog.w("probe", "result=BadResponse latencyMs=${SystemClock.elapsedRealtime() - probeStarted}")
-                    fail(castId, generation, CastFailureCode.HTTP_REJECTED, true, beforeReady = true)
-                }
+            } finally {
+                foreground.release(hold)
             }
         }
         return accepted
@@ -417,7 +444,7 @@ class SessionController(
      * timer, and the timer is the one that wins.
      */
     private fun armStartupDeadline(castId: String, generation: Long, budgetMs: Long) {
-        startupDeadlineElapsedMs = SystemClock.elapsedRealtime() + budgetMs
+        startupDeadlineElapsedMs = clock() + budgetMs
         startupDeadlineJob?.cancel()
         startupDeadlineJob = scope.launch {
             delay(budgetMs)
@@ -442,7 +469,7 @@ class SessionController(
         val budgetMs = StartupDeadlinePolicy.budgetAfterRotationRePrepare(
             deadlineElapsedMs = startupDeadlineElapsedMs,
             alreadyExtended = startupDeadlineExtended,
-            nowElapsedMs = SystemClock.elapsedRealtime(),
+            nowElapsedMs = clock(),
         ) ?: return
         startupDeadlineExtended = true
         armStartupDeadline(castId, generation, budgetMs)
@@ -456,7 +483,7 @@ class SessionController(
     override fun replayResult(castId: String): ControlCastResult? = retainedResult?.takeIf { resultCastId(it) == castId }
 
     private fun startPlayer(castId: String, generation: Long, probeLatencyMs: Long, startedElapsedMs: Long) {
-        if (!gate.isCurrent(castId, generation) || SystemClock.elapsedRealtime() >= startupDeadlineElapsedMs) {
+        if (!gate.isCurrent(castId, generation) || clock() >= startupDeadlineElapsedMs) {
             fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, true, beforeReady = true)
             return
         }
@@ -476,11 +503,11 @@ class SessionController(
                 startupDeadlineJob?.cancel()
                 startupDeadlineJob = null
                 stage = MediaStage.Active(castId, lease)
-                FlickLog.i("cast", "stage=active castIdFp=${FlickLog.fp(castId)} startupMs=${SystemClock.elapsedRealtime() - startedElapsedMs}")
+                FlickLog.i("cast", "stage=active castIdFp=${FlickLog.fp(castId)} startupMs=${clock() - startedElapsedMs}")
                 val outcome = ControlCastResult.Ready(
                     castId = castId,
                     probeLatencyMs = probeLatencyMs,
-                    startupMs = SystemClock.elapsedRealtime() - startedElapsedMs,
+                    startupMs = clock() - startedElapsedMs,
                 )
                 retainedResult = outcome
                 ready?.invoke(castId, outcome.probeLatencyMs, outcome.startupMs)
@@ -504,7 +531,7 @@ class SessionController(
         val retryDelay = StartupRetryPolicy.delayForRetry(
             completedRetries = startupRetries,
             isTransientIo = PlaybackFailureClassifier.isStartupRetryable(error),
-            nowMs = SystemClock.elapsedRealtime(),
+            nowMs = clock(),
             deadlineMs = startupDeadlineElapsedMs,
         )
         if (retryDelay != null) {
@@ -583,9 +610,13 @@ class SessionController(
         status: Int? = null,
         beforeReady: Boolean,
         detail: ReceiverFaultDetail = ReceiverFaultDetail.None,
+        rendered: Boolean = true,
     ) {
         if (!gate.isCurrent(id, generation)) return
         FlickLog.w("cast", "fail code=${code.wire} detail=$detail retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
+        // Safe from inside the probe coroutine itself: nothing suspends after fail() there,
+        // and its finally still releases the hold.
+        probeJob?.cancel(); probeJob = null
         controller.stop()
         startupDeadlineJob?.cancel()
         startupDeadlineJob = null
@@ -593,7 +624,16 @@ class SessionController(
         retainedResult = outcome
         // [detail] never reaches the wire: the frame below carries [code] alone, which is
         // the whole of the vocabulary the sender validates against.
-        stage = MediaStage.Error(id, code, controlLeaseGeneration, detail, beforeReady)
+        // Unrendered only for a summon that missed: nobody saw this cast on the TV, and a
+        // trampoline that lands late must open Flick on Idle, not on a card for a cast
+        // the phone has already reported and moved past.
+        if (rendered) {
+            stage = MediaStage.Error(id, code, controlLeaseGeneration, detail, beforeReady)
+        } else {
+            stage = MediaStage.None
+            title = null
+            seekTargetMs = 0L
+        }
         terminal?.invoke(id, code, retryable, status, beforeReady)
         // Keep only the immutable result for a duplicate replay; no player or
         // active ownership survives a terminal failure.
@@ -790,7 +830,7 @@ class SessionController(
             seekTargetMs = position
             return
         }
-        when (SeekReconciler.phaseOf(pending, position, SystemClock.elapsedRealtime())) {
+        when (SeekReconciler.phaseOf(pending, position, clock())) {
             SeekPhase.InFlight -> Unit
             SeekPhase.Settling -> seekTargetMs = position
             SeekPhase.Landed -> {
@@ -805,7 +845,7 @@ class SessionController(
         pendingSeek = PendingSeek(
             targetMs = targetMs,
             originMs = originMs,
-            issuedAtElapsedMs = SystemClock.elapsedRealtime(),
+            issuedAtElapsedMs = clock(),
         )
     }
 

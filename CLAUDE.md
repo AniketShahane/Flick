@@ -96,5 +96,10 @@ committed.
   band warning on the phone; generous retry policy + bounded auto-recovery + pre-flight
   probe with specific diagnosis + TV-side Wi-Fi telemetry on the TV) exists so plain
   home-Wi-Fi streaming never silently degrades.
+- "Open when you cast" (TV Settings, opt-in, off by default): a `connectedDevice` foreground
+  service keeps the backgrounded receiver process reachable, and a cast brings MainActivity
+  forward through a throwaway `WakeActivity` trampoline that needs "Display over other apps".
+  Android blocks background launches **silently**, so success is judged only by the Activity
+  reaching STARTED; anything unverified falls back to today's `tv_backgrounded`. No wire change.
 - Verified TV hardware: Google TV Streamer (Wi-Fi 5, MediaTek) — decoders `c2.mtk.avc.decoder`,
   `c2.mtk.dvhe.sth.decoder`. Prefer DV Profile 8.1 in MP4; 2.4 GHz cannot sustain 4K VBR peaks.

@@ -28,14 +28,14 @@ class BackupExclusionsTest {
 
     @Test fun everySecretBearingPrefsFileIsExcludedFromCloudBackup() {
         val excluded = sharedPrefExcludes(fullBackupSection(xml("backup_rules.xml")))
-        assertExcluded(SECRET_BEARING, excluded, "backup_rules.xml (cloud backup)")
+        assertExcluded(SECRET_BEARING + THIS_TV_ONLY, excluded, "backup_rules.xml (cloud backup)")
     }
 
     @Test fun everySecretBearingPrefsFileIsExcludedFromBothTransferPaths() {
         val root = xml("data_extraction_rules.xml")
         for (section in listOf("cloud-backup", "device-transfer")) {
             val excluded = sharedPrefExcludes(childSection(root, section))
-            assertExcluded(SECRET_BEARING, excluded, "data_extraction_rules.xml <$section>")
+            assertExcluded(SECRET_BEARING + THIS_TV_ONLY, excluded, "data_extraction_rules.xml <$section>")
         }
     }
 
@@ -50,7 +50,7 @@ class BackupExclusionsTest {
                 "is not reading the sources it thinks it is",
             found.isNotEmpty(),
         )
-        val known = SECRET_BEARING + CARRIED_DELIBERATELY.keys
+        val known = SECRET_BEARING + THIS_TV_ONLY + CARRIED_DELIBERATELY.keys
         val unclassified = found - known
         assertEquals(
             "unclassified SharedPreferences file(s) in $MODULE: $unclassified. Decide whether " +
@@ -60,9 +60,9 @@ class BackupExclusionsTest {
             emptySet<String>(),
             unclassified,
         )
-        val vanished = SECRET_BEARING - found
+        val vanished = (SECRET_BEARING + THIS_TV_ONLY) - found
         assertEquals(
-            "SECRET_BEARING names $vanished, which no getSharedPreferences call in $MODULE " +
+            "SECRET_BEARING or THIS_TV_ONLY names $vanished, which no getSharedPreferences call in $MODULE " +
                 "opens any more. Either the store was renamed — in which case the exclusion " +
                 "paths in res/xml now protect nothing — or it is gone and this list is stale.",
             emptySet<String>(),
@@ -76,8 +76,8 @@ class BackupExclusionsTest {
         val missing = required.map { "$it.xml" }.filterNot { it in excluded }
         if (missing.isNotEmpty()) {
             fail(
-                "$where does not exclude $missing. That file holds the 256-bit pairing key of " +
-                    "every phone this TV admits; without the exclusion it is uploaded verbatim. " +
+                "$where does not exclude $missing. SECRET_BEARING and THIS_TV_ONLY say why each " +
+                    "must never leave this TV; without the exclusion it is uploaded verbatim. " +
                     "Present exclusions were: ${excluded.sorted()}",
             )
         }
@@ -171,6 +171,17 @@ class BackupExclusionsTest {
          * that TV the right to be driven by phones that never paired with it.
          */
         val SECRET_BEARING = setOf("flick_pairing")
+
+        /**
+         * Prefs files that hold no credential but must still stay on the TV that
+         * wrote them, so they are excluded exactly as the credential stores are.
+         *
+         * `flick_open_for_casts` is the viewer's "Open when you cast" choice and this
+         * TV's launch-strike record. Below Android 10 no grant stands between that
+         * choice and a TV that opens itself for casts, so a restore would switch the
+         * feature on for a TV whose owner never chose it.
+         */
+        val THIS_TV_ONLY = setOf("flick_open_for_casts")
 
         /**
          * Prefs files that carry no credential, with the reason each is allowed to

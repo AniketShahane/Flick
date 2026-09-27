@@ -328,7 +328,7 @@ The binding is one immutable `(engine, host, port)` tuple published only after t
 
 Connectivity callbacks are re-sample triggers, not rebind events. `LanBindingMonitor` reports an **address**; `onCapabilitiesChanged` fires for RSSI, link speed, validation and `NOT_SUSPENDED` on a link that never changed address, and those updates carry no address at all. A single reconciler owns bind state, is woken by the distinct address flow with a slow 10 s safety-net tick, and resolves a capability burst on an unchanged address to "do nothing".
 
-A visibility change (screensaver, Home, a system dialog) no longer tears anything down. `ON_STOP` releases the decoder, publishes an idle frame, sends the `tv_backgrounded` terminal and closes the pairing surface, then **re-advertises with TXT `state=sleeping` while keeping the socket bound and the service registered**. `ReceiverBindingGate` already refuses `loadMedia` while backgrounded, so the posture is unchanged: the socket stops accepting new casts instead of vanishing. `ON_START` re-advertises `state=ready` on the still-live port. NSD has no update primitive, so a state flip re-registers under the **same service name and the same port**; the sender must treat a same-name re-registration as an update, never as a loss.
+A visibility change (screensaver, Home, a system dialog) no longer tears anything down. `ON_STOP` releases the decoder, publishes an idle frame, sends the `tv_backgrounded` terminal and closes the pairing surface, then **re-advertises with TXT `state=sleeping` while keeping the socket bound and the service registered**. `ReceiverBindingGate` only stops rebinding and advertising while backgrounded; it does not refuse `loadMedia`. A cast that still arrives is refused by the check after the probe (`tv_backgrounded`), unless the TV is armed for "Open when you cast", in which case the advertisement is `state=ready` and the cast brings Flick forward — see [Casting opens Flick on the TV](#casting-opens-flick-on-the-tv). `ON_START` re-advertises `state=ready` on the still-live port. NSD has no update primitive, so a state flip re-registers under the **same service name and the same port**; the sender must treat a same-name re-registration as an update, never as a loss.
 
 ## Launch and initial pairing
 
@@ -774,7 +774,77 @@ Control connection, cast ID, and receiver cast generation guard every queued mut
 
 `stop(castId)` is the canonical terminal command for the current Checking/Preparing or Active cast. The receiver clears player/session ownership, sends cast-correlated `stopped`, and replays that retained result for a duplicate stop. The sender reducer treats matching `stopped` as terminal, runs cast-correlated foreground-service cleanup, and returns to Library; local cleanup never waits indefinitely for the acknowledgement. `cancelLoad` remains the sender's best-effort pre-ready cancellation path; local TV Back uses the same stopped terminal path rather than silently clearing an active cast.
 
-TV background, LAN loss/change, control stop/loss, cancellation, and terminal failure invalidate the session before stopping/clearing media items, URL, title, startup callback, retry state, and decoder ownership. While backgrounded the TV stays bound and advertised as `state=sleeping`, and `ReceiverBindingGate` refuses `loadMedia`; the socket accepts no new cast. Foreground return requires a fresh authenticated cast; v2 has no background playback resume. The phone reads that advertisement beside a live link as Flick closed on the TV, and checks the socket before trusting a cast to it — see [A held socket is checked before it is trusted](#a-held-socket-is-checked-before-it-is-trusted).
+TV background, LAN loss/change, control stop/loss, cancellation, and terminal failure invalidate the session before stopping/clearing media items, URL, title, startup callback, retry state, and decoder ownership. While backgrounded the TV stays bound and advertised as `state=sleeping`, and the check after the probe refuses a new cast with `tv_backgrounded` (`ReceiverBindingGate` only stops rebinding and advertising). An armed TV instead advertises `state=ready` and brings Flick forward for a cast — see [Casting opens Flick on the TV](#casting-opens-flick-on-the-tv). Foreground return requires a fresh authenticated cast; v2 has no background playback resume. The phone reads that advertisement beside a live link as Flick closed on the TV, and checks the socket before trusting a cast to it — see [A held socket is checked before it is trusted](#a-held-socket-is-checked-before-it-is-trusted).
+
+### Casting opens Flick on the TV
+
+"Open when you cast" is a TV-side, opt-in setting (TV **Settings › Open when you cast**, off by default). When it is on and the TV allows it, a cast from a paired phone to a TV where Flick is in the background, or where the TV is asleep, brings Flick to the front by itself (waking the box if needed) and plays. Nothing about it is on the wire: the phone sends the same `loadMedia`, and a TV that cannot open itself answers with the same `tv_backgrounded` it always has. A TV that is off, lacks access or refuses at cast time (R0–R2 and the R3 refusals below) answers at the same instant, through the same `fail(...)` call; a launch the platform silently dropped (R3b) answers up to 8 s later, through `fail(..., rendered = false)`, with stage `None` rather than `Error`. That wait is the feature's main cost.
+
+Two things stopped a backgrounded TV taking a cast, and each has one fix:
+
+- **The process drops to cached, then gets frozen or killed.** `CastReadyService` is a `connectedDevice` foreground service. It keeps the paired phone's control connection (the Ktor listener in this process) reachable while Flick is in the background, so a cast can open the app. It is started only while `MainActivity` is `STARTED` (from `ON_START` or the Settings row), is `START_NOT_STICKY`, and has no boot or package-replaced receiver.
+- **The refusal after the probe.** `SessionController` now asks a `ForegroundRequest` seam (`ForegroundSummoner`) to bring the Activity forward and then waits for `STARTED`. A background launch can be dropped silently, so success is judged only by `MainActivity`'s own Lifecycle reaching `STARTED` — never by `startActivity` returning.
+
+**The ladder**, decided on main inside `request()`, after a probe `Ok`. Access comes from `SummonPolicy.overlayAccess`: `NotNeeded` below API 29 (no background-launch restriction), `Granted` when "Display over other apps" is on, `Unavailable` on a low-RAM TV, a TV whose overlay settings screen does not resolve, or a Fire TV, and `Grantable` otherwise.
+
+| Rung | When | Outcome |
+| --- | --- | --- |
+| R0 Off | the default | exactly today: `sleeping` on `ON_STOP`, `tv_backgrounded` right after the probe, stage `Error`, screen always on; no service, watcher or wake lock, and no binder call on the cast path |
+| R1 Unavailable | access `Unavailable` | as R0; the Settings row is hidden (a Fire TV granted by `adb` reads `Granted`) |
+| R2 Needs permission | access `Grantable`, including a permission revoked after enabling | as R0; the row reads "Turn on Flick in Display over other apps". Pressing it saves the choice and opens that list in Flick's own task, so Back returns to Flick; an `ON_START` that still finds no grant (the viewer declined, or revoked it later) turns the choice off again, so a grant made later for any other reason never arms it unasked. A TV where that list fails to open hides the row for the rest of the process and turns the choice off |
+| R3 Armed | enabled, access `NotNeeded` or `Granted`, not blocked | cast-time refusals (`stale_address`, `locked`, `latched`, or no budget) end in today's immediate `tv_backgrounded`; otherwise the summon runs and either opens (R3a) or misses (R3b) |
+| R4 Unreachable | process killed, force-stopped or updated; composition disposed; after a reboot until Flick is opened; network down in deep standby | no TV code runs; the phone's liveness ping and unreachable faces apply, exactly today |
+
+A secure lock screen is refused (`locked`) before any launch; the TV is never woken to one. A LAN address that the next `ON_START` reconcile would replace is refused (`stale_address`), so the TV is not woken just to send `no_compatible_lan`. A probe failure sends the probe's own code as today: the TV is never woken for a cast that cannot play.
+
+**Budgets.** Nothing summon-related runs inside the 4 s `MainHandoff` adoption: the hold and the request both run in the probe coroutine after `onLoadMedia` has returned `Accepted`.
+
+| Budget | Owner | Effect |
+| --- | --- | --- |
+| `MainHandoff` 4 s | TV | untouched |
+| Phone accept wait 10 s | phone | untouched; accept precedes the probe |
+| TV startup deadline 18 s | TV | the wait is `min(8 s, deadline − now − 8 s)`, floored at 0, so it ends at least 8 s before the deadline and `startup_timeout` can never beat the `tv_backgrounded` verdict; after a successful summon 10–14 s remain for the first frame |
+| Phone first-frame wait 18 s | phone | same epoch, same bound |
+| Probe 6 s | TV | serial, before the summon, under the probe-time wake lock |
+| Wake lock `flick:summon` | TV | taken at probe start only when armed, stopped and unlatched; released in the probe coroutine's `finally` on every branch; 12 s backstop |
+
+The probe-time wake lock exists because the phone's 10 s and 18 s waits run in real time: the TV's startup deadline and the summon wait are `delay()`s, which run on uptime and stall while the CPU is suspended, while `elapsedRealtime` (and the phone's clocks) keep running. That is why `sleptMs` is the growth of `elapsedRealtime − uptimeMillis`. The `summon request` and `summon missed` lines log `sleptMs` to show whether it ever did.
+
+**The trampoline.** `request()` starts `WakeActivity` — a translucent, non-exported, Compose-free Activity with its own `taskAffinity` — with `NEW_TASK | CLEAR_TASK | NO_ANIMATION`. `CLEAR_TASK` only ever replaces a previous wake task; it is never used on `MainActivity`'s task. `WakeActivity` turns the screen on and shows when locked (window flags on API 26), dismisses a non-secure keyguard, and once it has focus hops to `MainActivity` with `NEW_TASK | CLEAR_TOP | SINGLE_TOP | NO_ANIMATION`, which brings the existing task and the same `MainActivity` instance forward, then finishes. It gives up `WAKE_GIVE_UP_MS` (10 s) after the request, not after its own `onCreate`.
+
+**Cancellation abandons.** `cancelLoad`, `stop`, a superseding `loadMedia` (including a subtitle reload before `Active`), control loss, LAN teardown and composition disposal cancel the probe job; the cancellation passes through `awaitStarted`, which abandons the attempt. A `WakeActivity` not yet created finishes in `onCreate` without turning the screen on; one already created gives up at focus. The TV does not switch to Flick, and no second terminal is sent. `fail()` from any path now also cancels the probe job, so a wait never outlives its cast.
+
+**Misses.** When the wait ends without `STARTED`, the TV sends the same `tv_backgrounded` and returns to Idle (stage `None`, not `Error`), and the background period is latched: every further cast before Flick is next opened is refused instantly. A miss is classified:
+
+- **Late** — the `WakeActivity` resumed, so the launch was allowed but did not finish in time. No strike.
+- **Asleep** — it never resumed and the TV was not interactive when asked. No strike.
+- **Blocked** — it never resumed on an interactive TV. A strike. Two in a row set `blocked`: the service stops, the TV advertises `sleeping`, and the row reads "This TV didn't let Flick open · press to try again" until the viewer presses it or the OS fingerprint or app version changes.
+
+A Blocked miss whose `WakeActivity` resumes later is corrected to Late: the strikes reset, and `blocked` is cleared if that strike set it. A missed (not cancelled) attempt stays wanted, so a trampoline that arrives late still opens Flick on Idle, and that `ON_START` clears the latch for the phone's retry.
+
+**Leaving during a cast latches too.** An `ON_STOP` while a cast is live latches the background period when the feature is on: `reason=bounced` within 5 s of `summon opened` and before `Active` (a launcher or profile picker taking the screen on wake), otherwise `reason=left_during_cast` (Home or Back during a cast, a film that has ended included). A stop while the TV is not interactive (sleep, HDMI-CEC standby, the sleep timer) does not latch: it left no app in front to protect. Either way the stop sends the `tv_backgrounded` terminal for a live cast, as it always has. While latched the TV advertises `sleeping` and refuses casts, so a phone Retry never pushes Flick back over the app the viewer chose.
+
+**Back at the root.** An armed TV moves its task to the back on Back from the idle root, on every Android version and every launch path. Unarmed, the platform decides as before: on 12+ it moves a root task back only when the home app launched it.
+
+**NSD while backgrounded.** `ON_STOP` advertises `ready` when the TV is armed, unlatched, on its bound address, and not in Low Power Standby with the screen off; otherwise `sleeping`. A collector re-decides that while stopped (arming, latch, screen, Low Power Standby, address) and re-registers only on a change. `ON_START` skips its `ready` re-registration when the TV already advertised `ready` while stopped and the advertiser is still live, so NSD is not re-registered in the middle of a summoned cast. No TXT key or `state` value was added.
+
+**Keep-screen-on.** `MainActivity` no longer sets `FLAG_KEEP_SCREEN_ON` for its whole life; `ReceiverApp` applies `keepScreenOnWhilePresenting`. Unarmed, the screen is always on, as before. Armed, idle, Settings and error surfaces may dim or fall into the screensaver, because a cast can wake the TV; a film (playing, paused or ended, for as long as the cast is `Active`), the connecting handshake and a pairing code keep it on, since a screensaver over a live cast stops the Activity and ends the cast as `tv_backgrounded`. With Low Power Standby on, or with G1 off, a sleeping TV cannot hear a cast, so `ForegroundSummoner.idleMayRest` stays false and the screen stays on as when unarmed.
+
+**Ship gates.**
+
+- **G1** — the "even if the TV is asleep" summary and `SummonPolicy.ADVERTISE_READY_WHILE_SCREEN_OFF = true` ship only if casts to a TV asleep for 90 s, 10 min and 1 h all open and play. Otherwise the constant becomes `false`, the summary becomes "Casting opens Flick here", and every screen-off advertises `sleeping`. Outcome: _to be recorded from the device run_.
+- **G2** — `idleMayRest = summonIdleMayRest` ships only if a cast over the screensaver opens Flick and the 1 h asleep cast passes. Otherwise `ReceiverApp` passes `idleMayRest = false` (today's always-on screen). Outcome: _to be recorded from the device run_.
+
+**Measured results.** _To be recorded from the device run_: `waitedMs` awake over Home and over another app, asleep at 90 s / 10 min / 1 h, and over the screensaver; `sleptMs`; whether the control socket survived the Wi-Fi re-association on wake; the Android 16 emulator background-launch data point.
+
+**Notes.**
+
+- The phone's automatic re-casts (control recovery, at most two in 60 s, and the block-wait re-cast) are ordinary `loadMedia` and will also open Flick unless latched. This is accepted.
+- An app update, a force-stop or any process death turns the feature off until Flick is next opened: `START_NOT_STICKY` and no boot or package-replaced receiver means nothing restarts it without a server.
+- A `locked` refusal does not change the advertisement, so the phone may show "Ready" while every cast is refused.
+- The choice and the strike record (`flick_open_for_casts`) are excluded from cloud backup and device transfer, like `flick_pairing`: below Android 10 no grant stands between a restored choice and a TV that opens itself, so a restore would switch the feature on for a TV whose owner never chose it.
+- `POST_NOTIFICATIONS` is not requested, so on Android 13+ the service's notification is not shown; the Settings row is the visible state.
+- Pairing a new phone still needs Flick in front: a `Checking` stage never mints a code.
 
 ### Control-socket transport failures
 
@@ -794,7 +864,7 @@ The face that appears is split on what the terminal can prove about the drop, be
 
 ### A held socket is checked before it is trusted
 
-Back on the TV does not finish the receiver's root activity on Android 12+: it moves the task to the back, and `ON_STOP` deliberately keeps the control socket open (sending `tv_backgrounded` only if a cast was live) and re-advertises `state=sleeping`. Once the platform freezes or kills that backgrounded app nothing reads the socket, and the phone's only detector was the watchdog above — 30–45 s, and only while the phone process is awake. `flickToTv` re-dialed only when no authenticated endpoint existed, so a cast in that window handed `loadMedia` to a dead socket (`send()` answers *queued*, not *delivered*), failed two seconds later as `startup_timeout`, and every retry reused the same socket until the watchdog fired — the user-visible "after a while it can't cast".
+Back on the TV does not finish the receiver's root activity on Android 12+ when the home screen launched it: it moves the task to the back (an armed TV moves its task to the back on every version and every launch path), and `ON_STOP` deliberately keeps the control socket open (sending `tv_backgrounded` only if a cast was live) and re-advertises `state=sleeping`. Once the platform freezes or kills that backgrounded app nothing reads the socket, and the phone's only detector was the watchdog above — 30–45 s, and only while the phone process is awake. `flickToTv` re-dialed only when no authenticated endpoint existed, so a cast in that window handed `loadMedia` to a dead socket (`send()` answers *queued*, not *delivered*), failed two seconds later as `startup_timeout`, and every retry reused the same socket until the watchdog fired — the user-visible "after a while it can't cast".
 
 The phone now uses the authenticated `ping`/`pong` pair v2 has always carried. **No frame, field, capability or failure code was added and the receiver is unchanged** — the wire is frozen. The receiver answers `ping` from its Ktor worker rather than its main thread, so a TV busy decoding still answers and one whose app is frozen does not.
 
@@ -803,7 +873,7 @@ The phone now uses the authenticated `ping`/`pong` pair v2 has always carried. *
 - **Dead means re-dial.** `flickToTv` runs the check only when a socket is held and has not spoken inside the freshness window. It runs as a pairing attempt with the request queued in `pendingCast`, exactly as a resume does, so Cancel (`invalidatePairingAttempt`) and every other dial cancel it; a second tap while it runs replaces the queued request and spends no second ping; Stop drops a queued cast as well. `ALIVE` or `UNKNOWN` → `startCast` as before. `DEAD` → any live cast is ended locally first (no remote stop — its socket is the dead one), the line is retired, and `flickToTv` is re-entered, which takes the resume path with its unpaired and `needsRepair` handling unchanged. `onControlLost` ends a cast quietly — no recovery re-cast, no face — whenever another cast is queued behind it, because that cast is being replaced. The check draws no UI of its own, like the resume it may lead into, and is bounded at 1.5 s. The recovery re-cast and the block-wait retry are not gated: both run only after the old socket is already gone, so they take the resume path directly.
 - **A line that just proved dead is hung up.** A startup that fails with `load_not_sent`, or with `load_unanswered` from the ten-second `loadAccepted` wait — never the 18-second `loadReady` wait, which an accept already proved — **and** heard nothing on the socket since `loadMedia` retires that socket after the terminal is published, or after the silent retry's teardown (`ControlLiveness.hangsUpAfterStartupFailure`). That cleanup has already cleared the current cast, so the teardown is not read as a loss to recover from, and neither the paired TV nor its pairing's trust is touched. The next dial — the silent retry's, or the next tap's — goes out afresh.
 - **Foreground check.** `onStart()` (the activity's first composition and the Connect screen) and `onForeground()` (the activity's `ON_START`) check a held socket once, and only when no cast is live, starting or queued, no dial is in flight and no check is already running (`ControlLiveness.checksHeldLine`) — the two callers overlap, and a second check would spend budget to learn nothing. A dead socket is retired **quietly**: no route change, no face, no haptic, no re-dial. The Connect row stops calling the TV connected and the next cast resumes. Nothing probes on a timer; a router block (research/03) is not shortened by asking it more often.
-- **The Connect row tells the truth about a closed TV.** A connected TV that advertises `sleeping` is Flick closed on the TV: the socket still answers, but every new cast gets `tv_backgrounded`. `DeviceRow` therefore no longer lets the link overrule that advertisement (`deviceRowFace`): the row drops the Connected badge for the asleep outline and reads "Flick is closed · open it on the TV". NSD is a hint and can be stale, so nothing blocks a cast on it — the gate and the receiver's `tv_backgrounded` answer stay authoritative. The library pill and the detail CTA are deliberately unchanged: they name the paired TV, have never claimed anything about the socket, and read no advertisement.
+- **The Connect row tells the truth about a closed TV.** A connected TV that advertises `sleeping` is Flick closed on the TV: the socket still answers, but every new cast gets `tv_backgrounded`. `DeviceRow` therefore no longer lets the link overrule that advertisement (`deviceRowFace`): the row drops the Connected badge for the asleep outline and reads "Flick is closed · open it on the TV". `ready` from a backgrounded TV means it is armed and a cast will open Flick; `sleeping` still means it will not, including while the TV is latched after a miss or after the viewer left a cast. NSD is a hint and can be stale, so nothing blocks a cast on it — the gate and the receiver's `tv_backgrounded` answer stay authoritative. The library pill and the detail CTA are deliberately unchanged: they name the paired TV, have never claimed anything about the socket, and read no advertisement.
 
 ### Waiting out a router that has stopped forwarding
 
@@ -835,7 +905,22 @@ Pairing preferences are excluded from legacy backup, cloud backup, and device tr
 
 Both modules ship one small logger with an identical shape: `FlickLog` in `receiver/util` under tag **`FlickTV`**, and `FlickLog` in `sender/util` under tag **`FlickPhone`**. Line format is `[area] key=value key=value`.
 
-The shared core `area` vocabulary is `bind`, `lan`, `nsd`, `ws`, `auth`, `pair`, `cast`, `probe`, `player`, and `http`; the receiver additionally uses `subtitle` for selection-only MIME diagnostics.
+The shared core `area` vocabulary is `bind`, `lan`, `nsd`, `ws`, `auth`, `pair`, `cast`, `probe`, `player`, and `http`; the receiver additionally uses `subtitle` for selection-only MIME diagnostics, and `summon` for "Open when you cast".
+
+**`summon` (receiver).** No line carries an address, a token or a cast id; attempts are a per-composition counter, so ids restart at 1 when the composition is rebuilt.
+
+- `[summon] access=… enabled=… blocked=… armed=…` — at every `ON_START`.
+- `[summon] access changed access=…` — the overlay permission changed while the watcher was registered.
+- `[summon] service start`, `[summon] service stop reason=off|no_access|blocked`, `[summon] service failed reason=<exception simple name>`.
+- `[summon] refused reason=off|no_access|blocked|stale_address|locked|latched|start_threw` — the cast gets today's immediate `tv_backgrounded`.
+- `[summon] request attempt=… sdk=… interactive=… svc=… sleptMs=…` — the trampoline was started.
+- `[summon] wake created|hop attempt=…`, `[summon] wake giveup attempt=… reason=timeout|abandoned|keyguard`.
+- `[summon] opened attempt=… waitedMs=…` — `MainActivity` reached `STARTED`.
+- `[summon] abandoned attempt=…` — the cast was cancelled during the wait.
+- `[summon] missed attempt=… kind=blocked|late|asleep waitedMs=… strikes=… sleptMs=…`, `[summon] blocked strikes=…`, `[summon] corrected attempt=… kind=late unblocked=…`.
+- `[summon] latched reason=left_during_cast|bounced`.
+- `[summon] row pressed from=<row>`, `[summon] settings unavailable`.
+- `[nsd] readvertise trigger=on_stop|background_change port=… state=ready|sleeping` — the advertisement while stopped; `[nsd] sleeping trigger=on_stop` is still written when `ON_STOP` advertises `sleeping`.
 
 `v`/`d` are gated on `BuildConfig.DEBUG` (both modules set `buildFeatures { buildConfig = true }`; AGP 8 defaults it to false and generates no class at all). `i`/`w`/`e` always emit. Every level appends to a 200-entry in-memory ring buffer exposed as a `StateFlow`, which is never persisted to disk or backed up. Helpers: `fp(value)` returns an 8-hex SHA-256 prefix; `endpoint(url)` returns `scheme://host:port` only, because the path is the media token.
 
@@ -845,7 +930,7 @@ The shared core `area` vocabulary is `bind`, `lan`, `nsd`, `ws`, `auth`, `pair`,
 
 Log message bodies are English literals in code. This is developer output, not user-facing copy, and is a recorded exception to the strings.xml rule; the diagnostics UI chrome around them is still a string resource.
 
-Every pre-auth rejection names itself locally (`not_bound`, `port_unbound`, `host_pin`, `peer_not_private`, `preauth_limit`, `auth_timeout_or_denied`), and every lifecycle edge that touches the binding carries a named trigger (`on_start`, `on_stop`, `no_lan_address`, `addr_changed`, `dispose`). The wire bytes are unchanged: reasons are logged locally only.
+Every pre-auth rejection names itself locally (`not_bound`, `port_unbound`, `host_pin`, `peer_not_private`, `preauth_limit`, `auth_timeout_or_denied`), and every lifecycle edge that touches the binding carries a named trigger (`on_start`, `on_stop`, `background_change`, `no_lan_address`, `addr_changed`, `dispose`). The wire bytes are unchanged: reasons are logged locally only.
 
 **Control-socket frame trace (receiver).** The authenticated read loop writes three `i` lines, all stamped `atMs` from `SystemClock.elapsedRealtime()` — monotonic, because a clock step mid-cast would otherwise invent or erase a delay. `i` and not `v` because `FlickLog.v` reaches logcat only under `BuildConfig.DEBUG`, and a stall of this kind is reproduced on release builds; a line that exists only in the build nobody hits the bug on is not instrumentation:
 

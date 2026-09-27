@@ -40,6 +40,8 @@ NSD/mDNS names, addresses, and `tvId` values are hints, not identity. The sender
 
 Every playback mutation is guarded by control-session and cast generations. A stale socket's lease-checked loss callback cannot clear its successor; lifecycle, LAN-loss, and endpoint-rebind paths instead use unconditional local teardown because the TV itself is withdrawing authority. While a cast is preparing or active, a second mutually authenticated phone receives `busy(active_cast)` and cannot displace the owner.
 
+When the TV's owner turns on **Open when you cast** (TV Settings, off by default), a paired credential also lets that phone wake the TV and bring Flick to the front over another app, by casting to it. It uses the same authenticated cast and adds no frame, field or capability; it never opens Flick over a secure lock screen. Forgetting the phone on the TV revokes it, and turning the setting off removes it for every phone.
+
 Accepted residual P2: v2 has `busy` but no positive `available` frame. After a valid `paired`/`resumed`, the sender waits a fixed 250 ms for an immediate busy disposition, then treats silence as available. A delayed busy can briefly start sender UI/foreground-service work before the ordinary terminal cleanup runs, but the receiver's ownership mutex never grants that phone the active cast. A future protocol revision may add an explicit `available|busy` disposition.
 
 ## Custom-scheme limitation
@@ -66,7 +68,7 @@ Never record pairing key/code, media token/full URL, HMAC nonce/proof, the raw d
 
 Bound host/port and the observed peer IP are deliberately **not** on that list. Both modules' `FlickLog` redaction contract names them safe at any level, because a private LAN address is what makes a binding or pairing fault diagnosable at all, and the log ring is a bounded in-memory buffer that never leaves the device. The permitted transient surfaces are TV/phone pairing UI for host/port/code and library/active playback UI for title.
 
-Legacy full-backup and Android 12+ cloud/device-transfer rules exclude sender `flick_pairings.xml` and receiver `flick_pairing.xml`; migration therefore requires re-pairing. The sender foreground notification is private, shows generic localized direct-play status only, and uses a unique immutable `castId`-correlated Stop intent without URL/token/title extras. Diagnostics may retain redacted timing, HTTP status, link-quality, decoder, and buffer/recovery measurements.
+Legacy full-backup and Android 12+ cloud/device-transfer rules exclude sender `flick_pairings.xml` and receiver `flick_pairing.xml`; migration therefore requires re-pairing. Receiver `flick_open_for_casts.xml` is excluded too, so "Open when you cast" is only ever on for a TV whose owner turned it on there. The sender foreground notification is private, shows generic localized direct-play status only, and uses a unique immutable `castId`-correlated Stop intent without URL/token/title extras. Diagnostics may retain redacted timing, HTTP status, link-quality, decoder, and buffer/recovery measurements.
 
 ## Current assurance status
 

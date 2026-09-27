@@ -160,3 +160,22 @@ generated:
 That sentence is the whole reason the video exists. It must be legible, correctly spelled,
 and unmistakably authored — which is exactly why it is added in an editor and never asked of
 a generative model.
+
+---
+
+## TV foreground service demo — a real capture, not a generation
+
+Play's foreground-service declaration for the TV app's `connectedDevice` service needs a
+demo video. Unlike the explainer above, this one is **evidence**, so it is a real recording
+of the real apps (`adb screenrecord` on the TV, and on the phone for the cast), never a
+generated shot. One continuous take per step keeps it credible.
+
+1. On the TV, open Flick → **Settings** → move to **Open when you cast** and turn it on.
+   If the row reads "Turn on Flick in Display over other apps", press it, turn Flick on in
+   that list, and press Back; the row then reads on.
+2. Press **Home** on the TV remote. The Google TV home screen is in front.
+3. On the phone, open Flick, choose a video and cast it to the TV.
+4. Flick comes to the front on the TV by itself and the video plays.
+5. Stop the cast. On the TV, open Flick → **Settings** → turn **Open when you cast** off.
+6. Press **Home** on the TV and cast again from the phone. The phone reports that the TV
+   app is closed, and the TV stays on the home screen.
