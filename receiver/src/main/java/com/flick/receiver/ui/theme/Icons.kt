@@ -239,7 +239,7 @@ object FlickIcons {
 fun BrandMark(
     modifier: Modifier = Modifier,
     size: Dp = 35.dp,
-    tint: Color = FlickColor.PrimaryOnDark,
+    tint: Color = if (LocalHouseLit.current) FlickRoom.Primary else FlickColor.PrimaryOnDark,
     streakTint: Color = FlickColor.Spark,
     withStreaks: Boolean = true,
 ) {

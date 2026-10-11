@@ -24,17 +24,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
+import com.flick.receiver.ui.theme.LocalHouseLit
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.glassChrome
 import com.flick.receiver.ui.theme.glassPanel
@@ -101,14 +105,15 @@ fun GlassPanel(
     // on each redraw. It is a pure function of fractional stops, so one instance
     // serves every size.
     val topHighlight = remember { panelTopHighlightBrush() }
+    val lit = LocalHouseLit.current
 
     Column(
         modifier = modifier
             .then(entrance)
-            .glassTone(tone, shape, borderColor)
+            .then(if (lit) Modifier.roomCard(tone, shape, borderColor) else Modifier.glassTone(tone, shape, borderColor))
             .drawWithContent {
                 drawContent()
-                if (showTopHighlight) {
+                if (showTopHighlight && !lit) {
                     drawRect(
                         brush = topHighlight,
                         size = Size(size.width, FlickDimens.Hairline.toPx()),
@@ -191,6 +196,21 @@ fun glassPanelExit(riseDistance: Dp = FlickMotion.TvRise): ExitTransition {
     return slideOutVertically(FlickMotion.focusSpatial()) { sink } +
         fadeOut(FlickMotion.fastStateEffects())
 }
+
+/**
+ * A panel in the lit room is a card, not glass: there is no film behind it to
+ * show through, so every tone becomes an opaque white plate lifted off the bed by
+ * a soft shadow. The shadow must not clip — a focused child's ring may extend past
+ * the card.
+ */
+private fun Modifier.roomCard(
+    tone: GlassPanelTone,
+    shape: Shape,
+    borderColor: Color?,
+): Modifier = this
+    .shadow(elevation = if (tone == GlassPanelTone.Solid) 4.dp else 10.dp, shape = shape, clip = false)
+    .background(FlickRoom.Surface, shape)
+    .border(FlickDimens.Hairline, borderColor ?: FlickRoom.GlassBorder, shape)
 
 private fun Modifier.glassTone(
     tone: GlassPanelTone,

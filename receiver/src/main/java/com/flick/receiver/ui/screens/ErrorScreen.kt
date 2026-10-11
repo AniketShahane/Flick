@@ -37,9 +37,9 @@ import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.LiveDot
 import com.flick.receiver.ui.components.LocalShellRetained
-import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
@@ -111,7 +111,7 @@ fun ErrorScreen(
         label = "errorTroubleWeight",
     )
 
-    val accent = if (shownFace.blamesTheLink()) FlickColor.Trouble else FlickColor.Caution
+    val accent = if (shownFace.blamesTheLink()) FlickRoom.Trouble else FlickRoom.Caution
     val device = deviceLabel ?: stringResource(R.string.device_fallback)
     val copy = errorCopyFor(shownFace, shownBeforeReady, device)
     val actionLabel = stringResource(
@@ -145,27 +145,27 @@ fun ErrorScreen(
             Text(
                 text = copy.title,
                 style = FlickType.display(sizeSp = 27),
-                color = FlickColor.OnSurface,
+                color = FlickRoom.OnSurface,
                 textAlign = TextAlign.Center,
             )
             Text(
                 text = copy.detail,
                 style = FlickType.body(sizeSp = 18),
-                color = FlickColor.OnSurfaceDim,
+                color = FlickRoom.OnSurfaceDim,
                 textAlign = TextAlign.Center,
             )
             FlickTvButton(
                 onClick = onDismiss,
                 focusRequester = actionFocus,
-                containerColor = FlickColor.Spark,
+                containerColor = FlickRoom.Spark,
                 borderColor = Color.Transparent,
-                ringColor = FlickColor.FocusRingOnSpark,
+                ringColor = FlickRoom.FocusRingOnSpark,
                 contentPadding = FlickDimens.ControlPadding,
             ) {
                 Text(
                     text = actionLabel,
                     style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                    color = FlickColor.OnSpark,
+                    color = FlickRoom.OnSpark,
                 )
             }
         }
@@ -346,7 +346,7 @@ private fun TvGlyph(accent: Color) {
         Box(
             modifier = Modifier
                 .size(width = 20.dp, height = 4.dp)
-                .background(FlickColor.Outline, FlickShape.Sm),
+                .background(FlickRoom.Outline, FlickShape.Sm),
         )
     }
 }
@@ -357,16 +357,16 @@ private fun FaultGlyph(accent: Color, width: Dp, height: Dp) {
         Box(
             modifier = Modifier
                 .size(width = width, height = height)
-                .background(FlickColor.ControlFill, FlickShape.Md)
+                .background(FlickRoom.ControlFill, FlickShape.Md)
                 // Not a hairline: this stroke is the device, so it holds its
                 // weight while the form around it comes down.
-                .border(2.dp, FlickColor.Outline, FlickShape.Md),
+                .border(2.dp, FlickRoom.Outline, FlickShape.Md),
         )
         Box(
             modifier = Modifier
                 .offset(x = 6.dp, y = (-6).dp)
                 .size(18.dp)
-                .drawBehind { drawCircle(FlickColor.CanvasPair) },
+                .drawBehind { drawCircle(FlickRoom.CanvasPair) },
             contentAlignment = Alignment.Center,
         ) {
             LiveDot(color = accent, size = 10.dp)

@@ -76,9 +76,9 @@ import com.flick.receiver.ui.components.flickPlate
 import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.components.rememberTvRevealOrigin
 import com.flick.receiver.ui.components.tvRevealSource
-import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
@@ -679,7 +679,7 @@ fun SettingsScreen(
                                     Text(
                                         text = stringResource(R.string.settings_disclosure),
                                         style = FlickType.body(sizeSp = 18),
-                                        color = FlickColor.OnSurfaceFaint,
+                                        color = FlickRoom.OnSurfaceFaint,
                                     )
                                 }
                             }
@@ -706,7 +706,7 @@ fun SettingsScreen(
                                         Text(
                                             text = stringResource(R.string.settings_paired_open),
                                             style = FlickType.body(sizeSp = 18),
-                                            color = FlickColor.OnSurfaceFaint,
+                                            color = FlickRoom.OnSurfaceFaint,
                                         )
                                     }
                                 } else {
@@ -716,8 +716,8 @@ fun SettingsScreen(
                                     Row(
                                         modifier = pairedRowModifier
                                             .clip(FlickShape.Md)
-                                            .background(FlickColor.SurfaceRaisedAlt)
-                                            .border(FlickDimens.Hairline, FlickColor.OutlineHairline, FlickShape.Md)
+                                            .background(FlickRoom.SurfaceRaisedAlt)
+                                            .border(FlickDimens.Hairline, FlickRoom.OutlineHairline, FlickShape.Md)
                                             .padding(RowPadding),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
@@ -801,7 +801,7 @@ fun SettingsScreen(
                                                 if (confirmForget) R.string.settings_forget_all_confirm
                                                 else R.string.settings_forget_all_summary,
                                             ),
-                                            summaryColor = if (confirmForget) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                                            summaryColor = if (confirmForget) FlickRoom.Caution else FlickRoom.OnSurfaceDim,
                                         )
                                     }
                                 }
@@ -872,7 +872,7 @@ fun SettingsScreen(
                                     TvOriginReveal(
                                         visible = diagnosticsRevealed,
                                         origin = diagnosticsOrigin,
-                                        color = FlickColor.SurfaceRaisedAlt,
+                                        color = FlickRoom.SurfaceRaisedAlt,
                                         modifier = Modifier.fillMaxWidth(),
                                         // Also reported by a reveal that composes
                                         // hidden and is never opened, so only a
@@ -884,8 +884,8 @@ fun SettingsScreen(
                                                 .fillMaxWidth()
                                                 .testTag("settings-diagnostic-entries")
                                                 .clip(FlickShape.Md)
-                                                .background(FlickColor.SurfaceRaisedAlt)
-                                                .border(FlickDimens.Hairline, FlickColor.OutlineHairline, FlickShape.Md)
+                                                .background(FlickRoom.SurfaceRaisedAlt)
+                                                .border(FlickDimens.Hairline, FlickRoom.OutlineHairline, FlickShape.Md)
                                                 .padding(horizontal = 18.dp, vertical = 12.dp),
                                             verticalArrangement = Arrangement.spacedBy(3.dp),
                                         ) {
@@ -893,7 +893,7 @@ fun SettingsScreen(
                                                 Text(
                                                     text = stringResource(R.string.settings_diagnostics_empty),
                                                     style = FlickType.monoTabular(sizeSp = 14, weight = FontWeight.Medium),
-                                                    color = FlickColor.OnSurfaceFaint,
+                                                    color = FlickRoom.OnSurfaceFaint,
                                                 )
                                             } else {
                                                 val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
@@ -924,7 +924,7 @@ fun SettingsScreen(
                                                         // characters at 14 sp against
                                                         // 58 at 20 sp.
                                                         style = FlickType.monoTabular(sizeSp = 14, weight = FontWeight.Medium),
-                                                        color = FlickColor.OnSurfaceDim,
+                                                        color = FlickRoom.OnSurfaceDim,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis,
                                                         modifier = if (index == 0) {
@@ -988,7 +988,7 @@ fun SettingsScreen(
                                         Text(
                                             text = stringResource(R.string.settings_done),
                                             style = FlickType.body(sizeSp = 16),
-                                            color = FlickColor.OnSurface,
+                                            color = FlickRoom.OnSurface,
                                         )
                                     }
                                 }
@@ -1050,8 +1050,8 @@ private fun PairedPhonesPane(
                         .fillMaxWidth()
                         .testTag("settings-paired-phone-row")
                         .clip(FlickShape.Md)
-                        .background(FlickColor.SurfaceRaisedAlt)
-                        .border(FlickDimens.Hairline, FlickColor.OutlineHairline, FlickShape.Md)
+                        .background(FlickRoom.SurfaceRaisedAlt)
+                        .border(FlickDimens.Hairline, FlickRoom.OutlineHairline, FlickShape.Md)
                         .padding(RowPadding),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md),
@@ -1067,7 +1067,7 @@ private fun PairedPhonesPane(
                             )
                             else -> stringResource(R.string.settings_paired_undated)
                         },
-                        summaryColor = if (armed) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                        summaryColor = if (armed) FlickRoom.Caution else FlickRoom.OnSurfaceDim,
                     )
                     FlickTvButton(
                         onClick = { onRenamePhone(phone.keyId) },
@@ -1086,7 +1086,7 @@ private fun PairedPhonesPane(
                         Text(
                             text = stringResource(R.string.settings_phone_rename),
                             style = FlickType.body(sizeSp = 16),
-                            color = FlickColor.OnSurface,
+                            color = FlickRoom.OnSurface,
                         )
                     }
                     FlickTvButton(
@@ -1105,7 +1105,7 @@ private fun PairedPhonesPane(
                     ) {
                         InkText(
                             text = stringResource(R.string.settings_paired_forget),
-                            color = if (armed) FlickColor.Caution else FlickColor.OnSurfaceDim,
+                            color = if (armed) FlickRoom.Caution else FlickRoom.OnSurfaceDim,
                             style = FlickType.body(sizeSp = 16),
                         )
                     }
@@ -1132,7 +1132,7 @@ private fun PairedPhonesPane(
                     Text(
                         text = stringResource(R.string.settings_paired_back),
                         style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.OnSurface,
+                        color = FlickRoom.OnSurface,
                     )
                 }
             }
@@ -1164,7 +1164,7 @@ private fun SettingsHeader(
         Text(
             text = title,
             style = FlickType.display(sizeSp = 27),
-            color = FlickColor.OnSurface,
+            color = FlickRoom.OnSurface,
         )
     }
 }
@@ -1235,13 +1235,13 @@ private fun OpenForCastsItem(
                     else -> R.string.settings_open_summary
                 },
             ),
-            summaryColor = if (state == OpenForCastsRow.Blocked) FlickColor.Caution else FlickColor.OnSurfaceDim,
+            summaryColor = if (state == OpenForCastsRow.Blocked) FlickRoom.Caution else FlickRoom.OnSurfaceDim,
         )
         if (toggle == null) {
             Text(
                 text = stringResource(R.string.settings_disclosure),
                 style = FlickType.body(sizeSp = 18),
-                color = FlickColor.OnSurfaceFaint,
+                color = FlickRoom.OnSurfaceFaint,
             )
         } else {
             ToggleGlyph(enabled = toggle)
@@ -1279,7 +1279,7 @@ private fun LabeledColumn(
     title: String,
     summary: String,
     modifier: Modifier = Modifier,
-    summaryColor: Color = FlickColor.OnSurfaceDim,
+    summaryColor: Color = FlickRoom.OnSurfaceDim,
 ) {
     // Title and summary carried the same 24 sp, so a row read as one undifferentiated
     // block. bodyLarge over bodySmall separates them by size as well as weight.
@@ -1287,7 +1287,7 @@ private fun LabeledColumn(
         Text(
             text = title,
             style = FlickType.body(sizeSp = 18, weight = FontWeight.Bold),
-            color = FlickColor.OnSurface,
+            color = FlickRoom.OnSurface,
         )
         FlickSwap(target = summary, label = "settingsSummary") { s ->
             InkText(
@@ -1309,12 +1309,12 @@ private fun ToggleGlyph(enabled: Boolean) {
     // flick of the toggle repaints the toggle instead of recomposing it once a
     // frame for the length of the throw.
     val fill = animateColorAsState(
-        targetValue = if (enabled) FlickColor.SelectedFill else FlickColor.ControlFill,
+        targetValue = if (enabled) FlickRoom.SelectedFill else FlickRoom.ControlFill,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleFill",
     )
     val border = animateColorAsState(
-        targetValue = if (enabled) FlickColor.SelectedBorder else FlickColor.Outline,
+        targetValue = if (enabled) FlickRoom.SelectedBorder else FlickRoom.Outline,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleBorder",
     )
@@ -1326,7 +1326,7 @@ private fun ToggleGlyph(enabled: Boolean) {
         label = "toggleKnob",
     )
     val knobColor = animateColorAsState(
-        targetValue = if (enabled) FlickColor.Spark else FlickColor.OnSurfaceFaint,
+        targetValue = if (enabled) FlickRoom.Spark else FlickRoom.OnSurfaceFaint,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleKnobColor",
     )

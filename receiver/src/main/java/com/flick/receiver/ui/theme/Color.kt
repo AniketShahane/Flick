@@ -1,12 +1,14 @@
 package com.flick.receiver.ui.theme
 
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 /**
- * The canonical Flick colour tokens (receiver-expressive-spec.md §2). The TV is
- * ALWAYS "the cinema" — fixed cinematic dark; it never re-tints from artwork, so
- * only the dark set lives here. Values match the design system hex exactly.
+ * The canonical Flick colour tokens (receiver-expressive-spec.md §2) for "the
+ * cinema": the film and everything drawn over it — playback chrome, the handshake
+ * card, the house-lights curtain. That stays fixed dark; it never re-tints from
+ * artwork. The standby screens draw with [FlickRoom] instead.
  *
  * **The role split flipped with the Expressive redesign, and the flip is
  * load-bearing:**
@@ -332,4 +334,92 @@ object FlickColor {
 
     /** The playhead / played fill — `#FFB61E → #FFD87A`, left to right. */
     val SparkGradient = Brush.horizontalGradient(listOf(Spark, SparkLight))
+}
+
+/**
+ * True under the lit room: the standby screens (idle, pairing, settings), the
+ * fault screen and the rename dialog. Shared components read it for their default
+ * fills and inks; everything over the film stays on [FlickColor].
+ */
+val LocalHouseLit = staticCompositionLocalOf { false }
+
+/**
+ * The lit room — the light palette the standby screens draw with. It names every
+ * [FlickColor] token those screens use, so a screen moves between the two by its
+ * prefix alone.
+ *
+ * Every ink holds 4.5:1 against [Canvas], a white card, [SurfaceRaised] and a
+ * control fill (`RoomContrastTest`). Amber cannot: `#FFB61E` is 1.6:1 on
+ * [Canvas], so it stays a fill and a focus colour here, and amber TEXT is
+ * [SparkBright]. The canvas is off-white rather than white because it fills a
+ * television.
+ */
+object FlickRoom {
+
+    val Canvas = Color(0xFFF2F4F9)
+
+    /** The pairing bed, a touch cooler than [Canvas] under its washes. */
+    val CanvasPair = Color(0xFFEEF1F8)
+
+    /** Card fill. */
+    val Surface = Color(0xFFFFFFFF)
+
+    /** Nested row inside a card. */
+    val SurfaceRaised = Color(0xFFE6EBF5)
+
+    /** Opaque card / row fill. */
+    val SurfaceRaisedAlt = Color(0xFFFFFFFF)
+
+    /** A card's 1 dp edge, [OnSurface] @ 10 %. */
+    val GlassBorder = Color(0x1A0A1533)
+
+    val OnSurface = Color(0xFF0A1533)
+    val OnSurfaceDim = Color(0xFF36466E)
+    val OnSurfaceMuted = Color(0xFF4A5880)
+    val OnSurfaceFaint = Color(0xFF4F5D83)
+    val OnSurfaceSoft = Color(0xFF24345C)
+    val OnChrome = Color(0xFF1A2647)
+
+    /** Unfocused control border, [OnSurface] @ 28 %. */
+    val Outline = Color(0x470A1533)
+
+    /** Divider hairline, [OnSurface] @ 14 %. */
+    val OutlineHairline = Color(0x240A1533)
+
+    /** Unfocused control fill, [OnSurface] @ 6 %. */
+    val ControlFill = Color(0x0F0A1533)
+
+    /** Pressed / square control fill, [OnSurface] @ 10 %. */
+    val ControlFillStrong = Color(0x1A0A1533)
+
+    /** Icon-button fill, [OnSurface] @ 7 %. */
+    val ChromeButtonFill = Color(0x120A1533)
+
+    /** Selected-but-not-focused fill, [Spark] @ 22 %. */
+    val SelectedFill = Color(0x38FFB61E)
+
+    /** Selected-but-not-focused border, a deep amber @ 80 %. */
+    val SelectedBorder = Color(0xCCC98A00)
+
+    /** Brand blue. On a light bed the deep blue is the one that reads. */
+    val Primary = FlickColor.Primary
+    val PrimaryOnDark = FlickColor.Primary
+
+    /** Amber as a FILL — buttons, the toggle track, the mark's streaks, focus. */
+    val Spark = FlickColor.Spark
+
+    /** Amber as TEXT — the pairing code, eyebrows, highlighted words. */
+    val SparkBright = Color(0xFF8A5200)
+
+    val OnSpark = FlickColor.OnSpark
+
+    /** The ring around an amber fill: white vanishes on this bed, so it is ink. */
+    val FocusRingOnSpark = OnSurface
+
+    val Live = Color(0xFF0E6E44)
+    val Caution = Color(0xFF8F4800)
+    val Trouble = Color(0xFFB0233F)
+
+    /** The dim behind a dialog, drawn at a fraction of its alpha. */
+    val Scrim = Color(0xFF0A1533)
 }

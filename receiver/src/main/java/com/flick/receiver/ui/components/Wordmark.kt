@@ -18,9 +18,11 @@ import com.flick.receiver.R
 import com.flick.receiver.ui.theme.BrandMark
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalHouseLit
 
 /**
  * Inset for the focusable form only. Tighter than [FlickDimens.ControlPadding]:
@@ -51,8 +53,8 @@ fun FlickWordmark(
     markSize: Dp = 30.dp,
     textSizeSp: Int = 18,
     eyebrow: String? = null,
-    tint: Color = FlickColor.OnSurface,
-    markTint: Color = FlickColor.OnSurface,
+    tint: Color = if (LocalHouseLit.current) FlickRoom.OnSurface else FlickColor.OnSurface,
+    markTint: Color = if (LocalHouseLit.current) FlickRoom.OnSurface else FlickColor.OnSurface,
     onClick: (() -> Unit)? = null,
     contentDescription: String? = null,
     focusRequester: FocusRequester? = null,
@@ -69,7 +71,7 @@ fun FlickWordmark(
                 Text(
                     text = eyebrow,
                     style = FlickType.monoEyebrow(trackingEm = 0.2f),
-                    color = FlickColor.OnSurfaceMuted,
+                    color = if (LocalHouseLit.current) FlickRoom.OnSurfaceMuted else FlickColor.OnSurfaceMuted,
                 )
             }
         }

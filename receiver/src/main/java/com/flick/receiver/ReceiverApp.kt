@@ -148,9 +148,11 @@ import com.flick.receiver.ui.screens.videoResolutionClass
 import com.flick.receiver.ui.screens.videoResolutionLines
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.components.RenameLabelDialog
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalHouseLit
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.ui.theme.idleAmbientBackground
 import com.flick.receiver.ui.theme.rememberReducedMotion
@@ -1339,7 +1341,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(FlickColor.Canvas)
+                // The room is lit; only a film brings the house dark. Under the
+                // standby and fault faces this is what a cross-fade passes through.
+                .background(if (stage is MediaStage.Active) FlickColor.Canvas else FlickRoom.Canvas)
                 .focusRequester(rootFocus)
                 .focusable(enabled = rootFocusCatcherEnabled(stage, chromeVisible)),
         ) {
@@ -1537,7 +1541,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     val hostInteractive = shown.interactive &&
                         transition.targetState == EnterExitState.Visible
                     ShellGate(hostInteractive) {
-                        CompositionLocalProvider(LocalShellRetained provides !shown.interactive) {
+                        CompositionLocalProvider(
+                            LocalShellRetained provides !shown.interactive,
+                            LocalHouseLit provides true,
+                        ) {
                             when (val face = shown.face) {
                                 ShellFace.Standby -> {
                                     // Only non-video standby surfaces animate. The outgoing subtree
@@ -1725,13 +1732,13 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                                 )
 
                                                 StandbySurface.PairSuccess -> Box(
-                                                    Modifier.fillMaxSize().background(FlickColor.Canvas),
+                                                    Modifier.fillMaxSize().background(FlickRoom.Canvas),
                                                     contentAlignment = Alignment.Center,
                                                 ) {
                                                     Text(
                                                         text = stringResource(R.string.pair_success),
                                                         style = FlickType.display(sizeSp = 34),
-                                                        color = FlickColor.OnSurface,
+                                                        color = FlickRoom.OnSurface,
                                                     )
                                                 }
 

@@ -42,9 +42,9 @@ import com.flick.receiver.ui.components.LiveDot
 import com.flick.receiver.ui.components.LocalShellRetained
 import com.flick.receiver.ui.components.RollingGlyphs
 import com.flick.receiver.ui.theme.BrandMark
-import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
@@ -178,12 +178,12 @@ fun IdleScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             // The constant. Held, never staged — see [IdleStageCount].
-            BrandMark(size = 58.dp, tint = FlickColor.PrimaryOnDark)
+            BrandMark(size = 58.dp, tint = FlickRoom.PrimaryOnDark)
             key(clockEpoch, shown.returns) {
                 RollingGlyphs(
                     text = shown.text,
                     style = FlickType.monoTabular(sizeSp = 44, weight = FontWeight.SemiBold),
-                    color = FlickColor.OnSurface,
+                    color = FlickRoom.OnSurface,
                     semanticsText = shown.text,
                     contentAlignment = Alignment.TopCenter,
                     modifier = Modifier
@@ -205,7 +205,7 @@ fun IdleScreen(
         ) {
             // Static: the dot reports that a phone is paired, which is not an
             // event, and the drifting wash is this screen's one moving thing.
-            LiveDot(color = FlickColor.Live, size = 7.dp)
+            LiveDot(color = FlickRoom.Live, size = 7.dp)
             FlickSwap(target = pairedLabel, label = "idlePaired") { label ->
                 Text(
                     text = if (label != null) {
@@ -214,7 +214,7 @@ fun IdleScreen(
                         stringResource(R.string.idle_ready)
                     },
                     style = FlickType.body(sizeSp = 16),
-                    color = FlickColor.OnSurfaceDim,
+                    color = FlickRoom.OnSurfaceDim,
                 )
             }
         }
@@ -238,7 +238,7 @@ fun IdleScreen(
                     Text(
                         text = stringResource(R.string.idle_settings),
                         style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.OnSurfaceDim,
+                        color = FlickRoom.OnSurfaceDim,
                     )
                 }
                 FlickTvButton(
@@ -249,7 +249,7 @@ fun IdleScreen(
                     Text(
                         text = stringResource(R.string.idle_pair_another),
                         style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.OnSurface,
+                        color = FlickRoom.OnSurface,
                     )
                 }
             }

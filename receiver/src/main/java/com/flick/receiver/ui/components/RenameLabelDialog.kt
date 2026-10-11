@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,12 +57,13 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.net.normalizeLabel
-import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
+import com.flick.receiver.ui.theme.LocalHouseLit
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -205,185 +207,188 @@ fun RenameLabelDialog(
         if (!saveFailed) close()
     }
 
-    Dialog(
-        onDismissRequest = ::close,
-        properties = DialogProperties(
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false,
-        ),
-    ) {
-        // The platform's own entrance would run on top of the one drawn here. The
-        // exit keeps a window fade: a cast arriving removes the dialog from
-        // composition outright, and only the window can still fade out then.
-        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-        DisposableEffect(dialogWindow, reducedMotion) {
-            dialogWindow?.setWindowAnimations(
-                if (reducedMotion) 0 else R.style.Animation_Flick_RenameDialog,
-            )
-            // The floating dialog theme adds a platform dim that the window manager
-            // releases on its own clock, only after the window leaves, so it would
-            // outlast the drawn exit. The drawn scrim is the only darkening layer.
-            dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            onDispose { }
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                // 0.91 is the darkness the 0.78 scrim over the theme's 0.6 dim gave.
-                .drawBehind { drawRect(Color.Black, alpha = 0.91f * scrim.value) }
-                .padding(top = 44.dp),
-            contentAlignment = Alignment.TopCenter,
+    // Only ever opened over the standby screens, so it is drawn in the lit room.
+    CompositionLocalProvider(LocalHouseLit provides true) {
+        Dialog(
+            onDismissRequest = ::close,
+            properties = DialogProperties(
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false,
+            ),
         ) {
-            Column(
+            // The platform's own entrance would run on top of the one drawn here. The
+            // exit keeps a window fade: a cast arriving removes the dialog from
+            // composition outright, and only the window can still fade out then.
+            val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+            DisposableEffect(dialogWindow, reducedMotion) {
+                dialogWindow?.setWindowAnimations(
+                    if (reducedMotion) 0 else R.style.Animation_Flick_RenameDialog,
+                )
+                // The floating dialog theme adds a platform dim that the window manager
+                // releases on its own clock, only after the window leaves, so it would
+                // outlast the drawn exit. The drawn scrim is the only darkening layer.
+                dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                onDispose { }
+            }
+            Box(
                 modifier = Modifier
-                    .width(560.dp)
-                    .then(
-                        if (settled) {
-                            Modifier
-                        } else {
-                            Modifier.graphicsLayer {
-                                alpha = cardAlpha.value
-                                translationY = (cardRise.value + 0.5f * cardSink.value) *
-                                    FlickMotion.TvRiseCard.toPx()
-                                compositingStrategy = CompositingStrategy.ModulateAlpha
-                            }
-                        },
-                    )
-                    .focusProperties { if (closing) canFocus = false }
-                    .background(FlickColor.SurfaceRaisedAlt, FlickShape.Hero)
-                    .border(1.dp, FlickColor.GlassBorder, FlickShape.Hero)
-                    .padding(28.dp),
-                verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
+                    .fillMaxSize()
+                    // Dims the lit room rather than blacking it out, so the card stays in it.
+                    .drawBehind { drawRect(FlickRoom.Scrim, alpha = 0.5f * scrim.value) }
+                    .padding(top = 44.dp),
+                contentAlignment = Alignment.TopCenter,
             ) {
-                Text(
-                    text = title,
-                    style = FlickType.display(sizeSp = 28),
-                    color = FlickColor.OnSurface,
-                )
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { next ->
-                        val changed = next.text != input.text
-                        val replaced = if (changed && seededNameIntact) {
-                            firstRenameLabelEdit(input, next)
-                        } else {
-                            next
-                        }
-                        if (changed) seededNameIntact = false
-                        val limited = limitRenameLabelInput(replaced.text)
-                        input = if (limited == replaced.text) {
-                            replaced
-                        } else {
-                            TextFieldValue(limited, TextRange(limited.length))
-                        }
-                        // Only a real text change clears the failure. Saving ends
-                        // the IME session, and finishing composition arrives here
-                        // as a value change carrying the same text — clearing on
-                        // that would wipe the message before it could be read.
-                        if (changed) saveFailed = false
-                    },
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        // Previewed, not handled: the editor takes DirectionDown as
-                        // a cursor move and consumes it, so neither `focusProperties`
-                        // nor the focus system's directional search is ever reached
-                        // and the buttons cannot be got at with a remote. Only the
-                        // key-down half is claimed — claiming the key-up as well
-                        // would move focus twice per press. Left and right are left
-                        // to the editor, where they are cursor movement, and so is
-                        // up: nothing above this field is focusable.
-                        .onPreviewKeyEvent { event ->
-                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                            if (event.key != Key.DirectionDown) return@onPreviewKeyEvent false
-                            cancelFocusRequester.requestFocus()
-                            true
-                        }
-                        .focusRequester(focusRequester)
-                        .testTag("rename-name-field"),
-                    // The colour is on the Text, not in `colors` below: this is
-                    // tv-material3's `Text`, and M3 tints a label by providing
-                    // ITS OWN `LocalContentColor`, which tv-material3 does not
-                    // read. `focusedLabelColor` would be silently ignored and the
-                    // label would fall back to tv's default content colour —
-                    // black, since only a tv `Surface` ever provides that local
-                    // and this theme installs none.
-                    label = {
-                        Text(
-                            text = stringResource(R.string.rename_name_label),
-                            color = FlickColor.Spark,
+                        .width(560.dp)
+                        .then(
+                            if (settled) {
+                                Modifier
+                            } else {
+                                Modifier.graphicsLayer {
+                                    alpha = cardAlpha.value
+                                    translationY = (cardRise.value + 0.5f * cardSink.value) *
+                                        FlickMotion.TvRiseCard.toPx()
+                                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                                }
+                            },
                         )
-                    },
-                    singleLine = true,
-                    textStyle = FlickType.body(sizeSp = 18),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Words,
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Done,
-                        platformImeOptions = PlatformImeOptions("horizontalAlignment=center"),
-                        showKeyboardOnFocus = true,
-                    ),
-                    keyboardActions = KeyboardActions(onDone = { submit() }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = FlickColor.OnSurface,
-                        unfocusedTextColor = FlickColor.OnSurface,
-                        cursorColor = FlickColor.Spark,
-                        focusedBorderColor = FlickColor.Spark,
-                        unfocusedBorderColor = FlickColor.Outline,
-                        // The floating label straddles the top border, so a
-                        // container of its own put the word's upper half on the
-                        // card and its lower half on the field — two navies
-                        // behind one label. An outlined field is drawn by its
-                        // border; letting the card show through is what gives the
-                        // label a single backdrop.
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                    ),
-                )
-                AnimatedVisibility(
-                    visible = saveFailed,
-                    enter = flickRevealEnter(),
-                    exit = flickRevealExit(),
+                        .focusProperties { if (closing) canFocus = false }
+                        .background(FlickRoom.SurfaceRaisedAlt, FlickShape.Hero)
+                        .border(1.dp, FlickRoom.GlassBorder, FlickShape.Hero)
+                        .padding(28.dp),
+                    verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
                 ) {
                     Text(
-                        text = stringResource(R.string.rename_save_failed),
-                        style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.Caution,
+                        text = title,
+                        style = FlickType.display(sizeSp = 28),
+                        color = FlickRoom.OnSurface,
                     )
-                }
-                FocusBeaconHost(Modifier.fillMaxWidth()) {
-                    Row(
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { next ->
+                            val changed = next.text != input.text
+                            val replaced = if (changed && seededNameIntact) {
+                                firstRenameLabelEdit(input, next)
+                            } else {
+                                next
+                            }
+                            if (changed) seededNameIntact = false
+                            val limited = limitRenameLabelInput(replaced.text)
+                            input = if (limited == replaced.text) {
+                                replaced
+                            } else {
+                                TextFieldValue(limited, TextRange(limited.length))
+                            }
+                            // Only a real text change clears the failure. Saving ends
+                            // the IME session, and finishing composition arrives here
+                            // as a value change carrying the same text — clearing on
+                            // that would wipe the message before it could be read.
+                            if (changed) saveFailed = false
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            // Inherited by both buttons: up returns to the editor, which
-                            // is the one focusable above this row. Left and right inside
-                            // the row are ordinary focus search.
-                            .focusProperties { up = focusRequester },
-                        horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md, Alignment.End),
+                            // Previewed, not handled: the editor takes DirectionDown as
+                            // a cursor move and consumes it, so neither `focusProperties`
+                            // nor the focus system's directional search is ever reached
+                            // and the buttons cannot be got at with a remote. Only the
+                            // key-down half is claimed — claiming the key-up as well
+                            // would move focus twice per press. Left and right are left
+                            // to the editor, where they are cursor movement, and so is
+                            // up: nothing above this field is focusable.
+                            .onPreviewKeyEvent { event ->
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                if (event.key != Key.DirectionDown) return@onPreviewKeyEvent false
+                                cancelFocusRequester.requestFocus()
+                                true
+                            }
+                            .focusRequester(focusRequester)
+                            .testTag("rename-name-field"),
+                        // The colour is on the Text, not in `colors` below: this is
+                        // tv-material3's `Text`, and M3 tints a label by providing
+                        // ITS OWN `LocalContentColor`, which tv-material3 does not
+                        // read. `focusedLabelColor` would be silently ignored and the
+                        // label would fall back to tv's default content colour —
+                        // black, since only a tv `Surface` ever provides that local
+                        // and this theme installs none.
+                        label = {
+                            Text(
+                                text = stringResource(R.string.rename_name_label),
+                                color = FlickRoom.SparkBright,
+                            )
+                        },
+                        singleLine = true,
+                        textStyle = FlickType.body(sizeSp = 18),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Words,
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Done,
+                            platformImeOptions = PlatformImeOptions("horizontalAlignment=center"),
+                            showKeyboardOnFocus = true,
+                        ),
+                        keyboardActions = KeyboardActions(onDone = { submit() }),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = FlickRoom.OnSurface,
+                            unfocusedTextColor = FlickRoom.OnSurface,
+                            cursorColor = FlickRoom.SparkBright,
+                            focusedBorderColor = FlickRoom.SparkBright,
+                            unfocusedBorderColor = FlickRoom.Outline,
+                            // The floating label straddles the top border, so a
+                            // container of its own put the word's upper half on the
+                            // card and its lower half on the field — two navies
+                            // behind one label. An outlined field is drawn by its
+                            // border; letting the card show through is what gives the
+                            // label a single backdrop.
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                        ),
+                    )
+                    AnimatedVisibility(
+                        visible = saveFailed,
+                        enter = flickRevealEnter(),
+                        exit = flickRevealExit(),
                     ) {
-                        FlickTvButton(
-                            onClick = ::close,
-                            contentPadding = FlickDimens.ControlPadding,
-                            focusRequester = cancelFocusRequester,
-                            modifier = Modifier.testTag("rename-cancel"),
+                        Text(
+                            text = stringResource(R.string.rename_save_failed),
+                            style = FlickType.body(sizeSp = 16),
+                            color = FlickRoom.Caution,
+                        )
+                    }
+                    FocusBeaconHost(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                // Inherited by both buttons: up returns to the editor, which
+                                // is the one focusable above this row. Left and right inside
+                                // the row are ordinary focus search.
+                                .focusProperties { up = focusRequester },
+                            horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md, Alignment.End),
                         ) {
-                            Text(
-                                text = stringResource(R.string.rename_cancel),
-                                style = FlickType.body(sizeSp = 16),
-                                color = FlickColor.OnSurfaceDim,
-                            )
-                        }
-                        FlickTvButton(
-                            onClick = ::submit,
-                            enabled = normalized != null,
-                            contentPadding = FlickDimens.ControlPadding,
-                            modifier = Modifier.testTag("rename-save"),
-                        ) {
-                            Text(
-                                text = stringResource(R.string.rename_save),
-                                style = FlickType.body(sizeSp = 16),
-                                color = FlickColor.OnSurface,
-                            )
+                            FlickTvButton(
+                                onClick = ::close,
+                                contentPadding = FlickDimens.ControlPadding,
+                                focusRequester = cancelFocusRequester,
+                                modifier = Modifier.testTag("rename-cancel"),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.rename_cancel),
+                                    style = FlickType.body(sizeSp = 16),
+                                    color = FlickRoom.OnSurfaceDim,
+                                )
+                            }
+                            FlickTvButton(
+                                onClick = ::submit,
+                                enabled = normalized != null,
+                                contentPadding = FlickDimens.ControlPadding,
+                                modifier = Modifier.testTag("rename-save"),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.rename_save),
+                                    style = FlickType.body(sizeSp = 16),
+                                    color = FlickRoom.OnSurface,
+                                )
+                            }
                         }
                     }
                 }

@@ -37,8 +37,9 @@ import kotlin.math.max
 import kotlin.math.sin
 
 /**
- * Fixed cinematic-dark theme for the TV. The TV NEVER re-tints from artwork — it
- * holds this palette under every film. Wraps tv-material3's [MaterialTheme] with
+ * The TV's theme. The film and its chrome hold the fixed cinematic-dark palette
+ * and never re-tint from artwork; the standby screens are the lit room
+ * ([FlickRoom], under [LocalHouseLit]). Wraps tv-material3's [MaterialTheme] with
  * the Flick colour/type tokens.
  *
  * The Material roles follow the §2c split: `primary` is amber (action, focus,
@@ -454,22 +455,23 @@ private fun DrawScope.drawWash(wash: AmbientWash, alpha: Float = 1f) {
 }
 
 /**
- * The pairing bed (spec §2d): `CanvasPair`, a brand-blue radial from the upper
- * left at 50 %, and an amber radial from the lower right at 22 %. Both washes
- * are static — there is nothing to skip under reduced motion.
+ * The pairing bed (spec §2d): the room's `CanvasPair`, a brand-blue radial from the
+ * upper left at 14 %, and an amber radial from the lower right at 16 %. On a lit
+ * bed a wash tints rather than glows, so it carries far less than the dark set's
+ * 50 / 22 %. Both washes are static — there is nothing to skip under reduced motion.
  */
 fun Modifier.pairAmbientBackground(): Modifier = this
-    .background(FlickColor.CanvasPair)
+    .background(FlickRoom.CanvasPair)
     .drawWithCache {
         val reach = max(size.width, size.height)
         val brand = ambientWash(
-            color = FlickColor.Primary.copy(alpha = 0.50f),
+            color = FlickColor.Primary.copy(alpha = 0.14f),
             center = Offset(size.width * 0.10f, -size.height * 0.06f),
             radius = reach * 0.62f,
             panel = size,
         )
         val spark = ambientWash(
-            color = FlickColor.Spark.copy(alpha = 0.22f),
+            color = FlickColor.Spark.copy(alpha = 0.16f),
             center = Offset(size.width * 0.96f, size.height * 1.04f),
             radius = reach * 0.55f,
             panel = size,
@@ -481,7 +483,7 @@ fun Modifier.pairAmbientBackground(): Modifier = this
     }
 
 /** The idle bed's resting geometry, shared by the static and drifting variants. */
-private const val IDLE_WASH_ALPHA = 0.22f
+private const val IDLE_WASH_ALPHA = 0.10f
 private const val IDLE_WASH_CENTRE_X = 0.5f
 private const val IDLE_WASH_CENTRE_Y = -0.10f
 private const val IDLE_WASH_RADIUS = 0.65f
@@ -573,13 +575,13 @@ internal fun idleAmbientBounds(panel: Size, phase: Float, footprint: Boolean): R
 }
 
 /**
- * The idle bed: `Canvas` plus one soft brand-blue radial hanging off the top
+ * The idle bed: the room's `Canvas` plus one soft brand-blue radial hanging off the top
  * edge. Quieter than [pairAmbientBackground] — idle is a resting state. This is the
  * still variant, held under reduced motion and by Settings; [idleAmbientDrift] is the
  * same geometry in motion.
  */
 fun Modifier.idleAmbientBackground(): Modifier = this
-    .background(FlickColor.Canvas)
+    .background(FlickRoom.Canvas)
     .drawWithCache {
         val wash = ambientWash(
             color = FlickColor.Primary.copy(alpha = IDLE_WASH_ALPHA),
@@ -616,7 +618,7 @@ private fun Modifier.idleAmbientShaderBackground(phase: () -> Float): Modifier =
     .drawWithCache {
         val shader = RuntimeShader(IDLE_AMBIENT_SHADER)
         shader.setFloatUniform("resolution", size.width, size.height)
-        shader.setComposeColorUniform("canvasColor", FlickColor.Canvas)
+        shader.setComposeColorUniform("canvasColor", FlickRoom.Canvas)
         shader.setComposeColorUniform(
             "washColor",
             FlickColor.Primary.copy(alpha = IDLE_WASH_ALPHA),
@@ -630,7 +632,7 @@ private fun Modifier.idleAmbientShaderBackground(phase: () -> Float): Modifier =
 
 /** Cached Compose-radial fallback with stationary native-pixel dither for API 26–32. */
 private fun Modifier.idleAmbientCanvasDrift(phase: () -> Float): Modifier = this
-    .background(FlickColor.Canvas)
+    .background(FlickRoom.Canvas)
     .drawWithCache {
         val reach = max(size.width, size.height)
         val centre = Offset(size.width * IDLE_WASH_CENTRE_X, size.height * IDLE_WASH_CENTRE_Y)
@@ -661,20 +663,22 @@ private fun Modifier.idleAmbientCanvasDrift(phase: () -> Float): Modifier = this
     }
 
 /**
- * The failure bed: `Canvas` under one wash in the failure's own [accent]. It is
+ * The failure bed: the room's `Canvas` under one wash in the failure's own [accent]. It is
  * full-bleed on purpose — the card inside it stops at the overscan inset.
  */
 fun Modifier.errorAmbientBackground(accent: Color): Modifier = this
-    .background(FlickColor.Canvas)
+    .background(FlickRoom.Canvas)
     .drawWithCache {
         val wash = ambientWash(
-            color = accent.copy(alpha = 0.20f),
+            color = accent.copy(alpha = ERROR_WASH_ALPHA),
             center = Offset(size.width * 0.5f, size.height * 0.14f),
             radius = max(size.width, size.height) * 0.68f,
             panel = size,
         )
         onDrawBehind { drawWash(wash) }
     }
+
+private const val ERROR_WASH_ALPHA = 0.12f
 
 /**
  * [errorAmbientBackground] moving between its two accents: [FlickColor.Trouble] at a
@@ -683,18 +687,18 @@ fun Modifier.errorAmbientBackground(accent: Color): Modifier = this
  * face repaints without a new gradient.
  */
 fun Modifier.errorAmbientBlend(troubleWeight: () -> Float): Modifier = this
-    .background(FlickColor.Canvas)
+    .background(FlickRoom.Canvas)
     .drawWithCache {
         val center = Offset(size.width * 0.5f, size.height * 0.14f)
         val radius = max(size.width, size.height) * 0.68f
         val trouble = ambientWash(
-            color = FlickColor.Trouble.copy(alpha = 0.20f),
+            color = FlickRoom.Trouble.copy(alpha = ERROR_WASH_ALPHA),
             center = center,
             radius = radius,
             panel = size,
         )
         val caution = ambientWash(
-            color = FlickColor.Caution.copy(alpha = 0.20f),
+            color = FlickRoom.Caution.copy(alpha = ERROR_WASH_ALPHA),
             center = center,
             radius = radius,
             panel = size,

@@ -81,8 +81,10 @@ import androidx.tv.material3.Icon
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
+import com.flick.receiver.ui.theme.LocalHouseLit
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
@@ -816,13 +818,21 @@ fun FlickTvButton(
         if (reducedMotion) shape else shape.grownBy(FocusCornerGrowth)
     }
 
-    val baseFill = containerColor ?: if (selected) FlickColor.SelectedFill else FlickColor.ControlFill
-    val baseStroke = borderColor ?: if (selected) FlickColor.SelectedBorder else FlickColor.Outline
+    val lit = LocalHouseLit.current
+    val baseFill = containerColor ?: when {
+        selected -> if (lit) FlickRoom.SelectedFill else FlickColor.SelectedFill
+        else -> if (lit) FlickRoom.ControlFill else FlickColor.ControlFill
+    }
+    val baseStroke = borderColor ?: when {
+        selected -> if (lit) FlickRoom.SelectedBorder else FlickColor.SelectedBorder
+        else -> if (lit) FlickRoom.Outline else FlickColor.Outline
+    }
+    val pressedFill = if (lit) FlickRoom.ControlFillStrong else FlickColor.ControlFillStrong
     // Selection persists as a fill/border state; press is a brief physical
     // acknowledgement. Neither changes layout, so the detached focus ring stays
     // inside the caller's overscan reserve. Both are read in the draw phase.
     val fill = animateColorAsState(
-        targetValue = if (pressed && !selected && containerColor == null) FlickColor.ControlFillStrong else baseFill,
+        targetValue = if (pressed && !selected && containerColor == null) pressedFill else baseFill,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "buttonFill",
     )
@@ -908,8 +918,8 @@ fun FlickTvIconButton(
     shape: Shape = FlickShape.Sm,
     enabled: Boolean = true,
     focusRequester: FocusRequester? = null,
-    tint: Color = FlickColor.OnChrome,
-    containerColor: Color = FlickColor.ChromeButtonFill,
+    tint: Color = if (LocalHouseLit.current) FlickRoom.OnChrome else FlickColor.OnChrome,
+    containerColor: Color = if (LocalHouseLit.current) FlickRoom.ChromeButtonFill else FlickColor.ChromeButtonFill,
     borderColor: Color = Color.Transparent,
     borderWidth: Dp = flickBorderWidth(containerColor),
     ringColor: Color = FlickColor.FocusRing,

@@ -38,6 +38,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
@@ -76,10 +77,10 @@ import com.flick.receiver.ui.components.flickRevealEnter
 import com.flick.receiver.ui.components.flickRevealExit
 import com.flick.receiver.ui.components.landTvFocus
 import com.flick.receiver.ui.theme.BrandMark
-import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickIcons
 import com.flick.receiver.ui.theme.FlickMotion
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
@@ -474,7 +475,7 @@ fun PairScreen(
                     Text(
                         text = stringResource(res),
                         style = FlickType.display(sizeSp = 40),
-                        color = Color.White,
+                        color = FlickRoom.OnSurface,
                     )
                 }
                 FlickSwap(
@@ -492,7 +493,7 @@ fun PairScreen(
                             highlightedInstructions()
                         },
                         style = FlickType.body(sizeSp = 18),
-                        color = FlickColor.OnSurfaceDim,
+                        color = FlickRoom.OnSurfaceDim,
                         // Someone else's device name is inside this line, so it is
                         // bounded here rather than trusted to be short.
                         maxLines = 3,
@@ -558,11 +559,11 @@ fun PairScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         ) {
-                                            LiveDot(color = FlickColor.Live, size = 7.dp, pulsing = !retained)
+                                            LiveDot(color = FlickRoom.Live, size = 7.dp, pulsing = !retained)
                                             Text(
                                                 text = stringResource(R.string.pair_listening),
                                                 style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                                                color = FlickColor.OnSurfaceSoft,
+                                                color = FlickRoom.OnSurfaceSoft,
                                             )
                                         }
                                     }
@@ -627,24 +628,24 @@ fun PairScreen(
                                     Text(
                                         text = stringResource(R.string.pair_confirm_deny),
                                         style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                                        color = FlickColor.OnSurface,
+                                        color = FlickRoom.OnSurface,
                                     )
                                 }
                                 FlickTvButton(
                                     onClick = onAllowPair,
-                                    containerColor = FlickColor.ControlFillStrong,
+                                    containerColor = FlickRoom.ControlFillStrong,
                                     contentPadding = FlickDimens.ControlPadding,
                                 ) {
                                     Icon(
                                         imageVector = FlickIcons.CheckCircle,
                                         contentDescription = null,
-                                        tint = FlickColor.Live,
+                                        tint = FlickRoom.Live,
                                         modifier = Modifier.size(FlickDimens.GlyphSmall),
                                     )
                                     Text(
                                         text = stringResource(R.string.pair_confirm_allow),
                                         style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                                        color = FlickColor.OnSurface,
+                                        color = FlickRoom.OnSurface,
                                     )
                                 }
                             }
@@ -660,7 +661,7 @@ fun PairScreen(
                                     Text(
                                         text = stringResource(R.string.pair_sealed_resume),
                                         style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                                        color = FlickColor.OnSurface,
+                                        color = FlickRoom.OnSurface,
                                     )
                                 }
                             }
@@ -675,7 +676,7 @@ fun PairScreen(
                                     Text(
                                         text = stringResource(R.string.pair_rename),
                                         style = FlickType.body(sizeSp = 16),
-                                        color = FlickColor.OnSurface,
+                                        color = FlickRoom.OnSurface,
                                     )
                                 }
                                 FlickTvButton(
@@ -685,7 +686,7 @@ fun PairScreen(
                                     Text(
                                         text = stringResource(R.string.pair_settings),
                                         style = FlickType.body(sizeSp = 16),
-                                        color = FlickColor.OnSurfaceDim,
+                                        color = FlickRoom.OnSurfaceDim,
                                     )
                                 }
                             }
@@ -764,7 +765,7 @@ private fun ManualEntryCard(
         Text(
             text = stringResource(R.string.pair_manual_eyebrow),
             style = FlickType.monoEyebrow(trackingEm = 0.2f),
-            color = FlickColor.OnSurfaceFaint,
+            color = FlickRoom.OnSurfaceFaint,
         )
         // Above the fields, because the fresh code below it is the resolution: the
         // press succeeded, the write did not, and a new code is already on screen.
@@ -785,14 +786,14 @@ private fun ManualEntryCard(
                     Text(
                         text = stringResource(R.string.pair_save_failed_title),
                         style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                        color = FlickColor.Caution,
+                        color = FlickRoom.Caution,
                     )
                     Text(
                         // Someone else's device name, so it is bounded here rather
                         // than trusted to be short.
                         text = stringResource(R.string.pair_save_failed_detail, label),
                         style = FlickType.body(sizeSp = 14),
-                        color = FlickColor.OnSurfaceDim,
+                        color = FlickRoom.OnSurfaceDim,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -810,24 +811,24 @@ private fun ManualEntryCard(
                 label = stringResource(R.string.pair_manual_ip_label),
                 value = host,
                 valueSizeSp = 18,
-                valueColor = FlickColor.OnSurface,
+                valueColor = FlickRoom.OnSurface,
             )
             FieldDivider()
             ManualField(
                 label = stringResource(R.string.pair_manual_port_label),
                 value = port.toString(),
                 valueSizeSp = 18,
-                valueColor = FlickColor.OnSurface,
+                valueColor = FlickRoom.OnSurface,
             )
             FieldDivider()
             ManualField(
                 // The one value a viewer types from memory, so it stays a step
                 // above the endpoint beside it.
                 label = stringResource(R.string.pair_manual_code_label),
-                labelColor = FlickColor.SparkBright,
+                labelColor = FlickRoom.SparkBright,
                 value = spacedCode,
                 valueSizeSp = 20,
-                valueColor = FlickColor.Spark,
+                valueColor = FlickRoom.SparkBright,
                 rolls = true,
             )
         }
@@ -849,7 +850,7 @@ private fun ManualEntryCard(
                         stringResource(R.string.pair_locked_countdown, countdown(footer.lockedRetryAtElapsedMs))
                     },
                     style = FlickType.body(sizeSp = 16),
-                    color = FlickColor.Caution,
+                    color = FlickRoom.Caution,
                 )
             } else {
                 Row(
@@ -859,13 +860,13 @@ private fun ManualEntryCard(
                     Icon(
                         imageVector = FlickIcons.Timer,
                         contentDescription = null,
-                        tint = FlickColor.OnSurfaceFaint,
+                        tint = FlickRoom.OnSurfaceFaint,
                         modifier = Modifier.size(FlickDimens.GlyphSmall),
                     )
                     Text(
                         text = rotationLine(footer.codeExpiresAtElapsedMs),
                         style = FlickType.monoEyebrow(trackingEm = 0.14f),
-                        color = FlickColor.OnSurfaceFaint,
+                        color = FlickRoom.OnSurfaceFaint,
                         // Uppercased mono at this tracking is wide: a second line here
                         // orphans a word AND overflows the column budget above.
                         maxLines = 1,
@@ -883,7 +884,7 @@ private fun ManualField(
     value: String,
     valueSizeSp: Int,
     valueColor: Color,
-    labelColor: Color = FlickColor.OnSurfaceMuted,
+    labelColor: Color = FlickRoom.OnSurfaceMuted,
     /** Only the pairing code rolls; an address and a port are not events. */
     rolls: Boolean = false,
 ) {
@@ -908,7 +909,7 @@ private fun FieldDivider() {
         modifier = Modifier
             .width(FlickDimens.Hairline)
             .fillMaxHeight()
-            .background(FlickColor.OutlineHairline),
+            .background(FlickRoom.OutlineHairline),
     )
 }
 
@@ -941,19 +942,19 @@ private fun PairingSealedCard(resumeFailed: Boolean, modifier: Modifier = Modifi
             Icon(
                 imageVector = FlickIcons.Private,
                 contentDescription = null,
-                tint = FlickColor.Caution,
+                tint = FlickRoom.Caution,
                 modifier = Modifier.size(FlickDimens.GlyphMedium),
             )
             Text(
                 text = stringResource(R.string.pair_sealed_title),
                 style = FlickType.display(sizeSp = 22),
-                color = FlickColor.OnSurface,
+                color = FlickRoom.OnSurface,
             )
         }
         Text(
             text = stringResource(R.string.pair_sealed_body),
             style = FlickType.body(sizeSp = 16),
-            color = FlickColor.OnSurfaceDim,
+            color = FlickRoom.OnSurfaceDim,
         )
         // The Resume key below is inert until a restart clears the write, and the seal
         // above promises "pairing stays closed until you resume it here" — so silence
@@ -969,12 +970,12 @@ private fun PairingSealedCard(resumeFailed: Boolean, modifier: Modifier = Modifi
                 Text(
                     text = stringResource(R.string.pair_resume_failed_title),
                     style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
-                    color = FlickColor.Caution,
+                    color = FlickRoom.Caution,
                 )
                 Text(
                     text = stringResource(R.string.pair_resume_failed_detail),
                     style = FlickType.body(sizeSp = 14),
-                    color = FlickColor.OnSurfaceDim,
+                    color = FlickRoom.OnSurfaceDim,
                 )
             }
         }
@@ -1014,7 +1015,7 @@ private fun PairConfirmCard(
             Icon(
                 imageVector = FlickIcons.Cast,
                 contentDescription = null,
-                tint = FlickColor.SparkBright,
+                tint = FlickRoom.SparkBright,
                 modifier = Modifier.size(FlickDimens.GlyphMedium),
             )
             Text(
@@ -1023,7 +1024,7 @@ private fun PairConfirmCard(
                 // line and ellipsized rather than allowed to set this card's height.
                 text = deviceLabel,
                 style = FlickType.display(sizeSp = 22),
-                color = FlickColor.OnSurface,
+                color = FlickRoom.OnSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1031,7 +1032,7 @@ private fun PairConfirmCard(
         Text(
             text = stringResource(R.string.pair_confirm_body),
             style = FlickType.body(sizeSp = 16),
-            color = FlickColor.OnSurfaceDim,
+            color = FlickRoom.OnSurfaceDim,
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1040,13 +1041,13 @@ private fun PairConfirmCard(
             Icon(
                 imageVector = FlickIcons.Timer,
                 contentDescription = null,
-                tint = FlickColor.Caution,
+                tint = FlickRoom.Caution,
                 modifier = Modifier.size(FlickDimens.GlyphSmall),
             )
             Text(
                 text = confirmDeadlineLine(expiresAtElapsedMs),
                 style = FlickType.monoEyebrow(trackingEm = 0.14f),
-                color = FlickColor.Caution,
+                color = FlickRoom.Caution,
                 maxLines = 1,
             )
         }
@@ -1082,7 +1083,7 @@ private fun PairNetworkCard(face: PairNetworkFace, modifier: Modifier = Modifier
             Icon(
                 imageVector = FlickIcons.Wifi,
                 contentDescription = null,
-                tint = FlickColor.Caution,
+                tint = FlickRoom.Caution,
                 modifier = Modifier.size(FlickDimens.GlyphMedium),
             )
             Text(
@@ -1094,7 +1095,7 @@ private fun PairNetworkCard(face: PairNetworkFace, modifier: Modifier = Modifier
                     },
                 ),
                 style = FlickType.display(sizeSp = 22),
-                color = FlickColor.OnSurface,
+                color = FlickRoom.OnSurface,
             )
         }
         Text(
@@ -1106,7 +1107,7 @@ private fun PairNetworkCard(face: PairNetworkFace, modifier: Modifier = Modifier
                 },
             ),
             style = FlickType.body(sizeSp = 16),
-            color = FlickColor.OnSurfaceDim,
+            color = FlickRoom.OnSurfaceDim,
         )
     }
 }
@@ -1130,6 +1131,8 @@ private fun QrColumn(
     ) {
         QrCode(
             payload = payload,
+            // White on the lit bed: the lift is what tells the plate from the room.
+            modifier = Modifier.shadow(elevation = 10.dp, shape = FlickShape.Hero, clip = false),
             size = QrCardSize,
             // The quiet zone is a ratio, not a constant: it came down with the
             // card so the symbol keeps the same share of the white plate.
@@ -1144,8 +1147,8 @@ private fun QrColumn(
             centerOverlay = { markSize ->
                 BrandMark(
                     size = markSize,
-                    tint = FlickColor.Primary,
-                    streakTint = FlickColor.Spark,
+                    tint = FlickRoom.Primary,
+                    streakTint = FlickRoom.Spark,
                 )
             },
         )
@@ -1156,13 +1159,13 @@ private fun QrColumn(
             Icon(
                 imageVector = FlickIcons.Wifi,
                 contentDescription = null,
-                tint = FlickColor.OnSurfaceMuted,
+                tint = FlickRoom.OnSurfaceMuted,
                 modifier = Modifier.size(FlickDimens.GlyphSmall),
             )
             Text(
                 text = stringResource(R.string.pair_url, host, port),
                 style = FlickType.monoTabular(sizeSp = 14, weight = FontWeight.SemiBold),
-                color = FlickColor.OnSurfaceMuted,
+                color = FlickRoom.OnSurfaceMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1172,7 +1175,7 @@ private fun QrColumn(
             text = stringResource(R.string.pair_bind_health, bindUptimeSec, rebindCount) +
                 (lastTeardown?.let { " · " + stringResource(R.string.pair_bind_last_teardown, it) } ?: ""),
             style = FlickType.monoTabular(sizeSp = 14, weight = FontWeight.Medium),
-            color = FlickColor.OnSurfaceFaint,
+            color = FlickRoom.OnSurfaceFaint,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -1188,7 +1191,7 @@ private fun QrColumn(
             Text(
                 text = stringResource(R.string.pair_not_discoverable),
                 style = FlickType.body(sizeSp = 14),
-                color = FlickColor.OnSurfaceFaint,
+                color = FlickRoom.OnSurfaceFaint,
             )
         }
     }
@@ -1206,7 +1209,7 @@ private fun highlightedInstructions(): AnnotatedString {
                 append(copy)
             } else {
                 append(copy.substring(0, at))
-                withStyle(SpanStyle(color = FlickColor.SparkBright)) { append(highlight) }
+                withStyle(SpanStyle(color = FlickRoom.SparkBright)) { append(highlight) }
                 append(copy.substring(at + highlight.length))
             }
         }
