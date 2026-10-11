@@ -34,12 +34,16 @@ import kotlin.math.sin
  * [loop] false is the still scene — reduce motion, or a window that is not resumed — and
  * no clock is created at all. [intensity] is read in the draw phase only, so the warp that
  * ramps the field in never recomposes this; neither does the loop clock.
+ *
+ * [vanishingFraction] is the vanishing point's height as a fraction of the field, so the
+ * field converges where the screen put its poster.
  */
 @Composable
 internal fun HyperspaceField(
     loop: Boolean,
     intensity: () -> Float,
     modifier: Modifier = Modifier,
+    vanishingFraction: Float = Hyperspace.VanishingY,
 ) {
     val clock: State<Float>? = if (loop) {
         rememberInfiniteTransition(label = "hyperspace").animateFloat(
@@ -56,7 +60,7 @@ internal fun HyperspaceField(
     }
     Box(
         modifier.drawWithCache {
-            val centre = Offset(size.width / 2f, size.height * Hyperspace.VanishingY)
+            val centre = Offset(size.width / 2f, size.height * vanishingFraction)
             val wash = Brush.radialGradient(
                 0f to Hyperspace.Core,
                 Hyperspace.MidStop to Hyperspace.Mid,
@@ -199,7 +203,7 @@ internal object Hyperspace {
     /** Accelerating all the way in: a cubic ease-in. */
     val WarpEasing: Easing = CubicBezierEasing(0.32f, 0f, 0.67f, 0f)
 
-    /** Height of the vanishing point, as a fraction of the window. */
+    /** Height of the vanishing point, as a fraction of the window, where the window has room. */
     const val VanishingY = 0.38f
 
     const val RingCount = 4

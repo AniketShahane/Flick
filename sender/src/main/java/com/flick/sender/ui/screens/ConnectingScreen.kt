@@ -19,8 +19,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -77,7 +80,7 @@ import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
-import com.flick.sender.ui.rememberFilmPosterPath
+import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
@@ -189,14 +192,16 @@ fun ConnectingScreen(
     val filmName = film?.displayName()
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
     val routeLine = filmName?.let { stringResource(R.string.connecting_route, it, tvName) } ?: tvName
-    val posterPath = film?.rememberFilmPosterPath()
+    // The warp throws the same portrait card the detail sheet held, never a backdrop.
+    val posterPath = film?.rememberFilmArt()?.poster
 
     FlickCinematicTheme {
         val colors = LocalFlickColors.current
         val motionScheme = MaterialTheme.motionScheme
         val reduceMotion = rememberReduceMotion()
         val resumed = rememberIsResumed()
-        // Saved so a rotation mid-handshake does not throw the poster a second time.
+        // Saved so a process restored mid-handshake does not throw the poster a second time;
+        // rotation never gets here, since the activity handles that change itself.
         var warped by rememberSaveable { mutableStateOf(false) }
         val warp = remember { Animatable(if (warped || reduceMotion) 1f else 0f) }
         LaunchedEffect(Unit) {
@@ -209,14 +214,22 @@ fun ConnectingScreen(
             warped = true
         }
         BoxWithConstraints(Modifier.fillMaxSize().background(Hyperspace.Edge)) {
-            // A short window sheds spacing rather than scrolling for it: Cancel has to be
-            // under the thumb, not below the fold.
-            val roomy = connectingIsRoomy(maxHeight.value, LocalDensity.current.fontScale)
-            val vanishingY = maxHeight * Hyperspace.VanishingY
+            // A short window — landscape, split screen — sheds spacing and then lifts the
+            // whole scene, so the copy and Cancel stay above the fold. The vanishing point is
+            // derived from where the copy starts, so the poster and the landing seat are
+            // always above it.
+            val fontScale = LocalDensity.current.fontScale
+            val roomy = connectingIsRoomy(maxHeight.value, fontScale)
+            val copyGap = if (roomy) CopyGapRoomy else CopyGapCompact
+            val navInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val copyTop = connectingCopyTopDp(maxHeight.value, navInset.value, copyGap.value, fontScale).dp
+            val vanishingY = copyTop - copyGap
+            val vanishingFraction = if (maxHeight.value > 0f) vanishingY / maxHeight else Hyperspace.VanishingY
 
             HyperspaceField(
                 loop = !reduceMotion && resumed,
                 intensity = { warp.value },
+                vanishingFraction = vanishingFraction,
                 modifier = Modifier.fillMaxSize(),
             )
 
@@ -246,16 +259,16 @@ fun ConnectingScreen(
                 )
             }
 
-            // The status pill owns the foot of the window; the copy starts below the
-            // vanishing point and scrolls rather than pushing Cancel under it. The slow-link
-            // card costs this column another ~170 dp, more than the spacing can give back
-            // at a large type scale, and the row it would push off is Cancel.
+            // The status pill owns the foot of the window; the copy scrolls rather than
+            // pushing Cancel under it. The slow-link card costs this column another ~170 dp,
+            // which no lifting of the scene can give back, and the row it would push off is
+            // Cancel.
             Box(
                 Modifier
                     .fillMaxSize()
                     .navigationBarsPadding()
                     .padding(
-                        top = vanishingY + if (roomy) CopyGapRoomy else CopyGapCompact,
+                        top = copyTop,
                         bottom = StatusPillBand,
                     ),
                 contentAlignment = Alignment.TopCenter,
@@ -439,10 +452,39 @@ private val LandingSeatHeight = 18.dp
 private val CopyGapRoomy = 72.dp
 private val CopyGapCompact = 40.dp
 
-// The scene above the vanishing point, the copy and Cancel cost roughly 430 dp at full
-// spacing AT SCALE 1, and the status pill claims the bottom band; below this the column
-// would start clipping its own terminal control.
-private const val RoomyColumnHeightDp = 520f
+// Title, two route lines, the two-line stage and Cancel with full spacing, at type scale 1.
+// The slow-link card is not in it: that scrolls.
+private const val CopyBudgetDp = 212f
+
+// The vanishing point never rises closer than this to the top: the landing seat is drawn
+// around it and must stay in the window.
+private const val MinVanishingDp = 24f
+
+// Allowance for a three-button navigation bar under the pill band.
+private const val NavAllowanceDp = 48f
+
+// Half the warp poster above the vanishing point, the full gap, the copy, the pill band and
+// a navigation bar, at scale 1. Below this the column would start clipping its own terminal
+// control at full spacing.
+private val RoomyColumnHeightDp =
+    FlickPadMotion.PosterHeightDp / 2f + CopyGapRoomy.value + CopyBudgetDp + StatusPillBand.value + NavAllowanceDp
+
+/**
+ * Where the copy starts, in dp from the top: just under the vanishing point at its
+ * [Hyperspace.VanishingY] height when there is room, and lifted on a short window so the
+ * copy budget, scaled with type, still ends above the pill band and the navigation bar.
+ */
+internal fun connectingCopyTopDp(
+    viewportHeightDp: Float,
+    bottomInsetDp: Float,
+    gapDp: Float,
+    fontScale: Float,
+): Float {
+    val natural = viewportHeightDp * Hyperspace.VanishingY + gapDp
+    val ceiling = viewportHeightDp - StatusPillBand.value - bottomInsetDp -
+        CopyBudgetDp * fontScale.coerceAtLeast(1f)
+    return minOf(natural, ceiling).coerceAtLeast(gapDp + MinVanishingDp)
+}
 
 /**
  * Whether the window can still afford the full-spacing stack. The figure it is compared

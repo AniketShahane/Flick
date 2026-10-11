@@ -175,7 +175,6 @@
     <string name="detail_cta_noconnect">Flick to your TV</string>
     <!-- The poster pad above the CTA: swipe the film's poster up to send it. -->
     <string name="flick_pad_title">Flick it toward your TV</string>
-    <string name="flick_pad_hint">Swipe the poster up</string>
     <string name="flick_pad_armed">Let go to send</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
     <!-- The subtitle this film was left with, confirmed where it is put back. The value is

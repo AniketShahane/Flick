@@ -23,6 +23,15 @@ internal object FlickPadPolicy {
     const val TILT_DEG_PER_DP = 0.12f
     const val MAX_TILT_DEG = 8f
 
+    /**
+     * Whether the poster takes a drag that has just crossed touch slop, [travelYDp] from where
+     * the finger went down (negative is up). The sheet around it scrolls, and a swipe it can
+     * still use is a scroll: only once it has nothing further below does an upward swipe become
+     * a throw, and a downward one that could scroll it back stays the sheet's too.
+     */
+    fun claims(sheetCanScrollForward: Boolean, sheetCanScrollBackward: Boolean, travelYDp: Float): Boolean =
+        !sheetCanScrollForward && !(travelYDp > 0f && sheetCanScrollBackward)
+
     /** While the finger is down only distance can be judged; velocity exists at release. */
     fun armed(upDp: Float): Boolean = upDp >= ARM_DISTANCE_DP
 

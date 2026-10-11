@@ -10,8 +10,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -46,6 +50,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import coil.ImageLoader
@@ -73,6 +78,9 @@ import kotlinx.coroutines.launch
  *
  * [enabled] false is the CTA's own disabled state: no drag is accepted and the idle nudge
  * stops, so the poster never invites a send the button would refuse.
+ *
+ * [sheetScroll] is the scroll of the sheet the pad sits in. While that sheet can still
+ * scroll, a swipe starting on the poster is the sheet's, never a send.
  */
 @Composable
 internal fun FlickPad(
@@ -80,6 +88,7 @@ internal fun FlickPad(
     frameRequest: ImageRequest,
     imageLoader: ImageLoader,
     enabled: Boolean,
+    sheetScroll: ScrollState,
     onFlick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -118,11 +127,10 @@ internal fun FlickPad(
         }
     }
 
-    val gesture = Modifier.pointerInput(enabled && !sending) {
+    // Keyed on the sheet's scroll state too: a new state object means the predicate below
+    // would otherwise keep asking the old one.
+    val gesture = Modifier.pointerInput(enabled && !sending, sheetScroll) {
         if (!enabled || sending) return@pointerInput
-        val tracker = VelocityTracker()
-        var rawX = 0f
-        var rawY = 0f
         val flyPx = FlickPadMotion.FlyDistanceDp.dp.toPx()
 
         fun settle() {
@@ -132,22 +140,60 @@ internal fun FlickPad(
             scope.launch { offsetY.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
         }
 
-        detectDragGestures(
-            onDragStart = { _: Offset ->
+        // Measured from the down position, not from where slop was crossed, so the arm and
+        // fling distances are the finger's real travel.
+        fun follow(travel: Offset) {
+            val followX = FlickPadPolicy.followX(travel.x / density) * density
+            val followY = FlickPadPolicy.followY(travel.y / density) * density
+            scope.launch {
+                offsetX.snapTo(followX)
+                offsetY.snapTo(followY)
+            }
+            val nowArmed = FlickPadPolicy.armed(-travel.y / density)
+            if (nowArmed != armed) {
+                armed = nowArmed
+                if (nowArmed) haptics.gestureArmed()
+            }
+        }
+
+        awaitEachGesture {
+            // Unconsumed, so the sheet's own scroll still sees every gesture this declines.
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val tracker = VelocityTracker()
+            tracker.addPointerInputChange(down)
+            // A change left unconsumed here goes on to the sheet's scroll, which takes it and
+            // cancels this wait: the poster only claims a drag the sheet has no use for.
+            val start = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                val travelYDp = (change.position.y - down.position.y) / density
+                if (FlickPadPolicy.claims(sheetScroll.canScrollForward, sheetScroll.canScrollBackward, travelYDp)) {
+                    change.consume()
+                }
+            } ?: return@awaitEachGesture
+
+            // Also reached when the key changes mid-drag, which cancels this coroutine
+            // without any release: the poster must not be left displaced or armed.
+            try {
                 touched = true
-                rawX = 0f
-                rawY = 0f
-                tracker.resetTracking()
                 scope.launch { nudge.snapTo(0f) }
                 scope.launch { held.animateTo(1f, motionScheme.fastSpatialSpec<Float>()) }
-            },
-            onDragEnd = {
-                val upDp = -rawY / density
+                tracker.addPointerInputChange(start)
+                follow(start.position - down.position)
+                var last = start
+                val released = drag(start.id) { change ->
+                    change.consume()
+                    tracker.addPointerInputChange(change)
+                    last = change
+                    follow(change.position - down.position)
+                }
+                val upDp = -(last.position.y - down.position.y) / density
                 val upVelocity = -tracker.calculateVelocity().y / density
-                if (currentEnabled && FlickPadPolicy.sends(upDp, upVelocity)) {
+                if (released && currentEnabled && FlickPadPolicy.sends(upDp, upVelocity)) {
                     sending = true
                     armed = false
-                    haptics.confirm()
+                    haptics.gestureEnd()
+                    // Before the flight, not after it: the flight is decoration, and a pad
+                    // that leaves composition mid-flight must not take the send with it.
+                    currentOnFlick()
                     scope.launch {
                         val snap = currentReduceMotion
                         held.snapTo(0f)
@@ -162,7 +208,6 @@ internal fun FlickPad(
                             Motion.orSnap(snap, tween(FlickPadMotion.FlyMs, easing = FlickPadMotion.FadeEasing)),
                         )
                         flight.join()
-                        if (currentEnabled) currentOnFlick()
                         // Still composed after this long means nothing navigated — a CTA
                         // that resolves to pairing, say — so the poster comes back to its
                         // seat instead of leaving an empty one.
@@ -172,26 +217,9 @@ internal fun FlickPad(
                         presence.animateTo(1f, Motion.orSnap(snap, tween(FlickPadMotion.ReturnFadeMs)))
                         sending = false
                     }
-                } else {
-                    settle()
                 }
-            },
-            onDragCancel = { settle() },
-        ) { change, amount ->
-            change.consume()
-            tracker.addPointerInputChange(change)
-            rawX += amount.x
-            rawY += amount.y
-            val followX = FlickPadPolicy.followX(rawX / density) * density
-            val followY = FlickPadPolicy.followY(rawY / density) * density
-            scope.launch {
-                offsetX.snapTo(followX)
-                offsetY.snapTo(followY)
-            }
-            val nowArmed = FlickPadPolicy.armed(-rawY / density)
-            if (nowArmed != armed) {
-                armed = nowArmed
-                if (nowArmed) haptics.gestureArmed()
+            } finally {
+                if (!sending) settle()
             }
         }
     }
@@ -206,9 +234,12 @@ internal fun FlickPad(
             live = enabled && !reduceMotion && resumed,
             dimmed = !enabled,
             color = colors.primary,
-            modifier = Modifier.size(width = 30.dp, height = 34.dp),
+            modifier = Modifier.size(
+                width = FlickPadMotion.ChevronWidthDp.dp,
+                height = FlickPadMotion.ChevronRowDp.dp,
+            ),
         )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(FlickPadMotion.ChevronGapDp.dp))
         Box(
             Modifier
                 .size(width = FlickPadMotion.PosterWidthDp.dp, height = FlickPadMotion.PosterHeightDp.dp)
@@ -226,7 +257,7 @@ internal fun FlickPad(
                     scaleY = scale
                     alpha = presence.value
                 }
-                .shadow(18.dp, shape, clip = false, ambientColor = TileShadow, spotColor = TileShadow)
+                .shadow(FlickPadMotion.PosterShadowDp.dp, shape, clip = false, ambientColor = TileShadow, spotColor = TileShadow)
                 .clip(shape)
                 .background(colors.surfaceRaisedAlt),
         ) {
@@ -242,19 +273,14 @@ internal fun FlickPad(
                 )
             }
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(FlickPadMotion.TitleGapDp.dp))
         Text(
             text = stringResource(if (armed) R.string.flick_pad_armed else R.string.flick_pad_title),
             style = FlickText.titleSmall.copy(color = if (armed) colors.primary else colors.onSurface),
             textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(3.dp))
-        Text(
-            text = stringResource(R.string.flick_pad_hint),
-            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-            textAlign = TextAlign.Center,
-            // Hidden rather than removed while armed, so the CTA below never moves.
-            modifier = Modifier.graphicsLayer { alpha = if (armed) 0f else 1f },
+            // One line in both states, so arming never moves the CTA below.
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -327,9 +353,10 @@ internal fun chevronRestAlpha(index: Int): Float = when (index) {
 
 /** Every number in docs/flick-hyperspace-phone.md; change either and change both. */
 internal object FlickPadMotion {
-    const val PosterWidthDp = 132f
-    const val PosterHeightDp = 198f
-    const val PosterCornerDp = 18f
+    const val PosterWidthDp = 104f
+    const val PosterHeightDp = 156f
+    const val PosterCornerDp = 14f
+    const val PosterShadowDp = 14f
     const val HeldScale = 1.03f
 
     const val NudgeDp = 12f
@@ -354,7 +381,13 @@ internal object FlickPadMotion {
     const val ChevronPeakAt = 0.25f
     const val ChevronBaseAlpha = 0.25f
     const val ChevronDimmedAlpha = 0.2f
-    const val ChevronStrokeDp = 3f
-    const val ChevronRiseDp = 7f
-    const val ChevronPitchDp = 10f
+    const val ChevronStrokeDp = 2.5f
+    const val ChevronRiseDp = 5f
+    const val ChevronPitchDp = 6.5f
+    const val ChevronWidthDp = 24f
+    const val ChevronRowDp = 24f
+
+    /** Chevrons, gap, poster, gap, one title line: about 210 dp of sheet in all. */
+    const val ChevronGapDp = 6f
+    const val TitleGapDp = 8f
 }

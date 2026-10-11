@@ -49,6 +49,21 @@ class FlickPadPolicyTest {
         assertEquals(FlickPadPolicy.MAX_TILT_DEG, FlickPadPolicy.tiltDegrees(1000f), EPS)
         assertEquals(-FlickPadPolicy.MAX_TILT_DEG, FlickPadPolicy.tiltDegrees(-1000f), EPS)
     }
+
+    @Test
+    fun aSheetThatCanStillScrollKeepsTheSwipe() {
+        // The report: a scroll that started on the poster threw the film at the TV.
+        assertFalse(FlickPadPolicy.claims(sheetCanScrollForward = true, sheetCanScrollBackward = false, travelYDp = -12f))
+        assertFalse(FlickPadPolicy.claims(sheetCanScrollForward = true, sheetCanScrollBackward = true, travelYDp = -12f))
+        assertTrue(FlickPadPolicy.claims(sheetCanScrollForward = false, sheetCanScrollBackward = true, travelYDp = -12f))
+    }
+
+    @Test
+    fun aDownwardSwipeScrollsTheSheetBackRatherThanHoldingThePoster() {
+        assertFalse(FlickPadPolicy.claims(sheetCanScrollForward = false, sheetCanScrollBackward = true, travelYDp = 12f))
+        // A sheet that does not scroll at all leaves every drag to the poster.
+        assertTrue(FlickPadPolicy.claims(sheetCanScrollForward = false, sheetCanScrollBackward = false, travelYDp = 12f))
+    }
 }
 
 private const val EPS = 1e-4f

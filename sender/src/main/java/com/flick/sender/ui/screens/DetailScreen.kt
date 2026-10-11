@@ -186,6 +186,7 @@ fun DetailScreen(
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }
     val startOverSource = remember { MutableInteractionSource() }
+    val sheetScroll = rememberScrollState()
 
     // Cinematic rather than the pale canvas: this route already declares a dark
     // backdrop to the system bars, and the frame arrives out of darkness.
@@ -232,7 +233,7 @@ fun DetailScreen(
                 .clip(SheetShape)
                 .background(colors.surface)
                 .clickable(interactionSource = sheetSource, indication = null, onClick = {})
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(sheetScroll)
                 .imePadding()
                 .navigationBarsPadding()
                 .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp),
@@ -377,6 +378,7 @@ fun DetailScreen(
                         frameRequest = request,
                         imageLoader = imageLoader,
                         enabled = progressReady && !castStart.isCommitting(),
+                        sheetScroll = sheetScroll,
                         onFlick = { controller.flickToTv(item) },
                     )
                     Spacer(Modifier.height(17.dp))

@@ -398,6 +398,9 @@ internal class FlickTouchHaptics(private val haptics: HapticFeedback) {
     /** A drag crossed the point where letting go would act. */
     fun gestureArmed() = perform(HapticFeedbackType.GestureThresholdActivate)
 
+    /** A drag was let go and acted. What it set off confirms itself when it lands. */
+    fun gestureEnd() = perform(HapticFeedbackType.GestureEnd)
+
     /** A cast or a pairing failed, or the input was rejected. */
     fun reject() = perform(HapticFeedbackType.Reject)
 
