@@ -327,6 +327,12 @@ fun PlaybackScreen(
     silentAudioMimeType: String? = null,
     /** The band's third card — see [BandNotice]. Null while the slot has nothing to say. */
     bandNotice: BandNotice? = null,
+    /**
+     * The phone this film's control link is waiting on, while it is held for it; null
+     * otherwise. Not part of the band's queue: it can stand for most of a minute, and it
+     * is a state of the link rather than an event of the film.
+     */
+    reconnectingTo: String? = null,
     openPanel: PlaybackPanel = PlaybackPanel.None,
     onOpenPanel: (PlaybackPanel) -> Unit = {},
     onScrubFocusChanged: (Boolean) -> Unit = {},
@@ -709,6 +715,25 @@ fun PlaybackScreen(
                 .padding(top = 42.dp),
         ) {
             retainedBandNotice?.let { BandNoticeCard(notice = it) }
+        }
+
+        // Top end, out of the band's column, so it never queues behind or covers a band
+        // card while it waits out a reconnect. That corner is the quality flourish's
+        // too, and the flourish is the one the viewer just asked for, so this gives way.
+        var retainedReconnecting by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(reconnectingTo) { if (reconnectingTo != null) retainedReconnecting = reconnectingTo }
+        AnimatedVisibility(
+            visible = reconnectingTo != null && quality == null,
+            enter = if (reducedMotion) EnterTransition.None else fadeIn(FlickMotion.chromeFadeIn()),
+            exit = if (reducedMotion) ExitTransition.None else fadeOut(FlickMotion.chromeFadeOut()),
+            label = "reconnectingNotice",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(safeArea)
+                // Clears the 32.2 dp top-chrome pill row plus a sibling gap.
+                .padding(top = 42.dp),
+        ) {
+            retainedReconnecting?.let { ReconnectingCard(deviceLabel = it) }
         }
 
         // Both chrome surfaces start hidden, so chrome that is already up at the
@@ -2314,6 +2339,39 @@ private fun SilentAudioCard(mimeType: String, modifier: Modifier = Modifier) {
  * It is not a control and never becomes one: no focus target, no click, no
  * `tvRevealSource`, and the chrome's own 4 s countdown never sees it.
  */
+/**
+ * The film's control link is down and this TV is holding the film for its phone.
+ *
+ * [BandNoticeCard]'s shape, and like it no affordance: there is nothing to press while
+ * the phone finds its way back, and Back still ends the film exactly as it always has.
+ */
+@Composable
+private fun ReconnectingCard(deviceLabel: String, modifier: Modifier = Modifier) {
+    val spoken = stringResource(R.string.notice_reconnecting_description, deviceLabel)
+    Column(
+        modifier = modifier
+            .glassPanel(FlickShape.Md)
+            .padding(horizontal = 11.dp, vertical = 9.dp)
+            .clearAndSetSemantics { contentDescription = spoken },
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.notice_reconnecting_title, deviceLabel),
+            style = FlickType.body(sizeSp = 16, weight = FontWeight.Bold),
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = stringResource(R.string.notice_reconnecting_line),
+            style = FlickType.monoEyebrow(trackingEm = 0.14f),
+            color = FlickColor.OnSurfaceDim,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 @Composable
 private fun BandNoticeCard(notice: BandNotice, modifier: Modifier = Modifier) {
     val spoken = stringResource(

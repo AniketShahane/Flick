@@ -262,6 +262,12 @@
     <string name="notice_audio_restart_description">The sound was interrupted. This TV is changing how it plays this film\'s audio.</string>
     <string name="notice_subtitle_dropped_description">That subtitle wouldn\'t load. The film is playing without it.</string>
     <string name="notice_turn_unavailable_description">Showing this film as filed. This TV can\'t turn this film.</string>
+    <!-- While a playing film has lost its phone's control link and is held for that phone
+         to come back. Never says the phone is gone: it usually returns within seconds.
+         %1$s is the phone's name. -->
+    <string name="notice_reconnecting_title">Reconnecting to %1$s…</string>
+    <string name="notice_reconnecting_line">THE FILM KEEPS PLAYING</string>
+    <string name="notice_reconnecting_description">Reconnecting to %1$s. The film keeps playing.</string>
 
     <!-- Stream metrics: transport key + panel -->
     <!-- Spoken, not drawn: the transport key is the glyph alone, so the throughput

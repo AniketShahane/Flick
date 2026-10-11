@@ -20,6 +20,18 @@ class ControlOwnership {
         return Adoption(displaced)
     }
 
+    /**
+     * The same phone replacing its own socket. Unlike [adoptIdleConnection] the cast
+     * stays: it is the film this phone is already driving, and the old socket is
+     * usually one its own Wi-Fi blip left half-open here.
+     */
+    @Synchronized fun takeOverController(token: Any, generation: Long): Adoption {
+        val displaced = controller
+        controller = token
+        controllerGeneration = generation
+        return Adoption(displaced)
+    }
+
     @Synchronized fun adoptCast(token: Any, generation: Long, castId: String): CastAdoption {
         if (!owns(token, generation)) return CastAdoption.STALE_LEASE
         return if (activeCastId == castId) CastAdoption.DUPLICATE else {

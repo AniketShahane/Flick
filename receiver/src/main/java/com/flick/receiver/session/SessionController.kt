@@ -211,6 +211,18 @@ class SessionController(
     var chromePoke by mutableStateOf(0)
         private set
 
+    /**
+     * Whether the playing film has lost its control socket and is being held for its
+     * phone — see [CastReattachPolicy]. The film is still on screen; this only says
+     * nobody is driving it.
+     */
+    var reconnecting by mutableStateOf(false)
+        private set
+
+    /** The paired phone [reconnecting] is waiting on, when the loss could name it. */
+    var reconnectingKeyId by mutableStateOf<String?>(null)
+        private set
+
     private val gate = CastGenerationGate()
     private val castId get() = gate.castId
     private val generation get() = gate.generation
@@ -232,6 +244,13 @@ class SessionController(
      */
     private var preparedSubtitle: ExternalSubtitle? = null
     private var startupPositionMs = 0L
+    /**
+     * The URL the running player is fetching. Unlike [startupUrl] it survives the first
+     * frame, because a reattach is measured against it for as long as the film plays.
+     */
+    private var castUrl: String? = null
+    private var orphan: OrphanedCast? = null
+    private var orphanJob: Job? = null
     private var retainedResult: ControlCastResult? = null
     private var terminal: ((String, CastFailureCode, Boolean, Int?, Boolean) -> Unit)? = null
     private var ready: ((String, Long, Long) -> Unit)? = null
@@ -268,6 +287,15 @@ class SessionController(
         startMs: Long,
         subtitle: ExternalSubtitle?,
     ): ControlCastResult {
+        // Reached while a cast is held only when [onReadoptMedia] refused this frame,
+        // so it is someone else's cast, or another film: it supersedes the held one as
+        // a new cast. The retained result is the held film's, and replaying it for a
+        // frame that did not re-adopt it would hand that film to the sender.
+        if (orphan != null) {
+            FlickLog.i("cast", "orphan superseded castIdFp=${FlickLog.fp(castId)}")
+            clearOrphan()
+            retainedResult = null
+        }
         replayResult(castId)?.let { return it }
         // An A/V nudge belongs to the film it was dialled in for, and this is the
         // only path a genuinely new castId reaches: control ownership routes a
@@ -344,6 +372,7 @@ class SessionController(
     ): Boolean {
         if (!controller.reloadInPlace(url, startMs, mediaIdFor(castId, generation), subtitle)) return false
         preparedSubtitle = subtitle
+        castUrl = url
         return true
     }
 
@@ -371,6 +400,7 @@ class SessionController(
         seekTargetMs = startMs
         stage = MediaStage.Checking(castId, controlLeaseGeneration)
         startupUrl = url
+        castUrl = url
         preparedSubtitle = subtitle
         startupPositionMs = startMs
         startupRetries = 0
@@ -482,6 +512,56 @@ class SessionController(
 
     override fun replayResult(castId: String): ControlCastResult? = retainedResult?.takeIf { resultCastId(it) == castId }
 
+    override fun onReadoptMedia(
+        controlLeaseGeneration: Long,
+        keyId: String,
+        castId: String,
+        url: String,
+    ): ControlCastResult.Ready? {
+        val id = this.castId ?: return null
+        val active = stage is MediaStage.Active
+        val held = orphan
+        if (held != null) {
+            if (!active || !lifecycleStarted()) return null
+            if (!CastReattachPolicy.readopts(held, keyId, castId, url, clock())) return null
+            clearOrphan()
+            this.controlLeaseGeneration = controlLeaseGeneration
+            gate.rebindLease(controlLeaseGeneration)
+            stage = MediaStage.Active(id, controlLeaseGeneration)
+            FlickLog.i("cast", "orphan readopted castIdFp=${FlickLog.fp(id)}")
+        } else {
+            if (controlLeaseGeneration != this.controlLeaseGeneration) return null
+            if (!CastReattachPolicy.continues(id, castUrl, active, castId, url)) return null
+            FlickLog.i("cast", "takeover readopted castIdFp=${FlickLog.fp(id)}")
+        }
+        return ControlCastResult.Ready(castId, probeLatencyMs = 0L, startupMs = 0L)
+    }
+
+    override fun onControlLeaseMoved(fromGeneration: Long, toGeneration: Long) {
+        if (castId == null || controlLeaseGeneration != fromGeneration) return
+        controlLeaseGeneration = toGeneration
+        gate.rebindLease(toGeneration)
+        stage = when (val value = stage) {
+            is MediaStage.Checking -> value.copy(controlLeaseGeneration = toGeneration)
+            is MediaStage.Preparing -> value.copy(controlLeaseGeneration = toGeneration)
+            is MediaStage.Active -> value.copy(controlLeaseGeneration = toGeneration)
+            else -> value
+        }
+    }
+
+    /**
+     * A held cast whose phone was just forgotten ends the way a Forget ends a cast that
+     * phone was still driving: quietly, and at once. That phone can no longer prove
+     * itself here, so waiting out the grace for it would only leave a film nobody can
+     * stop from their phone.
+     */
+    override fun onPhoneForgotten(keyId: String?) {
+        val held = orphan ?: return
+        if (keyId != null && held.keyId != keyId) return
+        FlickLog.i("cast", "orphan forgotten castIdFp=${FlickLog.fp(held.castId)}")
+        invalidateToNone(clearRetained = true)
+    }
+
     private fun startPlayer(castId: String, generation: Long, probeLatencyMs: Long, startedElapsedMs: Long) {
         if (!gate.isCurrent(castId, generation) || clock() >= startupDeadlineElapsedMs) {
             fail(castId, generation, CastFailureCode.STARTUP_TIMEOUT, true, beforeReady = true)
@@ -502,7 +582,9 @@ class SessionController(
                 if (!gate.isCurrent(castId, generation)) return@firstFrame
                 startupDeadlineJob?.cancel()
                 startupDeadlineJob = null
-                stage = MediaStage.Active(castId, lease)
+                // The live lease, not the one captured at prepare: a takeover can have
+                // moved the cast to the phone's new socket while it was still starting.
+                stage = MediaStage.Active(castId, controlLeaseGeneration ?: lease)
                 FlickLog.i("cast", "stage=active castIdFp=${FlickLog.fp(castId)} startupMs=${clock() - startedElapsedMs}")
                 val outcome = ControlCastResult.Ready(
                     castId = castId,
@@ -613,6 +695,7 @@ class SessionController(
         rendered: Boolean = true,
     ) {
         if (!gate.isCurrent(id, generation)) return
+        clearOrphan()
         FlickLog.w("cast", "fail code=${code.wire} detail=$detail retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
         // Safe from inside the probe coroutine itself: nothing suspends after fail() there,
         // and its finally still releases the hold.
@@ -709,16 +792,65 @@ class SessionController(
      *
      * [ControlLossReason.announces] is what keeps an owner's own Forget from being
      * dressed as a network fault.
+     *
+     * A film that is already PLAYING is not torn down here at all when the socket merely
+     * dropped: it is held for its phone first (see [holdForPhone]), and only a hold that
+     * runs out reaches the teardown and the sentence above.
      */
-    override fun onControlLost(generation: Long, reason: ControlLossReason) {
+    override fun onControlLost(generation: Long, reason: ControlLossReason, keyId: String?) {
         if (!gate.shouldInvalidateForControlLoss(generation) && stageLeaseGeneration() != generation) return
         if (stage is MediaStage.Error) return
+        // Already held: the loss that orphaned it is the only one its lease can have.
+        if (orphan != null) return
         val id = castId
+        val url = castUrl
+        if (id != null && url != null && CastReattachPolicy.entersGrace(reason, stage is MediaStage.Active, lifecycleStarted())) {
+            holdForPhone(OrphanedCast(keyId, id, url, clock() + CastReattachPolicy.ORPHAN_GRACE_MS))
+            return
+        }
         val explains = reason.announces && id != null && stage !is MediaStage.None
         if (!explains) {
             invalidateToNone(clearRetained = true)
             return
         }
+        announceControlLoss(id!!)
+    }
+
+    /**
+     * The film plays on and the session keeps its player, lease generation and retained
+     * `loadReady`; only the socket is gone. Nothing is sent and nothing is drawn but the
+     * small notice — the phone is expected back inside the grace, and if it is not,
+     * the grace ends exactly where a dropped socket always ended.
+     */
+    private fun holdForPhone(held: OrphanedCast) {
+        clearOrphan()
+        orphan = held
+        reconnecting = true
+        reconnectingKeyId = held.keyId
+        FlickLog.w(
+            "cast",
+            "controlLost reason=dropped held graceMs=${CastReattachPolicy.ORPHAN_GRACE_MS} " +
+                "keyIdFp=${held.keyId?.let(FlickLog::fp) ?: "none"} castIdFp=${FlickLog.fp(held.castId)}",
+        )
+        orphanJob = scope.launch {
+            delay(CastReattachPolicy.ORPHAN_GRACE_MS)
+            if (orphan !== held || castId != held.castId) return@launch
+            FlickLog.w("cast", "orphan expired castIdFp=${FlickLog.fp(held.castId)}")
+            announceControlLoss(held.castId)
+        }
+    }
+
+    private fun clearOrphan() {
+        val job = orphanJob
+        orphanJob = null
+        orphan = null
+        reconnecting = false
+        reconnectingKeyId = null
+        job?.cancel()
+    }
+
+    /** Today's dropped-socket teardown: the film stops, and the sentence follows unless rescued. */
+    private fun announceControlLoss(id: String) {
         val beforeReady = TerminalPhase.beforeReady(stage)
         val lease = controlLeaseGeneration
         invalidate(clearRetained = true)
@@ -726,7 +858,7 @@ class SessionController(
         title = null
         seekTargetMs = 0L
         stage = MediaStage.None
-        FlickLog.w("cast", "controlLost reason=${reason.wire} beforeReady=$beforeReady castIdFp=${FlickLog.fp(id)}")
+        FlickLog.w("cast", "controlLost reason=dropped beforeReady=$beforeReady castIdFp=${FlickLog.fp(id)}")
         controlLossAnnounceJob = scope.launch {
             delay(CONTROL_LOSS_ANNOUNCE_DELAY_MS)
             // Anything at all having happened in the meantime — a re-cast, a Back, a new
@@ -787,8 +919,10 @@ class SessionController(
         // two waiting sentences, and so a fresh cast or a Back silences the pending one.
         controlLossAnnounceJob?.cancel(); controlLossAnnounceJob = null
         startupDeadlineJob?.cancel(); startupDeadlineJob = null
+        clearOrphan()
         controller.clearStartupListener()
         clearStartupState()
+        castUrl = null
         controlLeaseGeneration = null
         if (clearRetained) retainedResult = null
     }

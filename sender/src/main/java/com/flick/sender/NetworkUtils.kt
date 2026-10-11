@@ -74,6 +74,27 @@ object NetworkUtils {
         return fallback
     }
 
+    /** The name of the interface that holds [ip], or null when none does. */
+    fun interfaceOwning(ip: String): String? = try {
+        NetworkInterface.getNetworkInterfaces()?.asSequence()
+            ?.firstOrNull { nif -> nif.inetAddresses.asSequence().filterIsInstance<Inet4Address>().any { it.hostAddress == ip } }
+            ?.name
+    } catch (_: Exception) { null }
+
+    /**
+     * The site-local IPv4 address interface [name] holds now, or null.
+     *
+     * Asked of one interface rather than of the phone: mid-blip a phone with mobile data
+     * still holds a carrier 10/8 address, and [getSiteLocalIpv4] would offer that as the
+     * phone having moved to another network when the Wi-Fi has only dropped for a second.
+     */
+    fun siteLocalIpv4On(name: String): String? = try {
+        NetworkInterface.getByName(name)?.takeIf { it.isUp }?.inetAddresses?.asSequence()
+            ?.filterIsInstance<Inet4Address>()
+            ?.firstOrNull { it.isSiteLocalAddress && !it.isLoopbackAddress && !it.isLinkLocalAddress }
+            ?.hostAddress
+    } catch (_: Exception) { null }
+
     /**
      * Reads this phone's own Wi-Fi link (band / link speed / RSSI), or `null` when
      * Wi-Fi isn't the active link or its frequency can't be read.

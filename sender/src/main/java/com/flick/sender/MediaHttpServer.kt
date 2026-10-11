@@ -32,6 +32,8 @@ import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.MessageDigest
 import java.util.concurrent.Semaphore
 import kotlin.coroutines.cancellation.CancellationException
@@ -130,26 +132,55 @@ class MediaHttpServer(context: Context) {
             }
 
             boundHost = bindHost
-            val engine = embeddedServer(
-                CIO,
-                environment = applicationEnvironment { },
-                configure = {
-                    connector {
-                        host = bindHost
-                        port = SERVER_PORT
-                    }
-                    // Reap idle sockets so a client that opens a connection and
-                    // then stalls can't hold an engine slot indefinitely.
-                    connectionIdleTimeoutSeconds = IDLE_TIMEOUT_SECONDS
-                },
-            ) {
-                configureRouting()
-            }
-            engine.start(false)
-            server = engine
+            server = startEngine(bindHost)
             // Length only — the token itself is the media capability.
             FlickLog.i("bind", "media server $bindHost:$SERVER_PORT tokenLen=${token.length}")
         }
+    }
+
+    /**
+     * Put a fresh listener on the address, port and served session already in force.
+     *
+     * For an address that went away and came back unchanged: the URL the TV holds names
+     * exactly this host, port and token, so its player's own retry reconnects without a new
+     * load — but only if something is accepting there again, and a listener whose address
+     * was removed under it cannot be trusted to be. Answers whether one now is; a failed
+     * bind leaves no engine, and the next [start] binds from scratch.
+     */
+    fun relisten(): Boolean {
+        synchronized(lock) {
+            val running = server ?: return false
+            val host = boundHost ?: return false
+            stopEngine(running)
+            server = null
+            server = startEngine(host)
+            FlickLog.i("bind", "media server relistened $host:$SERVER_PORT")
+            return true
+        }
+    }
+
+    private fun startEngine(bindHost: String): EmbeddedServer<*, *> {
+        val engine = embeddedServer(
+            CIO,
+            environment = applicationEnvironment { },
+            configure = {
+                connector {
+                    host = bindHost
+                    port = SERVER_PORT
+                }
+                // Reap idle sockets so a client that opens a connection and
+                // then stalls can't hold an engine slot indefinitely.
+                connectionIdleTimeoutSeconds = IDLE_TIMEOUT_SECONDS
+                // Defaults to false in Ktor 3.1.3: a same-port rebind (relisten, or a
+                // re-cast right after one) would throw EADDRINUSE while a connection this
+                // engine closed still lingers in TIME_WAIT.
+                reuseAddress = true
+            },
+        ) {
+            configureRouting()
+        }
+        engine.start(false)
+        return engine
     }
 
     /**
@@ -660,4 +691,18 @@ internal object SubtitlePolicy {
             else -> PLAIN
         }
     }
+}
+
+/**
+ * Whether anything accepts a TCP connection at [host]:[port], asked from this phone itself.
+ *
+ * A connect and nothing more: the listener's own Host pin and token are what guard the
+ * film, and an accept that is closed straight away costs the engine one idle socket.
+ * Blocking, so callers run it off the main thread.
+ */
+internal fun mediaServerListening(host: String, port: Int = SERVER_PORT, timeoutMs: Int = 500): Boolean = try {
+    Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) }
+    true
+} catch (_: IOException) {
+    false
 }

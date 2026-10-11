@@ -41,8 +41,32 @@ interface ControlCommands {
         subtitle: ExternalSubtitle?,
     ): ControlCastResult?
     fun replayResult(castId: String): ControlCastResult?
-    /** Called only for the currently-owned control generation. */
-    fun onControlLost(generation: Long, reason: ControlLossReason)
+
+    /**
+     * A `loadMedia` that may be [keyId]'s phone reattaching to the film it is already
+     * driving — after its socket died, or after its new socket took the lease over.
+     * Returns the `loadReady` to answer with only when the running cast is kept
+     * exactly as it is; null means the frame is handled as it always was. Never
+     * touches the player.
+     */
+    fun onReadoptMedia(
+        controlLeaseGeneration: Long,
+        keyId: String,
+        castId: String,
+        url: String,
+    ): ControlCastResult.Ready?
+
+    /** The cast owned by lease [fromGeneration] now belongs to lease [toGeneration]. */
+    fun onControlLeaseMoved(fromGeneration: Long, toGeneration: Long)
+
+    /** [keyId] was forgotten on this TV; null is every phone. */
+    fun onPhoneForgotten(keyId: String?)
+
+    /**
+     * Called only for the currently-owned control generation. [keyId] is the phone
+     * that held it, when the loss can name one.
+     */
+    fun onControlLost(generation: Long, reason: ControlLossReason, keyId: String?)
     fun onPlay(castId: String)
     fun onPause(castId: String)
     fun onSeek(castId: String, posMs: Long)
@@ -85,7 +109,11 @@ interface ControlCommands {
  * false. Only a socket that simply stopped answering is worth a sentence on screen.
  */
 enum class ControlLossReason(val wire: String, val announces: Boolean) {
-    /** The socket ended while it still held the lease: nothing on this TV took it away. */
+    /**
+     * The socket ended while it still held the lease: nothing on this TV took it away.
+     * Also a lease revoked by [ControlServer.relisten], whose socket went with the
+     * address the platform removed under it.
+     */
     DROPPED("dropped", announces = true),
 
     /** This TV stopped its own server — a rebind or a teardown, each explained by itself. */

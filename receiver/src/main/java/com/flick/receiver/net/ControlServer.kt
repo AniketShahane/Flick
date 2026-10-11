@@ -41,12 +41,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Mac
@@ -73,6 +76,12 @@ class ControlServer(
         /** Which paired phone holds this lease, so a per-phone forget can find it. */
         val keyId: String,
         val emit: suspend (String) -> Unit,
+        /**
+         * The cast this socket took over from the same phone's previous socket, until
+         * its first `loadMedia`. Only that frame can be the phone reattaching; any
+         * later repeat keeps the ordinary duplicate meaning.
+         */
+        val inheritedCast: AtomicReference<String?> = AtomicReference(null),
     )
 
     /** One immutable tuple so a reader can never see a host from one bind and a port from another. */
@@ -186,7 +195,36 @@ class ControlServer(
      * Walks [ports] in order and returns the port that actually bound, or -1.
      * The caller persists and advertises the RETURNED port, never the requested one.
      */
-    suspend fun start(host: String, ports: List<Int>): Int = lifecycleLock.withLock {
+    suspend fun start(host: String, ports: List<Int>): Int = lifecycleLock.withLock { startLocked(host, ports) }
+
+    /**
+     * Whether this server's own listening socket still accepts a connection.
+     *
+     * A connect rather than a look at the engine: when the address under it is removed
+     * the platform destroys the sockets bound to it from outside, and nothing in Ktor
+     * is told. The probe sends no request, so it never reaches the routing.
+     */
+    suspend fun acceptsConnections(): Boolean {
+        val bound = binding ?: return false
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                Socket().use { it.connect(InetSocketAddress(bound.host, bound.port), LISTEN_PROBE_TIMEOUT_MS) }
+            }.isSuccess
+        }
+    }
+
+    /**
+     * Binds again on the same [host] and [port] after the address under the server
+     * blipped. Any lease still held is on a socket that went with the address, so it
+     * is lost as DROPPED — the one reason a playing cast is held for its phone across —
+     * and never as this server's own CLOSED.
+     */
+    suspend fun relisten(host: String, port: Int): Int = lifecycleLock.withLock {
+        revokeActive(ControlLossReason.DROPPED)
+        startLocked(host, listOf(port))
+    }
+
+    private suspend fun startLocked(host: String, ports: List<Int>): Int {
         stopLocked()
         for (candidate in ports) {
             // Published only after startSuspend returns, but created first so the
@@ -225,10 +263,10 @@ class ControlServer(
             } ?: continue
             binding = Binding(server, host, resolved)
             bound.complete(host to resolved)
-            return@withLock resolved
+            return resolved
         }
         FlickLog.e("bind", "no candidate port bound host=$host tried=${ports.size}")
-        -1
+        return -1
     }
 
     suspend fun stop() = lifecycleLock.withLock { stopLocked() }
@@ -252,7 +290,7 @@ class ControlServer(
             val prior = active
             active = null
             generation = counter.incrementAndGet()
-            ownership.invalidate()?.also { notifyControlLost(it, reason) }
+            ownership.invalidate()?.also { notifyControlLost(it, reason, prior?.keyId) }
             prior
         }
         lost?.let { connection ->
@@ -279,7 +317,7 @@ class ControlServer(
             if (active !== target) return
             active = null
             generation = counter.incrementAndGet()
-            ownership.invalidate()?.also { notifyControlLost(it, reason) }
+            ownership.invalidate()?.also { notifyControlLost(it, reason, target.keyId) }
             target
         }
         lost.session.launch {
@@ -309,6 +347,7 @@ class ControlServer(
     fun sendAudioSilent(castId: String, mime: String) {
         val connection = active ?: return
         if (!ownership.isCurrent(connection.token, connection.generation, castId)) return
+        if (!speaksUnprompted(connection.inheritedCast.get())) return
         emit(connection, json(audioSilentFrameFields(castId, mime)))
     }
 
@@ -327,6 +366,7 @@ class ControlServer(
         revokeActive(ControlLossReason.REVOKED)
         val cleared = pairing.forgetAllPairings()
         if (cleared) {
+            main.post { commands.onPhoneForgotten(null) }
             // The revoke above ends the cast through the player while there is
             // still an owner to do it; this pair runs the same after-the-write
             // discipline [forget] does, and for the same reason. A durable commit
@@ -393,6 +433,9 @@ class ControlServer(
     fun forget(keyId: String): Boolean {
         if (!pairing.forget(keyId)) return false
         invalidateResumes(keyId)
+        // A cast held for this phone after its socket died has no lease to revoke
+        // below, and the phone can no longer come back for it.
+        main.post { commands.onPhoneForgotten(keyId) }
         val connection = synchronized(serverLock) { active } ?: return true
         if (!forgetRevokesActiveConnection(keyId, connection.keyId)) return true
         val castId = ownership.currentCast(connection.token, connection.generation)
@@ -416,12 +459,14 @@ class ControlServer(
         }
         val connection = active ?: return
         if (!ownership.isCurrent(connection.token, connection.generation, castId)) return
+        val terminal = result is ControlCastResult.Failed || result is ControlCastResult.Stopped
+        if (!terminal && !speaksUnprompted(connection.inheritedCast.get())) return
         val frame = resultFrame(result)
         // A terminal result authorizes an idle replacement immediately. Capture
         // this lease's sender before releasing ownership so that replacement does
         // not suppress the final result for the socket that owned the cast.
-        if (result is ControlCastResult.Failed || result is ControlCastResult.Stopped) connection.session.launch { connection.emit(frame) } else emit(connection, frame)
-        if (result is ControlCastResult.Failed || result is ControlCastResult.Stopped) {
+        if (terminal) connection.session.launch { connection.emit(frame) } else emit(connection, frame)
+        if (terminal) {
             synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, castId) }
         }
     }
@@ -482,6 +527,7 @@ class ControlServer(
             val token: Any = this
             lateinit var connection: Connection
             var displaced: Any? = null
+            var inherited: String? = null
             val admission = synchronized(serverLock) {
                 // A `@Volatile` read of this server's own state, never a re-read of
                 // PairingManager: the forget path acquires the manager monitor and
@@ -489,16 +535,31 @@ class ControlServer(
                 // block would invert that order. The `pair` path installs a record
                 // [PairingManager.commitConfirmedPair] has just committed and carries
                 // no ticket at all, so it can never be refused here.
+                val previous = active
                 val decision = leaseAdmission(
                     resumeRevoked = resume.get()?.revoked == true,
                     busy = ownership.isBusy(),
+                    sameController = previous?.keyId == auth.record.keyId,
                 )
-                if (decision == LeaseAdmission.INSTALL) {
+                if (decision == LeaseAdmission.INSTALL || decision == LeaseAdmission.TAKEOVER) {
                     val next = counter.incrementAndGet()
                     connection = Connection(this, token, next, auth.record.keyId, emit)
-                    displaced = ownership.adoptIdleConnection(token, next)?.displaced
+                    displaced = if (decision == LeaseAdmission.TAKEOVER) {
+                        ownership.takeOverController(token, next).displaced
+                    } else {
+                        ownership.adoptIdleConnection(token, next)?.displaced
+                    }
                     generation = next
                     active = connection
+                    if (decision == LeaseAdmission.TAKEOVER) {
+                        inherited = ownership.currentCast(token, next)
+                        connection.inheritedCast.set(inherited)
+                        // Posted under [serverLock], where every control loss is posted
+                        // too: a revoke of this new lease cannot reach the main thread
+                        // ahead of the move and be discarded as a stranger's.
+                        val from = previous?.generation
+                        if (inherited != null && from != null) main.post { commands.onControlLeaseMoved(from, next) }
+                    }
                 }
                 decision
             }
@@ -522,6 +583,8 @@ class ControlServer(
                     close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "busy"))
                     return
                 }
+                LeaseAdmission.TAKEOVER ->
+                    FlickLog.i("ws", "takeover keyIdFp=${FlickLog.fp(auth.record.keyId)} castIdFp=${inherited?.let(FlickLog::fp) ?: "none"} peer=$peer")
                 LeaseAdmission.INSTALL -> Unit
             }
             // Published as soon as the lease is this connection's, so a screen raised by
@@ -589,7 +652,7 @@ class ControlServer(
                 // Reached only when this socket still HELD the lease when it ended —
                 // every revoke above clears ownership first, so `released` is false
                 // there. That is what makes DROPPED provable rather than assumed.
-                if (released) notifyControlLost(connection.generation, ControlLossReason.DROPPED)
+                if (released) notifyControlLost(connection.generation, ControlLossReason.DROPPED, connection.keyId)
             }
         } finally {
             resume.getAndSet(null)?.let(outstandingResumes::remove)
@@ -831,12 +894,22 @@ class ControlServer(
                     ControlOwnership.CastAdoption.DUPLICATE -> true
                     ControlOwnership.CastAdoption.NEW -> false
                 }
+                // Spent by the first `loadMedia` on this socket whatever it asks for. A
+                // new cast may be the phone reattaching to a film it lost the socket of;
+                // a repeat may only be that on the socket that inherited the cast.
+                val inherited = connection.inheritedCast.getAndSet(null)
+                val reattach = !reload || inherited == cast
+                val readopted = AtomicBoolean(false)
                 val postedAtMs = SystemClock.elapsedRealtime()
                 // A reload that misses the deadline still runs when the main thread
                 // reaches it, as it always has: it is answered `loadAccepted` either way,
                 // and abandoning it would drop the subtitle the viewer just chose.
                 val adopted = onMainAdoption(connection, cast, abandonOnTimeout = !reload) {
-                    if (reload) {
+                    val kept = if (reattach) commands.onReadoptMedia(connection.generation, connection.keyId, cast, url!!) else null
+                    if (kept != null) {
+                        readopted.set(true)
+                        kept
+                    } else if (reload) {
                         // A repeat for the live cast is how the phone attaches or
                         // removes an external subtitle mid-watch. Replaying the
                         // retained result unconditionally would discard the
@@ -889,6 +962,11 @@ class ControlServer(
                 if (outcome == null && adopted !is MainHandoff.Outcome.Refused) return reject("adopt_failed")
                 if (outcome == null || !stillOwned) {
                     FlickLog.i("cast", "loadMedia drop reason=ownership_changed castIdFp=${FlickLog.fp(cast)}")
+                    return true
+                }
+                if (adopted is MainHandoff.Outcome.Done && readopted.get()) {
+                    FlickLog.i("cast", "loadMedia reattach castIdFp=${FlickLog.fp(cast)} src=${FlickLog.endpoint(url)}")
+                    sendReattached(connection, cast)
                     return true
                 }
                 FlickLog.i("cast", "loadMedia accept castIdFp=${FlickLog.fp(cast)} src=${FlickLog.endpoint(url)} durationMs=$duration startMs=$start extSub=${subtitle != null} extSubLang=${subtitle?.language ?: "none"}")
@@ -976,6 +1054,22 @@ class ControlServer(
         }
     }
 
+    /**
+     * The answer to a reattach: the film never stopped, so the phone is given the two
+     * frames a cast start ends with, in that order, and nothing it would have to wait
+     * on. One coroutine sends both — two launches are not ordered against each other.
+     */
+    private fun sendReattached(connection: Connection, castId: String) {
+        if (!holdsLease(connection) || !ownership.isCurrent(connection.token, connection.generation, castId)) return
+        val accepted = resultFrame(ControlCastResult.Accepted(castId))
+        val ready = resultFrame(ControlCastResult.Ready(castId, probeLatencyMs = 0L, startupMs = 0L))
+        connection.session.launch {
+            if (active?.token !== connection.token || generation != connection.generation) return@launch
+            connection.emit(accepted)
+            connection.emit(ready)
+        }
+    }
+
     private fun stopCast(connection: Connection, castId: String): Boolean {
         if (!ownership.isCurrent(connection.token, connection.generation, castId)) return false
         if (!onMainBoolean { commands.onStop(castId) }) return false
@@ -1032,7 +1126,7 @@ class ControlServer(
     private fun DefaultWebSocketServerSession.stateFeed(connection: Connection) = launch {
         while (isActive && generation == connection.generation) {
             val cast = ownership.currentCast(connection.token, connection.generation)
-            if (cast != null) {
+            if (cast != null && speaksUnprompted(connection.inheritedCast.get())) {
                 val frame = stateProvider()
                 val phase = frame.phase.wire.takeIf { it in PHASES } ?: "buffering"
                 emit(connection, json(linkedMapOf("t" to "state", "v" to 2, "castId" to cast, "posMs" to frame.posMs.coerceIn(0, MAX_MS), "durationMs" to frame.durationMs.coerceIn(0, MAX_MS), "playing" to frame.playing, "bufferedMs" to frame.bufferedMs.coerceIn(0, MAX_MS), "phase" to phase, "volume" to frame.volume.toDouble().coerceIn(0.0, 1.0), "seq" to sequence.incrementAndGet())))
@@ -1102,8 +1196,8 @@ class ControlServer(
         if (active?.token !== connection.token || active?.generation != connection.generation || generation != connection.generation) return
         connection.session.launch { if (active?.token === connection.token && generation == connection.generation) connection.emit(payload) }
     }
-    private fun notifyControlLost(lostGeneration: Long, reason: ControlLossReason) {
-        main.post { commands.onControlLost(lostGeneration, reason) }
+    private fun notifyControlLost(lostGeneration: Long, reason: ControlLossReason, keyId: String?) {
+        main.post { commands.onControlLost(lostGeneration, reason, keyId) }
     }
     /**
      * The wire bytes are unchanged and stay generic; [reason] never leaves the
@@ -1184,6 +1278,8 @@ class ControlServer(
         // A socket accepted between listen() and the binding being published waits
         // rather than being rejected; it can never outlive the auth deadline.
         private const val BIND_PUBLISH_TIMEOUT_MS = 2_000L
+        // A connect to this TV's own address; anything slower than this is not listening.
+        private const val LISTEN_PROBE_TIMEOUT_MS = 1_000
         private val ID = Regex("^[A-Za-z0-9_-]{22}$")
         private val PROOF = Regex("^[A-Za-z0-9_-]{43}$")
         private val CODE = Regex("^[0-9]{4}$")
@@ -1388,7 +1484,14 @@ internal fun leaseholderAfterRename(current: ControlPeer?, renamedKeyId: String,
     if (current?.keyId == renamedKeyId) ControlPeer(renamedKeyId, label) else current
 
 /** What a completed authentication is allowed to do with the control lease. */
-internal enum class LeaseAdmission { FORGOTTEN, BUSY, INSTALL }
+internal enum class LeaseAdmission {
+    FORGOTTEN,
+    BUSY,
+    INSTALL,
+
+    /** The lease AND its running cast move to the new socket of the phone that holds them. */
+    TAKEOVER,
+}
 
 /**
  * Whether a phone that has just authenticated may take the lease.
@@ -1397,12 +1500,31 @@ internal enum class LeaseAdmission { FORGOTTEN, BUSY, INSTALL }
  * invitation to try again in a moment and a forgotten phone must never be given
  * one — its next attempt has to start at `resumeInit` and be denied by the
  * missing record, not queue behind a cast.
+ *
+ * [sameController] — the new socket proved the key id the current controller
+ * proved — turns `busy` into a takeover. A phone whose own Wi-Fi blipped re-dials
+ * at once, while this TV still holds the old socket half-open and would otherwise
+ * refuse that phone its own film until TCP gave up on it, minutes later. Only
+ * that key can do it: any other phone is still refused.
  */
-internal fun leaseAdmission(resumeRevoked: Boolean, busy: Boolean): LeaseAdmission = when {
+internal fun leaseAdmission(resumeRevoked: Boolean, busy: Boolean, sameController: Boolean = false): LeaseAdmission = when {
     resumeRevoked -> LeaseAdmission.FORGOTTEN
+    busy && sameController -> LeaseAdmission.TAKEOVER
     busy -> LeaseAdmission.BUSY
     else -> LeaseAdmission.INSTALL
 }
+
+/**
+ * Whether this lease may put a frame on the wire that the phone did not ask for.
+ *
+ * A socket that took a running cast over stays silent until the phone's first
+ * `loadMedia` spends [inheritedCast]. Every phone reads the frame after `resumed`
+ * as its busy disposition, and anything there other than `busy` fails the
+ * handshake as a protocol error — on an older phone, one that marks a working
+ * pairing for repair. A terminal result is still sent: holding it back would
+ * leave the phone reattaching to a cast this TV has already ended.
+ */
+internal fun speaksUnprompted(inheritedCast: String?): Boolean = inheritedCast == null
 
 // The complete `denied` reason vocabulary. Only "code" and "expired" are derived
 // from what the user typed, so the frame stays non-enumerating: it is not an

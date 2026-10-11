@@ -156,6 +156,13 @@ class CastServerService : Service() {
                 return START_NOT_STICKY
             }
 
+            ACTION_RELISTEN -> {
+                val castId = intent.getStringExtra(EXTRA_CAST_ID)
+                val host = intent.getStringExtra(EXTRA_BIND_HOST)
+                if (castId != null && host != null && ControlCastId.valid(castId)) relisten(castId, host)
+                return START_NOT_STICKY
+            }
+
             ACTION_SET_SUBTITLE -> {
                 val castId = intent.getStringExtra(EXTRA_CAST_ID)
                 if (castId != null && ControlCastId.valid(castId)) {
@@ -292,6 +299,30 @@ class CastServerService : Service() {
                 "bind",
                 if (subtitle == null) "subtitle revoked" else "subtitle armed tokenLen=${subtitle.token.length}",
             )
+        }
+    }
+
+    /**
+     * Listen again on [host] for [castId], keeping the port and the token the TV's URL names.
+     *
+     * Only for the generation still serving that cast on that same address: a changed
+     * address is a URL nobody can reach, and the coordinator re-casts for that instead.
+     * Off the main thread, because stopping the old engine blocks while it drains.
+     */
+    private fun relisten(castId: String, host: String) {
+        serviceScope.launch {
+            val session = synchronized(teardownGuard) {
+                startGate.current()?.takeIf { it.castId == castId && servedHost == host }
+            } ?: return@launch
+            if (!NetworkUtils.isOwnedLanIpv4(host)) return@launch
+            synchronized(lockGuard) {
+                if (!startGate.isLatest(session)) return@launch
+                try {
+                    httpServer.relisten()
+                } catch (e: Exception) {
+                    FlickLog.w("bind", "media server relisten failed ${e.javaClass.simpleName}")
+                }
+            }
         }
     }
 
@@ -458,9 +489,11 @@ class CastServerService : Service() {
         }
     }
 
-    // WIFI_MODE_FULL_LOW_LATENCY is only honoured while the app is foreground with
-    // the screen ON; this server must serve at full rate with the screen OFF, so
-    // FULL_HIGH_PERF is the correct mode despite its API 34 deprecation.
+    // FULL_HIGH_PERF is requested, but from API 34 the platform silently treats it as
+    // FULL_LOW_LATENCY, which holds only while this app is foreground with the screen on.
+    // No public API keeps Wi-Fi out of power save with the screen off, so on those
+    // releases a screen-off cast serves under power save and the lock is kept for the
+    // releases and screen-on time it still covers.
     @Suppress("DEPRECATION")
     private fun newWifiLock(): WifiManager.WifiLock? {
         val wifiManager = applicationContext.getSystemService(WifiManager::class.java) ?: return null
@@ -639,6 +672,7 @@ class CastServerService : Service() {
         const val ACTION_START = "com.flick.sender.action.START"
         const val ACTION_STOP = "com.flick.sender.action.STOP"
         const val ACTION_SET_SUBTITLE = "com.flick.sender.action.SET_SUBTITLE"
+        private const val ACTION_RELISTEN = "com.flick.sender.action.RELISTEN"
         private const val ACTION_PLAY_PAUSE = "com.flick.sender.action.PLAY_PAUSE"
         private const val ACTION_SKIP_BACK = "com.flick.sender.action.SKIP_BACK"
         private const val ACTION_SKIP_FORWARD = "com.flick.sender.action.SKIP_FORWARD"
@@ -693,6 +727,19 @@ class CastServerService : Service() {
                 .putExtra(EXTRA_CAST_ID, castId)
                 .putExtra(EXTRA_SUBTITLE_URI, subtitleUri)
             deliverToRunningService(context, intent, "setSubtitle")
+        }
+
+        /**
+         * Ask the service serving [castId] to listen on [host] again, same port and token.
+         * Delivered as a plain start command like [stop]: a cast is being served, so the
+         * service is already foreground.
+         */
+        fun relisten(context: Context, castId: String, host: String) {
+            val intent = Intent(context, CastServerService::class.java)
+                .setAction(ACTION_RELISTEN)
+                .putExtra(EXTRA_CAST_ID, castId)
+                .putExtra(EXTRA_BIND_HOST, host)
+            deliverToRunningService(context, intent, "relisten")
         }
 
         @Suppress("DEPRECATION")

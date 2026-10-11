@@ -29,7 +29,8 @@ class ControlLossFaceTest {
         val player = RecordingPlayer()
         val session = activeSession(player)
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
+        settleHold()
         settleAnnounce()
 
         val stage = session.stage as MediaStage.Error
@@ -39,13 +40,24 @@ class ControlLossFaceTest {
         assertFalse(stage.beforeReady)
     }
 
-    /** The window the phone's own recovery runs in: nothing is claimed inside it. */
+    /**
+     * The windows the phone's own recovery runs in: the film plays on through the hold,
+     * and nothing is claimed in the re-cast window after it.
+     */
     @Test fun nothingIsSaidWhileTheSenderMayStillBeRescuingTheCast() = runTest {
         val player = RecordingPlayer()
         val session = activeSession(player)
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
 
+        assertEquals(MediaStage.Active(CAST, LEASE), session.stage)
+        assertEquals(0, player.stops)
+        advanceTimeBy(HOLD_MS - 1L)
+        runCurrent()
+        assertEquals(MediaStage.Active(CAST, LEASE), session.stage)
+
+        advanceTimeBy(1L)
+        runCurrent()
         assertEquals(MediaStage.None, session.stage)
         advanceTimeBy(ANNOUNCE_DELAY_MS - 1L)
         runCurrent()
@@ -57,7 +69,7 @@ class ControlLossFaceTest {
         val player = RecordingPlayer()
         val session = activeSession(player)
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
         advanceTimeBy(ANNOUNCE_DELAY_MS / 2)
         runCurrent()
         session.onLoadMedia(LEASE + 1L, "cast-b", URL, TITLE, DURATION_MS, 0L, null)
@@ -75,7 +87,7 @@ class ControlLossFaceTest {
         runCurrent()
         check(session.stage is MediaStage.Preparing)
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
         settleAnnounce()
 
         assertTrue((session.stage as MediaStage.Error).beforeReady)
@@ -92,7 +104,7 @@ class ControlLossFaceTest {
             val player = RecordingPlayer()
             val session = activeSession(player)
 
-            session.onControlLost(LEASE, reason)
+            session.onControlLost(LEASE, reason, null)
 
             assertEquals(reason.wire, MediaStage.None, session.stage)
         }
@@ -106,11 +118,12 @@ class ControlLossFaceTest {
     @Test fun aDiagnosisAlreadyOnScreenSurvivesTheSocketClosing() = runTest {
         val player = RecordingPlayer()
         val session = activeSession(player)
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
+        settleHold()
         settleAnnounce()
         val diagnosed = session.stage as MediaStage.Error
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
         settleAnnounce()
 
         assertEquals(diagnosed, session.stage)
@@ -120,7 +133,7 @@ class ControlLossFaceTest {
         val player = RecordingPlayer()
         val session = activeSession(player)
 
-        session.onControlLost(LEASE + 9L, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE + 9L, ControlLossReason.DROPPED, null)
         settleAnnounce()
 
         assertEquals(MediaStage.Active(CAST, LEASE), session.stage)
@@ -133,7 +146,8 @@ class ControlLossFaceTest {
         val terminals = mutableListOf<CastFailureCode>()
         session.attachTerminal { _, code, _, _, _ -> terminals += code }
 
-        session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
+        settleHold()
         settleAnnounce()
 
         assertEquals(emptyList<CastFailureCode>(), terminals)
@@ -151,6 +165,12 @@ class ControlLossFaceTest {
         val stage = session.stage as MediaStage.Error
         assertEquals(CastFailureCode.NO_COMPATIBLE_LAN, stage.code)
         assertEquals(ReceiverErrorFace.TV_NETWORK_CHANGED, stage.face)
+    }
+
+    /** Past the hold a playing film is given for its phone to come back. */
+    private fun TestScope.settleHold() {
+        advanceTimeBy(HOLD_MS)
+        runCurrent()
     }
 
     /** Past the window the sender's own recovery is given, so the sentence may be read. */
@@ -173,6 +193,7 @@ class ControlLossFaceTest {
         const val LEASE = 1L
         /** SessionController.CONTROL_LOSS_ANNOUNCE_DELAY_MS, which is private to it. */
         const val ANNOUNCE_DELAY_MS = 6_000L
+        const val HOLD_MS = CastReattachPolicy.ORPHAN_GRACE_MS
         const val URL = "http://192.168.42.17:8080/v/token"
         const val TITLE = "Film"
         const val DURATION_MS = 7_200_000L

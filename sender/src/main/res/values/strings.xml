@@ -256,6 +256,8 @@
     <string name="syncing">SYNCING…</string>
     <string name="np_tv_generic">Your TV</string>
     <string name="np_stop">Stop casting</string>
+    <!-- %1$s is the TV's name. The control link dropped; the film is still playing on the TV. -->
+    <string name="np_reattaching">Reconnecting to %1$s · the film keeps playing</string>
     <string name="np_serving_eyebrow">SERVING FROM THIS PHONE</string>
     <string name="np_direct_play_badge">DIRECT PLAY</string>
     <string name="np_meta">%1$s · %2$s · on %3$s</string>

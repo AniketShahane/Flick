@@ -12,6 +12,7 @@ import com.flick.sender.MediaMeta
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
+import com.flick.sender.ServerUiState
 import com.flick.sender.SourceFault
 import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.preferredTerminalCode
@@ -20,6 +21,7 @@ import com.flick.sender.TransferTelemetry
 import com.flick.sender.WifiAssociationMonitor
 import com.flick.sender.currentProcessImportance
 import com.flick.sender.foregroundStartAllowed
+import com.flick.sender.mediaServerListening
 import com.flick.sender.media.AudioDelayMemoryStore
 import com.flick.sender.media.AudioDelayRecorder
 import com.flick.sender.media.AudioDelayWrite
@@ -69,6 +71,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -76,6 +80,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -600,6 +605,37 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var blockAdvertised = false
     private var blockDialing = false
 
+    /**
+     * The control link this phone is putting back under a cast the TV is still playing.
+     *
+     * Its own [Job] for [blockJob]'s reason, and it dials through [ControlClient.resume]
+     * directly rather than through [resume]: that one passes [beginPairingAttempt], moves the
+     * route and raises faces, and this is invisible but for the banner [reattaching] draws.
+     * [reattachCastId] is set for exactly as long as the job runs, and every failed dial it
+     * makes reports DISCONNECTED to [onControlLost], which reads it to stay out of the way.
+     */
+    private var reattachJob: Job? = null
+    private var reattachCastId: String? = null
+    private var reattaches = 0
+    private var lastReattachAtMs = 0L
+
+    // A subtitle chosen while the link was being put back: a receiver that re-adopts ignores
+    // every field of the reattach load but the cast id and URL, so the change is re-sent once
+    // it lands.
+    private var subtitleOwedCastId: String? = null
+
+    // Recorded while the address is still on it: a blip removes the address first, and
+    // nothing could find the interface by that address afterwards.
+    private var servedInterface: String? = null
+
+    // The title the cast's own load carried, so the reattach load names the film the same.
+    private var castTitle: String? = null
+
+    private val _reattaching = MutableStateFlow(false)
+
+    /** Whether the Now Playing banner says the link is being put back under a film that keeps playing. */
+    val reattaching: StateFlow<Boolean> = _reattaching.asStateFlow()
+
     private val _route = MutableStateFlow<Route>(if (store.last() == null) Route.Connect else Route.Library)
     val route: StateFlow<Route> = _route.asStateFlow()
     private val _pendingPairLaunch = MutableStateFlow<PendingPairLaunch?>(null)
@@ -865,13 +901,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * [ControlRecoveryPolicy] is where the two are weighed. Where the bytes stopped too,
      * the TV really has gone and the terminal below is unchanged.
      *
-     * Recovery is a re-cast rather than a bare reconnect, and it has to be: the receiver
-     * tears its own session down the moment this socket closes
-     * (`SessionController.onControlLost`), so there is no playback left on the far end for
-     * a re-established link to re-adopt. What it costs the viewer is the re-buffer a seek
-     * costs; what it saves them is the film.
+     * Before any of that, a cast the TV was playing is reattached rather than re-cast
+     * ([ControlReattachPolicy]): the receiver keeps an orphaned cast playing for a grace
+     * period and re-adopts it for this phone's load of the same cast and URL, so the film
+     * never stops. Only a reattach that does not land reaches [recoverOrFail].
      */
     private fun onControlLost(castId: String) {
+        // A reattach dials, fails and drops sockets of its own, and each of those reports
+        // DISCONNECTED here; the reattach owns what happens to the cast until it ends.
+        if (reattachCastId == castId) return
         // A cast queued behind a liveness check is replacing this one, so the loss ends it
         // here and nothing more: a recovery would re-cast the film the viewer just walked
         // away from over the one they chose, and a terminal would raise a face for it in
@@ -884,6 +922,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
         val nowMs = SystemClock.elapsedRealtime()
         val serving = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, nowMs)
+        if (beginReattach(castId, serving, nowMs)) return
+        recoverOrFail(castId, serving)
+    }
+
+    /**
+     * Re-cast, wait a block out, or fail — the loss rules this phone had before reattach, run
+     * unchanged where no reattach was tried and where one gave up.
+     *
+     * Recovery is a re-cast rather than a bare reconnect: a receiver that did not keep the
+     * cast (an older one, or one whose grace ran out) has no playback on the far end for a
+     * re-established link to re-adopt. What it costs the viewer is the re-buffer a seek
+     * costs; what it saves them is the film.
+     */
+    private fun recoverOrFail(castId: String, serving: Boolean) {
+        val nowMs = SystemClock.elapsedRealtime()
         val request = currentRequest
         val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
         val reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId
@@ -943,6 +996,289 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // remote stop is sent: the socket that would carry it is the one that just went.
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = false)
         flickToTv(request.copy(startMs = resumed.startMs, startOver = resumed.startOver))
+    }
+
+    /** The server state while it is serving [castId] with a URL the TV can hold, or null. */
+    private fun servingState(castId: String): ServerUiState? =
+        ServerStateHolder.state.value.takeIf {
+            it.castId == castId && it.status == ServerStatus.RUNNING && it.videoUrl != null && it.lanIp != null
+        }
+
+    /** Where [served] stands on the interface this cast is served on. */
+    private fun servedAddress(served: String): ServedAddress = ControlReattachPolicy.address(
+        served = served,
+        servedOwned = com.flick.sender.NetworkUtils.isOwnedLanIpv4(served),
+        interfaceAddress = servedInterface?.let(com.flick.sender.NetworkUtils::siteLocalIpv4On),
+    )
+
+    /**
+     * Start putting the control link back under [castId], answering whether that is what
+     * happens. False leaves the loss to [recoverOrFail] exactly as before.
+     *
+     * Nothing is torn down: the media server, its token, the foreground service and its
+     * locks, the playback state and the Now Playing screen all stay, because the film is
+     * still playing on the TV and the URL it holds is still this phone's.
+     */
+    private fun beginReattach(castId: String, servingAtLoss: Boolean, nowMs: Long): Boolean {
+        val server = servingState(castId)
+        val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
+        val reachedActive = (_castStart.value as? CastStartState.Active)?.castId == castId
+        val attempt = ControlRecoveryPolicy.attempt(reattaches, lastReattachAtMs, nowMs)
+        val address = server?.lanIp?.let(::servedAddress) ?: ServedAddress.ABSENT
+        val reattach = ControlReattachPolicy.reattaches(
+            reachedActive = reachedActive,
+            serverRunning = server != null,
+            canDial = currentRequest != null && pairing != null,
+            address = address,
+            attempt = attempt,
+        )
+        if (!reattach) return false
+        reattaches = attempt
+        lastReattachAtMs = nowMs
+        reattachCastId = castId
+        _reattaching.value = true
+        FlickLog.w(
+            "cast",
+            "control lost castIdFp=${FlickLog.fp(castId)} serving=$servingAtLoss reattach=true attempt=$attempt " +
+                "address=${address.name.lowercase()} atMs=$nowMs",
+        )
+        publishTransport()
+        reattachJob = scope.launch {
+            runReattach(castId, servingAtLoss, nowMs)
+            // Every way out that has more to do clears this itself; one that found the cast
+            // already gone must not leave the banner up behind it.
+            if (reattachCastId == castId) clearReattach()
+        }
+        return true
+    }
+
+    /**
+     * Re-dial with capped backoff until the cast is re-adopted, the window closes, or the TV
+     * answers with something a further dial would only repeat.
+     *
+     * Every tick re-reads where this phone's own address stands. A phone that blipped has
+     * none for a moment, and dialing from none only fails, so the tick polls instead; when
+     * the same address comes back the listener is checked before anything else, because the
+     * TV's player is already retrying the URL that names it.
+     */
+    private suspend fun runReattach(castId: String, servingAtLoss: Boolean, armedAtMs: Long) {
+        var dials = 0
+        var absent = false
+        var sawGap = false
+        while (true) {
+            val waitMs = ControlReattachPolicy.delayWithinWindowMs(
+                ControlReattachPolicy.nextDelayMs(dials, absent),
+                armedAtMs,
+                SystemClock.elapsedRealtime(),
+            )
+            delay(waitMs)
+            val nowMs = SystemClock.elapsedRealtime()
+            if (currentCastId != castId) return
+            if (!ControlReattachPolicy.open(armedAtMs, nowMs)) return fallBackFromReattach(castId, servingAtLoss, "window", dials)
+            val server = servingState(castId) ?: return fallBackFromReattach(castId, servingAtLoss, "server", dials)
+            val host = server.lanIp ?: return fallBackFromReattach(castId, servingAtLoss, "server", dials)
+            val address = servedAddress(host)
+            if (address == ServedAddress.CHANGED) return fallBackFromReattach(castId, servingAtLoss, "address", dials)
+            absent = address == ServedAddress.ABSENT
+            if (absent) sawGap = true
+            if (!ControlReattachPolicy.dials(address)) continue
+            if (sawGap) {
+                sawGap = false
+                ensureMediaListening(castId, host)
+                if (currentCastId != castId) return
+            }
+            val pairing = _connectedTv.value?.let { store.get(it.tvId) }?.takeIf { !it.needsRepair }
+                ?: return fallBackFromReattach(castId, servingAtLoss, "unpaired", dials)
+            dials += 1
+            val candidates = ResumeCandidates.ordered(pairing.host, pairing.port, pairing.tvId, devices.value)
+            val candidate = candidates[(dials - 1) % candidates.size]
+            val result = control.resume(pairing, candidate.host, candidate.port)
+            if (currentCastId != castId) return
+            FlickLog.i("ws", "reattach dial=$dials ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
+            when (ControlReattachPolicy.classify(result)) {
+                ReattachDial.RETRY -> Unit
+                ReattachDial.REFUSED -> return fallBackFromReattach(castId, servingAtLoss, "refused", dials)
+                ReattachDial.RESUMED -> {
+                    val endpoint = (result as ControlClient.Result.Resumed).endpoint
+                    commitReattachedEndpoint(pairing, endpoint, candidate.host, candidate.port)
+                    when (reloadOnReattach(castId, server, endpoint)) {
+                        ReattachLoad.LOADED -> return finishReattach(castId, dials, restarted = false)
+                        ReattachLoad.RESTARTED -> return finishReattach(castId, dials, restarted = true)
+                        ReattachLoad.LINE_LOST -> Unit
+                        ReattachLoad.ADDRESS -> return fallBackFromReattach(castId, servingAtLoss, "address", dials)
+                        ReattachLoad.NOT_LISTENING -> return fallBackFromReattach(castId, servingAtLoss, "listener", dials)
+                        ReattachLoad.UNANSWERED -> return fallBackFromReattach(castId, servingAtLoss, "unanswered", dials)
+                        ReattachLoad.GONE -> return
+                    }
+                }
+            }
+        }
+    }
+
+    private enum class ReattachLoad { LOADED, RESTARTED, LINE_LOST, ADDRESS, NOT_LISTENING, UNANSWERED, GONE }
+
+    /**
+     * Send the cast's own load again — same cast id, URL and title — and wait for the TV
+     * to take it. A receiver that kept the orphan answers both frames at once without
+     * touching its player; one that did not starts the film at the position sent, which is
+     * the slower half of the same two waits a startup has.
+     */
+    private suspend fun reloadOnReattach(
+        castId: String,
+        server: ServerUiState,
+        endpoint: ControlClient.AuthenticatedEndpoint,
+    ): ReattachLoad {
+        val host = server.lanIp ?: return ReattachLoad.ADDRESS
+        val url = server.videoUrl ?: return ReattachLoad.ADDRESS
+        // The TV names the address it sees this phone at, and the URL it would fetch names
+        // another: a phone that reached it from elsewhere has nothing at that URL to serve.
+        if (endpoint.peerIp != host) return ReattachLoad.ADDRESS
+        if (!ensureMediaListening(castId, host)) return ReattachLoad.NOT_LISTENING
+        if (currentCastId != castId) return ReattachLoad.GONE
+        val item = _castingItem.value ?: return ReattachLoad.GONE
+        val title = castTitle
+            ?: ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
+            ?: appContext.getString(R.string.media_title_generic)
+        val startMs = ControlReattachPolicy.loadStartMs(session.state.value.confirmedMs, item.durationMs)
+        val acceptedNow = CompletableDeferred<JSONObject>()
+        val readyNow = CompletableDeferred<JSONObject>()
+        accepted = acceptedNow
+        ready = readyNow
+        // A receiver that starts afresh refills its buffer, and that refill is not a stall.
+        linkMonitor.onReload()
+        if (!session.reloadLive(castId, url, title, item.durationMs, startMs)) return ReattachLoad.LINE_LOST
+        FlickLog.i("cast", "reattach load castIdFp=${FlickLog.fp(castId)} startMs=$startMs")
+        val accept = awaitUnlessLineLost(acceptedNow, CastStartupPolicy.ACCEPT_TIMEOUT_MS)
+        if (accept != true) return if (accept == false) ReattachLoad.LINE_LOST else ReattachLoad.UNANSWERED
+        val readied = awaitUnlessLineLost(readyNow, CastStartupPolicy.FIRST_FRAME_TIMEOUT_MS)
+        if (readied != true) return if (readied == false) ReattachLoad.LINE_LOST else ReattachLoad.UNANSWERED
+        if (currentCastId != castId) return ReattachLoad.GONE
+        val frame = readyNow.await()
+        val restarted = ControlReattachPolicy.restarted(frame.optLong("probeLatencyMs"), frame.optLong("startupMs"))
+        return if (restarted) ReattachLoad.RESTARTED else ReattachLoad.LOADED
+    }
+
+    /**
+     * True for [frame] arriving, false for the control link dropping first, null for
+     * neither inside [timeoutMs]. A dropped link is the window's to retry; silence on a
+     * link that stayed up is a TV that will not take the load.
+     */
+    private suspend fun awaitUnlessLineLost(frame: CompletableDeferred<JSONObject>, timeoutMs: Long): Boolean? =
+        withTimeoutOrNull(timeoutMs) {
+            coroutineScope {
+                val lost = async { control.connection.first { it != ConnectionStatus.CONNECTED } }
+                try {
+                    select<Boolean> {
+                        frame.onAwait { true }
+                        lost.onAwait { false }
+                    }
+                } finally {
+                    lost.cancel()
+                }
+            }
+        }
+
+    /**
+     * Make sure something accepts on [host] at the media port before a load names it.
+     *
+     * The probe comes first so a listener that survived the blip is left alone: restarting
+     * one would cut the TV's live connection for nothing. Only a dead one is rebound, on the
+     * same port with the same token, and then probed again until it answers.
+     */
+    private suspend fun ensureMediaListening(castId: String, host: String): Boolean {
+        if (withContext(Dispatchers.IO) { mediaServerListening(host) }) return true
+        FlickLog.w("bind", "media server not listening after blip castIdFp=${FlickLog.fp(castId)}")
+        CastServerService.relisten(appContext, castId, host)
+        repeat(RELISTEN_PROBES) {
+            delay(RELISTEN_PROBE_INTERVAL_MS)
+            if (currentCastId != castId) return false
+            if (withContext(Dispatchers.IO) { mediaServerListening(host) }) return true
+        }
+        return false
+    }
+
+    /** The endpoint a reattach landed at, recorded the way [resume] records one. */
+    private fun commitReattachedEndpoint(
+        pairing: PairingStore.Pairing,
+        endpoint: ControlClient.AuthenticatedEndpoint,
+        host: String,
+        port: Int,
+    ) {
+        val committed = PairingPersistence.commit {
+            store.commitVerifiedEndpoint(pairing.tvId, endpoint.tv, host, port)
+        }
+        // A write that failed costs the next resume a sweep, never the film being played.
+        if (!committed) FlickLog.w("pair", "reattach endpoint not saved tvId=${pairing.tvId}")
+        _connectedTv.value = PairedTv(endpoint.tv, host, port, pairing.tvId)
+    }
+
+    /** The film is back under a live link; the cast never left Active. */
+    private fun finishReattach(castId: String, dials: Int, restarted: Boolean) {
+        val subtitleOwed = subtitleOwedCastId == castId
+        clearReattach()
+        FlickLog.i(
+            "cast",
+            "reattached castIdFp=${FlickLog.fp(castId)} dials=$dials restarted=$restarted " +
+                "subtitleOwed=$subtitleOwed atMs=${SystemClock.elapsedRealtime()}",
+        )
+        val rotation = session.state.value.rotation
+        if (restarted) session.onRestartedByReload()
+        // The reattach load already spent the socket's inherited cast, so this repeat
+        // reaches the receiver's in-place reload rather than its re-adopt.
+        if (subtitleOwed) reloadArmedSubtitle(castId)
+        // A receiver that started the film afresh reset its offset to in-sync and its
+        // rotation to Auto; one that re-adopted already holds both, and receiving either
+        // again changes nothing.
+        val nudge = session.audioDelayTargetMs
+        if (nudge != AudioDelayPolicy.IN_SYNC_MS) session.applyRememberedAudioDelay(nudge)
+        if ((restarted || subtitleOwed) && rotation != VideoRotation.Auto) session.setRotation(rotation)
+        publishTransport()
+    }
+
+    /**
+     * The window gave up; the loss goes to the rules it would have met with no reattach.
+     *
+     * The reattach is cleared FIRST: every way out of [recoverOrFail] runs [cleanup], which
+     * ends a running reattach — and this is still running inside it.
+     */
+    private fun fallBackFromReattach(castId: String, servingAtLoss: Boolean, reason: String, dials: Int) {
+        clearReattach()
+        if (currentCastId != castId) return
+        val servingNow = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, SystemClock.elapsedRealtime())
+        FlickLog.w("cast", "reattach gave up castIdFp=${FlickLog.fp(castId)} reason=$reason dials=$dials")
+        // The window may end on a socket that authenticated and then sat silent over the
+        // load; a re-cast checks a held line before trusting it, so it is left for that.
+        recoverOrFail(castId, ControlReattachPolicy.fallbackServing(servingAtLoss, servingNow))
+    }
+
+    /** Stop a reattach without touching the cast: whatever ended it owns the cast now. */
+    private fun endReattach() {
+        if (reattachCastId == null && reattachJob == null) return
+        reattachJob?.cancel()
+        clearReattach()
+    }
+
+    private fun clearReattach() {
+        reattachJob = null
+        reattachCastId = null
+        subtitleOwedCastId = null
+        _reattaching.value = false
+    }
+
+    /**
+     * Another dial is starting while a reattach runs. The two would close each other's
+     * sockets, and the other one is a person doing something, so the reattached cast is
+     * ended here — locally, because the only socket that could carry a stop is the one being
+     * replaced. A new film reaches here through its own resume and starts in its place.
+     */
+    private fun abandonReattach() {
+        val castId = reattachCastId ?: return
+        endReattach()
+        FlickLog.w("cast", "reattach abandoned castIdFp=${FlickLog.fp(castId)} reason=dial")
+        if (currentCastId == castId) {
+            castJob?.cancel()
+            cleanup(castId, stopRemoteIfLoaded = false)
+        }
     }
 
     /**
@@ -1530,7 +1866,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
 
     private fun retargetSubtitle(selection: SelectedSubtitle?) {
         val castId = currentCastId ?: return
-        val item = _castingItem.value ?: return
+        if (_castingItem.value == null) return
         // Only a cast that already reached Active has a load to re-issue; a startup
         // still in flight picks the selection up from startCast instead.
         if (_castStart.value !is CastStartState.Active) return
@@ -1547,18 +1883,33 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // A retarget that never landed leaves the load with no subtitle rather than
             // a URL that would 404 on the TV; the video is never at risk either way.
             val subUrl = subtitleUrlFor(videoUrl, served?.url)
-            val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
-                ?: appContext.getString(R.string.media_title_generic)
-            // MediaStore's duration and the container's can disagree by a frame, so near
-            // the end of a film the TV-confirmed position can exceed the value that goes
-            // on the wire as durationMs. The receiver answers startMs > durationMs by
-            // closing the control socket, which would cost the user the whole cast.
-            val resumeMs = session.state.value.confirmedMs.coerceAtLeast(0L)
-                .let { if (item.durationMs > 0L) it.coerceAtMost(item.durationMs) else it }
             control.armLoadSubtitle(castId, subUrl, selection?.displayName, selection?.language)
-            linkMonitor.onReload()
-            session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)
+            // Armed and not sent while the link is being put back: a load with no socket
+            // would only reset the clock on screen. The reattach re-sends it once it lands.
+            if (reattachCastId == castId) {
+                subtitleOwedCastId = castId
+                return@launch
+            }
+            if (control.connection.value != ConnectionStatus.CONNECTED) return@launch
+            reloadArmedSubtitle(castId)
         }
+    }
+
+    /** Re-issue the live cast's own load so the subtitle armed for it reaches the TV. */
+    private fun reloadArmedSubtitle(castId: String) {
+        val item = _castingItem.value ?: return
+        val server = ServerStateHolder.state.value
+        val videoUrl = server.videoUrl?.takeIf { server.castId == castId } ?: return
+        val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
+            ?: appContext.getString(R.string.media_title_generic)
+        // MediaStore's duration and the container's can disagree by a frame, so near
+        // the end of a film the TV-confirmed position can exceed the value that goes
+        // on the wire as durationMs. The receiver answers startMs > durationMs by
+        // closing the control socket, which would cost the user the whole cast.
+        val resumeMs = session.state.value.confirmedMs.coerceAtLeast(0L)
+            .let { if (item.durationMs > 0L) it.coerceAtMost(item.durationMs) else it }
+        linkMonitor.onReload()
+        session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)
     }
 
     /** The subtitle URL is only ever emitted when it shares the media URL's origin. */
@@ -2098,6 +2449,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         endBlockWait()
         controlRecoveries = 0
         lastControlRecoveryAtMs = 0L
+        reattaches = 0
+        lastReattachAtMs = 0L
         startupRetries = 0
         startupRetrying = null
         _startupRetryItem.value = null
@@ -2279,10 +2632,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 )
                 // endpoint() strips the path: the /v/{token} segment IS the capability.
                 FlickLog.i("cast", "source ready ${FlickLog.endpoint(videoUrl)} subtitle=${subUrl != null}")
+                servedInterface = server.lanIp?.let(com.flick.sender.NetworkUtils::interfaceOwning)
                 accepted = CompletableDeferred(); ready = CompletableDeferred(); publishCastStart(CastStartState.AwaitingAcceptance(castId))
                 loadSentCastId = castId
                 val title = ControlProtocolV2.normalizedLabel(displayedVideoName(item.name), 200)
                     ?: appContext.getString(R.string.media_title_generic)
+                castTitle = title
                 control.armLoadSubtitle(castId, subUrl, subtitle?.displayName, subtitle?.language)
                 val fingerprint = PlaybackMediaFingerprint.of(item)
                 // Read without waiting. This store starts reading at launch, fails open to
@@ -2500,6 +2855,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
     private fun cleanup(castId: String, clearStart: Boolean = true, stopRemoteIfLoaded: Boolean = false) {
+        // Stop, Cancel, a new film and every terminal reach here, and each of them ends the
+        // reattach with the cast it was putting back.
+        if (reattachCastId == castId) endReattach()
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
@@ -2518,6 +2876,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             startupRetrying = null; _startupRetryItem.value = null
             // Nothing one cast's socket proved may be read as evidence about the next.
             lastServedByteAtMs = 0L
+            servedInterface = null
+            castTitle = null
             if (clearStart) publishCastStart(CastStartState.Idle)
             // The terminal path keeps the Failed state, so it never reaches publishCastStart
             // — and the notification has to go with the cast either way.
@@ -2806,7 +3166,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _pairCodeRevision = MutableStateFlow(0L); val pairCodeRevision = _pairCodeRevision.asStateFlow()
     private fun clearEnteredCode() { _pairCodeRevision.value = pairCodeReset.clear() }
     private fun castProbeRunning(): Boolean = castProbeAttempt?.let(pairingGate::isCurrent) == true
-    private fun beginPairingAttempt(): Long { invalidatePairingAttempt(); return pairingGate.begin() }
+    private fun beginPairingAttempt(): Long { abandonReattach(); invalidatePairingAttempt(); return pairingGate.begin() }
     private fun beginManualPairAttempt(): Long = manualPairAttemptLedger.begin().also {
         _manualPairAttempt.value = manualPairAttemptLedger.event
     }
@@ -2839,6 +3199,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         const val MAX_PAIR_REBIND_CANDIDATES = 3
         const val PAIR_REBIND_BUDGET_MS = 4_000L
         const val SUBTITLE_RETARGET_MS = 3_000L
+        /** A rebind is a stop and a start on one thread; ten looks cover it with room over. */
+        const val RELISTEN_PROBES = 10
+        const val RELISTEN_PROBE_INTERVAL_MS = 200L
         /** Denials that describe the TV's momentary state, not the stored credential. */
         val TRANSIENT_DENIALS = setOf("surface", "locked", "busy", "storage")
     }
