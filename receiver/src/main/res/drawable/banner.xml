@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Leanback launcher banner (320 x 180 dp): the Flick lockup — the brand mark plus
-  the "flick" wordmark drawn as real letterforms — on the #04070F canvas, with the
-  design's brand-blue wash hanging off the top edge.
+  the "flick" wordmark drawn as real letterforms — on the lit room's #F2F4F9
+  canvas, with the design's brand-blue wash hanging off the top edge.
 
   The wordmark is built from round-capped strokes at a 13-unit weight, matching
   the mark's own rounded language: ascender 50, x-height 74, baseline 118. The
-  dot on the "i" is the amber accent.
+  dot on the "i" is the amber accent, taken down to #D18F00: the brand #D18F00 is
+  1.6:1 on this canvas and all but disappears from across the room.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -16,7 +17,7 @@
     android:viewportHeight="180">
 
     <path
-        android:fillColor="#04070F"
+        android:fillColor="#F2F4F9"
         android:pathData="M0,0h320v180H0z" />
 
     <path android:pathData="M0,0h320v180H0z">
@@ -27,10 +28,10 @@
                 android:centerY="-18"
                 android:gradientRadius="230">
                 <item
-                    android:color="#381240E8"
+                    android:color="#1F1240E8"
                     android:offset="0" />
                 <item
-                    android:color="#0004070F"
+                    android:color="#00F2F4F9"
                     android:offset="1" />
             </gradient>
         </aapt:attr>
@@ -41,15 +42,15 @@
         android:translateX="35"
         android:translateY="58">
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.5"
             android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.85"
             android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.5"
             android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
         <path
@@ -64,38 +65,38 @@
         <!-- f -->
         <path
             android:pathData="M140,54h-4a8,8 0 0 0 -8,8V118 M118,80.5H142"
-            android:strokeColor="#F2F6FF"
+            android:strokeColor="#0A1533"
             android:strokeWidth="13"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />
         <!-- l -->
         <path
             android:pathData="M160,50V118"
-            android:strokeColor="#F2F6FF"
+            android:strokeColor="#0A1533"
             android:strokeWidth="13"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />
         <!-- i -->
         <path
             android:pathData="M180,74V118"
-            android:strokeColor="#F2F6FF"
+            android:strokeColor="#0A1533"
             android:strokeWidth="13"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:pathData="M180,51a7,7 0 0 1 0,14a7,7 0 0 1 0,-14z" />
         <!-- c -->
         <path
             android:pathData="M236.5,83a21,21 0 1 0 0,26"
-            android:strokeColor="#F2F6FF"
+            android:strokeColor="#0A1533"
             android:strokeWidth="13"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />
         <!-- k -->
         <path
             android:pathData="M260,50V118 M279,76L260,98 M267,90L281,118"
-            android:strokeColor="#F2F6FF"
+            android:strokeColor="#0A1533"
             android:strokeWidth="13"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />

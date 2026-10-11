@@ -2,7 +2,7 @@
 <resources>
     <!--
       Full-bleed adaptive-icon canvas. The launcher supplies the device mask;
-      Flick supplies the blue-black fill, never #000.
+      Flick supplies the lit room's off-white fill (FlickRoom.Canvas).
     -->
-    <color name="ic_launcher_background">#FF04070F</color>
+    <color name="ic_launcher_background">#FFF2F4F9</color>
 </resources>

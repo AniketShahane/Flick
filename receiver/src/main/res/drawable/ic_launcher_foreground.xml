@@ -3,6 +3,8 @@
   Adaptive-icon foreground: the Flick mark alone on the 108-unit canvas. The
   themed icon is ic_launcher_monochrome, not this file — the launcher keeps a
   monochrome layer's alpha, and the streaks below are deliberately translucent.
+  They are a deeper amber than the brand #D18F00, which vanishes on the light
+  background layer.
 
   The group maps the 64-unit grid to (54,54): p -> 0.90625p + 25, so the grid
   centre (32,32) lands exactly on the canvas centre. The artwork's visual x range
@@ -29,15 +31,15 @@
 
         <!-- motion streaks: (9,22.5,13x5) (4,31.5,11x5) (9,40.5,13x5), r=2.5 -->
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.5"
             android:pathData="M11.5,22.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.85"
             android:pathData="M6.5,31.5h6a2.5,2.5 0 0 1 0,5h-6a2.5,2.5 0 0 1 0,-5z" />
         <path
-            android:fillColor="#FFB61E"
+            android:fillColor="#D18F00"
             android:fillAlpha="0.5"
             android:pathData="M11.5,40.5h8a2.5,2.5 0 0 1 0,5h-8a2.5,2.5 0 0 1 0,-5z" />
 
