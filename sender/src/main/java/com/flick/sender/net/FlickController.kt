@@ -61,6 +61,7 @@ import com.flick.sender.model.CastFailure
 import com.flick.sender.model.ConnectionStatus
 import com.flick.sender.model.DiscoveredTv
 import com.flick.sender.model.MediaItem
+import com.flick.sender.ui.prefetchFilmArt
 import com.flick.sender.model.TerminalOrigin
 import com.flick.sender.model.TvAvailability
 import com.flick.sender.model.VideoRotation
@@ -1616,7 +1617,19 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun selectSimplifiedVideoNames(simplified: Boolean) =
         videoNamePreference.select(simplified)
 
-    fun selectFilmPosters(enabled: Boolean) = filmPosterPreference.select(enabled)
+    fun selectFilmPosters(enabled: Boolean) {
+        filmPosterPreference.select(enabled)
+        if (enabled) warmFilmArt(_library.value.items) else filmArtJob?.cancel()
+    }
+
+    private var filmArtJob: Job? = null
+
+    /** Every load re-runs it, so a film added since last time gets its art before it is seen. */
+    private fun warmFilmArt(items: List<MediaItem>) {
+        filmArtJob?.cancel()
+        if (!filmPosters.value) return
+        filmArtJob = scope.launch { prefetchFilmArt(appContext, items) }
+    }
 
     fun onMediaAccess(access: MediaAccess) {
         val load = libraryGate.begin(access)
@@ -1645,6 +1658,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 publishLibrary(read.items)
                 _libraryLoading.value = false
                 libraryJob = null
+                warmFilmArt(read.items)
             }
         }
     }

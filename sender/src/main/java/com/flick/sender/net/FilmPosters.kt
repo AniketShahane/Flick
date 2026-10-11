@@ -3,6 +3,7 @@ package com.flick.sender.net
 import android.content.Context
 import android.content.SharedPreferences
 import com.flick.sender.BuildConfig
+import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.FilmPosterQuery
 import com.flick.sender.util.FlickLog
@@ -20,7 +21,8 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Film posters from TMDB, looked up once per title and remembered across launches.
+ * Film art from TMDB — poster, backdrop and title logo — looked up once per title and
+ * remembered across launches.
  *
  * A hit is kept for good: a film's poster path does not change under it. A miss is kept for
  * a week so a home video is not asked about on every scroll. A failure — no network, a
@@ -43,7 +45,7 @@ object FilmPosters {
 
     // A grid binding a screenful of tiles at once must not open a screenful of sockets.
     private val gate = Semaphore(4)
-    private val inFlight = ConcurrentHashMap<String, Deferred<String?>>()
+    private val inFlight = ConcurrentHashMap<String, Deferred<FilmArt?>>()
     private val failedUntil = ConcurrentHashMap<String, Long>()
 
     @Volatile private var prefs: SharedPreferences? = null
@@ -51,18 +53,18 @@ object FilmPosters {
     @Volatile private var keyRejected = false
 
     /**
-     * What is already known, without touching the network: a tile that has its poster from
+     * What is already known, without touching the network: a tile that has its art from
      * last time draws it on its first frame rather than flashing the still first.
      */
-    fun cached(context: Context, query: FilmPosterQuery): String? =
-        readEntry(context, query)?.path
+    fun cached(context: Context, query: FilmPosterQuery): FilmArt? =
+        readEntry(context, query)?.art
 
-    /** The poster path for [query], or null when TMDB has none this app believes. */
-    suspend fun poster(context: Context, query: FilmPosterQuery): String? {
+    /** The art for [query], or null when TMDB has none this app believes. */
+    suspend fun art(context: Context, query: FilmPosterQuery): FilmArt? {
         if (!available || keyRejected) return null
         readEntry(context, query)?.let { entry ->
-            val fresh = entry.path != null || System.currentTimeMillis() - entry.atMs < MISS_TTL_MS
-            if (fresh) return entry.path
+            val fresh = entry.art != null || System.currentTimeMillis() - entry.atMs < MISS_TTL_MS
+            if (fresh) return entry.art
         }
         if ((failedUntil[query.cacheKey] ?: 0L) > System.currentTimeMillis()) return null
         val appContext = context.applicationContext
@@ -75,9 +77,25 @@ object FilmPosters {
         return lookup.await()
     }
 
-    private fun lookUp(context: Context, query: FilmPosterQuery): String? {
-        val connection = URL(FilmPosterPolicy.searchUrl(query, key)).openConnection() as HttpURLConnection
-        return try {
+    private fun lookUp(context: Context, query: FilmPosterQuery): FilmArt? = try {
+        val match = get(FilmPosterPolicy.searchUrl(query, key))?.let { FilmPosterPolicy.pickMatch(query, it) }
+        // The images call can fail on its own; the search's own art is still worth keeping,
+        // so only a failed search is a failure.
+        val art = match?.let { FilmPosterPolicy.pickArt(it, runCatching { get(FilmPosterPolicy.imagesUrl(query, it.id, key)) }.getOrNull()) }
+            ?.takeUnless { it.isEmpty }
+        writeEntry(context, query, art)
+        art
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        failed(query, e.message ?: e.javaClass.simpleName)
+        null
+    }
+
+    /** The body of a 200, or an exception naming why not. Null only once the key is refused. */
+    private fun get(url: String): String? {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
             connection.instanceFollowRedirects = false
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
@@ -85,29 +103,15 @@ object FilmPosters {
             if (FilmPosterPolicy.isBearerToken(key)) {
                 connection.setRequestProperty("Authorization", "Bearer $key")
             }
-            when (val status = connection.responseCode) {
-                HttpURLConnection.HTTP_OK -> {
-                    val body = connection.inputStream.bufferedReader().use { it.readText() }
-                    val path = FilmPosterPolicy.pickPoster(query, body)
-                    writeEntry(context, query, path)
-                    path
-                }
+            return when (val status = connection.responseCode) {
+                HttpURLConnection.HTTP_OK -> connection.inputStream.bufferedReader().use { it.readText() }
                 HttpURLConnection.HTTP_UNAUTHORIZED -> {
                     // Every other title would be refused the same way; stop asking.
                     keyRejected = true
-                    FlickLog.w("posters", "tmdb refused the key status=$status")
-                    null
+                    throw IllegalStateException("tmdb refused the key status=$status")
                 }
-                else -> {
-                    failed(query, "status=$status")
-                    null
-                }
+                else -> throw IllegalStateException("status=$status")
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            failed(query, e.javaClass.simpleName)
-            null
         } finally {
             connection.disconnect()
         }
@@ -118,20 +122,27 @@ object FilmPosters {
         FlickLog.d("posters", "lookup failed $why")
     }
 
-    private class Entry(val path: String?, val atMs: Long)
+    private class Entry(val art: FilmArt?, val atMs: Long)
 
-    // Stored as "<path>|<epoch ms>", with an empty path for a miss.
+    // Stored as "<poster>|<backdrop>|<logo>|<epoch ms>", empty fields for missing art and
+    // all three empty for a miss. Anything else, including the older two-field form, reads
+    // as unknown and is looked up again.
     private fun readEntry(context: Context, query: FilmPosterQuery): Entry? {
-        val raw = prefs(context).getString(query.cacheKey, null) ?: return null
-        val split = raw.lastIndexOf('|').takeIf { it >= 0 } ?: return null
-        val atMs = raw.substring(split + 1).toLongOrNull() ?: return null
-        val path = raw.substring(0, split).takeIf { it != MISS }
-        return Entry(path, atMs)
+        val fields = prefs(context).getString(query.cacheKey, null)?.split('|') ?: return null
+        if (fields.size != 4) return null
+        val atMs = fields[3].toLongOrNull() ?: return null
+        val art = FilmArt(
+            poster = fields[0].takeIf { it != MISS },
+            backdrop = fields[1].takeIf { it != MISS },
+            logo = fields[2].takeIf { it != MISS },
+        )
+        return Entry(art.takeUnless { it.isEmpty }, atMs)
     }
 
-    private fun writeEntry(context: Context, query: FilmPosterQuery, path: String?) {
+    private fun writeEntry(context: Context, query: FilmPosterQuery, art: FilmArt?) {
+        val value = listOf(art?.poster, art?.backdrop, art?.logo).joinToString("|") { it ?: MISS }
         prefs(context).edit()
-            .putString(query.cacheKey, "${path ?: MISS}|${System.currentTimeMillis()}")
+            .putString(query.cacheKey, "$value|${System.currentTimeMillis()}")
             .apply()
     }
 
