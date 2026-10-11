@@ -45,7 +45,7 @@ object FilmPosters {
 
     // A grid binding a screenful of tiles at once must not open a screenful of sockets.
     private val gate = Semaphore(4)
-    private val inFlight = ConcurrentHashMap<String, Deferred<String?>>()
+    private val inFlight = ConcurrentHashMap<String, Deferred<FilmArt?>>()
     private val failedUntil = ConcurrentHashMap<String, Long>()
 
     @Volatile private var prefs: SharedPreferences? = null
