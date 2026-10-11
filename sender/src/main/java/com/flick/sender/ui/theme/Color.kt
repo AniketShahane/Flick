@@ -302,8 +302,18 @@ val PosterHairline = Color(0x1FFFFFFF)
 // Glass laid straight on the cinema gradient. White at low alpha rather than a navy tone, so
 // it takes the colour of whatever backdrop is under it instead of greying it.
 val CinemaGlass = Color(0x1AFFFFFF)
-val CinemaGlassStrong = Color(0x24FFFFFF)
 val CinemaGlassEdge = Color(0x29FFFFFF)
+
+/**
+ * A control disc over artwork. Dark rather than white glass: white at low alpha over a pale
+ * sky left a white chevron at about 1.5:1.
+ */
+val CinemaDisc = Color(0x70000000)
+val CinemaDiscEdge = Color(0x38FFFFFF)
+
+/** A notice card's glass on the cinema page: lit a little more at the top than the foot. */
+val CinemaNoticeTop = Color(0x1CFFFFFF)
+val CinemaNoticeFoot = Color(0x0FFFFFFF)
 
 /**
  * The floating nav pill's shadow on the dark set. A tinted ink shadow is a way of making

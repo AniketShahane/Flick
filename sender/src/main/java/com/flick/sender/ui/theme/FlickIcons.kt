@@ -266,8 +266,8 @@ object FlickIcons {
         moveTo(9.5f, 5f); lineTo(16.5f, 12f); lineTo(9.5f, 19f)
     }
 
-    /** [ChevronRight] mirrored about x = 12. */
-    val ChevronLeft: ImageVector = strokeIcon("ChevronLeft", width = 2f) {
+    /** [ChevronRight] mirrored about x = 12. A back control, so it flips with the layout. */
+    val ChevronLeft: ImageVector = strokeIcon("ChevronLeft", width = 2f, autoMirror = true) {
         moveTo(14.5f, 5f); lineTo(7.5f, 12f); lineTo(14.5f, 19f)
     }
 
@@ -383,6 +383,7 @@ private fun fillIcon(
 private fun strokeIcon(
     name: String,
     width: Float = 1.8f,
+    autoMirror: Boolean = false,
     block: PathBuilder.() -> Unit,
 ): ImageVector =
     ImageVector.Builder(
@@ -391,6 +392,7 @@ private fun strokeIcon(
         defaultHeight = 24.dp,
         viewportWidth = 24f,
         viewportHeight = 24f,
+        autoMirror = autoMirror,
     ).apply {
         path(
             stroke = SolidColor(Color.Black),

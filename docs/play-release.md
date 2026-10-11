@@ -250,7 +250,7 @@ makes it different, what you get.
 | # | Screen | Caption |
 | --- | --- | --- |
 | 1 | Library grid, thumbnails loaded | Your videos on the big screen |
-| 2 | Detail sheet, direct-play verdict, real 4K specs | Never transcoded. Never downscaled. |
+| 2 | Detail page, poster pad over the film's backdrop, real 4K specs | Never transcoded. Never downscaled. |
 | 3 | Now Playing, mid-film, transport visible | Your phone becomes the remote |
 | 4 | Subtitles sheet with a matched subtitle attached | Subtitles that just work |
 | 5 | Devices, paired TV and the pairing card | Pair once, in one scan |
@@ -365,9 +365,10 @@ picture cannot reveal. DTS is expected to land there: the verified TV declares n
 decoder at all.
 
 And the detail sheet said **"Will direct-play at full quality"** for a file that then did
-not play. The verdict is computed without knowing what the paired TV will accept, so the
+not play. The verdict was computed without knowing what the paired TV will accept, so the
 app's most prominent promise could be wrong and never learn it was. That half is fixed —
-the sheet now stops promising after one failure and refuses after two.
+the detail page no longer makes a direct-play promise at all, and shows a refusal card
+after the same failure twice running.
 
 ### Promo video (optional, one per listing)
 

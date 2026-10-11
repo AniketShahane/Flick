@@ -1,6 +1,8 @@
 package com.flick.sender.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -11,8 +13,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +40,7 @@ import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.ui.components.videoImageLoader
+import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -195,6 +200,7 @@ fun FilmPosterBackdrop(
     posterPath: String,
     imageLoader: ImageLoader,
     modifier: Modifier = Modifier,
+    alignment: Alignment = Alignment.Center,
 ) {
     val request = rememberPosterRequest(posterPath, FilmPosterPolicy.HERO_WIDTH) ?: return
     AsyncImage(
@@ -202,6 +208,7 @@ fun FilmPosterBackdrop(
         contentDescription = null,
         imageLoader = imageLoader,
         contentScale = ContentScale.Crop,
+        alignment = alignment,
         modifier = modifier,
     )
 }
@@ -212,6 +219,7 @@ fun FilmBackdropHero(
     backdropPath: String,
     imageLoader: ImageLoader,
     modifier: Modifier = Modifier,
+    alignment: Alignment = Alignment.Center,
 ) {
     val request = rememberHeroRequest(
         backdropPath,
@@ -223,13 +231,18 @@ fun FilmBackdropHero(
         contentDescription = null,
         imageLoader = imageLoader,
         contentScale = ContentScale.Crop,
+        alignment = alignment,
         modifier = modifier,
     )
 }
 
 /**
- * TMDB's title logo, fitted whole inside [modifier]'s bounds. [onFailed] fires when the image
- * cannot be drawn at all, so the caller can set the title in type instead of leaving a hole.
+ * TMDB's title logo at no more than its own pixel size, fitted whole inside [modifier]'s
+ * maximum bounds. [onFailed] fires when the image cannot be drawn at all, so the caller can
+ * set the title in type instead of leaving a hole.
+ *
+ * A logo whose ink is dark is drawn white: TMDB carries black wordmarks made for light
+ * posters, and on the dark page they would vanish.
  */
 @Composable
 fun FilmTitleLogo(
@@ -239,19 +252,81 @@ fun FilmTitleLogo(
     onFailed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val request = rememberArtRequest(logoPath, FilmPosterPolicy.LOGO_WIDTH)
+    val context = LocalContext.current
+    val request = remember(logoPath) {
+        FilmPosterPolicy.imageUrl(logoPath, FilmPosterPolicy.HERO_LOGO_WIDTH)?.let { url ->
+            ImageRequest.Builder(context)
+                .data(url)
+                .crossfade(true)
+                // Software, so its pixels can be read to choose its ink.
+                .allowHardware(false)
+                .build()
+        }
+    }
     if (request == null) {
         LaunchedEffect(logoPath) { onFailed() }
         return
     }
+    var ink by remember(logoPath) { mutableStateOf<ColorFilter?>(null) }
     AsyncImage(
         model = request,
         contentDescription = contentDescription,
         imageLoader = imageLoader,
         contentScale = ContentScale.Fit,
+        colorFilter = ink,
+        onSuccess = { success ->
+            val bitmap = (success.result.drawable as? BitmapDrawable)?.bitmap
+            ink = if (bitmap != null && LogoInk.isDark(bitmap.sampledOpaqueLuma())) {
+                ColorFilter.tint(Color.White)
+            } else {
+                null
+            }
+        },
         onError = { onFailed() },
         modifier = modifier,
     )
+}
+
+/**
+ * Mean luma of a sparse grid of [this]'s pixels. Runs on the main thread inside the load
+ * callback, before the crossfade's first frame, so the grid stays at most about 64 × 64.
+ */
+private fun Bitmap.sampledOpaqueLuma(): Float? {
+    if (config == Bitmap.Config.HARDWARE || width <= 0 || height <= 0) return null
+    val stride = max(1, max(width, height) / LogoInk.SAMPLE_SPAN)
+    val row = IntArray(width)
+    val samples = IntArray(((width + stride - 1) / stride) * ((height + stride - 1) / stride))
+    var count = 0
+    for (y in 0 until height step stride) {
+        getPixels(row, 0, width, 0, y, width, 1)
+        for (x in 0 until width step stride) samples[count++] = row[x]
+    }
+    return LogoInk.meanOpaqueLuma(samples, count)
+}
+
+/** Whether a title logo's own ink is too dark to stand on the cinema page. */
+internal object LogoInk {
+    const val SAMPLE_SPAN = 64
+    const val DARK_LUMA = 0.35f
+    private const val OPAQUE_ALPHA = 128
+
+    /** Rec. 601 luma, 0..1, averaged over the samples at least half opaque; null if none are. */
+    fun meanOpaqueLuma(argb: IntArray, count: Int = argb.size): Float? {
+        var sum = 0f
+        var opaque = 0
+        for (i in 0 until count) {
+            val pixel = argb[i]
+            if ((pixel ushr 24) < OPAQUE_ALPHA) continue
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            sum += (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+            opaque++
+        }
+        return if (opaque == 0) null else sum / opaque
+    }
+
+    fun isDark(luma: Float?): Boolean = luma != null && luma < DARK_LUMA
 }
 
 // Leaves the trailing corner to the running time, which is about a quarter of a tile wide.
