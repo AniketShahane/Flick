@@ -94,8 +94,15 @@ object VideoNames {
         val lowered = segments.map { it.lowercase() }
         val episodeIndex = segments.indexOfFirst { SeasonEpisode.matches(it) }.takeIf { it >= 0 }
         val episodeMarker = episodeIndex?.let { SeasonEpisode.matchEntire(segments[it]) }
-        val nearestEpisodeYear = episodeIndex?.let { ep ->
-            (ep - 1).takeIf { it > 0 && Year.matches(segments[it]) }
+        // Quality tags can sit between the show and its episode marker
+        // (`Show (2026) 4k S01E02`); they belong to neither the title nor the year.
+        val episodeTitleEnd = episodeIndex?.let { ep ->
+            var end = ep
+            while (end > 1 && isReleaseNoise(lowered[end - 1])) end--
+            end
+        }
+        val nearestEpisodeYear = episodeTitleEnd?.let { end ->
+            (end - 1).takeIf { it > 0 && Year.matches(segments[it]) }
         }
         val releaseYear = if (episodeIndex == null) {
             segments.indices.lastOrNull { index ->
@@ -120,7 +127,7 @@ object VideoNames {
             }
         } else null
 
-        val titleEnd = nearestEpisodeYear ?: episodeIndex ?: releaseYear ?: technicalIndex
+        val titleEnd = nearestEpisodeYear ?: episodeTitleEnd ?: releaseYear ?: technicalIndex
         val structured = titleEnd != null && titleEnd > 0
         if (structured) {
             val title = segments.take(titleEnd).joinToString(" ").cleanSpacing()

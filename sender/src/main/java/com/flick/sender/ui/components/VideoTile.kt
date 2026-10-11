@@ -81,10 +81,10 @@ import com.flick.sender.media.ResumeProgress
 import com.flick.sender.media.VideoStills
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
-import com.flick.sender.ui.FilmPosterOnGround
+import com.flick.sender.ui.FilmTileArt
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
-import com.flick.sender.ui.rememberFilmPosterPath
+import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
@@ -111,8 +111,11 @@ private val videoImageLoaderLock = Any()
  * video (design: the tiles are filmic stills, not generic icons).
  */
 @Composable
-fun rememberVideoImageLoader(): ImageLoader {
-    val appContext = LocalContext.current.applicationContext
+fun rememberVideoImageLoader(): ImageLoader = videoImageLoader(LocalContext.current)
+
+/** The same loader, for work outside composition such as warming the film-art cache. */
+fun videoImageLoader(context: Context): ImageLoader {
+    val appContext = context.applicationContext
     return sharedVideoImageLoader ?: synchronized(videoImageLoaderLock) {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }
@@ -518,7 +521,7 @@ fun VideoTile(
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
     val request = rememberLibraryThumbnailRequest(item)
-    val posterPath = item.rememberFilmPosterPath()
+    val filmArt = item.rememberFilmArt()
     val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
     val silentDescription = stringResource(R.string.a11y_tile_no_sound)
     val watchedDescription = resume?.let {
@@ -587,9 +590,9 @@ fun VideoTile(
                     restCorner = FlickCorners.tile,
                 )
                 .fillMaxSize()
-            if (posterPath != null) {
-                FilmPosterOnGround(
-                    posterPath = posterPath,
+            if (filmArt != null) {
+                FilmTileArt(
+                    art = filmArt,
                     imageLoader = imageLoader,
                     contentDescription = displayName,
                     colorFilter = frameFilter,

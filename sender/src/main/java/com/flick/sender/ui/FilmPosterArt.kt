@@ -1,16 +1,24 @@
 package com.flick.sender.ui
 
+import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
@@ -19,32 +27,108 @@ import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.memory.MemoryCache
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
+import com.flick.sender.ui.components.videoImageLoader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 val LocalFilmPosters = staticCompositionLocalOf { true }
 
 /**
- * This file's TMDB poster path, or null while there is none to draw — the setting is off, the
- * build has no key, the name is not a title, or TMDB has nothing that matches it. Null is
- * always "draw the film's own frame", never an empty seat.
+ * This file's TMDB art, or null while there is none to draw — the setting is off, the build
+ * has no key, the name is not a title, or TMDB has nothing that matches it. Null is always
+ * "draw the film's own frame", never an empty seat.
  */
 @Composable
-fun MediaItem.rememberFilmPosterPath(): String? {
+fun MediaItem.rememberFilmArt(): FilmArt? {
     val enabled = LocalFilmPosters.current && FilmPosters.available
     val context = LocalContext.current.applicationContext
     val query = remember(name, enabled) {
         if (enabled) FilmPosterPolicy.queryFor(VideoNames.parse(name)) else null
     }
-    val path by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
+    val art by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
         // Re-read on a new query: produceState keeps the previous value across a key change.
         value = query?.let { FilmPosters.cached(context, it) }
-        if (query != null && value == null) value = FilmPosters.poster(context, query)
+        if (query != null && value == null) value = FilmPosters.art(context, query)
     }
-    return path?.takeIf { enabled }
+    return art?.takeIf { enabled }
+}
+
+@Composable
+private fun rememberArtRequest(path: String, width: String): ImageRequest? {
+    val context = LocalContext.current
+    return remember(path, width) {
+        FilmPosterPolicy.imageUrl(path, width)?.let { url ->
+            ImageRequest.Builder(context).data(url).crossfade(true).build()
+        }
+    }
+}
+
+/**
+ * The library tile's art. A film's backdrop fills the landscape seat edge to edge with its
+ * title logo set low on the leading side, opposite the running time; with no backdrop the
+ * poster stands whole on a wash of itself.
+ */
+@Composable
+fun FilmTileArt(
+    art: FilmArt,
+    imageLoader: ImageLoader,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    colorFilter: ColorFilter? = null,
+) {
+    val backdrop = art.backdrop?.let { rememberArtRequest(it, FilmPosterPolicy.BACKDROP_WIDTH) }
+    if (backdrop == null) {
+        art.poster?.let { FilmPosterOnGround(it, imageLoader, contentDescription, modifier, colorFilter) }
+        return
+    }
+    val logo = art.logo?.let { rememberArtRequest(it, FilmPosterPolicy.LOGO_WIDTH) }
+    Box(modifier.background(Color.Black)) {
+        AsyncImage(
+            model = backdrop,
+            contentDescription = contentDescription,
+            imageLoader = imageLoader,
+            contentScale = ContentScale.Crop,
+            colorFilter = colorFilter,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (logo != null) {
+            // A soft pool of shade under the logo's corner: a white wordmark on a pale sky
+            // otherwise loses its first letters.
+            Box(
+                Modifier.matchParentSize().drawBehind {
+                    drawRect(
+                        Brush.radialGradient(
+                            colors = listOf(Color.Black.copy(alpha = LogoShadeAlpha), Color.Transparent),
+                            center = Offset(0f, size.height),
+                            radius = size.width * LogoShadeReach,
+                        ),
+                    )
+                },
+            )
+            AsyncImage(
+                model = logo,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.BottomStart,
+                colorFilter = colorFilter,
+                // Bounded on both axes: a wide wordmark is held by the width, a stacked one
+                // by the height, and either way the running time keeps its corner.
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 12.dp)
+                    .fillMaxWidth(LogoWidthFraction)
+                    .fillMaxHeight(LogoHeightFraction),
+            )
+        }
+    }
 }
 
 @Composable
@@ -117,5 +201,41 @@ fun FilmPosterBackdrop(
     )
 }
 
+// Leaves the trailing corner to the running time, which is about a quarter of a tile wide.
+private const val LogoWidthFraction = 0.42f
+private const val LogoHeightFraction = 0.36f
+private const val LogoShadeAlpha = 0.6f
+private const val LogoShadeReach = 0.75f
 private val GroundBlur = 28.dp
 private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f
+
+/**
+ * Looks up art for every title in [items] and puts the images a tile draws into Coil's disk
+ * cache, so a film added since the last visit already has its art when it is first scrolled
+ * to — and still has it offline. Titles already known cost nothing: the lookup answers from
+ * its own cache and Coil from its disk.
+ */
+suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
+    if (!FilmPosters.available) return
+    val appContext = context.applicationContext
+    val loader = videoImageLoader(appContext)
+    val queries = withContext(Dispatchers.Default) {
+        items.mapNotNull { FilmPosterPolicy.queryFor(VideoNames.parse(it.name)) }.distinctBy { it.cacheKey }
+    }
+    for (query in queries) {
+        val art = FilmPosters.art(appContext, query) ?: continue
+        listOfNotNull(
+            art.backdrop?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.BACKDROP_WIDTH) },
+            art.logo?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.LOGO_WIDTH) },
+            art.poster?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.TILE_WIDTH) },
+        ).forEach { url ->
+            // Disk only: the memory cache belongs to what is on screen.
+            loader.enqueue(
+                ImageRequest.Builder(appContext)
+                    .data(url)
+                    .memoryCachePolicy(CachePolicy.DISABLED)
+                    .build(),
+            )
+        }
+    }
+}

@@ -40,6 +40,14 @@ class VideoNamesTest {
         assertEquals(3, parsed.episode)
     }
 
+    @Test fun qualityTagBeforeTheEpisodeMarkerIsNotTitle() {
+        val parsed = VideoNames.parse("Example Show (2026) 4k S01E02 Trust Fall HEVC HDR10.mp4")
+        assertEquals("Example Show (2026) S01E02", parsed.displayName)
+        assertEquals("Example Show", parsed.searchQuery)
+        assertEquals(2026, parsed.year)
+        assertEquals(2, parsed.episode)
+    }
+
     @Test fun episodeWithoutYearIsStillStructured() {
         val parsed = VideoNames.parse("Example.Show.S1E3.1080p.WEB.mkv")
         assertEquals("Example Show S01E03", parsed.displayName)
