@@ -236,13 +236,12 @@ fun DetailScreen(
                     .coerceIn(PosterMinHeightWide, PosterMaxHeight)
             } else {
                 // Sized so the page does not scroll: while it can, FlickPadPolicy hands an
-                // upward swipe to the page instead of the throw. Only a notice that cannot fit
-                // beside a usable poster goes below the fold, and then the poster still shows.
+                // upward swipe to the page instead of the throw. A notice that cannot fit
+                // beside a usable poster shrinks the poster to its floor, so only the notice's
+                // overflow goes below the fold, never the whole notice.
                 val beside = viewport - bars - PageVerticalPad * 2 - identity - heroGap * 2 -
                     padChrome - FitSlack
-                val withNotice = beside - notice
-                (if (notice == 0.dp || withNotice >= PosterMinHeight) withNotice else beside)
-                    .coerceIn(PosterMinHeight, PosterMaxHeight)
+                (beside - notice).coerceIn(PosterMinHeight, PosterMaxHeight)
             }
             val posterWidth = posterHeight / FlickPadMotion.PosterAspect
             val posterHeightPx = with(density) { posterHeight.roundToPx() }
