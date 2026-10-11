@@ -380,8 +380,8 @@ object FlickRoom {
     val OnSurfaceSoft = Color(0xFF24345C)
     val OnChrome = Color(0xFF1A2647)
 
-    /** Unfocused control border, [OnSurface] @ 28 %. */
-    val Outline = Color(0x470A1533)
+    /** Unfocused control border, [OnSurface] @ 48 % — 3:1 on [Canvas], the floor for a control's edge. */
+    val Outline = Color(0x7A0A1533)
 
     /** Divider hairline, [OnSurface] @ 14 %. */
     val OutlineHairline = Color(0x240A1533)
@@ -412,6 +412,9 @@ object FlickRoom {
     val SparkBright = Color(0xFF8A5200)
 
     val OnSpark = FlickColor.OnSpark
+
+    /** The mark's streaks: [Spark] at their 0.5–0.85 alphas is barely there on this bed. */
+    val MarkStreak = Color(0xFFB87A00)
 
     /** The ring around an amber fill: white vanishes on this bed, so it is ink. */
     val FocusRingOnSpark = OnSurface

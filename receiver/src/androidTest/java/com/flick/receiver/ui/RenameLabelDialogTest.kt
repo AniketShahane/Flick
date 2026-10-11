@@ -18,7 +18,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.input.key.Key
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.RenameLabelDialog
-import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickRoom
 import com.flick.receiver.ui.theme.FlickTvTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -154,10 +154,10 @@ class RenameLabelDialogTest {
      * say which colour actually won. The same capture covers the second half: a
      * field container of its own put the floating label's upper half on the card
      * and its lower half on the container, and that seam is gone only if the
-     * container's navy is drawn nowhere in the field.
+     * container's fill is drawn nowhere in the field.
      */
     @Test
-    fun theFieldLabelIsDrawnInSparkOverOneUniformBackdrop() {
+    fun theFieldLabelIsDrawnInAmberOverOneUniformBackdrop() {
         composeRule.setContent {
             FlickTvTheme {
                 RenameLabelDialog(
@@ -175,7 +175,7 @@ class RenameLabelDialogTest {
         var spark = 0
         for (y in 0 until label.height) {
             for (x in 0 until label.width) {
-                if (label[x, y] == FlickColor.Spark) spark++
+                if (label[x, y] == FlickRoom.SparkBright) spark++
             }
         }
         // Exact equality, not a tolerance: antialiasing only blends the glyph
@@ -183,16 +183,16 @@ class RenameLabelDialogTest {
         // — 836 of the 102 × 47 box on the verified TV. The floor is well under
         // that and well over the handful of pixels a stray tint could leave, so
         // it fails on a black label rather than on a hinting change.
-        assertTrue("the label drew $spark Spark pixels", spark > 200)
+        assertTrue("the label drew $spark amber pixels", spark > 200)
 
         val field = composeRule.onNodeWithTag("rename-name-field").captureToImage().toPixelMap()
         var containerFill = 0
         for (y in 0 until field.height) {
             for (x in 0 until field.width) {
-                if (field[x, y] == FlickColor.SurfaceRaised) containerFill++
+                if (field[x, y] == FlickRoom.SurfaceRaised) containerFill++
             }
         }
-        assertEquals("the field still paints a second navy behind its label", 0, containerFill)
+        assertEquals("the field still paints a second fill behind its label", 0, containerFill)
     }
 
     @Test

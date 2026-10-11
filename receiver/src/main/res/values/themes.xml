@@ -5,15 +5,16 @@
       Parented on the platform Material theme (minSdk 26) so no AppCompat/Material
       XML dependency is required — all UI is Compose.
 
-      The window background is the lit room's canvas (#F2F4F9, FlickRoom.Canvas),
-      so the first frame the compositor shows already matches the standby screens
-      the app opens on.
+      The window background is the cinema's canvas (#04070F, blue-black), not the
+      lit room's: a launch opens on the house-lights curtain, which starts closed
+      in exactly this colour and lifts onto the room. A light window would flash
+      light, then dark, then light.
     -->
     <style name="Theme.Flick" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FFF2F4F9</item>
-        <item name="android:colorBackground">#FFF2F4F9</item>
-        <item name="android:statusBarColor">#FFF2F4F9</item>
-        <item name="android:navigationBarColor">#FFF2F4F9</item>
+        <item name="android:windowBackground">#FF04070F</item>
+        <item name="android:colorBackground">#FF04070F</item>
+        <item name="android:statusBarColor">#FF04070F</item>
+        <item name="android:navigationBarColor">#FF04070F</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:windowFullscreen">true</item>

@@ -1299,7 +1299,11 @@ private fun LabeledColumn(
     }
 }
 
-/** Amber = on, per the §2c role split; the track never carries the focus ring. */
+/**
+ * Amber = on, per the §2c role split; the track never carries the focus ring. On
+ * the lit bed the track is solid amber under an ink knob: an amber knob on an
+ * amber wash is 1.3:1 there.
+ */
 @Composable
 private fun ToggleGlyph(enabled: Boolean) {
     val reducedMotion = LocalReducedMotion.current
@@ -1309,7 +1313,7 @@ private fun ToggleGlyph(enabled: Boolean) {
     // flick of the toggle repaints the toggle instead of recomposing it once a
     // frame for the length of the throw.
     val fill = animateColorAsState(
-        targetValue = if (enabled) FlickRoom.SelectedFill else FlickRoom.ControlFill,
+        targetValue = if (enabled) FlickRoom.Spark else FlickRoom.ControlFill,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleFill",
     )
@@ -1326,7 +1330,7 @@ private fun ToggleGlyph(enabled: Boolean) {
         label = "toggleKnob",
     )
     val knobColor = animateColorAsState(
-        targetValue = if (enabled) FlickRoom.Spark else FlickRoom.OnSurfaceFaint,
+        targetValue = if (enabled) FlickRoom.OnSpark else FlickRoom.OnSurfaceFaint,
         animationSpec = FlickMotion.orSnap(reducedMotion, FlickMotion.stateEffects()),
         label = "toggleKnobColor",
     )

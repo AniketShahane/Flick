@@ -240,7 +240,7 @@ fun BrandMark(
     modifier: Modifier = Modifier,
     size: Dp = 35.dp,
     tint: Color = if (LocalHouseLit.current) FlickRoom.Primary else FlickColor.PrimaryOnDark,
-    streakTint: Color = FlickColor.Spark,
+    streakTint: Color = if (LocalHouseLit.current) FlickRoom.MarkStreak else FlickColor.Spark,
     withStreaks: Boolean = true,
 ) {
     Canvas(modifier = modifier.size(size)) {
