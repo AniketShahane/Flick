@@ -600,9 +600,6 @@ object FlickGradients {
     val nowPlayingBackdrop: Brush =
         angledGradient(172f, 0f to CinemaTop, 0.52f to CinemaMid, 1f to CinemaDeep)
 
-    /** 170° Connecting-overlay backdrop. */
-    val connectingBackdrop: Brush = angledGradient(170f, 0f to CinemaTop, 1f to CinemaDeep)
-
     /**
      * 90° played-fill of the scrub bar, and 150° for the play/pause FAB.
      *

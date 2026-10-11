@@ -343,10 +343,25 @@ case the card exists for.
 `ReceiverApp.ConnectingScreen` is now a bare box around the player surface. The veil
 and the card belong to `HouseLights` (`ui/components/HouseLights.kt`), the one root
 sibling that owns every stage seam, drawn above the unmoved surface. At rest the
-handshake is what it was: full-bleed `Canvas` @ 82 % (`VEIL_DENSITY` =
-`ScrimVeil.alpha`) over the covered surface, and a centred card 560 dp wide
-(`HANDSHAKE_CARD_WIDTH`), `GlassPanel` fill, 26 dp radius, `FlickDimens.PanelPadding`,
-`GlassBorder` hairline.
+handshake is the **Flick card** on the dark: full-bleed `Canvas` @ 82 % (`VEIL_DENSITY` =
+`ScrimVeil.alpha`) over the covered surface, and one centred column 560 dp wide
+(`HANDSHAKE_CARD_WIDTH`) holding the card's seat, `FlickSpace.Lg`, then the copy. There
+is no glass panel: the 82 % veil alone holds `OnSurface` at about 13:1 and
+`OnSurfaceDim` at about 6:1 even over a white frame (the same figures `GlassState`
+quotes for its 82 % plate).
+
+**The Flick card** is the brand mark made an object: a `Primary` (#1240E8) card
+160 × 106 dp (`FLICK_CARD_WIDTH` / `FLICK_CARD_HEIGHT`), 16 dp radius, with the mark's
+white play triangle (the 64-unit mark grid at 1.1 dp a unit, fill and 9-unit round-joined
+stroke drawn as one `FILL_AND_STROKE` geometry, centred on its centroid) and a soft blue
+glow — a radial `Primary` gradient, 55 % at the centre to clear at 76 dp vertically,
+1.5× wider. No blur. It is drawn entirely in the draw phase by `FlickCardLayer`, a
+full-screen `Spacer` on its own `graphicsLayer()`, from animatables read only inside
+`onDrawBehind`: the bob repaints that one layer and recomposes nothing, and every alpha
+is per draw op, so even the screen-filling card never composites offscreen. Its seat is a
+fixed-size `Spacer` at the top of the column; the layer reads the column's height
+(written in layout, read in draw) to find it, so a headline that resizes moves the card
+with it. The copy is drawn under the card.
 
 How it arrives and leaves is the room's light:
 
@@ -354,68 +369,92 @@ How it arrives and leaves is the room's light:
   frozen and non-interactive, while a dithered radial aperture closes on the centre
   over `lightsDown()` (560 ms): the corner buttons go first, the clock at ~420–480 ms,
   the mark last. The card enters only once the aperture is at `p ≤ 0.12` (~425 ms),
-  into the last light — alpha on `stateEffects()`, a 23 dp rise (`TvRiseCard`) and
-  0.97 → 1 scale on `panelSpatial()` — because the glass is 88 % opaque and the last
-  pool holds the lit mark and the clock. At full dark the retained face is dropped and
-  the curtain snaps to the 82 % veil, invisibly over the black shutter. The aperture's
-  edge is a smoothstep ramp from its clear core to full density (8 dithered steps), so
-  neither end of the ramp shows a Mach band. A fault while Act I is still closing holds
-  the aperture where it reached and dissolves its density uniformly; the aperture never
-  moves for a fault.
-- **Picture up** (first frame). The card leaves at once and never waits: its semantics
+  into the last light, so it never lands on the lit mark and clock while they are still
+  legible. Card and copy fade in on `stateEffects()`; the copy also takes a 23 dp rise
+  (`TvRiseCard`) and 0.97 → 1 scale on `panelSpatial()`. The card **rises from below the
+  screen**: one keyframed progress (`flickCardArrive()`, 720 ms) from 300 dp below its
+  seat at 12° and 0.5 scale to an overshoot pose 10 dp above the seat at −3° and 1.03 by
+  460 ms (Material's emphasized decelerate), then settles to the seat at −2° and unit
+  scale (`CrossDissolve`). The overshoot is a designed pose, which is why this is a
+  keyframed tween and not a spring. 300 ms in, with the card ~95 % of the way up, three
+  amber (`Spark`) **speed bars** — the mark's 0.45 / 0.75 / 0.45 streak weights stood
+  upright, 6 / 7 / 6 dp wide, 64 / 88 / 64 dp tall, 15 dp apart, 10 dp under the card —
+  flash in (15 % of the run) and dissolve downward over `speedBars()` (500 ms): the tops
+  retract down their length while the feet drift 24 dp and the alpha falls. At full dark
+  the retained face is dropped and the curtain snaps to the 82 % veil, invisibly over the
+  black shutter. The aperture's edge is a smoothstep ramp from its clear core to full
+  density (8 dithered steps), so neither end of the ramp shows a Mach band. A fault
+  while Act I is still closing holds the aperture where it reached and dissolves its
+  density uniformly; the aperture never moves for a fault.
+- **Waiting** (any length, up to the 18 s adoption bound). Once seated the card
+  **bobs**: ±3 dp and ±0.5° on one sine, a 2.4 s cycle (`flickCardBob()`). That is the
+  liveness cue — it replaces `FlickLoader` on this screen — and it is **liveness, not
+  progress**: the handshake sits in one stage for as long as the TV takes to answer, so a
+  determinate shape would hold still for the whole wait and read as a hang, and nothing
+  here may imply transcoding, of which this project does none. The bob stops at the
+  first frame, so no loop runs while the film decodes; a resumed bob carries on from the
+  phase it stopped at.
+- **Picture up** (first frame). The copy leaves at once and never waits: its semantics
   clear on the first frame, alpha on `crossDissolve()` (400 ms), an 11.5 dp sink on
-  `focusSpatial()`; the loader goes with it. After the resync wait (§6.1) and a 120 ms
-  lag, the veil lifts uniformly on `filmReveal()` (720 ms).
+  `focusSpatial()`. The card holds its seat, still, through the resync wait (§6.1) — so
+  its expansion is never thrown into an HDMI mode switch's blank — and when the picture
+  is released it **takes the screen**: over `flickCardExpand()` (600 ms,
+  `cubic-bezier(.3, 0, .05, 1)`) it travels to the screen's centre, grows to fill it
+  (width and height separately, so the 1.5:1 card meets a 16:9 screen without
+  distortion), untilts and eases its corner to 3 dp, while the glow and any bars still
+  dissolving go with its stillness and the play mark fades out over the first 150 ms
+  (`flickCardMarkFade()`). 550 ms after the picture is released the expanded card fades
+  into the film over `flickCardFade()` (320 ms, `CrossDissolve`), ~870 ms in all. The
+  veil's own timing is untouched underneath it: 120 ms after release it lifts uniformly on
+  `filmReveal()` (720 ms). A card still mid-arrival at the first frame springs to its
+  seat on `panelSpatial()` and expands from wherever it is.
 - **Veil in** (a re-cast over a running film). The veil is seeded at
   `d = max(the dim drawn over the last Active frame, a mid-lift veil)`, so a paused,
   seeking or ended frame never brightens, and rises to 82 % on
   `filmReveal()`; the card enters once 60 % of that travel has landed, alpha on
-  `crossDissolve()`.
+  `crossDissolve()`, **already seated** — no rise and no bars, because a card travelling
+  over a film is a moving edge at the film's cadence (§6.1). It bobs once settled. A card
+  still expanding from the previous cast leaves first on `fastStateEffects()`.
+- **Cancel, fault, lights up.** Card and copy leave together with the existing exits —
+  alpha on `fastStateEffects()` and the copy's sink — over the closed curtain, from
+  whatever pose they reached, expanded or not. Every exit and every seam resets the card,
+  so none can leave it standing: an expansion cut off by the next seam is cleared by that
+  seam's exit (or, for a new cast, before its card enters).
+- **Reduced motion.** No rise, no bars, no bob and no expansion: the card is simply
+  present, seated, while handshaking and gone at the first frame — the same snaps as
+  every other house-lights move.
 
 The headline is a `FlickSwap` (resize on), so it dissolves rather than flips when the
 phone's and the film's names resolve. Checking ↔ Preparing and startup retries are
-one house stage, so the card and loader keep their phase through them.
+one house stage, so the card and its bob keep their phase through them.
 
-Contents: `FlickLoader` — the Material 3 Expressive shape-morph loading indicator
-in `Spark`, at `FlickLoaderDefaults.Size` — then `connecting_title` Bricolage 800 /
-22 sp, then `connecting_detail` 16 sp `OnSurfaceDim`, separated by `FlickSpace.Md`.
-Where a device label is known, the title becomes "<device> is flicking <title>"
-using the real session values.
+Copy: `connecting_title` Bricolage 800 / 22 sp, then `connecting_detail` 16 sp
+`OnSurfaceDim`, separated by `FlickSpace.Md`. Where a device label is known, the title
+becomes "<device> is flicking <title>" using the real session values. The TV knows only
+the film's title and the phone's label before the first frame — there is no poster
+here, which is why the card carries the mark rather than the film.
 
 **Re-cut from the numbers above** (450 dp / 32 dp / 27 sp / 24 sp), which were
 measured against nothing: the card took **52 % of the 864 dp usable width and ~62 %
-of the 486 dp usable height** to say one sentence, its 32 dp padding bypassed the
-`PanelPadding` token that exists for this, and its 24 sp *detail* outweighed the
+of the 486 dp usable height** to say one sentence, and its 24 sp *detail* outweighed the
 22 sp used for *headings* on every peer surface — `PairScreen`, `SubtitlesPanel`,
 `StreamMetricsPanel` — which inverts the hierarchy it was meant to establish. Type
-came down and `FlickSpace` did not follow it, per `FlickDimens`' own rule; the loader
-keeps `FlickLoaderDefaults.Size` deliberately, because shrinking the copy around it is
-what makes the morph the one bold thing on the screen.
+came down and `FlickSpace` did not follow it, per `FlickDimens`' own rule.
 
-**Width answers to the headline, not to the detail.** Seen rendered, the 380 dp that
-re-cut produced broke "&lt;device&gt; is flicking &lt;film&gt; (year)" across two lines and left
+**Width answers to the headline, not to the detail.** Seen rendered, a 380 dp column
+broke "&lt;device&gt; is flicking &lt;film&gt; (year)" across two lines and left
 the year standing on the second by itself: the width had been cut against the *detail*,
-which is the shortest thing on the card, while the headline is the longest. 560 dp — 65 %
-of the usable width — gives a ~518 dp text column, on which a film name and year of
-roughly thirty characters stay on one line; past that the headline wraps inside the name,
-which is the acceptable break. Recovering that second title line takes the column to ~40 %
-of the usable height, so the card is wider *and* shorter than the one it replaces.
+which is the shortest thing on the screen, while the headline is the longest. 560 dp — 65 %
+of the usable width — holds a film name and year of roughly thirty characters on one line;
+past that the headline wraps inside the name, which is the acceptable break.
 `connecting_detail` carries its own newline rather than trusting the wrapper, which at this
 column fits "Press Back" onto the first line and strands "to cancel." on the second.
 
-The hand-drawn 48 dp amber arc this replaces is retired. The loader is the phone's,
-so the two apps now speak one vocabulary for the same handshake: see
-`sender/.../ConnectingScreen.HandshakeIndicator`. It is **liveness, not progress** —
-the handshake sits in one stage for as long as the TV takes to answer, so a
-determinate shape would hold still for the whole wait and read as a hang, and
-nothing here may imply transcoding, of which this project does none. `FlickLoader`
-owns its own reduced-motion fallback (the resting silhouette, held still); call
-sites must not wrap it in a second `LocalReducedMotion` branch.
-
-This is only possible because `:receiver` is pinned to material3 **1.5.0-alpha24**
-rather than taking the Compose BOM's 1.4.0, which ships `LoadingIndicatorTokens`
-but no `LoadingIndicator` composable. Both modules therefore resolve one Compose
-runtime (1.12.0-beta01) instead of two that agree by accident.
+`FlickLoader` — the Material 3 Expressive shape-morph loading indicator — remains the
+rebuffer indicator (§5.3, §6.1). It is only possible because `:receiver` is pinned to
+material3 **1.5.0-alpha24** rather than taking the Compose BOM's 1.4.0, which ships
+`LoadingIndicatorTokens` but no `LoadingIndicator` composable. Both modules therefore
+resolve one Compose runtime (1.12.0-beta01) instead of two that agree by accident.
 
 ### 5.3 Playback (`PlaybackScreen.kt`)
 
@@ -704,7 +743,10 @@ captured, because the `@Composable` accessors cannot be called there.
 | `tvBurst` (the design's seek flash) | its 0.7 → 1 → 1.14 scale-and-fade shape, but not its fixed 0.72 s lifetime: the held seek owns visibility, so the seek burst runs on the "seek burst in / out" row below; the 720 ms keyframes live on only as the heard ring's `tvBurstAlpha()` |
 | seek-step impulse | snap to 1 → `flickSettleSpatial()` back to 0, one kick per accepted protocol step |
 | `tvPulse` (live dot, 1.9 s) | infinite pulse in `LiveDot`, bound to real state only |
-| indeterminate loading (handshake, rebuffer) | `FlickLoader` — material3's Expressive shape morph. `tvSpin` is retired with the arcs it drove |
+| indeterminate loading (rebuffer) | `FlickLoader` — material3's Expressive shape morph. `tvSpin` is retired with the arcs it drove |
+| the Flick card's arrival (Act I) | `flickCardArrive()` — 720 ms keyframes: 300 dp below / 12° / 0.5 → 10 dp above / −3° / 1.03 at 460 ms (`FlickCardRise`, emphasized decelerate) → seat / −2° / 1 (`CrossDissolve`); bars on `speedBars()` (500 ms, from `SPEED_BARS_LAG_MS` 300) |
+| the handshake's liveness | `flickCardBob()` — ±3 dp, ±0.5°, one 2 400 ms sine cycle, repeated; stops at the first frame |
+| the Flick card taking the screen (picture up) | `flickCardExpand()` — 600 ms `FlickCardExpand` `cubic-bezier(.3,0,.05,1)`; mark out on `flickCardMarkFade()` (150 ms); `flickCardFade()` (320 ms `CrossDissolve`) from `FLICK_CARD_FADE_DELAY_MS` 550 |
 | chrome fade | `chromeFadeIn()` / `chromeFadeOut()` |
 | focus ring / scale / beacon travel | `focusSpatial()` |
 | colour, alpha, selection fill | `stateEffects()` |
@@ -714,7 +756,7 @@ captured, because the `@Composable` accessors cannot be called there.
 | the room's light opening (launch, lights up) | `pictureUp()` — 640 ms `CrossDissolve`, aperture only, no film visible; rest rate unless the resync hold is cut short (lights up) or the panel is not at rest (launch, never held) |
 | the house-lights veil over a film | `filmReveal()` — 720 ms `CrossDissolve`, at most 10.0 % of its span per 24 Hz frame |
 | the playback state dim | `PlaybackDim.dimSpec` — `chromeFadeIn()` to darken or lift promptly, `crossDissolve()` to settle on Ended, `chromeFadeOut()` to lift off a seek (§6.1) |
-| card-sized alpha over a film (the handshake card's entrance on a re-cast, its exit at the first frame); the fault dissolve | `crossDissolve()` — 400 ms |
+| card-sized alpha over a film (the handshake card's entrance on a re-cast, its copy's exit at the first frame); the fault dissolve | `crossDissolve()` — 400 ms |
 | the handshake card's exit on a cancel, a fault or a Rest seam | `fastStateEffects()` — it leaves over the closed curtain, not a film |
 | an overlay leaving into bare film | `filmExit()` — 250 ms `ChromeFade`, six vsyncs at 24 Hz |
 | a small overlay's presence | `presenceIn(overFilm)` / `presenceOut(overFilm)` — `chromeFadeIn()` / `filmExit()` over a film, `stateEffects()` / `fastStateEffects()` elsewhere |
@@ -724,7 +766,7 @@ captured, because the `@Composable` accessors cannot be called there.
 
 The helpers that carry these, all in `ui/components/`:
 
-- `HouseLights` — the curtain and the handshake card for every stage seam (§5.2, §6.1).
+- `HouseLights` — the curtain and the handshake's Flick card for every stage seam (§5.2, §6.1).
 - `DisplayCadence` — passive observation of the HDMI mode switch the refresh-rate pin
   causes, and the bounded resync wait (`stageHold`, `awaitStageWindow`).
 - `FlickPresence` — an overlay shown while a value is non-null: rises in, sinks half
@@ -760,7 +802,9 @@ The TV is decoding 4K Dolby Vision while this UI composes. Inside `:receiver`:
 - no `Modifier.blur` / `RenderEffect`, anywhere;
 - no infinite or ambient animation while the decoder runs — ambience belongs to Idle,
   where the player surface is `Hidden`, and the idle wash drift is the **one** deliberate
-  ambient loop in the system;
+  ambient loop in the system. The Flick card's bob (§5.2) is liveness bound to real state,
+  as the handshake loader it replaced was: it runs only while the stage is the handshake
+  and stops on the first frame;
 - per-frame values are read inside `drawBehind` / `graphicsLayer` lambdas, never in
   composition;
 - chrome motion is `graphicsLayer` transforms, never layout offsets — the full-screen dim
@@ -784,8 +828,8 @@ the film is sized for that:
   the blind-seek burst exits on `tvBurstExit()` (180 ms, under `SEEK_DELTA_CLEAR_MS`),
   and the band cards on `chromeFadeOut()` (500 ms) plus their scale-out;
 - no new moving edge, wipe or aperture over a film, and no new layout-phase animation —
-  size transforms are null there, except `clip = false` on the handshake card above the
-  veil. Known pre-existing exceptions, deliberately kept and each checked in the 24 Hz
+  size transforms are null there, except `clip = false` on the handshake headline above
+  the veil. Known pre-existing exceptions, deliberately kept and each checked in the 24 Hz
   review: the side panel's `TvOriginReveal` circle wipe (§5.4/§5.5) and its
   `animateBounds(PanelTravel)` glide and resize on a panel swap;
   `animateContentSize(panelSpatial())` on the top net-pill/clock row and on the transport
@@ -796,7 +840,15 @@ the film is sized for that:
   `FlickPresence` rise (`TvRiseCard`, 23 dp on `panelSpatial()` in, an 11.5 dp sink on
   `focusSpatial()` out, a `ModulateAlpha` layer dropped once settled), and the heard
   ring's radius, 11 → 17 dp on `tvBurstReach()` (16.5 dp start around a focused knob,
-  same travel), a 2 dp stroke inside the transport glass (§5.3);
+  same travel), a 2 dp stroke inside the transport glass (§5.3); and the Flick card taking
+  the screen at picture up (§5.2) — an edge that sweeps to the screen's border over
+  `flickCardExpand()` (600 ms) and then a full-screen alpha over `flickCardFade()`
+  (320 ms, a steepest step of 1.724 × 41.67 / 320 ≈ 22 % of its span per 24 Hz frame, over
+  the 10 % budget). Both are deliberate and design-approved: the expansion is the reveal's
+  one gesture, it runs only after the resync wait so it is never thrown into a mode
+  switch's blank, it is a solid card arriving rather than a soft edge sweeping, and it
+  draws as plain draw ops (no layer composited offscreen). A re-cast's card enters seated
+  by alpha alone so the veil-in adds no travelling edge;
 - alpha on new overlays larger than a small control (`FlickPresence`, the resting key)
   is per draw op (`CompositingStrategy.ModulateAlpha`) with the layer dropped once
   settled. Exception: the two chrome groups (TopChrome and the 864 dp BottomChrome), the
@@ -809,7 +861,7 @@ the film is sized for that:
 
 **Stage covers are siblings.** The film surface is never moved, faded, clipped or
 wrapped: both `playerSurface()` call sites sit inside unchanged `when (stage)` branches,
-and every cover — the veil, the aperture, the handshake card, the retained standby — is
+and every cover — the veil, the aperture, the Flick card and its expansion, the retained standby — is
 drawn by `HouseLights` or the non-video shell, composed after them. The aperture is
 drawn only with no film visible (launch, Act I, lights up), and lights up opens it only
 after the resync hold, so it normally runs at the rest rate. A key, the cap or an unseen

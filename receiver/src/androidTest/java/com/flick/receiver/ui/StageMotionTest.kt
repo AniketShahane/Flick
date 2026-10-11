@@ -106,6 +106,7 @@ class StageMotionTest {
         reduced: Boolean = false,
         settle: Boolean = true,
         offstage: Boolean = false,
+        expand: Boolean = true,
     ) {
         stage = initial
         composeRule.setContent {
@@ -136,6 +137,7 @@ class StageMotionTest {
                             onPictureSettled = { settled++ },
                             now = { composeRule.mainClock.currentTime },
                             offstage = offstage,
+                            expandAtPictureUp = expand,
                         )
                     }
                 }
@@ -246,9 +248,8 @@ class StageMotionTest {
     }
 
     /**
-     * Below an aperture of about 0.1 the pool sits entirely behind the 88 % glass and
-     * the loader, so no pixel outside the card can see it: the last ~100 ms of Act I is
-     * judged from the filmstrip, not asserted here.
+     * Below an aperture of about 0.1 the pool sits behind the card and its copy, so the
+     * last ~100 ms of Act I is judged from the filmstrip, not asserted here.
      */
     @Test
     fun actOneEndsWithoutAGlint() {
@@ -256,9 +257,10 @@ class StageMotionTest {
         val seam = cut(HouseStage.Handshake)
         frame()
         val rimFromCentrePx = with(density) { (HANDSHAKE_CARD_WIDTH / 2 + 24.dp).toPx() }
-        // The glass's resting top edge, from its layout height, which the entrance's
-        // rise and scale (a graphicsLayer) do not change. The card enters lower than it
-        // rests, so this point is never covered.
+        // The handshake column's resting top edge (the Flick card's seat), from its
+        // layout height, which the entrance's draw-phase rise does not change. The card
+        // rises from below its seat and is still far below it until onLightsDown, so
+        // this point is never covered while it is judged.
         val glassH = glassHeightPx()
         var aboveCardY: Int? = null
         var cardShowing = false
@@ -302,8 +304,9 @@ class StageMotionTest {
     }
 
     /**
-     * The handshake glass's layout height: the outermost ancestor of the headline that
-     * is [HANDSHAKE_CARD_WIDTH] wide. Above it is the full-screen card slot.
+     * The handshake column's layout height, the Flick card's seat included: the
+     * outermost ancestor of the headline that is [HANDSHAKE_CARD_WIDTH] wide. Above it
+     * is the full-screen card slot.
      */
     private fun glassHeightPx(): Int {
         val cardWidthPx = with(density) { HANDSHAKE_CARD_WIDTH.roundToPx() }
@@ -313,16 +316,17 @@ class StageMotionTest {
             if (abs(node.width - cardWidthPx) <= 1) glass = node
             node = node.parentInfo
         }
-        assertTrue("no $HANDSHAKE_CARD_WIDTH-wide glass above the headline", glass != null)
+        assertTrue("no $HANDSHAKE_CARD_WIDTH-wide column above the headline", glass != null)
         return glass!!.height
     }
 
+    /** The card leaves with its copy here: the expanded card would cover the lift being judged. */
     @Test
     fun revealLiftsWithoutAStep() {
         rate = 60f
         cadence.physicalHz = 60f
         cadence.blank = false
-        launch()
+        launch(expand = false)
         settleHandshake()
         val seam = cut(HouseStage.Film)
         val samples = mutableListOf<Float>()
@@ -338,11 +342,40 @@ class StageMotionTest {
     }
 
     @Test
+    fun pictureUpTakesTheScreenWithTheCard() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch()
+        settleHandshake()
+        // Past the arrival, so the card is seated and bobbing.
+        advance(1_000)
+        val seam = cut(HouseStage.Film)
+        frame()
+        composeRule.onNodeWithText(HEADLINE).assertDoesNotExist()
+        assertTrue("the card left with its copy instead of staying to expand", cardExists())
+        // The expansion runs 600 ms from the picture coming up, and its fade starts 550 ms in.
+        advance(450)
+        val covered = shot("pictureUpTakesTheScreenWithTheCard", seam)
+        val blue = lumaOf(FlickColor.Primary)
+        for ((fx, fy) in listOf(0.05f to 0.05f, 0.5f to 0.1f, 0.95f to 0.95f)) {
+            assertEquals("the card did not cover ($fx, $fy) at ${since(seam)} ms", blue, covered.luma(fx, fy), 0.03f)
+        }
+        advance(1_000 - since(seam))
+        assertTrue("the expanded card outlived its fade", !cardExists())
+        assertEquals("onPictureSettled by about 880 ms", 1, settled)
+        val film = shot("pictureUpTakesTheScreenWithTheCard", seam)
+        val under = lumaOf(FILM[0]) + (lumaOf(FILM[1]) - lumaOf(FILM[0])) * 0.1f
+        assertEquals("the film was not uncovered", under, film.luma(0.5f, 0.1f), 0.03f)
+    }
+
+    /** The card leaves with its copy here: the expanded card would cover the lift being judged. */
+    @Test
     fun revealWaitsForTheModeSwitch() {
         rate = 23.976f
         cadence.physicalHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)

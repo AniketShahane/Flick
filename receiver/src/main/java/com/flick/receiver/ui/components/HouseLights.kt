@@ -9,14 +9,19 @@ import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -26,11 +31,17 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -41,9 +52,7 @@ import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.ui.theme.FlickColor
-import com.flick.receiver.ui.theme.FlickDimens
 import com.flick.receiver.ui.theme.FlickMotion
-import com.flick.receiver.ui.theme.FlickShape
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
@@ -58,8 +67,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The room the TV is in, as the house lights see it. Checking and Preparing are one stage. */
 internal enum class HouseStage { Room, Fault, Handshake, Film }
@@ -94,9 +105,9 @@ internal const val APERTURE_S_OPEN = 4.2f
 internal const val APERTURE_CORE = 0.35f
 
 /**
- * The handshake card enters once the aperture has closed this far. The glass fill
- * is 88 % opaque, and the last light pool holds the lit mark and the clock; any
- * earlier and the card lands on top of them.
+ * The handshake card enters once the aperture has closed this far. The last light
+ * pool holds the lit mark and the clock; any earlier and the card and its copy land
+ * on them while they are still legible.
  */
 internal const val CARD_ENTER_APERTURE = 0.12f
 
@@ -135,12 +146,55 @@ internal const val RETAINED_SHELL_LIMIT_MS = 1_500L
 internal const val REVEAL_SETTLE_FALLBACK_MS = 4_000L
 
 /**
- * Handshake card width (receiver-expressive-spec.md §5.2). Set by the headline it carries:
- * at 380 dp "<device> is flicking <film> (year)" wrapped and left the year alone on the
- * second line. This leaves ~518 dp of text column, which holds a film name and year of
- * roughly thirty characters on one line; longer ones wrap inside the name instead.
+ * The handshake column's width (receiver-expressive-spec.md §5.2). Set by the headline
+ * it carries: at 380 dp "<device> is flicking <film> (year)" wrapped and left the year
+ * alone on the second line. 560 dp holds a film name and year of roughly thirty
+ * characters on one line; longer ones wrap inside the name instead.
  */
 internal val HANDSHAKE_CARD_WIDTH = 560.dp
+
+/** The Flick card at rest (receiver-expressive-spec.md §5.2). */
+internal val FLICK_CARD_WIDTH = 160.dp
+internal val FLICK_CARD_HEIGHT = 106.dp
+private val FLICK_CARD_RADIUS = 16.dp
+
+/** The corner the card keeps once it has taken the screen. */
+private val FLICK_CARD_EXPANDED_RADIUS = 3.dp
+
+/** The glow's vertical reach from the card's centre; it is [FLICK_CARD_GLOW_ASPECT] times wider. */
+private val FLICK_CARD_GLOW_RADIUS = 76.dp
+private const val FLICK_CARD_GLOW_ASPECT = 1.5f
+private const val FLICK_CARD_GLOW_ALPHA = 0.55f
+
+/** One unit of the brand mark's 64-unit grid, which puts a ~47 dp play mark on the card. */
+private val FLICK_MARK_UNIT = 1.1.dp
+
+/** The mark's triangle is centred on its centroid, not its bounds, so it sits optically centred. */
+private const val MARK_CENTROID_X = 112f / 3f
+private const val MARK_CENTROID_Y = 32f
+
+/** The mark's streak weights, 0.45 / 0.75 / 0.45, stood upright under the card. */
+private val SPEED_BAR_WIDTHS = listOf(6.dp, 7.dp, 6.dp)
+private val SPEED_BAR_HEIGHTS = listOf(64.dp, 88.dp, 64.dp)
+private val SPEED_BAR_PITCH = 15.dp
+private val SPEED_BAR_GAP = 10.dp
+private val SPEED_BAR_DRIFT = 24.dp
+
+/** The share of the bars' run spent flashing in; the rest dissolves them downward. */
+private const val SPEED_BAR_FLASH = 0.15f
+
+/** [HouseCard.arrive] at the overshoot pose and seated. */
+private const val ARRIVE_OVERSHOOT = 1f
+private const val ARRIVE_SEATED = 2f
+
+private val TWO_PI = (2.0 * PI).toFloat()
+
+/** The speed bars' alpha across their run [b], 0 → 1. */
+internal fun speedBarAlpha(b: Float): Float = when {
+    b <= 0f || b >= 1f -> 0f
+    b < SPEED_BAR_FLASH -> b / SPEED_BAR_FLASH
+    else -> (1f - b) / (1f - SPEED_BAR_FLASH)
+}
 
 /**
  * The degrade switch for a turned film, which is composited into the app's window
@@ -263,13 +317,64 @@ private class HouseMemory {
     var lastCurtain: HouseCurtain? = null
 }
 
-/** Outlives every curtain, so an interrupted entrance or exit continues from where it is. */
+/**
+ * Outlives every curtain, so an interrupted entrance or exit continues from where it is.
+ * [alpha] is the whole card's; [copy], [rise] and [sink] move only the text, which
+ * leaves at the first frame while the Flick card stays to take the screen.
+ */
 private class HouseCard {
     val alpha = Animatable(0f)
     val rise = Animatable(1f)
     val sink = Animatable(0f)
+    val copy = Animatable(1f)
+
+    /** 0 below the screen, [ARRIVE_OVERSHOOT] at the overshoot pose, [ARRIVE_SEATED] seated. */
+    val arrive = Animatable(0f)
+
+    /** The speed bars' run; 1 is spent. */
+    val bars = Animatable(1f)
+
+    /** The bob's phase in cycles. Only its fraction is drawn, so a resumed bob carries on from it. */
+    val bob = Animatable(0f)
+    val expand = Animatable(0f)
+    val mark = Animatable(1f)
+
+    /** The expanded card's fade into the film. */
+    val cover = Animatable(1f)
     var held by mutableStateOf(false)
     var settledIn by mutableStateOf(false)
+
+    /** Written in layout and read only in draw, so a resize repositions the card without recomposing. */
+    var columnHeight by mutableIntStateOf(0)
+
+    suspend fun seat() {
+        alpha.snapTo(1f)
+        rise.snapTo(0f)
+        sink.snapTo(0f)
+        copy.snapTo(1f)
+        arrive.snapTo(ARRIVE_SEATED)
+        bars.snapTo(1f)
+        bob.snapTo(0f)
+        expand.snapTo(0f)
+        mark.snapTo(1f)
+        cover.snapTo(1f)
+        held = true
+        settledIn = true
+    }
+
+    suspend fun retire() {
+        held = false
+        settledIn = false
+        alpha.snapTo(0f)
+        rise.snapTo(1f)
+        sink.snapTo(0f)
+        copy.snapTo(1f)
+        arrive.snapTo(0f)
+        bars.snapTo(1f)
+        expand.snapTo(0f)
+        mark.snapTo(1f)
+        cover.snapTo(1f)
+    }
 }
 
 /** The headline an exiting card keeps showing once the session has moved on. */
@@ -291,6 +396,10 @@ private class HeadlineLatch {
  *
  * [offstage] is true for compositions made while the app was stopped: a seam planned
  * then starts from nothing on screen.
+ *
+ * [expandAtPictureUp] false lets the Flick card leave with its copy at the first frame
+ * instead of taking the screen once the resync wait ends. The stage tests use it to read
+ * the veil's lift, which the expanded card covers.
  */
 @Composable
 internal fun HouseLights(
@@ -307,6 +416,7 @@ internal fun HouseLights(
     filmDim: Float = 0f,
     filmDimNow: () -> Float = { filmDim },
     offstage: Boolean = false,
+    expandAtPictureUp: Boolean = true,
     requestedRefreshRate: Float = 0f,
     freshRate: () -> Float = { requestedRefreshRate },
     pinnedRate: () -> Float = { requestedRefreshRate },
@@ -332,6 +442,7 @@ internal fun HouseLights(
     val freshRateNow by rememberUpdatedState(freshRate)
     val pinnedRateNow by rememberUpdatedState(pinnedRate)
     val latestTurnedFilm by rememberUpdatedState(turnedFilm)
+    val expandNow by rememberUpdatedState(expandAtPictureUp)
     val lightsDownNow by rememberUpdatedState(onLightsDown)
     val pictureUpNow by rememberUpdatedState(onPictureUp)
     val pictureSettledNow by rememberUpdatedState(onPictureSettled)
@@ -349,13 +460,30 @@ internal fun HouseLights(
         val releasedAtSeam = pinnedRateNow() <= 0f
         fun <T> spec(s: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> = FlickMotion.orSnap(reduced, s)
 
-        suspend fun enterCard(alphaSpec: FiniteAnimationSpec<Float>) {
+        // Rising, the Flick card flies up from below the screen into the last light;
+        // otherwise (over a film) it fades in already seated, because a travelling
+        // card over a film is a moving edge at the film's cadence.
+        suspend fun enterCard(alphaSpec: FiniteAnimationSpec<Float>, rising: Boolean) {
             card.held = true
             card.settledIn = false
             coroutineScope {
                 launch { card.alpha.animateTo(1f, spec(alphaSpec)) }
+                launch { card.copy.animateTo(1f, spec(alphaSpec)) }
                 launch { card.rise.animateTo(0f, spec(panelSpec)) }
                 launch { card.sink.animateTo(0f, spec(panelSpec)) }
+                when {
+                    !rising -> card.arrive.snapTo(ARRIVE_SEATED)
+                    card.arrive.value <= 0f -> {
+                        launch { card.arrive.animateTo(ARRIVE_SEATED, spec(FlickMotion.flickCardArrive())) }
+                        launch {
+                            delay(FlickMotion.SPEED_BARS_LAG_MS)
+                            card.bars.snapTo(0f)
+                            card.bars.animateTo(1f, spec(FlickMotion.speedBars()))
+                        }
+                    }
+                    // Caught mid-exit: the keyframes pin their start, so settle from here.
+                    else -> launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
+                }
             }
             card.settledIn = true
         }
@@ -367,9 +495,25 @@ internal fun HouseLights(
                 launch { card.alpha.animateTo(0f, spec(alphaSpec)) }
                 launch { card.sink.animateTo(1f, spec(focusSpec)) }
             }
-            card.held = false
-            card.rise.snapTo(1f)
-            card.sink.snapTo(0f)
+            card.retire()
+        }
+
+        // An expansion cut off by the next seam would otherwise hold the screen until
+        // its card re-entered.
+        suspend fun clearExpanded() {
+            if (card.held && card.expand.value > 0f) exitCard(fastSpec)
+        }
+
+        suspend fun expandCard() {
+            coroutineScope {
+                launch { card.mark.animateTo(0f, spec(FlickMotion.flickCardMarkFade())) }
+                launch { card.expand.animateTo(1f, spec(FlickMotion.flickCardExpand())) }
+                launch {
+                    delay(FlickMotion.FLICK_CARD_FADE_DELAY_MS)
+                    card.cover.animateTo(0f, spec(FlickMotion.flickCardFade()))
+                }
+            }
+            card.retire()
         }
 
         fun recentChange(): Boolean {
@@ -447,19 +591,7 @@ internal fun HouseLights(
             val (p, d) = houseRest(move.to)
             aperture.snapTo(p)
             density.snapTo(d)
-            if (move.to == HouseStage.Handshake) {
-                card.alpha.snapTo(1f)
-                card.rise.snapTo(0f)
-                card.sink.snapTo(0f)
-                card.held = true
-                card.settledIn = true
-            } else {
-                card.alpha.snapTo(0f)
-                card.rise.snapTo(1f)
-                card.sink.snapTo(0f)
-                card.held = false
-                card.settledIn = false
-            }
+            if (move.to == HouseStage.Handshake) card.seat() else card.retire()
             if (move.to != HouseStage.Room && move.to != HouseStage.Fault) lightsDownNow()
             if (move.to == HouseStage.Film) {
                 pictureUpNow()
@@ -475,6 +607,7 @@ internal fun HouseLights(
                 // Seeded closed at full density: nothing lit is left to close over.
                 val alreadyDark = aperture.value <= CLOSED_APERTURE && density.value >= 1f - EMPTY_DENSITY
                 if (alreadyDark) lightsDownNow()
+                val clearing = launch { clearExpanded() }
                 launch {
                     if (aperture.value > CLOSED_APERTURE) {
                         snapshotFlow { aperture.value <= CARD_ENTER_APERTURE }.first { it }
@@ -483,7 +616,8 @@ internal fun HouseLights(
                         // before the card lands on it.
                         snapshotFlow { density.value >= 1f - CARD_ENTER_APERTURE }.first { it }
                     }
-                    enterCard(stateSpec)
+                    clearing.join()
+                    enterCard(stateSpec, rising = true)
                 }
                 if (alreadyDark) {
                     density.animateTo(VEIL_DENSITY, spec(FlickMotion.crossDissolve()))
@@ -504,13 +638,28 @@ internal fun HouseLights(
             }
 
             HouseMoveKind.PictureUp -> {
-                launch { exitCard(FlickMotion.crossDissolve()) }
+                val expanding = expandNow && card.held
+                if (expanding) {
+                    // The copy leaves at once; the card holds its seat through the resync
+                    // wait, so its expansion is never thrown into a mode switch's blank.
+                    card.settledIn = false
+                    launch { card.copy.animateTo(0f, spec(FlickMotion.crossDissolve())) }
+                    launch { card.sink.animateTo(1f, spec(focusSpec)) }
+                    launch { card.alpha.animateTo(1f, spec(stateSpec)) }
+                    launch { card.bars.animateTo(1f, spec(FlickMotion.speedBars())) }
+                    if (card.arrive.value < ARRIVE_SEATED) {
+                        launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
+                    }
+                } else {
+                    launch { exitCard(FlickMotion.crossDissolve()) }
+                }
                 if (aperture.value > CLOSED_APERTURE) aperture.animateTo(0f, spec(fastSpec))
                 // Also when Act I had already closed: releasing a face that is already
                 // gone is a no-op, and a face still retained would cover the film.
                 lightsDownNow()
                 holdForReveal()
                 pictureUpNow()
+                if (expanding) launch { expandCard() }
                 delay(FlickMotion.REVEAL_VEIL_LAG_MS)
                 val lift: FiniteAnimationSpec<Float> = if (latestTurnedFilm && SNAP_REVEAL_ON_TURNED_FILM) {
                     FlickMotion.orSnap(true, FlickMotion.filmReveal())
@@ -522,11 +671,13 @@ internal fun HouseLights(
             }
 
             HouseMoveKind.VeilIn -> {
+                val clearing = launch { clearExpanded() }
                 launch {
                     val seed = density.value
                     val threshold = seed + (VEIL_DENSITY - seed) * FlickMotion.CARD_AFTER_DIM_FRACTION
                     snapshotFlow { density.value >= threshold }.first { it }
-                    enterCard(FlickMotion.crossDissolve())
+                    clearing.join()
+                    enterCard(FlickMotion.crossDissolve(), rising = false)
                 }
                 density.animateTo(VEIL_DENSITY, spec(FlickMotion.filmReveal()))
             }
@@ -557,6 +708,14 @@ internal fun HouseLights(
 
             HouseMoveKind.Snap -> Unit
         }
+    }
+
+    // Liveness, not progress: the handshake sits in one stage for as long as the TV
+    // takes to answer, so a card holding still would read as a hang. It stops at the
+    // first frame, so no loop runs while the film decodes.
+    val bobbing = !reduced && stage == HouseStage.Handshake && card.settledIn
+    LaunchedEffect(bobbing) {
+        if (bobbing) card.bob.animateTo(card.bob.value + 1f, FlickMotion.flickCardBob())
     }
 
     Box(modifier.fillMaxSize()) {
@@ -633,58 +792,188 @@ internal fun HouseLights(
                 Modifier.fillMaxSize().testTag("house-card"),
                 contentAlignment = Alignment.Center,
             ) {
-                GlassPanel(
+                // No panel behind the copy: the 82 % veil alone holds OnSurface at about
+                // 13:1 and OnSurfaceDim at about 6:1 even over a white frame.
+                Column(
                     modifier = Modifier
                         .width(HANDSHAKE_CARD_WIDTH)
-                        .then(
-                            if (card.settledIn && live) {
-                                Modifier
-                            } else {
-                                Modifier.graphicsLayer {
-                                    alpha = card.alpha.value
-                                    translationY = (card.rise.value + 0.5f * card.sink.value) *
-                                        FlickMotion.TvRiseCard.toPx()
-                                    val sc = lerp(1f, 0.97f, card.rise.value)
-                                    scaleX = sc
-                                    scaleY = sc
-                                    compositingStrategy = CompositingStrategy.ModulateAlpha
-                                }
-                            },
-                        )
+                        .onSizeChanged { card.columnHeight = it.height }
                         .then(if (live) Modifier else Modifier.clearAndSetSemantics { }),
-                    shape = FlickShape.Hero,
-                    tone = GlassPanelTone.Panel,
-                    contentPadding = FlickDimens.PanelPadding,
-                    verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    animateEntrance = false,
                 ) {
-                    // Liveness, not progress. The handshake sits in one stage for as long
-                    // as the TV takes to answer, so a determinate shape would hold still
-                    // for the whole wait and read as a hang. It must never imply
-                    // transcoding, of which this project does none.
-                    FlickLoader()
-                    FlickSwap(
-                        target = headline,
-                        resize = true,
-                        contentAlignment = Alignment.Center,
-                        label = "handshakeHeadline",
+                    // The Flick card's seat. The card is drawn by the layer below, because
+                    // it travels from off screen and ends covering all of it.
+                    Spacer(Modifier.size(FLICK_CARD_WIDTH, FLICK_CARD_HEIGHT))
+                    Spacer(Modifier.height(FlickSpace.Lg))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (card.settledIn && live) {
+                                    Modifier
+                                } else {
+                                    Modifier.graphicsLayer {
+                                        alpha = card.alpha.value * card.copy.value
+                                        translationY = (card.rise.value + 0.5f * card.sink.value) *
+                                            FlickMotion.TvRiseCard.toPx()
+                                        val sc = lerp(1f, 0.97f, card.rise.value)
+                                        scaleX = sc
+                                        scaleY = sc
+                                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                                    }
+                                },
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        FlickSwap(
+                            target = headline,
+                            resize = true,
+                            contentAlignment = Alignment.Center,
+                            label = "handshakeHeadline",
+                        ) {
+                            Text(
+                                text = it,
+                                style = FlickType.display(sizeSp = 22),
+                                color = FlickColor.OnSurface,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                         Text(
-                            text = it,
-                            style = FlickType.display(sizeSp = 22),
-                            color = FlickColor.OnSurface,
+                            text = stringResource(R.string.connecting_detail),
+                            style = FlickType.body(sizeSp = 16),
+                            color = FlickColor.OnSurfaceDim,
                             textAlign = TextAlign.Center,
                         )
                     }
-                    Text(
-                        text = stringResource(R.string.connecting_detail),
-                        style = FlickType.body(sizeSp = 16),
-                        color = FlickColor.OnSurfaceDim,
-                        textAlign = TextAlign.Center,
-                    )
                 }
+                FlickCardLayer(card)
             }
         }
     }
+}
+
+/**
+ * The Flick card, its glow, its play mark and the speed bars, drawn from [card]'s
+ * animatables in the draw phase on a layer of their own, so the bob repaints this
+ * layer alone and recomposes nothing. Every alpha is per draw op: no offscreen layer,
+ * even when the card covers the screen.
+ */
+@Composable
+private fun FlickCardLayer(card: HouseCard) {
+    Spacer(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer()
+            .drawWithCache {
+                val cardW = FLICK_CARD_WIDTH.toPx()
+                val cardH = FLICK_CARD_HEIGHT.toPx()
+                val radius = FLICK_CARD_RADIUS.toPx()
+                val expandedRadius = FLICK_CARD_EXPANDED_RADIUS.toPx()
+                val riseFrom = FlickMotion.FlickCardRiseFrom.toPx()
+                val overshoot = -FlickMotion.FlickCardOvershoot.toPx()
+                val bobReach = FlickMotion.FlickCardBob.toPx()
+                val glowRadius = FLICK_CARD_GLOW_RADIUS.toPx()
+                val glow = Brush.radialGradient(
+                    colors = listOf(
+                        FlickColor.Primary.copy(alpha = FLICK_CARD_GLOW_ALPHA),
+                        FlickColor.Primary.copy(alpha = 0f),
+                    ),
+                    center = Offset.Zero,
+                    radius = glowRadius,
+                )
+                val unit = FLICK_MARK_UNIT.toPx()
+                val mark = android.graphics.Path().apply {
+                    moveTo((28f - MARK_CENTROID_X) * unit, (15f - MARK_CENTROID_Y) * unit)
+                    lineTo((56f - MARK_CENTROID_X) * unit, (32f - MARK_CENTROID_Y) * unit)
+                    lineTo((28f - MARK_CENTROID_X) * unit, (49f - MARK_CENTROID_Y) * unit)
+                    close()
+                }
+                // Fill and round-joined stroke as one geometry, as the brand mark draws
+                // them: two separate ops would double-blend along the edge while it fades.
+                val markPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.FILL_AND_STROKE
+                    strokeJoin = Paint.Join.ROUND
+                    strokeWidth = 9f * unit
+                    color = android.graphics.Color.WHITE
+                }
+                val barW = FloatArray(SPEED_BAR_WIDTHS.size) { SPEED_BAR_WIDTHS[it].toPx() }
+                val barH = FloatArray(SPEED_BAR_HEIGHTS.size) { SPEED_BAR_HEIGHTS[it].toPx() }
+                val barPitch = SPEED_BAR_PITCH.toPx()
+                val barGap = SPEED_BAR_GAP.toPx()
+                val barDrift = SPEED_BAR_DRIFT.toPx()
+                onDrawBehind {
+                    val a = card.alpha.value * card.cover.value
+                    if (a <= 0f) return@onDrawBehind
+                    val s = card.arrive.value
+                    val firstLeg = s <= ARRIVE_OVERSHOOT
+                    val t = if (firstLeg) s / ARRIVE_OVERSHOOT else (s - ARRIVE_OVERSHOOT) / (ARRIVE_SEATED - ARRIVE_OVERSHOOT)
+                    val dy = if (firstLeg) lerp(riseFrom, overshoot, t) else lerp(overshoot, 0f, t)
+                    val tilt = if (firstLeg) {
+                        lerp(FlickMotion.FLICK_CARD_TILT_FROM, FlickMotion.FLICK_CARD_TILT_OVERSHOOT, t)
+                    } else {
+                        lerp(FlickMotion.FLICK_CARD_TILT_OVERSHOOT, FlickMotion.FLICK_CARD_TILT_SEAT, t)
+                    }
+                    val sc = if (firstLeg) {
+                        lerp(FlickMotion.FLICK_CARD_SCALE_FROM, FlickMotion.FLICK_CARD_SCALE_OVERSHOOT, t)
+                    } else {
+                        lerp(FlickMotion.FLICK_CARD_SCALE_OVERSHOOT, 1f, t)
+                    }
+                    val wave = sin(card.bob.value * TWO_PI)
+                    val e = card.expand.value
+                    val still = 1f - e
+                    // The seat is the top of the centred column, whose height the copy sets.
+                    val seatY = (size.height - card.columnHeight) / 2f + cardH / 2f
+                    val cx = size.width / 2f
+                    val cy = lerp(seatY + dy + wave * bobReach, size.height / 2f, e)
+                    val w = lerp(cardW * sc, size.width, e)
+                    val h = lerp(cardH * sc, size.height, e)
+                    val r = lerp(radius * sc, expandedRadius, e)
+                    val rot = lerp(tilt + wave * FlickMotion.FLICK_CARD_BOB_TILT, 0f, e)
+                    withTransform({
+                        translate(cx, cy)
+                        rotate(rot, Offset.Zero)
+                    }) {
+                        if (still > 0f) {
+                            withTransform({ scale(FLICK_CARD_GLOW_ASPECT * sc, sc, Offset.Zero) }) {
+                                drawCircle(glow, radius = glowRadius, center = Offset.Zero, alpha = a * still)
+                            }
+                        }
+                        drawRoundRect(
+                            color = FlickColor.Primary,
+                            topLeft = Offset(-w / 2f, -h / 2f),
+                            size = Size(w, h),
+                            cornerRadius = CornerRadius(r),
+                            alpha = a,
+                        )
+                        val m = a * card.mark.value
+                        if (m > 0f) {
+                            withTransform({ scale(sc, sc, Offset.Zero) }) {
+                                drawIntoCanvas { c ->
+                                    markPaint.alpha = (m * 255f).roundToInt()
+                                    c.nativeCanvas.drawPath(mark, markPaint)
+                                }
+                            }
+                        }
+                    }
+                    val barsAlpha = a * still * speedBarAlpha(card.bars.value)
+                    if (barsAlpha > 0f) {
+                        val b = card.bars.value
+                        val top = cy + h / 2f + barGap
+                        for (i in barW.indices) {
+                            // The top retracts and the foot drifts: the trail dissolves downward.
+                            val y0 = top + b * barH[i]
+                            val y1 = top + barH[i] + b * barDrift
+                            drawRoundRect(
+                                color = FlickColor.Spark,
+                                topLeft = Offset(cx + (i - 1) * barPitch - barW[i] / 2f, y0),
+                                size = Size(barW[i], y1 - y0),
+                                cornerRadius = CornerRadius(barW[i] / 2f),
+                                alpha = barsAlpha,
+                            )
+                        }
+                    }
+                }
+            },
+    )
 }

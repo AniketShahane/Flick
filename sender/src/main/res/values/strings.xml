@@ -173,6 +173,9 @@
     <string name="detail_directplay_body">No transcode, no downscale — nothing leaves your Wi-Fi.</string>
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
+    <!-- The poster pad above the CTA: swipe the film's poster up to send it. -->
+    <string name="flick_pad_title">Flick it toward your TV</string>
+    <string name="flick_pad_armed">Let go to send</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
     <!-- The subtitle this film was left with, confirmed where it is put back. The value is
          the language when the memory names one and the file's own name when it does not. -->
@@ -185,8 +188,9 @@
     <string name="detail_play_here">Play on this phone</string>
 
     <!-- S5 · Connecting. -->
-    <string name="connecting_title">Waking %1$s…</string>
-    <string name="connecting_title_generic">Connecting…</string>
+    <string name="connecting_hyperspace_title">On its way</string>
+    <!-- Film name · TV name, under the hyperspace title. -->
+    <string name="connecting_route">%1$s · %2$s</string>
     <string name="connecting_step_found">Found on your network</string>
     <string name="connecting_step_handshake">Shaking hands over your LAN</string>
     <string name="connecting_step_directplay">Confirming direct-play</string>

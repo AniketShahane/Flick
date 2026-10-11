@@ -703,7 +703,7 @@ drawn as the light of a projection room, by overlays above a film surface that n
 2. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
    crossfades, no travel), composed only while a live or retained face exists — never during
    playback.
-3. `HouseLights` (`ui/components/HouseLights.kt`): a draw-only curtain plus the handshake card.
+3. `HouseLights` (`ui/components/HouseLights.kt`): a draw-only curtain plus the handshake's Flick card and copy.
 4. The rename dialog, in its own window. A cast arriving removes it from composition outright,
    so its own drawn exit never runs, and Act I is seeded fully open and draws nothing dark for
    about its first 150 ms, so the lights-down does not hide the cut either. The dialog window
@@ -724,12 +724,33 @@ restarting:
 | Seam | Move | What is seen |
 | --- | --- | --- |
 | first composition at Room | Launch | seeded closed (identical to the window background), opens from the centre on `pictureUp()` 640 ms |
-| Room/Fault → Handshake | LightsDown (Act I) | the outgoing face is retained, frozen and non-interactive; `p` 1 → 0 on `lightsDown()` 560 ms, dark closing from the edges to the centre; the card enters into the last light at `p ≤ CARD_ENTER_APERTURE` 0.12 (~425 ms); at `p = 0` `onLightsDown` drops the retained face and `d` snaps to the 82 % veil under full dark. From a fault still dissolving, the move seeds at the outgoing `(p, d)` and `d` rises to 1 on the same `lightsDown()` curve (alongside `p → 0` if a pool is open); with the aperture already closed the card waits for `d ≥ 0.88`, and `onLightsDown` still fires only at `d = 1` |
-| Handshake → Film | PictureUp (Act II) | the card exits at once on `crossDissolve()`; a still-closing Act I finishes on `fastStateEffects`; the resync wait; then 120 ms (`REVEAL_VEIL_LAG_MS`) later `d` → 0 on `filmReveal()` 720 ms |
-| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card enters once 60 % of that travel has landed |
+| Room/Fault → Handshake | LightsDown (Act I) | the outgoing face is retained, frozen and non-interactive; `p` 1 → 0 on `lightsDown()` 560 ms, dark closing from the edges to the centre; the card enters into the last light at `p ≤ CARD_ENTER_APERTURE` 0.12 (~425 ms), rising from 300 dp below its seat (see *The Flick card* below); at `p = 0` `onLightsDown` drops the retained face and `d` snaps to the 82 % veil under full dark. From a fault still dissolving, the move seeds at the outgoing `(p, d)` and `d` rises to 1 on the same `lightsDown()` curve (alongside `p → 0` if a pool is open); with the aperture already closed the card waits for `d ≥ 0.88`, and `onLightsDown` still fires only at `d = 1` |
+| Handshake → Film | PictureUp (Act II) | the copy exits at once on `crossDissolve()` while the card holds its seat, still; a still-closing Act I finishes on `fastStateEffects`; the resync wait; then the card takes the screen and fades into the film (~870 ms), and 120 ms (`REVEAL_VEIL_LAG_MS`) after the release `d` → 0 on `filmReveal()` 720 ms underneath it |
+| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card enters, already seated and by alpha alone, once 60 % of that travel has landed; a card still expanding from the last cast leaves first on `fastStateEffects` |
 | Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the resync wait; `p` 0 → 1 on `pictureUp()`. From Handshake it seeds from the live aperture, so a cancel on Act I's first frame starts at `p` ≈ 1 and draws nothing |
 | Handshake/Film → Fault | LightsUpFault | same seeding and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault. A fault that lands while Act I is still closing keeps the aperture where it reached (`p` held, `d` = 1) and dissolves `d` uniformly from there; one that lands at rest or over a film seeds closed |
 | Room ↔ Fault | Rest | none; the shell crossfades |
+
+**The Flick card.** The handshake is a `Primary` card 160 × 106 dp, 16 dp radius, carrying the
+mark's white play triangle and a soft blue glow, seated at the top of a 560 dp column over the
+copy (headline and "Press Back to cancel", with no glass panel: the 82 % veil holds both). It is
+drawn by `FlickCardLayer`, one full-screen `Spacer` on its own `graphicsLayer()`, whose
+`onDrawBehind` reads every animatable, so nothing about it recomposes; all of its constants are in
+`FlickMotion` (motion) and `HouseLights.kt` (geometry).
+
+| Phase | Motion |
+| --- | --- |
+| arrival (Act I) | one keyframed progress over `flickCardArrive()` 720 ms: 300 dp below the seat, 12°, 0.5 scale → 10 dp above, −3°, 1.03 at 460 ms (emphasized decelerate) → seated, −2°, 1 (`CrossDissolve`). 300 ms in, three `Spark` speed bars (6 / 7 / 6 × 64 / 88 / 64 dp, the mark's 0.45 / 0.75 / 0.45 weights) flash in under the card and dissolve downward over `speedBars()` 500 ms |
+| waiting | a bob of ±3 dp and ±0.5° on one sine, 2 400 ms a cycle, from the moment the card is seated until the first frame; it replaces `FlickLoader` here |
+| picture up | after the resync wait: to the screen's centre and full size over `flickCardExpand()` 600 ms, `cubic-bezier(.3,0,.05,1)`, corner 16 → 3 dp, tilt → 0, glow and bars gone with it; the mark fades over the first 150 ms; 550 ms after release the card fades over `flickCardFade()` 320 ms |
+| cancel, fault, lights up, Rest | card and copy leave together on the existing exit (`fastStateEffects`) from whatever pose they reached; every exit retires the card to its start |
+| re-cast (VeilIn) | seated, alpha only on `crossDissolve()`, then the bob |
+
+The expansion waits for the resync hold, as the veil does, because a mode switch's blank would
+swallow it whole. A card caught mid-arrival by the first frame springs to its seat
+(`panelSpatial()`) during the hold and expands from there. `HouseLights(expandAtPictureUp =
+false)` makes the card leave with its copy instead; only `StageMotionTest` uses it, to read the
+veil's lift that the expanded card would cover.
 
 The aperture is drawn only with no film visible, and lights-up opens it only after the resync
 hold, so it normally runs at the rest rate. It can still run at the film's cadence, or into the
@@ -737,7 +758,8 @@ switch's blank, when a key, `STAGE_HOLD_CAP_MS` or an unseen switch (`NoChangeSe
 hold first. Launch is never held and runs at whatever rate the panel is in. Over a film the veil is always a uniform
 alpha on `filmReveal()`, whose steepest CrossDissolve step is 1.724 × 41.67 / 720 = 10.0 % of its
 span per 24 Hz frame: a soft edge sweeping 230–400 px per film frame judders and bands. Under
-reduced motion every move is a snap to `houseRest(stage)` and the callbacks the destination
+reduced motion every move is a snap to `houseRest(stage)` — the Flick card simply present and
+seated for Handshake (no rise, bars, bob or expansion) and gone otherwise — and the callbacks the destination
 needs fire at once — `onLightsDown` for Handshake; `onLightsDown`, `onPictureUp` and
 `onPictureSettled` for Film; none for Room or Fault — exactly the old cut.
 
