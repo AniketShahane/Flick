@@ -78,6 +78,8 @@ import com.flick.receiver.net.ControlPortStore
 import com.flick.receiver.net.ControlServer
 import com.flick.receiver.net.LanAddress
 import com.flick.receiver.net.LanBindingMonitor
+import com.flick.receiver.net.LanBlipPolicy
+import com.flick.receiver.net.LanBlipVerdict
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.net.PairingManager
 import com.flick.receiver.net.PairingSurface
@@ -678,9 +680,27 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 boundHost = null
                 boundPort = -1
             }
-            suspend fun reconcile() {
+            suspend fun reconcile(addressMoved: Boolean) {
                 if (!bindingGate.mayBindOrAdvertise()) return
-                val host = LanAddress.current()
+                var host = LanAddress.current()
+                var blipped = false
+                val held = boundHost
+                if (host == null && held != null) {
+                    // A blip — band steering, a mesh hand-off, a re-key — removes the
+                    // address for a second or two and gives the same one back. Releasing
+                    // on the first empty sample cost the viewer the film for that.
+                    FlickLog.i("bind", "lan blip wait prev=$held graceMs=${LanBlipPolicy.LAN_BLIP_GRACE_MS}")
+                    val waitStartedMs = android.os.SystemClock.elapsedRealtime()
+                    var verdict = LanBlipPolicy.decide(held, host, waitedMs = 0L)
+                    while (verdict == LanBlipVerdict.WAIT) {
+                        delay(LanBlipPolicy.LAN_BLIP_RESAMPLE_MS)
+                        if (!bindingGate.mayBindOrAdvertise()) return
+                        host = LanAddress.current()
+                        verdict = LanBlipPolicy.decide(held, host, android.os.SystemClock.elapsedRealtime() - waitStartedMs)
+                    }
+                    blipped = true
+                    FlickLog.i("bind", "lan blip end verdict=$verdict waitedMs=${android.os.SystemClock.elapsedRealtime() - waitStartedMs}")
+                }
                 if (host == null) {
                     // Sampled only here, and only because the answer decides which of
                     // two contradictory things the pair screen says: a TV with a
@@ -696,7 +716,29 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 // a TV holding a perfectly good address to connect to its home network.
                 lanHost = host
                 anyIpv4 = true
-                if (host == boundHost) return
+                if (host == boundHost) {
+                    // Only after the address was seen to move: the platform destroys
+                    // sockets bound to an address it removes, so the same address can
+                    // come back with nothing listening on it.
+                    if ((blipped || addressMoved) && boundPort > 0 && !server.acceptsConnections()) {
+                        val port = server.relisten(host, boundPort)
+                        FlickLog.i("bind", "relisten host=$host port=$boundPort result=$port")
+                        if (port == boundPort) {
+                            nsd.register(tvName, port, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
+                            return
+                        }
+                        // The port could not be taken back. Fall through to an ordinary
+                        // bind on the same address, which walks the candidates and
+                        // advertises what it gets. Not [release]: the address is the
+                        // same, so a held cast can still be reached by its phone through
+                        // the new advertisement.
+                        boundHost = null
+                        boundPort = -1
+                        rebindCount++
+                    } else {
+                        return
+                    }
+                }
                 // A new address is a control-loss boundary even when the old
                 // address still exists: invalidate the cast before advertising a
                 // new endpoint so a stale callback cannot reach a re-bound server.
@@ -723,9 +765,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 )
             }
             merge(
-                lanMonitor.address.map { Unit },
-                flow { while (true) { emit(Unit); delay(RECONCILE_SAFETY_NET_MS) } },
-            ).collect { reconcile() }
+                lanMonitor.address.map { true },
+                flow { while (true) { emit(false); delay(RECONCILE_SAFETY_NET_MS) } },
+            ).collect { addressMoved -> reconcile(addressMoved) }
         }
     }
 
@@ -1141,6 +1183,14 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // say a rename is about this phone — see [ControlServer.onPhoneRenamed].
     val controlPeer by server.controlPeer.collectAsState()
     val castDeviceLabel = controlPeer?.label ?: deviceLabel
+    // Looked up by the key id the lost lease carried, not through [controlPeer]: another
+    // phone may connect while this film is held, and the notice is about the one it waits on.
+    val reconnectingTo = if (session.reconnecting) {
+        session.reconnectingKeyId?.let { keyId -> pairingSnapshot.devices.firstOrNull { it.keyId == keyId }?.label }
+            ?: stringResource(R.string.device_fallback)
+    } else {
+        null
+    }
 
     // The code the surface is actually offering, and the QR built from it.
     //
@@ -1337,6 +1387,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         silentAudioMimeType = controller.silentAudioMimeType
                             .takeIf { silentAudioPhase == SilentAudioNoticePhase.Showing },
                         bandNotice = bandNotice.takeIf { bandNoticeShowing },
+                        reconnectingTo = reconnectingTo,
                         openPanel = openPanel,
                         onOpenPanel = { openPanel = it },
                         onScrubFocusChanged = { scrubFocused = it },

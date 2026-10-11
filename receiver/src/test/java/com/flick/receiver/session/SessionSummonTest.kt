@@ -306,7 +306,7 @@ class SessionSummonTest {
 
         h.session.load()
         runCurrent()
-        h.session.onControlLost(LEASE, ControlLossReason.DROPPED)
+        h.session.onControlLost(LEASE, ControlLossReason.DROPPED, null)
         runCurrent()
         advance(30_000L)
 

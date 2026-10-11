@@ -154,6 +154,36 @@ class PlaybackSession(
         )
     }
 
+    /**
+     * Re-issue the load of the cast already being driven, over a control connection that
+     * replaced the one it started on.
+     *
+     * Unlike [loadMedia] nothing the viewer sees is reset: a receiver that re-adopts its
+     * orphaned cast never stopped playing, and the 10 Hz feed it resumes is what moves the
+     * clock. Only the `seq` watermark goes, because a receiver that instead starts the film
+     * afresh at [startMs] restarts that counter.
+     */
+    fun reloadLive(castId: String, url: String, title: String, durationMs: Long, startMs: Long): Boolean {
+        if (this.castId != castId) return false
+        lastSeq = -1L
+        val safeTitle = ControlProtocolV2.normalizedLabel(title, 200) ?: fallbackTitle
+        return control.send(
+            cmd("loadMedia", castId)
+                .put("url", url)
+                .put("title", safeTitle)
+                .put("durationMs", durationMs)
+                .put("startMs", startMs),
+        )
+    }
+
+    /**
+     * The receiver answered [reloadLive] by starting the film afresh, which resets its
+     * rotation to Auto as every new cast does; [reloadLive] left the held selection alone.
+     */
+    fun onRestartedByReload() {
+        _state.update { it.copy(rotation = VideoRotation.Auto) }
+    }
+
     fun togglePlayPause() {
         val next = !_state.value.playing
         playCommanded = next

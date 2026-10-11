@@ -12,6 +12,14 @@ class CastGenerationGate {
         generation = ++next
         return generation
     }
+    /**
+     * Moves the running cast to another control lease WITHOUT a new generation: the
+     * player's media id is derived from the generation, and a reattach must not make
+     * the film it kept look like a stranger's to its own callbacks.
+     */
+    fun rebindLease(controlLeaseGeneration: Long) {
+        if (castId != null) this.controlLeaseGeneration = controlLeaseGeneration
+    }
     fun invalidate(): Long { castId = null; controlLeaseGeneration = null; generation = ++next; return generation }
     /** Lifecycle/LAN authority is not a socket callback and always wins. */
     fun forceInvalidate(): Long = invalidate()

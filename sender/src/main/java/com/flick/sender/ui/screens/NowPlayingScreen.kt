@@ -73,8 +73,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -167,6 +169,7 @@ private fun RemoteScreen(
     // leaves that quote it are the only things here that may be rebuilt for it.
     val linkVerdict = controller.linkVerdict.collectAsState()
     val linkStall = controller.linkStall.collectAsState()
+    val reattaching by controller.reattaching.collectAsState()
     val configuration = LocalConfiguration.current
     val compactWidth = isCompactWidth(configuration.screenWidthDp)
     val fontScale = configuration.fontScale
@@ -260,6 +263,17 @@ private fun RemoteScreen(
                 onSignal = { controller.toggleQualitySheet(true) },
                 modifier = Modifier.padding(horizontal = RemoteGutter),
             )
+
+            // Outside the scroll container like the stall card below: a link being put back under
+            // a film that never stopped is news, never a wall in front of the controls.
+            if (reattaching) {
+                ReattachBanner(
+                    tvName = tv?.name ?: stringResource(R.string.notif_device_generic),
+                    modifier = Modifier
+                        .padding(horizontal = RemoteGutter, vertical = 12.dp)
+                        .fillMaxWidth(),
+                )
+            }
 
             // Outside the scroll container, for the same reason minimize is: three stalls
             // the user already watched are not news they should have to scroll up for. It
@@ -1222,6 +1236,29 @@ private fun LinkStallCard(
     )
 }
 
+/**
+ * The control link dropped under a film the TV is still playing and is being put back.
+ * Nothing to press: the transport is withheld until it is back, and Stop stays where it is.
+ */
+@Composable
+private fun ReattachBanner(tvName: String, modifier: Modifier = Modifier) {
+    val colors = LocalFlickColors.current
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(FlickCorners.warning))
+            .background(colors.inverseSurface)
+            .semantics { liveRegion = LiveRegionMode.Polite }
+            .padding(horizontal = 17.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LiveDot(color = colors.sparkInverse, size = 8.dp, pulsing = true)
+        Text(
+            text = stringResource(R.string.np_reattaching, tvName),
+            style = FlickText.bodySmall.copy(color = colors.onInverseSurface),
+        )
+    }
+}
 
 private fun PlaybackUiState.bufferedFraction(): Float =
     if (durationMs > 0L) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
