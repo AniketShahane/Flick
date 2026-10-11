@@ -88,7 +88,7 @@ import com.flick.sender.ui.displayName
 import com.flick.sender.ui.rememberFilmPosterPath
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
-import com.flick.sender.ui.components.FlickGesture
+import com.flick.sender.ui.components.FlickPad
 import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.posterKey
 import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
@@ -327,18 +327,17 @@ fun DetailScreen(
             // promise this TV has already broken for this file, and printing it above the
             // refusal would make the sheet argue with itself.
             //
-            // The gesture belongs to the same verdict. It is an invitation to press the
-            // button under it — a thumb flicking the film away — and above a refusal it
-            // would be the sheet cheering for the thing it has just warned about. Its seat
-            // is here rather than beside the poster because the flick has to point at the
-            // CTA, and because the poster overhead is still flying in from the Library
-            // when this route opens; FlickGesture holds its own first cycle back for that.
+            // The flick pad belongs to the same verdict. It is an invitation to throw the
+            // film at the TV, and above a refusal it would be the sheet cheering for the
+            // thing it has just warned about. Its seat is directly above the CTA because
+            // it is the same action; FlickPad holds its first nudge back while the poster
+            // overhead is still flying in from the Library.
             //
             // The link advisory takes that same seat when it is raised, and does not open a
-            // new one. One seat between the promise and the CTA: an invitation to press
+            // new one. One seat between the promise and the CTA: an invitation to flick
             // when there is nothing to say, the sentence when there is. Adding a block
             // instead would put a fourth arrival into the moment the poster, the sheet and
-            // the loop already share, and would push the CTA down a sheet that is capped at
+            // the pad already share, and would push the CTA down a sheet that is capped at
             // 640 dp and already scrolls.
             //
             // A refusal outranks it. A file this TV has already refused will not play at any
@@ -372,8 +371,14 @@ fun DetailScreen(
                     )
                     Spacer(Modifier.height(17.dp))
                 } else {
-                    FlickGesture()
-                    Spacer(Modifier.height(9.dp))
+                    FlickPad(
+                        posterPath = posterPath,
+                        frameRequest = request,
+                        imageLoader = imageLoader,
+                        enabled = progressReady && !castStart.isCommitting(),
+                        onFlick = { controller.flickToTv(item) },
+                    )
+                    Spacer(Modifier.height(17.dp))
                 }
             }
 

@@ -395,6 +395,9 @@ internal class FlickTouchHaptics(private val haptics: HapticFeedback) {
     /** A cast or a pairing succeeded. */
     fun confirm() = perform(HapticFeedbackType.Confirm)
 
+    /** A drag crossed the point where letting go would act. */
+    fun gestureArmed() = perform(HapticFeedbackType.GestureThresholdActivate)
+
     /** A cast or a pairing failed, or the input was rejected. */
     fun reject() = perform(HapticFeedbackType.Reject)
 

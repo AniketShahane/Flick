@@ -59,9 +59,9 @@ val LocalReducedMotion = staticCompositionLocalOf { false }
  * The design file names four animations; they map onto these tokens as:
  * `tvRise` → [panelSpatial] over a [TvRise] offset; `tvBurst` → [tvBurstFadeIn] +
  * [tvBurstScaleIn] + [tvBurstExit] for the seek burst, and [tvBurstAlpha] +
- * [tvBurstReach] for the seek-landing ring; `tvPulse` → [tvPulse]. `tvSpin` has no token left: both arcs it
- * drove — the handshake ring and the rebuffer ring — are now `FlickLoader`, which
- * carries its own motion.
+ * [tvBurstReach] for the seek-landing ring; `tvPulse` → [tvPulse]. `tvSpin` has no token left: the
+ * rebuffer ring it drove is now `FlickLoader`, which carries its own motion, and the
+ * handshake's liveness is the Flick card's [flickCardBob].
  *
  * Anything drawn while a film is on screen is designed for the 24 Hz pin, where a
  * frame is 41.67 ms: a full-screen alpha over a film moves on [filmReveal], a
@@ -69,8 +69,9 @@ val LocalReducedMotion = staticCompositionLocalOf { false }
  * [filmExit] (the seek burst keeps [tvBurstExit]). New motion over a film adds no
  * moving edge, wipe or layout-phase animation — at 24 steps a second those read as
  * judder, not motion. The side panel's `TvOriginReveal`/`animateBounds` and the chip
- * rows' `animateContentSize` are the known pre-existing exceptions
- * (receiver-expressive-spec.md §6.1). [lightsDown] and [pictureUp] are the only
+ * rows' `animateContentSize` are the known pre-existing exceptions, and the Flick card
+ * taking the screen at picture up ([flickCardExpand], [flickCardFade]) the one designed
+ * one (receiver-expressive-spec.md §6.1). [lightsDown] and [pictureUp] are the only
  * tokens sized for the rest rate rather than the 24 Hz pin, because no film is visible
  * while they run. A lights-up whose resync hold a key or the cap ends early runs at the
  * panel's current rate.
@@ -181,8 +182,48 @@ object FlickMotion {
     /** Rise distance for the bottom transport panel and the side panels (§5.3). */
     val TvRise: Dp = 21.dp
 
-    /** Rise distance for the centred handshake card (§5.2). */
+    /** Rise distance for the handshake copy under the Flick card (§5.2). */
     val TvRiseCard: Dp = 23.dp
+
+    // --- The Flick card (handshake, §5.2) -----------------------------------
+
+    /** How far below its seat the Flick card starts, at [FLICK_CARD_TILT_FROM] and [FLICK_CARD_SCALE_FROM]. */
+    val FlickCardRiseFrom: Dp = 300.dp
+    const val FLICK_CARD_TILT_FROM = 12f
+    const val FLICK_CARD_SCALE_FROM = 0.5f
+
+    /** The arrival's designed overshoot: this far above the seat, at [FLICK_CARD_TILT_OVERSHOOT] and [FLICK_CARD_SCALE_OVERSHOOT]. */
+    val FlickCardOvershoot: Dp = 10.dp
+    const val FLICK_CARD_TILT_OVERSHOOT = -3f
+    const val FLICK_CARD_SCALE_OVERSHOOT = 1.03f
+
+    /** The seated card's tilt; it rests at unit scale. */
+    const val FLICK_CARD_TILT_SEAT = -2f
+
+    /** The arrival, start → overshoot → seat. The overshoot pose lands at [FLICK_CARD_OVERSHOOT_AT_MS]. */
+    const val FLICK_CARD_ARRIVE_MS = 720
+    const val FLICK_CARD_OVERSHOOT_AT_MS = 460
+
+    /** The speed bars flash once the card is ~95 % of the way up, and dissolve over [SPEED_BARS_MS]. */
+    const val SPEED_BARS_LAG_MS = 300L
+    const val SPEED_BARS_MS = 500
+
+    /** The waiting card's bob: ±[FlickCardBob] and ±[FLICK_CARD_BOB_TILT]° over one [FLICK_CARD_BOB_MS] cycle. */
+    val FlickCardBob: Dp = 3.dp
+    const val FLICK_CARD_BOB_TILT = 0.5f
+    const val FLICK_CARD_BOB_MS = 2_400
+
+    /** Picture up: the card takes the screen, its mark goes first, then the whole card fades into the film. */
+    const val FLICK_CARD_EXPAND_MS = 600
+    const val FLICK_CARD_MARK_FADE_MS = 150
+    const val FLICK_CARD_FADE_DELAY_MS = 550L
+    const val FLICK_CARD_FADE_MS = 320
+
+    /** The arrival's first leg — Material's emphasized decelerate. */
+    val FlickCardRise: Easing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+
+    /** The card taking the screen at picture up. */
+    val FlickCardExpand: Easing = CubicBezierEasing(0.3f, 0f, 0.05f, 1f)
 
     // --- tvPulse envelope ---------------------------------------------------
 
@@ -381,6 +422,40 @@ object FlickMotion {
         animation = tween(TV_PULSE_MS / 2, easing = Breathe),
         repeatMode = RepeatMode.Reverse,
     )
+
+    /**
+     * The Flick card's path as one progress value: 0 below the screen, 1 the overshoot
+     * pose, 2 seated. A keyframed tween rather than a spring because the overshoot is a
+     * designed pose, not a damping artefact; nothing re-aims it, and an interruption
+     * hands the pose it reached to the exit or the expansion. The keyframe at 0 pins the
+     * start, so it may only run from 0.
+     */
+    fun flickCardArrive(): KeyframesSpec<Float> = keyframes {
+        durationMillis = FLICK_CARD_ARRIVE_MS
+        0f at 0 using FlickCardRise
+        1f at FLICK_CARD_OVERSHOOT_AT_MS using CrossDissolve
+    }
+
+    /** Speed-bar progress, 0 → 1 across a flash in and a downward dissolve. */
+    fun speedBars(): TweenSpec<Float> = tween(SPEED_BARS_MS, easing = LinearEasing)
+
+    /**
+     * One bob cycle of phase, repeated. Restart rather than Reverse because the phase
+     * feeds a sine: a whole cycle ends where it began. Guard with [LocalReducedMotion].
+     */
+    fun flickCardBob(): InfiniteRepeatableSpec<Float> = infiniteRepeatable(
+        animation = tween(FLICK_CARD_BOB_MS, easing = LinearEasing),
+        repeatMode = RepeatMode.Restart,
+    )
+
+    /** See [FLICK_CARD_EXPAND_MS]. */
+    fun flickCardExpand(): TweenSpec<Float> = tween(FLICK_CARD_EXPAND_MS, easing = FlickCardExpand)
+
+    /** The play mark leaving the expanding card. */
+    fun flickCardMarkFade(): TweenSpec<Float> = tween(FLICK_CARD_MARK_FADE_MS, easing = ChromeFade)
+
+    /** The expanded card fading into the film. */
+    fun flickCardFade(): TweenSpec<Float> = tween(FLICK_CARD_FADE_MS, easing = CrossDissolve)
 
     /** The idle bed's drift — the one deliberate ambient loop. Guard with [LocalReducedMotion]. */
     fun idleDrift(): InfiniteRepeatableSpec<Float> = infiniteRepeatable(
