@@ -101,10 +101,10 @@ class FilmPosterPolicyTest {
         assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png"), FilmPosterPolicy.pickArt(match, images))
     }
 
-    @Test fun withoutALogoTheSearchKeyArtStandsIn() {
+    @Test fun withoutALogoTheTextlessBackdropStandsAlone() {
         val match = FilmMatch(1, "/p.jpg", "/keyart.jpg")
         val images = """{"backdrops":[{"file_path":"/plain.jpg","iso_639_1":null,"aspect_ratio":1.778}],"logos":[]}"""
-        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", null), FilmPosterPolicy.pickArt(match, images))
         assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null), FilmPosterPolicy.pickArt(match, null))
     }
 }

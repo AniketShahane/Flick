@@ -5,9 +5,12 @@ import java.net.URLEncoder
 
 /** What a filename is asked of TMDB as: a film, or the show an episode belongs to. */
 data class FilmPosterQuery(val title: String, val year: Int?, val show: Boolean) {
-    /** Folded so two spellings of one release share a cache entry and a single lookup. */
+    /**
+     * Folded so two spellings of one release share a cache entry and a single lookup. The
+     * leading version retires every entry chosen under an older art rule.
+     */
     val cacheKey: String
-        get() = "${if (show) "tv" else "movie"}|${FoldedText.fold(title)}|${year ?: ""}"
+        get() = "v2|${if (show) "tv" else "movie"}|${FoldedText.fold(title)}|${year ?: ""}"
 }
 
 /** The art TMDB has for one title. Any field may be missing; all missing is a miss. */
@@ -111,8 +114,8 @@ object FilmPosterPolicy {
     /**
      * The tile's landscape art. A textless backdrop with the English title logo laid over it
      * is the best of it: the title is TMDB's own lettering, and Flick decides where it sits,
-     * clear of the badges. Without a logo the search's own backdrop stands in — usually
-     * the film's key art, title and all. PNG logos only: an SVG would need a decoder this
+     * clear of the badges. Without a logo the textless backdrop stands alone, and only
+     * without one of those does the search's own backdrop stand in, title and all. PNG logos only: an SVG would need a decoder this
      * app does not carry.
      */
     fun pickArt(match: FilmMatch, imagesBody: String?): FilmArt {
@@ -123,10 +126,12 @@ object FilmPosterPolicy {
         val textless = images?.optJSONArray("backdrops")?.best { image ->
             image.isNull("iso_639_1") && image.optDouble("aspect_ratio", 0.0) >= 1.5
         }
-        return if (logo != null && textless != null) {
-            FilmArt(poster = match.poster, backdrop = textless, logo = logo)
-        } else {
-            FilmArt(poster = match.poster, backdrop = match.backdrop, logo = null)
+        return when {
+            logo != null && textless != null -> FilmArt(match.poster, textless, logo)
+            // Textless first even without a logo: the tile crops to its own shape, and a
+            // titled backdrop cropped loses the ends of its title.
+            textless != null -> FilmArt(match.poster, textless, null)
+            else -> FilmArt(match.poster, match.backdrop, null)
         }
     }
 

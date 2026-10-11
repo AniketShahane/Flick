@@ -180,7 +180,8 @@ fun FilmPosterBackdrop(
     )
 }
 
-private const val LogoWidthFraction = 0.55f
-private const val LogoHeightFraction = 0.4f
+// Leaves the trailing corner to the running time, which is about a quarter of a tile wide.
+private const val LogoWidthFraction = 0.42f
+private const val LogoHeightFraction = 0.36f
 private val GroundBlur = 28.dp
 private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f
