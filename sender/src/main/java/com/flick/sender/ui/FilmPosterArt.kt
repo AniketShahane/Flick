@@ -16,6 +16,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
@@ -96,6 +99,19 @@ fun FilmTileArt(
             modifier = Modifier.fillMaxSize(),
         )
         if (logo != null) {
+            // A soft pool of shade under the logo's corner: a white wordmark on a pale sky
+            // otherwise loses its first letters.
+            Box(
+                Modifier.matchParentSize().drawBehind {
+                    drawRect(
+                        Brush.radialGradient(
+                            colors = listOf(Color.Black.copy(alpha = LogoShadeAlpha), Color.Transparent),
+                            center = Offset(0f, size.height),
+                            radius = size.width * LogoShadeReach,
+                        ),
+                    )
+                },
+            )
             AsyncImage(
                 model = logo,
                 contentDescription = null,
@@ -188,6 +204,8 @@ fun FilmPosterBackdrop(
 // Leaves the trailing corner to the running time, which is about a quarter of a tile wide.
 private const val LogoWidthFraction = 0.42f
 private const val LogoHeightFraction = 0.36f
+private const val LogoShadeAlpha = 0.6f
+private const val LogoShadeReach = 0.75f
 private val GroundBlur = 28.dp
 private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f
 
