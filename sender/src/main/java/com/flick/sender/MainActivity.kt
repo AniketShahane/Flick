@@ -50,6 +50,7 @@ import com.flick.sender.net.IncomingPairEvent
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.support.SupportCatalog
 import com.flick.sender.ui.screens.FlickApp
+import com.flick.sender.ui.LocalFilmPosters
 import com.flick.sender.ui.LocalSimplifiedVideoNames
 import com.flick.sender.ui.theme.AppearanceController
 import com.flick.sender.ui.theme.DarkFlickColors
@@ -239,6 +240,7 @@ private fun FlickRoot(
     val context = LocalContext.current
     val event by events.collectAsState()
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
+    val filmPosters by controller.filmPosters.collectAsState()
     val supportCatalog = remember { SupportCatalog.configured() }
 
     // Whether this process has ever put the video prompt on screen. The platform reports
@@ -309,7 +311,10 @@ private fun FlickRoot(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    CompositionLocalProvider(LocalSimplifiedVideoNames provides simplifiedVideoNames) {
+    CompositionLocalProvider(
+        LocalSimplifiedVideoNames provides simplifiedVideoNames,
+        LocalFilmPosters provides filmPosters,
+    ) {
         FlickApp(
             controller = controller,
             supportCatalog = supportCatalog,

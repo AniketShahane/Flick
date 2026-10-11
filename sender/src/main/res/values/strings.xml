@@ -310,6 +310,12 @@
     <string name="settings_video_names_a11y">%1$s. %2$s</string>
     <string name="settings_video_names_on">On</string>
     <string name="settings_video_names_off">Off</string>
+    <!-- Says what leaves the phone, because this is the one setting that sends anything about
+         the user's files off it. The notice is TMDB's required wording, verbatim. -->
+    <string name="settings_film_posters_title">Film posters</string>
+    <string name="settings_film_posters_summary">Show each film\'s real poster. Only the title and year from its name are sent to TMDB — never the file.</string>
+    <string name="settings_film_posters_tmdb">TMDB</string>
+    <string name="settings_film_posters_notice">This product uses the TMDB API but is not endorsed or certified by TMDB.</string>
     <!-- INFO, not CAUTION, and the second sentence is why: nothing about the cast changes.
          Only the lock-screen and shade controls are lost, which is a fact worth stating
          and not an error. -->

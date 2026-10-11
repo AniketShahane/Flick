@@ -1,6 +1,7 @@
 package com.flick.sender.ui.screens
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -39,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -48,7 +51,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.flick.sender.R
+import com.flick.sender.net.FilmPosters
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.navBottomClearance
@@ -85,6 +90,7 @@ fun PhoneSettingsScreen(
     val colors = LocalFlickColors.current
     val castingItem by controller.castingItem.collectAsState()
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
+    val filmPosters by controller.filmPosters.collectAsState()
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the screen's final controls sit
@@ -149,6 +155,9 @@ fun PhoneSettingsScreen(
             simplified = simplifiedVideoNames,
             onSelect = controller::selectSimplifiedVideoNames,
         )
+        if (FilmPosters.available) {
+            FilmPostersSection(enabled = filmPosters, onSelect = controller::selectFilmPosters)
+        }
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
         if (supportAvailable) {
             SupportFlickSection(onOpen = onOpenSupport)
@@ -272,12 +281,50 @@ private fun SupportBadge() {
 
 @Composable
 internal fun VideoNamesSection(simplified: Boolean, onSelect: (Boolean) -> Unit) {
+    SwitchRow(
+        title = stringResource(R.string.settings_video_names_title),
+        summary = stringResource(R.string.settings_video_names_summary),
+        checked = simplified,
+        onSelect = onSelect,
+    )
+}
+
+/**
+ * The TMDB credit sits under the switch rather than on a credits page this app does not
+ * have: TMDB's terms ask for their logo and notice wherever the app names its sources, and
+ * this row is the only place Flick does.
+ */
+@Composable
+internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
     val colors = LocalFlickColors.current
-    val title = stringResource(R.string.settings_video_names_title)
-    val summary = stringResource(R.string.settings_video_names_summary)
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SwitchRow(
+            title = stringResource(R.string.settings_film_posters_title),
+            summary = stringResource(R.string.settings_film_posters_summary),
+            checked = enabled,
+            onSelect = onSelect,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painter = painterResource(R.drawable.tmdb_logo),
+                contentDescription = stringResource(R.string.settings_film_posters_tmdb),
+                modifier = Modifier.height(12.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = stringResource(R.string.settings_film_posters_notice),
+                style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceDim),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, summary: String, checked: Boolean, onSelect: (Boolean) -> Unit) {
+    val colors = LocalFlickColors.current
     val spoken = stringResource(R.string.settings_video_names_a11y, title, summary)
     val state = stringResource(
-        if (simplified) R.string.settings_video_names_on else R.string.settings_video_names_off,
+        if (checked) R.string.settings_video_names_on else R.string.settings_video_names_off,
     )
     Row(
         modifier = Modifier
@@ -287,7 +334,7 @@ internal fun VideoNamesSection(simplified: Boolean, onSelect: (Boolean) -> Unit)
                 stateDescription = state
             }
             .toggleable(
-                value = simplified,
+                value = checked,
                 role = Role.Switch,
                 onValueChange = onSelect,
             ),
@@ -305,7 +352,7 @@ internal fun VideoNamesSection(simplified: Boolean, onSelect: (Boolean) -> Unit)
         }
         Spacer(Modifier.width(16.dp))
         Switch(
-            checked = simplified,
+            checked = checked,
             onCheckedChange = null,
             modifier = Modifier.clearAndSetSemantics {},
         )

@@ -50,6 +50,8 @@ import com.flick.sender.media.collectSettledAudioDelay
 import com.flick.sender.media.rememberedAudioDelayMs
 import com.flick.sender.media.rememberedSubtitle
 import com.flick.sender.media.resumePositionMs
+import com.flick.sender.media.FilmPosterPreferenceController
+import com.flick.sender.media.FilmPosterPreferenceStore
 import com.flick.sender.media.VideoNamePreferenceController
 import com.flick.sender.media.VideoNamePreferenceStore
 import com.flick.sender.media.VideoNames
@@ -493,6 +495,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val videoNameStore = VideoNamePreferenceStore(appContext)
     private val videoNamePreference =
         VideoNamePreferenceController(videoNameStore.simplified(), videoNameStore::save)
+    private val filmPosterStore = FilmPosterPreferenceStore(appContext)
+    private val filmPosterPreference =
+        FilmPosterPreferenceController(filmPosterStore.enabled(), filmPosterStore::save)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
     private var pairingJob: Job? = null
@@ -717,6 +722,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _decoderSuspects = MutableStateFlow<Set<String>>(emptySet()); val decoderSuspects = _decoderSuspects.asStateFlow()
     private val _selectedSubtitle = MutableStateFlow<SelectedSubtitle?>(null); val selectedSubtitle = _selectedSubtitle.asStateFlow()
     val simplifiedVideoNames = videoNamePreference.simplified
+    val filmPosters = filmPosterPreference.enabled
     val playback = session.state; val pulses = session.pulses
 
     /**
@@ -1609,6 +1615,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     fun selectSimplifiedVideoNames(simplified: Boolean) =
         videoNamePreference.select(simplified)
+
+    fun selectFilmPosters(enabled: Boolean) = filmPosterPreference.select(enabled)
 
     fun onMediaAccess(access: MediaAccess) {
         val load = libraryGate.begin(access)

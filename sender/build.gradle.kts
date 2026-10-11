@@ -37,6 +37,24 @@ val openSubtitlesApiKey: String = run {
 }
 
 /**
+ * The TMDB key film posters are looked up with. Public repository, so it lives where the
+ * OpenSubtitles key does: `tmdb.apiKey=...` in `local.properties`, or `TMDB_API_KEY` for CI.
+ * Either a v3 API key or a v4 read access token works. Empty is the normal state of a clone:
+ * the lookup is then off and every tile keeps its own frame.
+ */
+val tmdbApiKey: String = run {
+    val local = rootProject.file("local.properties")
+    val fromProperties = if (local.isFile) {
+        Properties()
+            .apply { local.inputStream().use { load(it) } }
+            .getProperty("tmdb.apiKey")
+    } else {
+        null
+    }
+    (fromProperties ?: System.getenv("TMDB_API_KEY")).orEmpty().trim()
+}
+
+/**
  * Public Stripe-hosted checkout URLs. A clone deliberately has no fallback links:
  * support is offered only when every tier is configured and validated at runtime.
  * Values are never printed because build logs are a poor place for deployment config.
@@ -188,6 +206,11 @@ android {
             "String",
             "OPENSUBTITLES_API_KEY",
             "\"${javaStringLiteral(openSubtitlesApiKey)}\"",
+        )
+        buildConfigField(
+            "String",
+            "TMDB_API_KEY",
+            "\"${javaStringLiteral(tmdbApiKey)}\"",
         )
         buildConfigField(
             "String",
