@@ -85,7 +85,7 @@ import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.ui.FilmPosterBackdrop
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
-import com.flick.sender.ui.rememberFilmPosterPath
+import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickGesture
@@ -180,7 +180,8 @@ fun DetailScreen(
     }.value
 
     val request = rememberDetailVideoFrameRequest(item)
-    val posterPath = item.rememberFilmPosterPath()
+    // The sheet is a portrait seat, so it takes the poster even where the tile had a backdrop.
+    val posterPath = item.rememberFilmArt()?.poster
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }

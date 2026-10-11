@@ -3,12 +3,16 @@ package com.flick.sender.ui
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
@@ -20,6 +24,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.memory.MemoryCache
 import coil.request.ImageRequest
+import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
@@ -28,23 +33,81 @@ import com.flick.sender.net.FilmPosters
 val LocalFilmPosters = staticCompositionLocalOf { true }
 
 /**
- * This file's TMDB poster path, or null while there is none to draw — the setting is off, the
- * build has no key, the name is not a title, or TMDB has nothing that matches it. Null is
- * always "draw the film's own frame", never an empty seat.
+ * This file's TMDB art, or null while there is none to draw — the setting is off, the build
+ * has no key, the name is not a title, or TMDB has nothing that matches it. Null is always
+ * "draw the film's own frame", never an empty seat.
  */
 @Composable
-fun MediaItem.rememberFilmPosterPath(): String? {
+fun MediaItem.rememberFilmArt(): FilmArt? {
     val enabled = LocalFilmPosters.current && FilmPosters.available
     val context = LocalContext.current.applicationContext
     val query = remember(name, enabled) {
         if (enabled) FilmPosterPolicy.queryFor(VideoNames.parse(name)) else null
     }
-    val path by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
+    val art by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
         // Re-read on a new query: produceState keeps the previous value across a key change.
         value = query?.let { FilmPosters.cached(context, it) }
-        if (query != null && value == null) value = FilmPosters.poster(context, query)
+        if (query != null && value == null) value = FilmPosters.art(context, query)
     }
-    return path?.takeIf { enabled }
+    return art?.takeIf { enabled }
+}
+
+@Composable
+private fun rememberArtRequest(path: String, width: String): ImageRequest? {
+    val context = LocalContext.current
+    return remember(path, width) {
+        FilmPosterPolicy.imageUrl(path, width)?.let { url ->
+            ImageRequest.Builder(context).data(url).crossfade(true).build()
+        }
+    }
+}
+
+/**
+ * The library tile's art. A film's backdrop fills the landscape seat edge to edge with its
+ * title logo set low on the leading side, opposite the running time; with no backdrop the
+ * poster stands whole on a wash of itself.
+ */
+@Composable
+fun FilmTileArt(
+    art: FilmArt,
+    imageLoader: ImageLoader,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    colorFilter: ColorFilter? = null,
+) {
+    val backdrop = art.backdrop?.let { rememberArtRequest(it, FilmPosterPolicy.BACKDROP_WIDTH) }
+    if (backdrop == null) {
+        art.poster?.let { FilmPosterOnGround(it, imageLoader, contentDescription, modifier, colorFilter) }
+        return
+    }
+    val logo = art.logo?.let { rememberArtRequest(it, FilmPosterPolicy.LOGO_WIDTH) }
+    Box(modifier.background(Color.Black)) {
+        AsyncImage(
+            model = backdrop,
+            contentDescription = contentDescription,
+            imageLoader = imageLoader,
+            contentScale = ContentScale.Crop,
+            colorFilter = colorFilter,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (logo != null) {
+            AsyncImage(
+                model = logo,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.BottomStart,
+                colorFilter = colorFilter,
+                // Bounded on both axes: a wide wordmark is held by the width, a stacked one
+                // by the height, and either way the running time keeps its corner.
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 12.dp)
+                    .fillMaxWidth(LogoWidthFraction)
+                    .fillMaxHeight(LogoHeightFraction),
+            )
+        }
+    }
 }
 
 @Composable
@@ -117,5 +180,7 @@ fun FilmPosterBackdrop(
     )
 }
 
+private const val LogoWidthFraction = 0.55f
+private const val LogoHeightFraction = 0.4f
 private val GroundBlur = 28.dp
 private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f

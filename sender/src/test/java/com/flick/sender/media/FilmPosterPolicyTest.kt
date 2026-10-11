@@ -43,39 +43,68 @@ class FilmPosterPolicyTest {
 
     @Test fun picksTheFirstExactTitleWithAPoster() {
         val body = """{"results":[
-            {"title":"Example Movie Returns","poster_path":"/wrong.jpg","vote_count":900},
-            {"title":"Example Movie","poster_path":null,"vote_count":900},
-            {"title":"Example: Movie!","poster_path":"/right.jpg","vote_count":900},
-            {"title":"Example Movie","poster_path":"/later.jpg","vote_count":900}
+            {"title":"Example Movie Returns","id":1,"poster_path":"/wrong.jpg","vote_count":900},
+            {"title":"Example Movie","id":1,"poster_path":null,"vote_count":900},
+            {"title":"Example: Movie!","id":1,"poster_path":"/right.jpg","vote_count":900},
+            {"title":"Example Movie","id":1,"poster_path":"/later.jpg","vote_count":900}
         ]}"""
-        assertEquals("/right.jpg", FilmPosterPolicy.pickPoster(FilmPosterQuery("Example Movie", null, false), body))
+        assertEquals("/right.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Example Movie", null, false), body)?.poster)
     }
 
     @Test fun originalTitleCountsToo() {
-        val body = """{"results":[{"title":"Amelie","original_title":"Le Fabuleux Destin d'Amélie Poulain","poster_path":"/a.jpg"}]}"""
+        val body = """{"results":[{"title":"Amelie","original_title":"Le Fabuleux Destin d'Amélie Poulain","id":1,"poster_path":"/a.jpg"}]}"""
         val query = FilmPosterQuery("Le Fabuleux Destin d Amelie Poulain", 2001, false)
-        assertEquals("/a.jpg", FilmPosterPolicy.pickPoster(query, body))
+        assertEquals("/a.jpg", FilmPosterPolicy.pickMatch(query, body)?.poster)
     }
 
     @Test fun nearMissIsNoPoster() {
-        val body = """{"results":[{"title":"Beach Day Massacre","poster_path":"/x.jpg"}]}"""
-        assertNull(FilmPosterPolicy.pickPoster(FilmPosterQuery("Beach Day", null, false), body))
+        val body = """{"results":[{"title":"Beach Day Massacre","id":1,"poster_path":"/x.jpg"}]}"""
+        assertNull(FilmPosterPolicy.pickMatch(FilmPosterQuery("Beach Day", null, false), body)?.poster)
     }
 
     @Test fun withoutAYearAnObscureNamesakeIsNoPoster() {
-        val body = """{"results":[{"title":"Birthday","poster_path":"/b.jpg","vote_count":12}]}"""
-        assertNull(FilmPosterPolicy.pickPoster(FilmPosterQuery("Birthday", null, false), body))
-        assertEquals("/b.jpg", FilmPosterPolicy.pickPoster(FilmPosterQuery("Birthday", 2019, false), body))
+        val body = """{"results":[{"title":"Birthday","id":1,"poster_path":"/b.jpg","vote_count":12}]}"""
+        assertNull(FilmPosterPolicy.pickMatch(FilmPosterQuery("Birthday", null, false), body)?.poster)
+        assertEquals("/b.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Birthday", 2019, false), body)?.poster)
     }
 
     @Test fun showsMatchOnName() {
-        val body = """{"results":[{"name":"Example Show","poster_path":"/s.jpg","vote_count":500}]}"""
-        assertEquals("/s.jpg", FilmPosterPolicy.pickPoster(FilmPosterQuery("Example Show", null, true), body))
+        val body = """{"results":[{"name":"Example Show","id":1,"poster_path":"/s.jpg","vote_count":500}]}"""
+        assertEquals("/s.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Example Show", null, true), body)?.poster)
     }
 
     @Test fun imageUrlRejectsAnythingButABarePath() {
         assertEquals("https://image.tmdb.org/t/p/w342/abc.jpg", FilmPosterPolicy.imageUrl("/abc.jpg", FilmPosterPolicy.TILE_WIDTH))
         assertNull(FilmPosterPolicy.imageUrl("//evil.example/x.jpg", FilmPosterPolicy.TILE_WIDTH))
         assertNull(FilmPosterPolicy.imageUrl("/../x.jpg", FilmPosterPolicy.TILE_WIDTH))
+    }
+
+    @Test fun backdropWithoutPosterStillMatches() {
+        val body = """{"results":[{"id":7,"title":"Example Movie","poster_path":null,"backdrop_path":"/b.jpg","vote_count":900}]}"""
+        assertEquals(FilmMatch(7, null, "/b.jpg"), FilmPosterPolicy.pickMatch(FilmPosterQuery("Example Movie", null, false), body))
+    }
+
+    @Test fun textlessBackdropAndEnglishLogoWinTogether() {
+        val match = FilmMatch(1, "/p.jpg", "/keyart.jpg")
+        val images = """{
+            "backdrops":[
+                {"file_path":"/titled.jpg","iso_639_1":"en","aspect_ratio":1.778,"vote_average":9.0},
+                {"file_path":"/plain-low.jpg","iso_639_1":null,"aspect_ratio":1.778,"vote_average":5.0},
+                {"file_path":"/plain.jpg","iso_639_1":null,"aspect_ratio":1.778,"vote_average":6.0}
+            ],
+            "logos":[
+                {"file_path":"/logo.svg","iso_639_1":"en","vote_average":9.0},
+                {"file_path":"/logo-fr.png","iso_639_1":"fr","vote_average":9.0},
+                {"file_path":"/logo.png","iso_639_1":"en","vote_average":5.0}
+            ]
+        }"""
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png"), FilmPosterPolicy.pickArt(match, images))
+    }
+
+    @Test fun withoutALogoTheSearchKeyArtStandsIn() {
+        val match = FilmMatch(1, "/p.jpg", "/keyart.jpg")
+        val images = """{"backdrops":[{"file_path":"/plain.jpg","iso_639_1":null,"aspect_ratio":1.778}],"logos":[]}"""
+        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null), FilmPosterPolicy.pickArt(match, null))
     }
 }
