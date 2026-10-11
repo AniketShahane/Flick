@@ -111,8 +111,11 @@ private val videoImageLoaderLock = Any()
  * video (design: the tiles are filmic stills, not generic icons).
  */
 @Composable
-fun rememberVideoImageLoader(): ImageLoader {
-    val appContext = LocalContext.current.applicationContext
+fun rememberVideoImageLoader(): ImageLoader = videoImageLoader(LocalContext.current)
+
+/** The same loader, for work outside composition such as warming the film-art cache. */
+fun videoImageLoader(context: Context): ImageLoader {
+    val appContext = context.applicationContext
     return sharedVideoImageLoader ?: synchronized(videoImageLoaderLock) {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }

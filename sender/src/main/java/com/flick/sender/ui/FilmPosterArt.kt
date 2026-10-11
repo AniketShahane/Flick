@@ -1,5 +1,6 @@
 package com.flick.sender.ui
 
+import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -23,12 +24,16 @@ import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.memory.MemoryCache
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
+import com.flick.sender.ui.components.videoImageLoader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 val LocalFilmPosters = staticCompositionLocalOf { true }
 
@@ -185,3 +190,34 @@ private const val LogoWidthFraction = 0.42f
 private const val LogoHeightFraction = 0.36f
 private val GroundBlur = 28.dp
 private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f
+
+/**
+ * Looks up art for every title in [items] and puts the images a tile draws into Coil's disk
+ * cache, so a film added since the last visit already has its art when it is first scrolled
+ * to — and still has it offline. Titles already known cost nothing: the lookup answers from
+ * its own cache and Coil from its disk.
+ */
+suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
+    if (!FilmPosters.available) return
+    val appContext = context.applicationContext
+    val loader = videoImageLoader(appContext)
+    val queries = withContext(Dispatchers.Default) {
+        items.mapNotNull { FilmPosterPolicy.queryFor(VideoNames.parse(it.name)) }.distinctBy { it.cacheKey }
+    }
+    for (query in queries) {
+        val art = FilmPosters.art(appContext, query) ?: continue
+        listOfNotNull(
+            art.backdrop?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.BACKDROP_WIDTH) },
+            art.logo?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.LOGO_WIDTH) },
+            art.poster?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.TILE_WIDTH) },
+        ).forEach { url ->
+            // Disk only: the memory cache belongs to what is on screen.
+            loader.enqueue(
+                ImageRequest.Builder(appContext)
+                    .data(url)
+                    .memoryCachePolicy(CachePolicy.DISABLED)
+                    .build(),
+            )
+        }
+    }
+}
