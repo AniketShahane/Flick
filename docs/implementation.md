@@ -688,7 +688,7 @@ The receiver's committed profile has since caught up: `FlickRenderersFactory`, `
 
 Panel capability is recorded, never enforced. `DisplayCapabilityPolicy` compares the decoded format against the display's advertised HDR types and its physical mode and logs any shortfall (`panelShortfall hdr:DolbyVision`, `downscaled:3840x2160`) when the video input format becomes known. It does not refuse playback: there is no transcode and no downscale here, so the only alternative to presenting the film anyway is refusing it, and `Display.HdrCapabilities` is under-reported often enough on Android TV that refusing on it would break films that play correctly today. An empty HDR-type list is read as unknown rather than as a shortfall for the same reason. This is separate from the decoder question above, which is enforced.
 
-Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. The one state that neither pins nor releases at once is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
+Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. Two states neither pin nor release at once. One is the moment a presenting film drops to `None`: the phone's re-cast sends `stop` as its own step before `loadMedia`, so `refreshRateHintDelayMs(filmJustStopped = true)` defers that release by the same 2-second settle, and a re-cast never blanks the panel between films (a real stop releases 2 s late). The other is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
 
 ### Stage motion: house lights and the resync wait
 
@@ -725,8 +725,8 @@ restarting:
 | --- | --- | --- |
 | first composition at Room | Launch | seeded closed (identical to the window background), opens from the centre on `pictureUp()` 640 ms |
 | Room/Fault → Handshake | LightsDown (Act I) | the outgoing face is retained, frozen and non-interactive; `p` 1 → 0 on `lightsDown()` 560 ms, dark closing from the edges to the centre; the card enters into the last light at `p ≤ CARD_ENTER_APERTURE` 0.12 (~425 ms), rising from 300 dp below its seat (see *The Flick card* below); at `p = 0` `onLightsDown` drops the retained face and `d` snaps to the 82 % veil under full dark. From a fault still dissolving, the move seeds at the outgoing `(p, d)` and `d` rises to 1 on the same `lightsDown()` curve (alongside `p → 0` if a pool is open); with the aperture already closed the card waits for `d ≥ 0.88`, and `onLightsDown` still fires only at `d = 1` |
-| Handshake → Film | PictureUp (Act II) | the copy exits at once on `crossDissolve()` while the card holds its seat, still; a still-closing Act I finishes on `fastStateEffects`; the resync wait; then the card takes the screen and fades into the film (~870 ms), and 120 ms (`REVEAL_VEIL_LAG_MS`) after the release `d` → 0 on `filmReveal()` 720 ms underneath it |
-| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card enters, already seated and by alpha alone, once 60 % of that travel has landed; a card still expanding from the last cast leaves first on `fastStateEffects` |
+| Handshake → Film | PictureUp (Act II) | the copy exits at once on `crossDissolve()` while the card holds its seat, still (a card whose flight is still running keeps flying; one that never entered flies in now, without its copy); a still-closing Act I finishes on `fastStateEffects`; the resync wait and the card's least time on screen, in parallel; then the card takes the screen and fades into the film (~870 ms), and 120 ms (`REVEAL_VEIL_LAG_MS`) after the release `d` → 0 on `filmReveal()` 720 ms underneath it |
+| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card flies in — the same arrival and speed bars as Act I — once 25 % of that travel has landed (`CARD_AFTER_DIM_FRACTION`, ~250 ms); a card still expanding from the last cast leaves first on `fastStateEffects` |
 | Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the resync wait; `p` 0 → 1 on `pictureUp()`. From Handshake it seeds from the live aperture, so a cancel on Act I's first frame starts at `p` ≈ 1 and draws nothing |
 | Handshake/Film → Fault | LightsUpFault | same seeding and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault. A fault that lands while Act I is still closing keeps the aperture where it reached (`p` held, `d` = 1) and dissolves `d` uniformly from there; one that lands at rest or over a film seeds closed |
 | Room ↔ Fault | Rest | none; the shell crossfades |
@@ -742,13 +742,51 @@ drawn by `FlickCardLayer`, one full-screen `Spacer` on its own `graphicsLayer()`
 | --- | --- |
 | arrival (Act I) | one keyframed progress over `flickCardArrive()` 720 ms: 300 dp below the seat, 12°, 0.5 scale → 10 dp above, −3°, 1.03 at 460 ms (emphasized decelerate) → seated, −2°, 1 (`CrossDissolve`). 300 ms in, three `Spark` speed bars (6 / 7 / 6 × 64 / 88 / 64 dp, the mark's 0.45 / 0.75 / 0.45 weights) flash in under the card and dissolve downward over `speedBars()` 500 ms |
 | waiting | a bob of ±3 dp and ±0.5° on one sine, 2 400 ms a cycle, from the moment the card is seated until the first frame; it replaces `FlickLoader` here |
-| picture up | after the resync wait: to the screen's centre and full size over `flickCardExpand()` 600 ms, `cubic-bezier(.3,0,.05,1)`, corner 16 → 3 dp, tilt → 0, glow and bars gone with it; the mark fades over the first 150 ms; 550 ms after release the card fades over `flickCardFade()` 320 ms |
+| picture up | after the resync wait and the card's least time on screen: to the screen's centre and full size over `flickCardExpand()` 600 ms, `cubic-bezier(.3,0,.05,1)`, corner 16 → 3 dp, tilt → 0, glow and bars gone with it; the mark fades over the first 150 ms; 550 ms after release the card fades over `flickCardFade()` 320 ms |
 | cancel, fault, lights up, Rest | card and copy leave together on the existing exit (`fastStateEffects`) from whatever pose they reached; every exit retires the card to its start |
-| re-cast (VeilIn) | seated, alpha only on `crossDissolve()`, then the bob |
+| re-cast (VeilIn) | the Act I arrival and speed bars over the veil, alpha on `crossDissolve()`, then the bob |
 
 The expansion waits for the resync hold, as the veil does, because a mode switch's blank would
-swallow it whole. A card caught mid-arrival by the first frame springs to its seat
-(`panelSpatial()`) during the hold and expands from there. `HouseLights(expandAtPictureUp =
+swallow it whole. **The flight belongs to the card, not to the seam.** The arrival and its bars
+run in `HouseLights`' own `rememberCoroutineScope()`, tracked as `HouseCard.flight` with the time
+it began (`enteredAtMs`), so a first frame landing mid-flight cannot cut it short; only an exit,
+a retire or a reduced-motion seat cancels it. PictureUp neither re-aims the card nor restarts its
+bars while that flight runs, and a card that never entered (Active beat its cue) flies in there
+rather than being skipped. The release then waits, alongside the resync hold, for the flight to
+finish and for `FLICK_CARD_MIN_SHOWN_MS` 1 100 from its start (`cardHoldLeftMs`), bounded by
+the same `STAGE_HOLD_CAP_MS` from the seam and ended by any key: a re-cast's handshake lands in
+about a second, and without the floor the card would be on screen for a few hundred
+milliseconds. A seated card from a reduced-motion seat owes nothing. A card caught mid-exit by
+the first frame springs to its seat (`panelSpatial()`) during the hold and expands from there.
+
+The phone re-casts as `stop` then `loadMedia`, so a re-cast usually reaches the TV as
+Film → Room → Handshake within a few hundred milliseconds. Film → Room seeds closed and fully
+dense, so the Room → Handshake that follows starts already past the card's cue and the card
+flies at once. The refresh-rate release at that `None` is deferred by the same 2-second settle
+as a handshake (`refreshRateHintDelayMs(filmJustStopped = true)`), so the flight is not thrown
+into an HDMI resync at the stop and a second one when the next film re-pins; the settle runs on
+into the handshake. A stop with nothing behind it releases 2 s late. The startup itself is
+unchanged: the previous player is still released synchronously in `playStartup`, before the new
+one prepares, because the hardware Dolby Vision decoder is not known to allow a second instance
+and the rotation reset after it needs the old playback thread joined; `[main] playStartup` logs
+what that costs.
+
+The card logs its life alongside the hold line, all under `[stage]` (`move` once per seam):
+
+```
+[stage] move from=Film to=Handshake kind=VeilIn
+[stage] card enter rising=true flies=true sinceSeamMs=262
+[stage] card seated sinceSeamMs=1070
+[stage] card pictureUp held=true flying=false shownMs=840
+[stage] card hold reason=shown waitedMs=262
+[stage] card expand start flying=false sinceSeamMs=268
+[stage] card expand done tookMs=606
+[display] pin hz=0.0 delayMs=2000
+[main] playStartup tookMs=41 releaseMs=33 replaced=true
+```
+
+`card skip reason=expandOff` marks a PictureUp that let the card leave with its copy, and
+`card exit` any other exit. `card hold` ends `shown`, `key` or `cap`. `HouseLights(expandAtPictureUp =
 false)` makes the card leave with its copy instead; only `StageMotionTest` uses it, to read the
 veil's lift that the expanded card would cover.
 

@@ -168,8 +168,12 @@ object FlickMotion {
     /** How long the veil holds after the picture is released before it starts to lift. */
     const val REVEAL_VEIL_LAG_MS = 120L
 
-    /** The fraction of the veil's travel that must have landed before the handshake card enters over a film. */
-    const val CARD_AFTER_DIM_FRACTION = 0.6f
+    /**
+     * The fraction of the veil's travel that must have landed before the handshake card
+     * flies in over a film: about 250 ms into [filmReveal]. Any later and a handshake
+     * that lands in about a second leaves the flight no time before the first frame.
+     */
+    const val CARD_AFTER_DIM_FRACTION = 0.25f
 
     /**
      * One idle drift half-cycle. At 34 s the wash is below the rate the eye reads as
@@ -212,6 +216,13 @@ object FlickMotion {
     val FlickCardBob: Dp = 3.dp
     const val FLICK_CARD_BOB_TILT = 0.5f
     const val FLICK_CARD_BOB_MS = 2_400
+
+    /**
+     * The least time the Flick card is on screen, from the start of its flight, before
+     * it may take the screen: the whole arrival and a beat seated. A remote key or the
+     * stage hold's cap ends it sooner.
+     */
+    const val FLICK_CARD_MIN_SHOWN_MS = 1_100L
 
     /** Picture up: the card takes the screen, its mark goes first, then the whole card fades into the film. */
     const val FLICK_CARD_EXPAND_MS = 600

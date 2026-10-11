@@ -397,8 +397,11 @@ How it arrives and leaves is the room's light:
 - **Picture up** (first frame). The copy leaves at once and never waits: its semantics
   clear on the first frame, alpha on `crossDissolve()` (400 ms), an 11.5 dp sink on
   `focusSpatial()`. The card holds its seat, still, through the resync wait (§6.1) — so
-  its expansion is never thrown into an HDMI mode switch's blank — and when the picture
-  is released it **takes the screen**: over `flickCardExpand()` (600 ms,
+  its expansion is never thrown into an HDMI mode switch's blank — and, in parallel, until
+  its flight has finished and **1 100 ms** have passed since the flight began
+  (`FLICK_CARD_MIN_SHOWN_MS`), bounded by the same 2.5 s cap and ended by any key, so a
+  fast handshake never shows the card for a blink. When the picture is released it
+  **takes the screen**: over `flickCardExpand()` (600 ms,
   `cubic-bezier(.3, 0, .05, 1)`) it travels to the screen's centre, grows to fill it
   (width and height separately, so the 1.5:1 card meets a 16:9 screen without
   distortion), untilts and eases its corner to 3 dp, while the glow and any bars still
@@ -406,15 +409,21 @@ How it arrives and leaves is the room's light:
   (`flickCardMarkFade()`). 550 ms after the picture is released the expanded card fades
   into the film over `flickCardFade()` (320 ms, `CrossDissolve`), ~870 ms in all. The
   veil's own timing is untouched underneath it: 120 ms after release it lifts uniformly on
-  `filmReveal()` (720 ms). A card still mid-arrival at the first frame springs to its
-  seat on `panelSpatial()` and expands from wherever it is.
+  `filmReveal()` (720 ms). The arrival belongs to the card, not to the stage: a card
+  still in flight at the first frame finishes its flight and bars untouched; one that
+  never entered flies in then, without its copy; one caught mid-exit springs to its seat
+  on `panelSpatial()` and expands from wherever it is.
 - **Veil in** (a re-cast over a running film). The veil is seeded at
   `d = max(the dim drawn over the last Active frame, a mid-lift veil)`, so a paused,
   seeking or ended frame never brightens, and rises to 82 % on
-  `filmReveal()`; the card enters once 60 % of that travel has landed, alpha on
-  `crossDissolve()`, **already seated** — no rise and no bars, because a card travelling
-  over a film is a moving edge at the film's cadence (§6.1). It bobs once settled. A card
-  still expanding from the previous cast leaves first on `fastStateEffects()`.
+  `filmReveal()`; once 25 % of that travel has landed (~250 ms) the card **flies in**
+  with the same arrival and speed bars as Act I, alpha on `crossDissolve()`. Seated it
+  bobs. It enters early because a re-cast's handshake lands in about a second; at 60 %
+  and seated in place the card came too late and too still to read as a cast at all. A
+  card still expanding from the previous cast leaves first on `fastStateEffects()`. The
+  phone re-casts as stop then load, so this usually arrives as film → room → handshake
+  in a few hundred milliseconds: the room's lights never get to open, the card's cue is
+  already met, and it flies at once over the dark.
 - **Cancel, fault, lights up.** Card and copy leave together with the existing exits —
   alpha on `fastStateEffects()` and the copy's sink — over the closed curtain, from
   whatever pose they reached, expanded or not. Every exit and every seam resets the card,

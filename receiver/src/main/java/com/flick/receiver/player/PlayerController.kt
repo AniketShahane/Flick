@@ -2126,6 +2126,7 @@ class PlayerController(context: Context) : SessionPlayer {
         onError: (PlaybackException, ReceiverFaultDetail) -> Unit,
         onRotationRePrepare: () -> Unit,
     ) {
+        val startedAtMs = SystemClock.uptimeMillis()
         firstFrameGate.arm(mediaId)
         startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError, onRotationRePrepare)
         currentUrl = url
@@ -2155,10 +2156,18 @@ class PlayerController(context: Context) : SessionPlayer {
         val exo = createPlayer()
         bindMediaSession(exo)
         player = exo
+        var releaseMs = 0L
+        // Released here, on the main thread and before the new player prepares, even
+        // though it can block a frame: the TV's Dolby Vision decoder is not known to
+        // allow a second instance, so a release deferred past prepare() would race the
+        // new player's codec allocation, and the rotation reset below needs the old
+        // playback thread already joined.
         previous?.let {
             it.removeListener(playerListener)
             it.removeAnalyticsListener(analyticsListener)
+            val releaseStartMs = SystemClock.uptimeMillis()
             it.release()
+            releaseMs = SystemClock.uptimeMillis() - releaseStartMs
             // The released player's playback thread can drain a queued format read
             // between the reset above and this call, and record it against the new
             // film's command. `release()` joins that thread, so this is the first
@@ -2170,6 +2179,10 @@ class PlayerController(context: Context) : SessionPlayer {
         if (startMs > 0) exo.seekTo(startMs)
         exo.prepare()
         exo.playWhenReady = true
+        FlickLog.i(
+            "main",
+            "playStartup tookMs=${SystemClock.uptimeMillis() - startedAtMs} releaseMs=$releaseMs replaced=${previous != null}",
+        )
     }
 
     /**

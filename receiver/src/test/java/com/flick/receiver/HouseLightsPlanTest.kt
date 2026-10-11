@@ -15,9 +15,11 @@ import com.flick.receiver.ui.components.HouseMove
 import com.flick.receiver.ui.components.HouseMoveKind
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RateSample
+import com.flick.receiver.ui.components.STAGE_HOLD_CAP_MS
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.components.apertureRampAlpha
 import com.flick.receiver.ui.components.apertureScale
+import com.flick.receiver.ui.components.cardHoldLeftMs
 import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
@@ -241,6 +243,38 @@ class HouseLightsPlanTest {
         assertEquals("no film active", 0f, freshRevealRate(null, RateSample(null, 24f)), 0f)
         assertEquals("format not yet known", 0f, freshRevealRate("b", RateSample("b", 0f)), 0f)
         assertEquals("not a cadence", 0f, freshRevealRate("b", RateSample("b", Float.NaN)), 0f)
+    }
+
+    @Test fun aStopBetweenTwoFilmsLeavesTheHandshakeDarkForTheFlight() {
+        // The phone re-casts as stop then loadMedia: Film -> Room -> Handshake.
+        assertMove(HouseMoveKind.LightsUpRoom, 0f, 1f, HouseGate.Rest, move(HouseStage.Film, HouseStage.Room))
+        // The Room's lights are still held or barely open, so the card's cue is already met.
+        assertMove(HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None, move(HouseStage.Room, HouseStage.Handshake, 0f, 1f))
+        val opening = move(HouseStage.Room, HouseStage.Handshake, 0.05f, 1f)
+        assertEquals(HouseMoveKind.LightsDown, opening.kind)
+        assertTrue("seeded past the card's cue", opening.seedAperture <= CARD_ENTER_APERTURE)
+    }
+
+    @Test fun aReCastCuesTheCardEarlyInTheVeil() {
+        assertTrue(FlickMotion.CARD_AFTER_DIM_FRACTION in 0.15f..0.35f)
+    }
+
+    @Test fun theCardsLeastTimeCoversItsWholeFlight() {
+        val flight = maxOf(
+            FlickMotion.FLICK_CARD_ARRIVE_MS.toLong(),
+            FlickMotion.SPEED_BARS_LAG_MS + FlickMotion.SPEED_BARS_MS,
+        )
+        assertTrue(FlickMotion.FLICK_CARD_MIN_SHOWN_MS >= flight)
+        assertTrue("the stage hold's cap must still be able to end it", FlickMotion.FLICK_CARD_MIN_SHOWN_MS < STAGE_HOLD_CAP_MS)
+    }
+
+    @Test fun aCardOwesItsLeastTimeFromTheStartOfItsFlight() {
+        val min = FlickMotion.FLICK_CARD_MIN_SHOWN_MS
+        assertEquals("seated without a flight", 0L, cardHoldLeftMs(enteredAtMs = null, nowMs = 5_000L))
+        assertEquals(min, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_000L))
+        assertEquals(min - 400L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_400L))
+        assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_000L + min))
+        assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 9_000L))
     }
 
     private fun move(

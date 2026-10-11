@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.DisplayCadenceSource
+import com.flick.receiver.ui.components.FLICK_CARD_HEIGHT
 import com.flick.receiver.ui.components.HANDSHAKE_CARD_WIDTH
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
@@ -205,9 +206,10 @@ class StageMotionTest {
     private fun cardExists(): Boolean =
         composeRule.onAllNodesWithTag(CARD_TAG).fetchSemanticsNodes().isNotEmpty()
 
+    // Past the card's flight and its least time on screen, so a reveal waits on the display alone.
     private fun settleHandshake() {
         cut(HouseStage.Handshake)
-        advance(1_000)
+        advance(1_600)
     }
 
     private fun settleFilm() {
@@ -610,6 +612,73 @@ class StageMotionTest {
         return (under - luma(fx, fy)) / (under - lumaOf(FlickColor.Canvas))
     }
 
+    /** A re-cast arrives as stop then loadMedia, so the Room lasts only a moment. */
+    @Test
+    fun aStopThenCastStillFliesTheCard() {
+        launch()
+        settleFilm()
+        cut(HouseStage.Room)
+        advance(250)
+        val seam = cut(HouseStage.Handshake)
+        frame()
+        val cardH = with(density) { FLICK_CARD_HEIGHT.toPx() }
+        val reach = with(density) { 120.dp.toPx() }
+        val glassH = glassHeightPx()
+        var barsSeenAt: Long? = null
+        while (since(seam) < 1_500) {
+            frame()
+            val px = shot("aStopThenCastStillFliesTheCard", seam)
+            val seatBottom = ((px.height - glassH) / 2f + cardH).roundToInt()
+            if (barsSeenAt == null && px.sparkInColumn(px.width / 2, seatBottom, seatBottom + reach.roundToInt())) {
+                barsSeenAt = since(seam)
+            }
+        }
+        // Only a flight runs the speed bars; a card seated in place never shows them.
+        assertTrue("the speed bars never showed, so the card did not fly", barsSeenAt != null)
+        assertTrue("the card was not left up for the handshake", cardExists())
+    }
+
+    /** A re-cast whose first frame lands 400 ms into the handshake, mid-flight. */
+    @Test
+    fun aQuickFirstFrameWaitsForTheCardsLeastTime() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.restHz = 60f
+        cadence.blank = false
+        launch()
+        settleFilm()
+        val upBefore = up
+        val handshake = cut(HouseStage.Handshake)
+        advance(400)
+        cut(HouseStage.Film)
+        // The veil reaches the card's cue about 240 ms in, and the card owes 1100 ms from there.
+        while (since(handshake) < 1_300) {
+            frame()
+            val t = since(handshake)
+            assertEquals("the picture came up before the card's least time at $t ms", upBefore, up)
+            assertTrue("the card left before it expanded at $t ms", cardExists())
+            val px = shot("aQuickFirstFrameWaitsForTheCardsLeastTime", handshake)
+            assertTrue("the card took the screen at $t ms", !px.isPrimaryAt(0.05f, 0.05f))
+        }
+        while (up == upBefore && since(handshake) < 2_000) frame()
+        assertEquals("the picture never came up once the card had its time", upBefore + 1, up)
+        assertTrue("the picture came up at ${since(handshake)} ms, not soon after its least time",
+            since(handshake) < 1_700)
+    }
+
+    private fun PixelMap.sparkInColumn(x: Int, fromY: Int, toY: Int): Boolean {
+        for (y in fromY.coerceIn(0, height - 1)..toY.coerceIn(0, height - 1)) {
+            val c = this[x, y]
+            if (c.red - c.blue > SPARK_RED_OVER_BLUE) return true
+        }
+        return false
+    }
+
+    private fun PixelMap.isPrimaryAt(fx: Float, fy: Float): Boolean {
+        val c = this[(fx * width).roundToInt().coerceIn(0, width - 1), (fy * height).roundToInt().coerceIn(0, height - 1)]
+        return c.blue - c.red > PRIMARY_BLUE_OVER_RED
+    }
+
     @Test
     fun aCastPlannedOffstageOpensDarkWithTheCard() {
         launch(offstage = true)
@@ -877,6 +946,10 @@ class StageMotionTest {
         const val GLYPHS_VISIBLE = 8f
         const val CARD_ENTER_DENSITY = 0.88f
         const val DENSITY_NOISE = 0.02f
+
+        // Spark is amber and Primary blue; no underlay under the curtain comes near either.
+        const val SPARK_RED_OVER_BLUE = 0.35f
+        const val PRIMARY_BLUE_OVER_RED = 0.5f
 
         val STANDBY = listOf(Color.White, Color(0xFFFFB61E))
         val FILM = listOf(Color.White, Color(0xFF1240E8))
