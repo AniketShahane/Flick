@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -450,7 +449,7 @@ private val PadChromeEstimate = 92.dp
 /** Exactly 2:3 at every size; the corner is 8% of whatever width this gives. */
 private val PosterMinHeight = 140.dp
 private val PosterMinHeightWide = 120.dp
-private val PosterMaxHeight = 345.dp
+private val PosterMaxHeight = 390.dp
 /** Rounding headroom: one pixel of overflow would make the page scrollable. */
 private val FitSlack = 2.dp
 
@@ -559,7 +558,7 @@ private fun DetailTitle(logoPath: String?, title: String, imageLoader: ImageLoad
                 contentDescription = title,
                 onFailed = { logoFailed = true },
                 modifier = Modifier
-                    .sizeIn(maxWidth = LogoMaxWidth, maxHeight = LogoMaxHeight)
+                    .size(LogoMaxWidth, LogoMaxHeight)
                     .semantics { heading() },
             )
         }
