@@ -1,30 +1,32 @@
 # Hyperspace — the phone side of a cast
 
-Three beats: throw the poster (detail sheet), ride the warp (connecting), land (flash into
+Three beats: throw the poster (detail page), ride the warp (connecting), land (flash into
 the remote). These numbers and the constants in code are one thing: change either, change both.
 
 Code: `ui/components/FlickPad.kt` (`FlickPadMotion`), `ui/components/FlickPadPolicy.kt`,
 `ui/components/Hyperspace.kt` (`Hyperspace`), `ui/screens/ConnectingScreen.kt`,
 `ui/screens/FlickApp.kt` (`LandingFlash*`). No protocol change: every send is `controller.flickToTv(item)`.
 
-## 1. Flick pad (detail sheet, above the CTA)
+## 1. Flick pad (detail page, the hero)
 
-Shown only in the seat the old gesture strip held: never with a refusal or a link advisory.
+The centre of the dark detail page, between the back control and the title/facts/CTA block.
+Never with a refusal or a link advisory: those take the moment instead, and the same card
+stands in the pad's place static (no chevrons, no line, no gesture).
 
 | What | Value |
 |---|---|
-| Size | about 210 dp of sheet: chevron row 24 dp, 6 dp gap, poster 156 dp, 8 dp gap, one title line — so the CTA and the "Start over" / "Play on this phone" row stay above the fold of the 640 dp sheet |
-| Poster | 104 × 156 dp, corner 14 dp, 14 dp shadow; TMDB **poster** (never the backdrop), else the video frame (Crop) |
-| Line | one only: "Flick it toward your TV", "Let go to send" while armed; single line in both states so the CTA never moves |
-| Chevrons | 3 in a 24 × 24 dp row, stroke 2.5 dp, rise 5 dp, pitch 6.5 dp, `colors.primary`; ripple 1200 ms, peak at 25%, base alpha 0.25 |
+| Size | about 295 dp of page: chevron row 24 dp, 10 dp gap, poster 225 dp, 16 dp gap, one title line; 20 dp above and below it |
+| Poster | 150 × 225 dp (exact 2:3, Crop), corner 8% of the width (12 dp), 1 dp white 12% hairline; action-colour glow: radial, 0.42 alpha at the centre, reach 0.8 × width (× 1.5 vertically), plus a 24 dp shadow tinted the same; TMDB **poster** (never the backdrop), else the video frame |
+| Line | one only, white: "Flick it toward your TV", "Let go to send" while armed; single line in both states so nothing below moves |
+| Chevrons | 3 in a 24 × 24 dp row, stroke 2.5 dp, rise 5 dp, pitch 6.5 dp, white; ripple 1200 ms, peak at 25%, base alpha 0.25 |
 | Chevrons, still | 0.35 / 0.60 / 0.85 bottom to top (reduce motion or paused); 0.2 when disabled; 1.0 when armed |
 | Idle nudge | up 12 dp: rise 280 ms, fall 420 ms, rest 2100 ms (2.8 s period); first after 1200 ms; stops for good on first touch, never under reduce motion |
 | Follow | up 1:1; down × 0.2; sideways × 0.25; tilt 0.12°/dp, capped ±8°; held scale 1.03 |
-| Claim | the sheet scrolls, so the pad takes a drag only once it crosses touch slop with the sheet unable to scroll further down (`!canScrollForward`), and not a downward one the sheet could scroll back; anything else is left unconsumed and scrolls the sheet |
+| Claim | the page scrolls when it overflows, so the pad takes a drag only once it crosses touch slop with the page unable to scroll further down (`!canScrollForward`), and not a downward one the page could scroll back; anything else is left unconsumed and scrolls the page |
 | Arm | finger ≥ 80 dp up from where it went down (touch slop included) → "Let go to send" + `GestureThresholdActivate` haptic |
 | Send | armed, or ≥ 20 dp up and ≥ 1000 dp/s upward at release |
 | Send motion | `GestureEnd` haptic and `flickToTv` at release; then, decoratively, poster up 640 dp in 250 ms, Release curve (0.12, 0.62, 0.24, 1); fades on (0.4, 0, 1, 1) |
-| Not sent | springs back on the scheme's default spatial spring — also when the gesture is cut off mid-drag (the pad disabled, or the sheet taking the drag) |
+| Not sent | springs back on the scheme's default spatial spring — also when the gesture is cut off mid-drag (the pad disabled, or the page taking the drag) |
 | Still composed 700 ms after a send | poster returns to its seat, 220 ms fade |
 | Disabled | exactly when the CTA is: `!progressReady \|\| castStart.isCommitting()` |
 
@@ -38,7 +40,7 @@ Accessibility: the pad is `clearAndSetSemantics {}`; the CTA below carries the a
 | Vanishing point | centre x, 38% of the window height where there is room; the field converges on it wherever it sits |
 | Copy | starts at `min(0.38·H + gap, H − 78 dp pill band − nav bar − 212 dp × max(fontScale, 1))`, never closer than gap + 24 dp to the top; the vanishing point is `copy top − gap`, so on a short window (landscape, split screen) the whole scene lifts and Cancel stays above the fold. Gap 72 dp roomy, 40 dp compact |
 | Roomy | H ≥ 488 dp × max(fontScale, 1): half the poster (78) + 72 gap + 212 copy + 78 pill band + 48 nav bar |
-| Warp | poster (same 104 × 156 card) holds 280 ms, then scale 1 → 0.02 over 640 ms, ease-in cubic (0.32, 0, 0.67, 0); fades over the last 15% |
+| Warp | poster (its own 104 × 156 card, corner 8% of the width, same hairline — smaller than the pad's, because the roomy budget below is half of it) holds 280 ms, then scale 1 → 0.02 over 640 ms, ease-in cubic (0.32, 0, 0.67, 0); fades over the last 15% |
 | Loop | one 1600 ms linear clock, read in the draw phase of one canvas; ramps in with the warp |
 | Rings | 4 phone-shaped (height 2.05 × width, corner 0.16 × width), staggered ¼ period; size ∝ phase²; reach 1.3 × the window; stroke 1.5 → 3 dp; `rgba(111,160,255,.55)`, ring 2 is amber `#FFB61E` at 0.8 |
 | Streaks | 12 radial, 30° apart ± fixed jitter; speed 1× or 2× the clock; 2 dp, born 18 dp out, up to 72 dp long; white / `#9FC0FF` / amber |

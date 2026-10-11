@@ -296,6 +296,15 @@ val TileShadow = Color(0x2E0A1533)
 val NavShadow = Color(0x260A1533)
 val PosterShadow = Color(0x99000000)
 
+/** The 1 dp edge a poster card needs to read against a near-black ground. */
+val PosterHairline = Color(0x1FFFFFFF)
+
+// Glass laid straight on the cinema gradient. White at low alpha rather than a navy tone, so
+// it takes the colour of whatever backdrop is under it instead of greying it.
+val CinemaGlass = Color(0x1AFFFFFF)
+val CinemaGlassStrong = Color(0x24FFFFFF)
+val CinemaGlassEdge = Color(0x29FFFFFF)
+
 /**
  * The floating nav pill's shadow on the dark set. A tinted ink shadow is a way of making
  * a pale canvas darker, and there is nothing darker than a near-black canvas to make it —

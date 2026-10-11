@@ -2,6 +2,7 @@ package com.flick.sender.ui.theme
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Shapes
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** Semantic shape scale from the selected expressive direction. */
@@ -51,3 +52,11 @@ val PressedPillShape = RoundedCornerShape(FlickCorners.pressedPill)
 
 /** Bottom sheets round only their leading edge. */
 val SheetShape = RoundedCornerShape(topStart = FlickCorners.sheet, topEnd = FlickCorners.sheet)
+
+/**
+ * A portrait poster card's corner, in proportion to its width. A fixed radius from the
+ * scale above takes a third of a small card's width and eats the key art in its corners.
+ */
+fun posterCardShape(width: Dp): RoundedCornerShape = RoundedCornerShape(width * PosterCornerFraction)
+
+private const val PosterCornerFraction = 0.08f

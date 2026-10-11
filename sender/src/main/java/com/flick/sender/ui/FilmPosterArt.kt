@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -132,13 +133,17 @@ fun FilmTileArt(
 }
 
 @Composable
-private fun rememberPosterRequest(posterPath: String, width: String): ImageRequest? {
+private fun rememberPosterRequest(posterPath: String, width: String): ImageRequest? =
+    rememberHeroRequest(posterPath, width, FilmPosterPolicy.TILE_WIDTH)
+
+@Composable
+private fun rememberHeroRequest(path: String, width: String, tileWidth: String): ImageRequest? {
     val context = LocalContext.current
-    return remember(posterPath, width) {
-        val url = FilmPosterPolicy.imageUrl(posterPath, width) ?: return@remember null
-        // The tile's smaller copy stands in while the larger one arrives, so a poster that
-        // flies from the grid into the detail sheet never flashes empty on landing.
-        val tileUrl = FilmPosterPolicy.imageUrl(posterPath, FilmPosterPolicy.TILE_WIDTH)
+    return remember(path, width, tileWidth) {
+        val url = FilmPosterPolicy.imageUrl(path, width) ?: return@remember null
+        // The tile's smaller copy stands in while the larger one arrives, so art that flies
+        // from the grid into the detail page never flashes empty on landing.
+        val tileUrl = FilmPosterPolicy.imageUrl(path, tileWidth)
         ImageRequest.Builder(context)
             .data(url)
             .crossfade(true)
@@ -184,7 +189,7 @@ fun FilmPosterOnGround(
     }
 }
 
-/** The poster filling a full-screen seat, as the detail sheet's backdrop. */
+/** The poster filling its seat edge to edge (Crop): the detail page's card, or its backdrop. */
 @Composable
 fun FilmPosterBackdrop(
     posterPath: String,
@@ -197,6 +202,54 @@ fun FilmPosterBackdrop(
         contentDescription = null,
         imageLoader = imageLoader,
         contentScale = ContentScale.Crop,
+        modifier = modifier,
+    )
+}
+
+/** The film's landscape backdrop filling a full-screen seat, as the detail page's ground. */
+@Composable
+fun FilmBackdropHero(
+    backdropPath: String,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+) {
+    val request = rememberHeroRequest(
+        backdropPath,
+        FilmPosterPolicy.HERO_BACKDROP_WIDTH,
+        FilmPosterPolicy.BACKDROP_WIDTH,
+    ) ?: return
+    AsyncImage(
+        model = request,
+        contentDescription = null,
+        imageLoader = imageLoader,
+        contentScale = ContentScale.Crop,
+        modifier = modifier,
+    )
+}
+
+/**
+ * TMDB's title logo, fitted whole inside [modifier]'s bounds. [onFailed] fires when the image
+ * cannot be drawn at all, so the caller can set the title in type instead of leaving a hole.
+ */
+@Composable
+fun FilmTitleLogo(
+    logoPath: String,
+    imageLoader: ImageLoader,
+    contentDescription: String,
+    onFailed: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val request = rememberArtRequest(logoPath, FilmPosterPolicy.LOGO_WIDTH)
+    if (request == null) {
+        LaunchedEffect(logoPath) { onFailed() }
+        return
+    }
+    AsyncImage(
+        model = request,
+        contentDescription = contentDescription,
+        imageLoader = imageLoader,
+        contentScale = ContentScale.Fit,
+        onError = { onFailed() },
         modifier = modifier,
     )
 }
