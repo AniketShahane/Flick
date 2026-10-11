@@ -762,6 +762,7 @@ private const val VerdictNoteAlpha = 0.82f
  * own guard, for a viewer who reads the card and would rather tap than swipe.
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun LinkAdvisory(
     advisory: PreCastLinkAdvisory,
     onSwitchNetwork: () -> Unit,
@@ -794,14 +795,17 @@ private fun LinkAdvisory(
             style = FlickText.bodySmall.copy(color = CinemaInkDim),
             modifier = Modifier.padding(top = 3.dp),
         )
-        Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Wraps rather than ellipsizing "Cast anyway" at large font scales.
+        FlowRow(
+            Modifier.padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             GlassAction(
                 text = stringResource(R.string.advisory_band_primary),
                 filled = true,
                 enabled = true,
                 onClick = onSwitchNetwork,
             )
-            Spacer(Modifier.width(6.dp))
             GlassAction(
                 text = stringResource(R.string.advisory_band_secondary),
                 filled = false,
