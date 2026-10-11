@@ -82,8 +82,10 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
 import com.flick.sender.media.PlaybackProgressState
+import com.flick.sender.ui.FilmPosterBackdrop
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.rememberFilmPosterPath
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.FlickGesture
@@ -178,6 +180,7 @@ fun DetailScreen(
     }.value
 
     val request = rememberDetailVideoFrameRequest(item)
+    val posterPath = item.rememberFilmPosterPath()
     val scrimSource = remember { MutableInteractionSource() }
     val sheetSource = remember { MutableInteractionSource() }
     val playHereSource = remember { MutableInteractionSource() }
@@ -186,22 +189,27 @@ fun DetailScreen(
     // Cinematic rather than the pale canvas: this route already declares a dark
     // backdrop to the system bars, and the frame arrives out of darkness.
     Box(Modifier.fillMaxSize().background(CinemaDeep)) {
-        AsyncImage(
-            model = request,
-            contentDescription = null,
-            imageLoader = imageLoader,
-            contentScale = ContentScale.Crop,
-            // In place rather than in the shared overlay: the sheet has to stay above
-            // the frame while both are arriving.
-            modifier = Modifier
-                .flickSharedFrame(
-                    sharedScope = sharedScope,
-                    animatedScope = animatedScope,
-                    key = posterKey(item.id),
-                    renderInOverlay = false,
-                )
-                .fillMaxSize(),
-        )
+        // In place rather than in the shared overlay: the sheet has to stay above
+        // the frame while both are arriving.
+        val backdropModifier = Modifier
+            .flickSharedFrame(
+                sharedScope = sharedScope,
+                animatedScope = animatedScope,
+                key = posterKey(item.id),
+                renderInOverlay = false,
+            )
+            .fillMaxSize()
+        if (posterPath != null) {
+            FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = backdropModifier)
+        } else {
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop,
+                modifier = backdropModifier,
+            )
+        }
         // The scrim and the sheet body below it are a dismiss target and a click
         // consumer, not controls: a state layer on either would advertise a tap target
         // that isn't one, so both stay unindicated. It is deliberately not part of the
@@ -232,23 +240,30 @@ fun DetailScreen(
             Spacer(Modifier.height(4.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
-                AsyncImage(
-                    model = request,
-                    contentDescription = null,
-                    imageLoader = imageLoader,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(width = 122.dp, height = 78.dp)
-                        .shadow(
-                            elevation = 14.dp,
-                            shape = RoundedCornerShape(FlickCorners.detailPoster),
-                            clip = false,
-                            ambientColor = TileShadow,
-                            spotColor = TileShadow,
-                        )
-                        .clip(RoundedCornerShape(FlickCorners.detailPoster))
-                        .background(colors.surfaceRaisedAlt),
-                )
+                // A poster takes its own 2:3 at the frame's height, so the title beside it
+                // keeps the same line.
+                val thumbModifier = Modifier
+                    .size(width = if (posterPath != null) 52.dp else 122.dp, height = 78.dp)
+                    .shadow(
+                        elevation = 14.dp,
+                        shape = RoundedCornerShape(FlickCorners.detailPoster),
+                        clip = false,
+                        ambientColor = TileShadow,
+                        spotColor = TileShadow,
+                    )
+                    .clip(RoundedCornerShape(FlickCorners.detailPoster))
+                    .background(colors.surfaceRaisedAlt)
+                if (posterPath != null) {
+                    FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = thumbModifier)
+                } else {
+                    AsyncImage(
+                        model = request,
+                        contentDescription = null,
+                        imageLoader = imageLoader,
+                        contentScale = ContentScale.Crop,
+                        modifier = thumbModifier,
+                    )
+                }
                 Column(
                     Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp),

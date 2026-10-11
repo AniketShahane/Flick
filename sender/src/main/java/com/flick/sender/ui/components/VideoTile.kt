@@ -81,8 +81,10 @@ import com.flick.sender.media.ResumeProgress
 import com.flick.sender.media.VideoStills
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
+import com.flick.sender.ui.FilmPosterOnGround
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.rememberFilmPosterPath
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
@@ -516,6 +518,7 @@ fun VideoTile(
     val shape = RoundedCornerShape(FlickCorners.tile)
     val interaction = remember { MutableInteractionSource() }
     val request = rememberLibraryThumbnailRequest(item)
+    val posterPath = item.rememberFilmPosterPath()
     val refusedDescription = stringResource(R.string.a11y_tile_unplayable)
     val silentDescription = stringResource(R.string.a11y_tile_no_sound)
     val watchedDescription = resume?.let {
@@ -572,25 +575,36 @@ fun VideoTile(
         ) {
             // Only the frame travels. The badges below belong to the grid, so they stay
             // out of the shared node and cross-fade with the route.
-            AsyncImage(
-                model = request,
-                contentDescription = displayName,
-                imageLoader = imageLoader,
-                contentScale = ContentScale.Crop,
-                colorFilter = frameFilter,
-                modifier = Modifier
-                    // The seat's radius, not the press's: for the first frames of a flight
-                    // begun under a finger the travelling copy can be up to 6 dp rounder
-                    // than the tile beneath it, which at that scale is not visible and is
-                    // not worth a second animation chasing it.
-                    .flickSharedFrame(
-                        sharedScope = sharedScope,
-                        animatedScope = animatedScope,
-                        key = posterKey(item.id),
-                        restCorner = FlickCorners.tile,
-                    )
-                    .fillMaxSize(),
-            )
+            val frameModifier = Modifier
+                // The seat's radius, not the press's: for the first frames of a flight
+                // begun under a finger the travelling copy can be up to 6 dp rounder
+                // than the tile beneath it, which at that scale is not visible and is
+                // not worth a second animation chasing it.
+                .flickSharedFrame(
+                    sharedScope = sharedScope,
+                    animatedScope = animatedScope,
+                    key = posterKey(item.id),
+                    restCorner = FlickCorners.tile,
+                )
+                .fillMaxSize()
+            if (posterPath != null) {
+                FilmPosterOnGround(
+                    posterPath = posterPath,
+                    imageLoader = imageLoader,
+                    contentDescription = displayName,
+                    colorFilter = frameFilter,
+                    modifier = frameModifier,
+                )
+            } else {
+                AsyncImage(
+                    model = request,
+                    contentDescription = displayName,
+                    imageLoader = imageLoader,
+                    contentScale = ContentScale.Crop,
+                    colorFilter = frameFilter,
+                    modifier = frameModifier,
+                )
+            }
             Box(Modifier.fillMaxSize().background(FlickGradients.posterScrim))
             // Stacked, not swapped: the two chips answer different questions, and a file
             // the TV refused still has whatever metadata it always had.

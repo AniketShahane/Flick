@@ -274,6 +274,11 @@ class BackupExclusionsTest {
             "flick_support" to
                 "holds only a saturated successful-cast count and a one-way prompt-consumed " +
                     "marker; it contains no checkout URL, credential, or payment data",
+            "flick_film_posters" to
+                "a cache of public TMDB poster paths keyed by a parsed title and year; it " +
+                    "holds no API key, and a restored copy only saves another phone a lookup",
+            "flick_film_poster_pref" to
+                "one on/off choice for showing posters, which is about the person and travels",
         )
 
         /** `getSharedPreferences("name"` or `getSharedPreferences(CONSTANT`. */
