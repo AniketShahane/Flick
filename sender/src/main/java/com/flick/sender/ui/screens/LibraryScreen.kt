@@ -183,8 +183,7 @@ import kotlin.math.roundToInt
  * Everything about the grid that is a POSITION in it rather than a fact about the library.
  * Held by the shell because routes cross-dissolve: the `AnimatedContent` that swaps them
  * disposes the surface it left, so anything remembered inside this screen is gone by the
- * time the user comes back from a detail sheet — the grid position and search state survive,
- * and the tile a poster is flying home to is still composed for it to land on.
+ * time the user comes back from another tab — the grid position and search state survive.
  *
  * The library itself is not in here. Which files exist and which folder is in force are the
  * controller's, and re-deriving them on arrival is the point of the reload this screen asks
@@ -258,6 +257,7 @@ internal fun LibraryScreen(
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
     cardFlip: Boolean = false,
+    active: () -> Boolean = { true },
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
@@ -408,8 +408,9 @@ internal fun LibraryScreen(
     // Back belongs to the screen, not to the control that raised the field: that control is
     // a row inside the lazy grid, so scrolling down through the results disposes it — and a
     // handler living there would hand Back to the shell, which leaves the library, while
-    // search is still open and still filtering what is on screen.
-    BackHandler(enabled = uiState.searchOpen, onBack = closeSearch)
+    // search is still open and still filtering what is on screen. Not while the screen is
+    // not the route: the grid stays composed under the detail page, whose Back this would take.
+    SearchBackHandler(enabled = { active() && uiState.searchOpen }, onBack = closeSearch)
 
     // The pull's own claim on the indicator, which is not the same claim as `loading`:
     // the library also reloads on a permission grant and on every return to this screen,
@@ -1622,6 +1623,12 @@ private fun LibraryTile(
         animatedScope = animatedScope,
         cardFlip = cardFlip,
     )
+}
+
+/** Its own scope, so the route changing under the grid recomposes only this. */
+@Composable
+private fun SearchBackHandler(enabled: () -> Boolean, onBack: () -> Unit) {
+    BackHandler(enabled = enabled(), onBack = onBack)
 }
 
 /** The answer [libraryEmptyShown] gave last, held across recompositions. */

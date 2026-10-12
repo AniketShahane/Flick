@@ -206,8 +206,9 @@ The verified phone runs an adaptive panel with a 120 Hz peak, and its platform "
 category resolves to 90 Hz there, so motion asks for the rate itself. `ui/motion/FrameRate.kt`
 reads the peak from the display's modes at the current resolution, and `animatingFrameRate(active)`
 votes it with `Modifier.preferredFrameRate` only while something moves: the route
-`AnimatedContent` while its transition runs, the shell while any shared element is in flight
-(the window takes the highest vote, so this covers the overlay), the dock's morph, the
+`AnimatedContent` and the library ⇄ detail stack while their transitions run, the shell while
+any shared element is in flight (the window takes the highest vote, so this covers the
+overlay), the dock's morph, the
 connecting warp's hold and throw, the flick pad's poster from the finger going down until it is
 back at rest (and through a throw), and the card flip. Always-running slow loops vote 30 Hz
 (`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple, the dock's progress

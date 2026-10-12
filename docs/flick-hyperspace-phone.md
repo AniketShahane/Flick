@@ -117,9 +117,11 @@ one; back has no delays at all.
   follow the card, so they are gated by the travel as well as their own track: going home they
   are gone by 15% of the way instead of fading in place over the library.
 - **Layering.** The page's ground, backdrop, scrim and glow sit under the card; the card is drawn
-  in the shared-element overlay, so it also passes over the chrome while it travels. Going back,
-  the library is placed beneath the page it is leaving, and every arriving route otherwise takes
-  a higher layer, so a flip reversed mid-way keeps the page on top while it fades.
+  in the shared-element overlay, so it also passes over the chrome while it travels. Library and
+  detail are one entry to the route switch (`LibraryStack` in `FlickApp.kt`): the page is always
+  drawn over a library that stays composed, so a flip reversed mid-way keeps the page on top
+  while it fades, and closing the page only redraws the grid. The grid is skipped at draw while
+  the page is settled over it, hidden from TalkBack and focus, and takes no touches.
 - **Chrome.** The nav and dock wait below the window while the card comes back and are released
   when 12% of the travel is left, so their rise overlaps the card's last settle (at most 560 ms
   if no card is flying).
