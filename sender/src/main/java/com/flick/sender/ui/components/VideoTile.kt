@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
@@ -612,8 +613,10 @@ fun VideoTile(
     } else {
         null
     }
-    val flipState = flipScopes?.let { (shared, _) ->
-        with(shared) { rememberSharedContentState(cardFlipKey(item.id)) }
+    val flipState = flipScopes?.let { (shared, animated) ->
+        val tileTransition = animated.transition
+        val config = remember(tileTransition) { FlipEndConfig(tileTransition, EnterExitState.PostExit) }
+        with(shared) { rememberSharedContentState(cardFlipKey(item.id), config) }
     }
     val handoff = LocalCardFlipHandoff.current
     val flipKey = cardFlipKey(item.id)
@@ -628,7 +631,12 @@ fun VideoTile(
             1f
         }
     }
-    val landed: () -> Boolean = { handoff.flightFor(flipKey)?.landed == true }
+    // Derived, so the overlay switch below recomposes this tile only when the card touches down,
+    // not on every frame of the flight or whenever any seat comes and goes.
+    val landedState = remember(handoff, flipKey) {
+        derivedStateOf { handoff.flightFor(flipKey)?.landed == true }
+    }
+    val landed: () -> Boolean = { landedState.value }
     // The card carries the marks while it is away from the slot, so the slot's own copy goes
     // and comes back with the face's.
     val cardAway: () -> Boolean = {

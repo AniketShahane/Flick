@@ -230,6 +230,26 @@ internal fun Modifier.cardFlipBounds(
 }
 
 /**
+ * One end of the flip, switched off while it rests on [restingIn]. Both ends stay composed while
+ * the page is up, and a match left standing between legs keeps the bounds it last animated: Back
+ * would start from where the seat was when the card landed, not from where the page has since
+ * moved it. Off at rest, each leg matches afresh from the ends' current bounds. The seat's switch
+ * is the one that clears a match at the settle: an end that is not the target is not watched then.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Stable
+internal class FlipEndConfig(
+    private val transition: Transition<EnterExitState>,
+    private val restingIn: EnterExitState,
+) : SharedTransitionScope.SharedContentConfig {
+    override val SharedTransitionScope.SharedContentState.isEnabled: Boolean
+        get() = transition.currentState != restingIn || transition.targetState != restingIn
+
+    override val shouldKeepEnabledForOngoingAnimation: Boolean
+        get() = false
+}
+
+/**
  * Hides the tile's own copy while the seat is drawing the card in its place, and shows it
  * again the moment the card lands — not when the route transition ends, which is as long as
  * the slowest of the page's tracks and would hold a badge-less copy over the tile for it.
@@ -509,7 +529,9 @@ internal fun FlipCard(
         }
         return
     }
-    val state = with(seat.sharedScope) { rememberSharedContentState(seat.key) }
+    val seatTransition = seat.animatedScope.transition
+    val config = remember(seatTransition) { FlipEndConfig(seatTransition, EnterExitState.Visible) }
+    val state = with(seat.sharedScope) { rememberSharedContentState(seat.key, config) }
     val tracks = seat.tracks
     val handoff = LocalCardFlipHandoff.current
     val flight = remember(seat.key, tracks, seat.animatedScope) {

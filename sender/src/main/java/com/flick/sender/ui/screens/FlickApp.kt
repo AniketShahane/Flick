@@ -193,7 +193,15 @@ fun FlickApp(
     // Plain, for [ShellHistory]'s reason; written before the switch reads it below.
     val stackTop = remember { StackTop(Route.Library) }
     if (route == Route.Library || route is Route.Detail) stackTop.route = route
-    val baseRoute = if (route is Route.Detail) Route.Library else route
+    // A stack left with its page up is a new entry if it comes back, even mid-exit: the
+    // entry still leaving keeps its page, and the one arriving starts settled where it is.
+    val stackGeneration = remember { StackGeneration() }
+    val generation = remember(route) { stackGeneration.after(route) }
+    val baseRoute = if (route == Route.Library || route is Route.Detail) {
+        RouteEntry(Route.Library, generation)
+    } else {
+        RouteEntry(route, 0)
+    }
     // Shared by the two ends of the card flip and read here: the card coming back down is what
     // releases the chrome below.
     val cardFlipHandoff = remember { CardFlipHandoff() }
@@ -436,8 +444,8 @@ fun FlickApp(
                             .hazeSource(navHazeState),
                         targetState = baseRoute,
                         transitionSpec = {
-                            val from = stackAwareDestination(initialState, stackTop)
-                            val to = stackAwareDestination(targetState, stackTop)
+                            val from = stackAwareDestination(initialState.route, stackTop)
+                            val to = stackAwareDestination(targetState.route, stackTop)
                             val motion = routeMotion(from, to, flightDockLive)
                             val transform = if (reduceMotion) {
                                 EnterTransition.None togetherWith ExitTransition.None
@@ -515,7 +523,8 @@ fun FlickApp(
                             transform.apply { targetContentZIndex = routeLayers.next() }
                         },
                         label = "route",
-                    ) { r ->
+                    ) { entry ->
+                        val r = entry.route
                         Box(
                             Modifier
                                 .fillMaxSize()
@@ -544,45 +553,53 @@ fun FlickApp(
                         ) {
                             when (r) {
                                 Route.Connect -> ConnectScreen(controller, onOpenWifiSettings)
-                                Route.Library, is Route.Detail -> LibraryStack(
+                                Route.Library, is Route.Detail -> {
                                     // Read here, not off [stackTop] alone, so this entry
-                                    // recomposes when the page opens or closes over it.
-                                    top = if (route == Route.Library || route is Route.Detail) {
-                                        route
-                                    } else {
-                                        stackTop.route
-                                    },
-                                    interactive = route == Route.Library,
-                                    sharedScope = sharedScope,
-                                    reduceMotion = reduceMotion,
-                                    library = { tileScope ->
-                                        LibraryScreen(
-                                            controller = controller,
-                                            supportAvailable = supportCatalog != null,
-                                            onOpenSupport = { controller.toggleSupportSheet(true) },
-                                            onRequestVideoPermission = onRequestVideoPermission,
-                                            mediaPermission = mediaPermission,
-                                            onOpenAppSettings = onOpenAppSettings,
-                                            uiState = libraryUi,
-                                            sharedScope = sharedScope,
-                                            animatedScope = tileScope,
-                                            // The tiles' scope only ever moves for the flip, so
-                                            // a constant here keeps the grid from recomposing
-                                            // on the frame the page opens.
-                                            cardFlip = !reduceMotion,
-                                            active = { route == Route.Library },
-                                        )
-                                    },
-                                    detail = { item, seatScope ->
-                                        DetailScreen(
-                                            controller = controller,
-                                            item = item,
-                                            sharedScope = sharedScope,
-                                            animatedScope = seatScope,
-                                            cardFlip = cardFlip,
-                                        )
-                                    },
-                                )
+                                    // recomposes when the page opens or closes over it. An entry
+                                    // that is not the target keeps the page it left with.
+                                    val live = entry == baseRoute
+                                    val entryTop = remember { StackTop(stackTop.route) }
+                                    if (live) entryTop.route = stackTop.route
+                                    // One grid at a time: every grid shares the one scroll state.
+                                    // A stack already replaced by a newer one is leaving under
+                                    // its page, so its grid goes.
+                                    val replaced = !live && baseRoute.route == Route.Library
+                                    LibraryStack(
+                                        top = entryTop.route,
+                                        interactive = live && route == Route.Library,
+                                        sharedScope = sharedScope,
+                                        reduceMotion = reduceMotion,
+                                        library = { tileScope ->
+                                            if (!replaced) {
+                                                LibraryScreen(
+                                                    controller = controller,
+                                                    supportAvailable = supportCatalog != null,
+                                                    onOpenSupport = { controller.toggleSupportSheet(true) },
+                                                    onRequestVideoPermission = onRequestVideoPermission,
+                                                    mediaPermission = mediaPermission,
+                                                    onOpenAppSettings = onOpenAppSettings,
+                                                    uiState = libraryUi,
+                                                    sharedScope = sharedScope,
+                                                    animatedScope = tileScope,
+                                                    // The tiles' scope only ever moves for the flip,
+                                                    // so a constant here keeps the grid from
+                                                    // recomposing on the frame the page opens.
+                                                    cardFlip = !reduceMotion,
+                                                    active = { live && route == Route.Library },
+                                                )
+                                            }
+                                        },
+                                        detail = { item, seatScope ->
+                                            DetailScreen(
+                                                controller = controller,
+                                                item = item,
+                                                sharedScope = sharedScope,
+                                                animatedScope = seatScope,
+                                                cardFlip = cardFlip,
+                                            )
+                                        },
+                                    )
+                                }
                                 Route.Settings -> PhoneSettingsScreen(
                                     controller = controller,
                                     supportAvailable = supportCatalog != null,
@@ -797,6 +814,22 @@ private class RouteLayers {
 /** Which of Library or Detail the stack last showed; plain for [ShellHistory]'s reason. */
 private class StackTop(var route: Route)
 
+/** The route switch's key: the stack's entry is [Route.Library] in its [generation]. */
+private data class RouteEntry(val route: Route, val generation: Int)
+
+/** Counts the times the route left the stack with a page up. Plain, for [ShellHistory]'s reason. */
+private class StackGeneration {
+    private var last: Route? = null
+    private var count = 0
+
+    fun after(route: Route): Int {
+        val inStack = route == Route.Library || route is Route.Detail
+        if (last is Route.Detail && !inStack) count++
+        last = route
+        return count
+    }
+}
+
 /** A route as the pair table sees it: the stack's entry stands for whichever page is on top. */
 private fun stackAwareDestination(state: Route, top: StackTop): ShellDestination =
     SenderShellPolicy.destinationOf(if (state == Route.Library) top.route else state)
@@ -848,7 +881,7 @@ private fun LibraryStack(
                 .then(if (reduceMotion) Modifier.graphicsLayer { alpha = gridAlpha.value } else Modifier)
                 // The page is opaque once it has settled; until then the grid shows through it.
                 .drawWithContent {
-                    val settled = stack.currentState != null && stack.targetState != null &&
+                    val settled = stack.currentState == stack.targetState && stack.targetState != null &&
                         !sharedScope.isTransitionActive
                     if (!settled) drawContent()
                 },
