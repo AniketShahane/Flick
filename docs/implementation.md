@@ -231,8 +231,8 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   and the warp's rings, which share one stroke paint.
 - **No warm is unsized.** The image loader's memory cache is shared with the grid and capped
   (a quarter of the heap up to 48 MB, 8 MB on low-RAM phones): enough for a screen of tiles
-  and the detail page over them, so neither evicts the other. Decodes and blurs run two at a
-  time. The card flip's small poster (w342) is warmed into memory at
+  and the detail page over them, so neither evicts the other. Decodes run two at a time; the
+  soft blur runs one at a time on a dispatcher of its own, so it never queues behind them. The card flip's small poster (w342) is warmed into memory at
   114 × 171 px while its tile is on screen and at 228 × 342 px at the tap; the full-size poster
   is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's
   front asks for its art at the size the tile drew it, so it is the tile's own decode. An unsized warm decodes at the display's

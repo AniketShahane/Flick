@@ -140,7 +140,8 @@ fun videoImageLoader(context: Context): ImageLoader {
             // Two at a time: a fling or a flip asks for a dozen decodes at once, and an
             // unbounded fan-out spends the frame's CPU on lock contention and garbage.
             .decoderDispatcher(ArtDecodeDispatcher)
-            .transformationDispatcher(ArtDecodeDispatcher)
+            // Apart from the decodes, so the detail page's blur never queues behind a fling's.
+            .transformationDispatcher(ArtTransformDispatcher)
             // An absolute ceiling keeps a large-heap phone from turning a proportional
             // default into an oversized gallery cache. The proportional half still lets
             // the platform's low-memory verdict shrink it further.
@@ -155,6 +156,7 @@ fun videoImageLoader(context: Context): ImageLoader {
 }
 
 private val ArtDecodeDispatcher = Dispatchers.IO.limitedParallelism(2)
+private val ArtTransformDispatcher = Dispatchers.Default.limitedParallelism(1)
 
 /**
  * The smaller of a heap share and a hard byte ceiling. Low-RAM devices get both a smaller
@@ -162,8 +164,8 @@ private val ArtDecodeDispatcher = Dispatchers.IO.limitedParallelism(2)
  *
  * Sized to hold a screen of tiles AND the detail page opened over them (its poster at the
  * seat's size, the blurred ground, the logo, the hero frame): any less and every open evicted
- * the grid it closes back onto, and every close and scroll decoded it again. The share is
- * Coil's own default; the art among it is hardware bitmaps, counted here but not Java heap.
+ * the grid it closes back onto, and every close and scroll decoded it again. A quarter, above
+ * Coil's 0.2 default, for that reason. Hardware bitmaps count against it without being Java heap.
  */
 private fun frameCacheBudgetBytes(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
