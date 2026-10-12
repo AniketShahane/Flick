@@ -34,9 +34,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,6 +96,7 @@ import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.softBlur
+import com.flick.sender.ui.theme.FlickColors
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
 import com.flick.sender.ui.theme.FlickIcons
@@ -601,7 +605,7 @@ fun VideoTile(
     val handoff = LocalCardFlipHandoff.current
     val flipKey = cardFlipKey(item.id)
     val badge = flipScopes?.let { (_, animated) -> rememberTileBadgeTrack(animated.transition, cardFlip) }
-    // How much of the slot — its ground, shadow, badges and running time — is gone from under
+    // How much of the slot — its ground and shadow — is gone from under
     // the card. Coming back it follows the card's own travel, so it is whole as the card lands.
     val slot: () -> Float = {
         if (badge != null && flipState?.isMatchFound == true) {
@@ -612,6 +616,24 @@ fun VideoTile(
         }
     }
     val landed: () -> Boolean = { handoff.flightFor(flipKey)?.landed == true }
+    // The card carries the marks while it is away from the slot, so the slot's own copy goes
+    // and comes back with the face's.
+    val cardAway: () -> Boolean = {
+        flipScopes != null && flipState != null &&
+            flipState.isMatchFound && flipScopes.first.isTransitionActive && !landed()
+    }
+    // The tile's own colours travel with the marks: the detail page draws the card under its
+    // cinematic palette, and the marks must land looking as the tile draws them.
+    val marks = TileMarks(
+        hdr = hdr,
+        unplayable = unplayable,
+        noSound = noSound,
+        resumeFraction = resume?.fraction,
+        colors = colors,
+    )
+    if (flipScopes != null) {
+        SideEffect { handoff.refreshMarks(flipKey, marks) }
+    }
     // Plain, not state: read once, at the tap.
     val faceSize = remember { FaceSize() }
     // The detail card turns over to this poster about a tenth of a second after a tap.
@@ -627,7 +649,7 @@ fun VideoTile(
         val leaving = animatedScope != null && animatedScope.transition.targetState != EnterExitState.Visible
         val flying = sharedScope?.isTransitionActive == true
         if (!leaving && !flying) {
-            handoff.armTile(flipKey, faceSize.px)
+            handoff.armTile(flipKey, faceSize.px, marks)
             posterPath?.let { warmFilmPoster(context, imageLoader, it) }
             currentOnClick()
         }
@@ -690,53 +712,19 @@ fun VideoTile(
                     Modifier.onSizeChanged { faceSize.px = it }.fillMaxSize()
                 },
             )
-            // The slot's marks. While a card is in the air they are drawn in the shared
-            // overlay, above it, as the design has them: fading off the card as it lifts, and
-            // back onto it as it lands, so nothing about the tile changes at the hand-back.
-            // The overlay bypasses every ancestor layer, so they carry their own fade and clip.
-            Box(
-                Modifier
+            // The slot's marks. While the card is away they ride on its front instead
+            // (CardFlipSeat.marks), fading off it as it leaves and back on as it lands.
+            TileMarkings(
+                item = item,
+                marks = marks,
+                modifier = Modifier
                     .matchParentSize()
-                    .then(
-                        if (flipScopes != null && flipState != null) {
-                            with(flipScopes.first) {
-                                Modifier.renderInSharedTransitionScopeOverlay(
-                                    renderInOverlay = { flipState.isMatchFound && isTransitionActive },
-                                    zIndexInOverlay = TileMarksZIndex,
-                                )
-                            }
-                        } else {
-                            Modifier
-                        },
-                    )
                     .graphicsLayer {
-                        alpha = slot()
+                        alpha = if (cardAway()) 0f else slot()
                         this.shape = shape
                         clip = true
                     },
-            ) {
-                // Stacked, not swapped: the two chips answer different questions, and a file
-                // the TV refused still has whatever metadata it always had.
-                Column(
-                    modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    MetadataBadge(hdr = hdr, item = item)
-                    if (unplayable) RefusedBadge()
-                    if (noSound) NoSoundBadge()
-                }
-                // A zero duration means MediaStore had no value, not a zero-length film.
-                if (item.knowsDuration) {
-                    Text(
-                        text = Format.timecode(item.durationMs),
-                        style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(bottom = 10.dp, end = 11.dp),
-                    )
-                }
-                resume?.let { ResumeLine(fraction = it.fraction, played = colors.spark) }
-            }
+            )
         }
         Column {
             Text(
@@ -755,6 +743,50 @@ fun VideoTile(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 3.dp),
             )
+        }
+    }
+}
+
+/** What a tile marks its face with, captured so the flying card can draw the same marks. */
+@Immutable
+internal data class TileMarks(
+    val hdr: HdrType?,
+    val unplayable: Boolean,
+    val noSound: Boolean,
+    val resumeFraction: Float?,
+    val colors: FlickColors,
+)
+
+/**
+ * The tile's marks over its face: the claim chips top-left, the running time bottom-right and
+ * the watched line along the bottom edge. Drawn by the tile at rest and by the card in flight,
+ * in the tile's own colours either way.
+ */
+@Composable
+internal fun TileMarkings(item: MediaItem, marks: TileMarks, modifier: Modifier = Modifier) {
+    CompositionLocalProvider(LocalFlickColors provides marks.colors) {
+        Box(modifier) {
+            // Stacked, not swapped: the two chips answer different questions, and a file
+            // the TV refused still has whatever metadata it always had.
+            Column(
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                MetadataBadge(hdr = marks.hdr, item = item)
+                if (marks.unplayable) RefusedBadge()
+                if (marks.noSound) NoSoundBadge()
+            }
+            // A zero duration means MediaStore had no value, not a zero-length film.
+            if (item.knowsDuration) {
+                Text(
+                    text = Format.timecode(item.durationMs),
+                    style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(bottom = 10.dp, end = 11.dp),
+                )
+            }
+            marks.resumeFraction?.let { ResumeLine(fraction = it, played = marks.colors.spark) }
         }
     }
 }
@@ -951,9 +983,6 @@ private const val WithheldFill = 0.62f
 private const val RefusedSaturation = 0.45f
 
 private val TileElevation = 10.dp
-
-/** Above the flying card (0), which the slot's marks fade off and back onto. */
-private const val TileMarksZIndex = 1f
 
 /** The size the face was last laid out at; plain, so a layout pass never recomposes the tile. */
 private class FaceSize {

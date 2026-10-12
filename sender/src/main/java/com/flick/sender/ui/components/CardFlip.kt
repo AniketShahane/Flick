@@ -114,8 +114,17 @@ internal object CardFlipMotion {
     val RiseDistance = 14.dp
     val CaptionRiseDistance = 18.dp
 
-    /** Travel still left when the slot's badges start returning; they are whole at contact. */
+    /** Travel still left when the slot's ground and shadow start returning; whole at contact. */
     const val BadgeReturnTravel = 0.06f
+    /**
+     * Share of the travel over which the tile's marks, drawn on the card's front, fade off it on
+     * the way out and back onto it on the way home: whole at the slot, gone from 30% of the way.
+     */
+    const val MarksTravel = 0.3f
+    /** Share of the travel home by which the light under the seat is gone; it cannot follow the card. */
+    const val GlowGoneTravel = 0.15f
+    /** Travel left over which a card coming home has its turn squared off, so it is flat at contact. */
+    const val TurnSettleTravel = 0.15f
     /** Travel and turn left at which the card counts as down: a pixel or two, and half a degree. */
     const val LandedWithin = 0.003f
     /** Travel left when the shell lets its bottom stack rise, so the rise overlaps the settle. */
@@ -138,6 +147,29 @@ internal fun flipLiftScale(lift: Float, move: Float, backLeg: Boolean): Float {
     val reach = if (backLeg) (1f - m) * m else 1f - m
     return 1f + CardFlipMotion.LiftScale * lift * reach
 }
+
+/**
+ * How opaque the tile's marks are on the card's front at travel [move]. One function of the
+ * travel for both legs, so a flight turned round mid-way never jumps.
+ */
+internal fun flipMarksAlpha(move: Float): Float = 1f - smoothstep(0f, CardFlipMotion.MarksTravel, move)
+
+/**
+ * The glow and shadow under the seat. They stay on the page while the card leaves it, so they
+ * are also bound to the travel and are gone before the card is clear of the seat. Both legs:
+ * open, the glow's delay outlasts the travel and the gate is already open; a flight turned
+ * round either way keeps one continuous value.
+ */
+internal fun flipGlowPresence(glow: Float, move: Float): Float =
+    glow.coerceIn(0f, 1f) * smoothstep(1f - CardFlipMotion.GlowGoneTravel, 1f, move)
+
+/**
+ * The turn as drawn. Back, it is also scaled down over the last of the travel, so a reversed
+ * flight whose turn lags its travel still meets the tile flat; on a fresh leg the two springs
+ * match and this only eases the last few degrees.
+ */
+internal fun flipTurnPose(turn: Float, move: Float, backLeg: Boolean): Float =
+    if (backLeg) turn * smoothstep(0f, CardFlipMotion.TurnSettleTravel, move) else turn
 
 /** How much of the grid slot is still gone while the card comes back with [move] left to go. */
 internal fun flipBadgeHidden(move: Float): Float =
@@ -213,13 +245,14 @@ internal fun Modifier.hideWhileFlipping(
  * What the two ends of a flip share outside the shared-element machinery: the seat in flight,
  * so the grid can tell when its card is down and the shell when to bring its chrome back, and
  * the size the tapped tile's face was drawn at, so the seat can ask Coil for the very bitmap
- * the tile is showing.
+ * the tile is showing, and the tile's marks, so the card can carry them.
  */
 @Stable
 internal class CardFlipHandoff {
     private var flight by mutableStateOf<SeatFlight?>(null)
     private var tileKey: String? = null
     private var tileFace: IntSize = IntSize.Zero
+    private var tileMarks by mutableStateOf<TileMarks?>(null)
 
     /** The seat flying [key]'s card, if one is registered. Snapshot state: read it in a layer. */
     fun flightFor(key: String): SeatFlight? = flight?.takeIf { it.key == key }
@@ -236,10 +269,19 @@ internal class CardFlipHandoff {
     }
 
     /** Written at the tap, before the route changes, so the page's first composition has it. */
-    fun armTile(key: String, facePx: IntSize) {
+    fun armTile(key: String, facePx: IntSize, marks: TileMarks) {
         tileKey = key
         tileFace = facePx
+        tileMarks = marks
     }
+
+    /** Keeps the armed tile's marks current, so the card lands with exactly what the tile shows. */
+    fun refreshMarks(key: String, marks: TileMarks) {
+        if (tileKey == key) tileMarks = marks
+    }
+
+    /** The armed tile's marks, for the card's front. Snapshot state. */
+    fun marksFor(key: String): TileMarks? = tileMarks?.takeIf { tileKey == key }
 
     fun tileFaceFor(key: String): IntSize? =
         tileFace.takeIf { tileKey == key && it.width > 0 && it.height > 0 }
@@ -256,7 +298,8 @@ internal class SeatFlight(
 ) {
     val backLeg: Boolean get() = transition.targetState != EnterExitState.Visible
     val move: Float get() = tracks.move.value
-    val landed: Boolean get() = backLeg && flipLanded(tracks.move.value, tracks.flip.value)
+    val landed: Boolean
+        get() = backLeg && flipLanded(tracks.move.value, flipTurnPose(tracks.flip.value, tracks.move.value, true))
     val nearContact: Boolean get() = backLeg && tracks.move.value <= CardFlipMotion.ChromeRiseTravel
 }
 
@@ -413,13 +456,18 @@ internal fun Modifier.fadeUp(progress: () -> Float, distance: Dp): Modifier = gr
     translationY = (1f - p) * distance.toPx()
 }
 
-/** What the seat needs to draw the flight: the shared bounds' scopes and the page's tracks. */
+/**
+ * What the seat needs to draw the flight: the shared bounds' scopes and the page's tracks.
+ * [marks] are the tile's badges, running time and watched line, drawn on the front face so they
+ * travel, scale and turn with it while they fade ([flipMarksAlpha]).
+ */
 @Stable
 internal class CardFlipSeat(
     val sharedScope: SharedTransitionScope,
     val animatedScope: AnimatedVisibilityScope,
     val key: String,
     val tracks: CardFlipTracks,
+    val marks: @Composable () -> Unit,
     val front: @Composable () -> Unit,
 )
 
@@ -469,7 +517,7 @@ internal fun FlipCard(
         }
     }
     val inFlight = { state.isMatchFound && seat.sharedScope.isTransitionActive }
-    val turn = { if (inFlight()) tracks.flip.value else 1f }
+    val turn = { if (inFlight()) flipTurnPose(tracks.flip.value, tracks.move.value, flight.backLeg) else 1f }
     val corner: Density.() -> Float = {
         val move = if (inFlight()) tracks.move.value else 1f
         lerp(FlickCorners.tile.toPx(), seatCorner.toPx(), move.coerceIn(0f, 1f))
@@ -503,7 +551,14 @@ internal fun FlipCard(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { alpha = if (180f * turn() < 90f) 1f else 0f },
-        ) { seat.front() }
+        ) {
+            seat.front()
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = if (inFlight()) flipMarksAlpha(tracks.move.value) else 0f },
+            ) { seat.marks() }
+        }
         Box(
             Modifier
                 .fillMaxSize()

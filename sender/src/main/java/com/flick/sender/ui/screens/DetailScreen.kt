@@ -99,8 +99,10 @@ import com.flick.sender.ui.components.FlickPad
 import com.flick.sender.ui.components.FlickPadMotion
 import com.flick.sender.ui.components.LocalCardFlipHandoff
 import com.flick.sender.ui.components.TileFace
+import com.flick.sender.ui.components.TileMarkings
 import com.flick.sender.ui.components.cardFlipKey
 import com.flick.sender.ui.components.fadeUp
+import com.flick.sender.ui.components.flipGlowPresence
 import com.flick.sender.ui.components.rememberCardFlipTracks
 import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
 import com.flick.sender.ui.components.rememberSoftFrameRequest
@@ -226,7 +228,15 @@ fun DetailScreen(
     // decode and is drawn from memory on its first frame.
     val tileFacePx = remember(flipKey) { handoff.tileFaceFor(flipKey) }
     val seat = if (sharedScope != null && animatedScope != null && tracks != null && !reduceMotion) {
-        CardFlipSeat(sharedScope, animatedScope, flipKey, tracks) {
+        CardFlipSeat(
+            sharedScope,
+            animatedScope,
+            flipKey,
+            tracks,
+            marks = {
+                if (cardFlip) handoff.marksFor(flipKey)?.let { TileMarkings(item, it, Modifier.fillMaxSize()) }
+            },
+        ) {
             if (cardFlip) {
                 TileFace(
                     item = item,
@@ -347,7 +357,7 @@ fun DetailScreen(
                     // The throw waits for the card to land: until then the seat is not where
                     // the finger is.
                     throwReady = sharedScope?.isTransitionActive != true,
-                    glowIn = { tracks?.glow?.value ?: 1f },
+                    glowIn = { tracks?.let { flipGlowPresence(it.glow.value, it.move.value) } ?: 1f },
                     chevronsIn = { tracks?.chevrons?.value ?: 1f },
                     captionIn = { tracks?.caption?.value ?: 1f },
                     modifier = Modifier

@@ -88,25 +88,34 @@ one; back has no delays at all.
 | Track | Open: delay, damping, stiffness | Back |
 |---|---|---|
 | Lift — scale 1 + 0.08 × lift × (1 − travel); back, × travel as well, so it is 0 at contact | 0 ms, 0.75, 900 | 0 ms, 1, 1000 |
-| Grid badges, running time, slot ground and shadow fade | 0 ms, 1, 2500 | follow the travel: whole from 6% of it left to contact |
+| Tile's badges, running time and watched line — drawn on the card's front, fade with the travel | 1 − smoothstep over the first 30% of the travel | the same curve: back on over the last 30%, whole at contact |
+| Slot ground and shadow fade (left in the grid) | 0 ms, 1, 2500 | follow the travel: whole from 6% of it left to contact |
 | Travel to the seat (the bounds; also eases the corner 26 dp → 8% of the poster's width) | 0 ms, 0.86, 260 | 0 ms, 1, 520 |
-| Flip — rotationY 180° × flip, roll −6° × sin(π × flip), camera distance 12 × density | 60 ms, 0.6, 190 | 0 ms, 1, 520 |
+| Flip — rotationY 180° × flip, roll −6° × sin(π × flip), camera distance 12 × density; back, flip is also × smoothstep over the last 15% of the travel, so both rotations are 0 at contact even on a reversed leg | 60 ms, 0.6, 190 | 0 ms, 1, 520 |
 | Page — ground, backdrop and scrim opacity | 60 ms, 1, 360 | 0 ms, 1, 620 |
 | Back disc / title / meta / chips (and attached subtitle) — rise 14 dp and fade in | 260 / 290 / 320 / 350 ms, 1, 500 | 0 ms, 1, 1400 |
-| Glow and shadow under the seated card — grow from 0.7 × and fade in | 380 ms, 1, 300 | 0 ms, 1, 1100 |
+| Glow and shadow under the seated card — grow from 0.7 × and fade in; also × smoothstep over the last 15% of the travel, so back they are gone by 15% of the way | 380 ms, 1, 300 | 0 ms, 1, 1100 |
 | Chevrons — rise 14 dp | 460 ms, 1, 500 | 0 ms, 1, 1400 |
 | Caption, note and notice card — rise 18 dp | 480 ms, 1, 500 | 0 ms, 1, 1400 |
 
-- **Landing and hand-back.** Coming back, the card is down when the travel and the turn are both
-  within 0.003 of home (a pixel or two, and half a degree); the turn home is as stiff as the
-  travel so neither waits on the other. On that frame the seat stops drawing and the
+- **Landing and hand-back.** Coming back, the card is down when the travel and the turn as drawn
+  are both within 0.003 of home (a pixel or two, and half a degree); the turn home is as stiff
+  as the travel so neither waits on the other, and the drawn turn is squared to the travel over
+  its last 15%, so a flight reversed mid-way (whose turn lags its travel) still lands flat and at
+  the tile's size rather than settling a few degrees on top of it. On that frame the seat stops drawing and the
   tile's own copy shows; neither waits for the route transition to end, which runs as long as
   the slowest page track. The seat is a card in flight only while a shared transition is
   active; otherwise it is the seated poster, fading with the page.
-- **The slot's marks.** The tile's badges, running time and watched line are drawn in the shared
-  overlay above the card while it flies (as on the design board): they fade off the card as it
-  lifts and back onto it over the last 6% of the travel home, so they are whole at contact and
-  nothing about the tile changes at the hand-back.
+- **The slot's marks.** The tile's badges, running time and watched line (`TileMarkings`) ride on
+  the card's front face while it flies, so they take its bounds, lift, turn and corner exactly:
+  whole on the first lift frame, gone by 30% of the travel out, back on over the last 30% home
+  and whole at contact. The tile's own copy is hidden with its face for the flight and shown
+  with it at the hand-back, so nothing pops at either end. The tile hands its marks and its own
+  palette to the page at the tap (`CardFlipHandoff`), so the card draws them in the tile's
+  colours under the page's cinematic theme.
+- **The light under the seat.** The glow and its tinted shadow are flat on the page and cannot
+  follow the card, so they are gated by the travel as well as their own track: going home they
+  are gone by 15% of the way instead of fading in place over the library.
 - **Layering.** The page's ground, backdrop, scrim and glow sit under the card; the card is drawn
   in the shared-element overlay, so it also passes over the chrome while it travels. Going back,
   the library is placed beneath the page it is leaving, and every arriving route otherwise takes

@@ -1,5 +1,8 @@
 package com.flick.sender.ui.components
 
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -46,6 +49,49 @@ class CardFlipMotionTest {
         assertTrue(CardFlipMotion.ChromeRiseTravel > CardFlipMotion.LandedWithin)
         // And the slot is whole by the time the card counts as down.
         assertTrue(flipBadgeHidden(CardFlipMotion.LandedWithin) < 0.05f)
+    }
+
+    @Test fun theMarksRideTheCardWholeAtTheSlotAndGoneByAThirdOfTheWay() {
+        assertEquals(1f, flipMarksAlpha(0f), 0f)
+        assertEquals(1f, flipMarksAlpha(-0.01f), 0f)
+        assertEquals(0f, flipMarksAlpha(CardFlipMotion.MarksTravel), 0f)
+        assertEquals(0f, flipMarksAlpha(1f), 0f)
+        assertEquals(0f, flipMarksAlpha(1.02f), 0f)
+        // Still whole when the card counts as down, so the tile's own copy takes over unchanged.
+        assertTrue(flipMarksAlpha(CardFlipMotion.LandedWithin) > 0.999f)
+        for (i in 1 until steps.size) assertTrue(flipMarksAlpha(steps[i]) <= flipMarksAlpha(steps[i - 1]))
+    }
+
+    @Test fun theGlowUnderTheSeatIsGoneEarlyInTheTravelHome() {
+        assertEquals(1f, flipGlowPresence(glow = 1f, move = 1f), 0f)
+        assertEquals(0.4f, flipGlowPresence(glow = 0.4f, move = 1.01f), 1e-6f)
+        for (m in steps.filter { it <= 1f - CardFlipMotion.GlowGoneTravel }) {
+            assertEquals("move=$m", 0f, flipGlowPresence(glow = 1f, move = m), 0f)
+        }
+        assertTrue(CardFlipMotion.GlowGoneTravel <= 0.15f)
+        for (i in 1 until steps.size) {
+            assertTrue(flipGlowPresence(1f, steps[i]) >= flipGlowPresence(1f, steps[i - 1]))
+        }
+    }
+
+    @Test fun aCardComingHomeIsFlatAtContactEvenWhenItsTurnLags() {
+        // A reversed flight: the turn still well short of home, or past the seat's half-turn.
+        for (turn in listOf(0f, 0.05f, 0.3f, 0.6f, 1.1f, -0.02f)) {
+            assertEquals("turn=$turn", 0f, flipTurnPose(turn, move = 0f, backLeg = true), 0f)
+            assertEquals("turn=$turn", 0f, flipTurnPose(turn, move = -0.01f, backLeg = true), 0f)
+            // Untouched until the last of the travel, so turning round never jumps.
+            assertEquals(turn, flipTurnPose(turn, CardFlipMotion.TurnSettleTravel, backLeg = true), 0f)
+            assertEquals(turn, flipTurnPose(turn, 0.6f, backLeg = true), 0f)
+            // Open is the turn as sprung.
+            assertEquals(turn, flipTurnPose(turn, 0f, backLeg = false), 0f)
+            // Down means flat: under half a degree of turn, so the roll is gone too.
+            val atContact = flipTurnPose(turn, CardFlipMotion.LandedWithin, backLeg = true)
+            assertTrue("turn=$turn", abs(180f * atContact) < 0.5f)
+            assertTrue("turn=$turn", flipLanded(CardFlipMotion.LandedWithin, atContact))
+            assertTrue("turn=$turn", abs(CardFlipMotion.TiltDegrees * sin(PI.toFloat() * atContact)) < 0.1f)
+        }
+        // On a fresh leg the turn follows the travel, and the pose only ever eases it.
+        for (m in steps) assertTrue(abs(flipTurnPose(m, m, backLeg = true)) <= m + 1e-6f)
     }
 
     @Test fun aLegStartsFreshOnlyFromAPoseAtOneEnd() {
