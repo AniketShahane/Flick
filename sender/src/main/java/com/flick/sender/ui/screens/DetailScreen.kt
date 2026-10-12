@@ -56,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -293,9 +294,13 @@ fun DetailScreen(
 
             // Blurred once into a small bitmap rather than live: a full-screen blur re-runs on
             // every frame the page is drawn, and the page's entrance is nothing but frames.
-            // Top-aligned, where a backdrop keeps its subject.
+            // Top-aligned, where a backdrop keeps its subject. One bitmap, so its fade modulates
+            // the draw rather than costing a window-sized offscreen layer for every fading frame.
             val viewportAspect = maxHeight / maxWidth
-            val backdropModifier = Modifier.fillMaxSize().graphicsLayer { alpha = page() }
+            val backdropModifier = Modifier.fillMaxSize().graphicsLayer {
+                alpha = page()
+                compositingStrategy = CompositingStrategy.ModulateAlpha
+            }
             val backdropPath = art?.backdrop
             when {
                 backdropPath != null -> FilmSoftBackdrop(
@@ -587,7 +592,7 @@ private fun DetailIdentity(
             logoPath = art?.logo,
             title = title,
             imageLoader = imageLoader,
-            modifier = Modifier.fadeUp(logoIn, CardFlipMotion.RiseDistance),
+            modifier = Modifier.fadeUp(logoIn, CardFlipMotion.RiseDistance, flat = true),
         )
         Spacer(Modifier.height(10.dp))
         Text(
@@ -596,7 +601,7 @@ private fun DetailIdentity(
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fadeUp(metaIn, CardFlipMotion.RiseDistance),
+            modifier = Modifier.fadeUp(metaIn, CardFlipMotion.RiseDistance, flat = true),
         )
         Spacer(Modifier.height(14.dp))
         // Source-fact chips reflow on narrow or large-font windows instead of
@@ -620,7 +625,7 @@ private fun DetailIdentity(
             AttachedSubtitleRow(
                 displayName = subtitle.first,
                 language = subtitle.second,
-                modifier = Modifier.fadeUp(chipsIn, CardFlipMotion.RiseDistance),
+                modifier = Modifier.fadeUp(chipsIn, CardFlipMotion.RiseDistance, flat = true),
             )
         }
     }

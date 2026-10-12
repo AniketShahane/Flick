@@ -35,6 +35,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Density
@@ -450,12 +451,18 @@ internal fun rememberTileBadgeTrack(
 /**
  * Rises [distance] into place and fades in with [progress]: the page's chrome arriving
  * around the card. Read in the layer, so the tracks never recompose what they move.
+ *
+ * [flat] is content that never draws over itself (a line of type, an icon beside it): its fade
+ * can modulate each draw, instead of the platform allocating an offscreen layer for every
+ * frame the fade is part-way, which on the page's first frames is a fresh allocation per fade.
  */
-internal fun Modifier.fadeUp(progress: () -> Float, distance: Dp): Modifier = graphicsLayer {
-    val p = progress()
-    alpha = p.coerceIn(0f, 1f)
-    translationY = (1f - p) * distance.toPx()
-}
+internal fun Modifier.fadeUp(progress: () -> Float, distance: Dp, flat: Boolean = false): Modifier =
+    graphicsLayer {
+        val p = progress()
+        alpha = p.coerceIn(0f, 1f)
+        translationY = (1f - p) * distance.toPx()
+        if (flat) compositingStrategy = CompositingStrategy.ModulateAlpha
+    }
 
 /**
  * What the seat needs to draw the flight: the shared bounds' scopes and the page's tracks.

@@ -52,6 +52,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -692,8 +693,17 @@ fun VideoTile(
                 .indication(interaction, flickRipple(colors.spark)),
         ) {
             // The slot's ground on a layer of its own: the face above it must be whole the
-            // instant the card is handed back, whatever the slot is still doing.
-            Box(Modifier.matchParentSize().graphicsLayer { alpha = slot() }.background(colors.surfaceTonal))
+            // instant the card is handed back, whatever the slot is still doing. One fill, so
+            // its fade needs no offscreen copy.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        alpha = slot()
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                    }
+                    .background(colors.surfaceTonal),
+            )
             TileFace(
                 item = item,
                 filmArt = filmArt,
