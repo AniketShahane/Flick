@@ -833,7 +833,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val filmVisible = stage is MediaStage.Active &&
         surfaceMode == PlayerSurfaceMode.VisiblePlayback &&
         pictureSettled
-    val onPictureUp = remember { { pictureUpEpoch++; Unit } }
+    // The starting film is held paused at its first frame until here, so none of it plays
+    // under the card; the player's own cap starts it if this never comes.
+    val onPictureUp = remember {
+        {
+            controller.onPictureUp()
+            pictureUpEpoch++
+            Unit
+        }
+    }
     val onPictureSettled = remember {
         { pictureSettledCastId = (session.stage as? MediaStage.Active)?.castId }
     }

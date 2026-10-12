@@ -453,6 +453,10 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Non-null only from player adoption until the exact first video frame. */
     private var startupCallbacks: StartupCallbacks? = null
     private val firstFrameGate = FirstFrameGate()
+
+    /** A starting film paused at its first frame until the house lights release the picture. */
+    private val pictureHold = PictureHold()
+    private var pendingPictureHoldCap: Runnable? = null
     private var playbackFailureListener: ((PlaybackException, ReceiverFaultDetail) -> Unit)? = null
     private var externalSubtitleDroppedListener: ((String, ExternalSubtitle) -> Unit)? = null
     private var silentAudioListener: ((String, String) -> Unit)? = null
@@ -520,6 +524,14 @@ class PlayerController(context: Context) : SessionPlayer {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             instrumentation.isPlaying = isPlaying
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!playWhenReady || !pictureHold.holding) return
+            // Only a controller outside this class can start a held film — a media button
+            // reaching the MediaSession. Its play is the viewer's word for after the release.
+            FlickLog.i("player", "pictureHold deferred play reason=$reason")
+            player?.playWhenReady = pictureHold.request(true)
         }
 
         override fun onPositionDiscontinuity(
@@ -809,6 +821,8 @@ class PlayerController(context: Context) : SessionPlayer {
             if (!firstFrameGate.consumeIfMatches(mediaId)) return
             if (callbacks.mediaId != mediaId) return
             startupCallbacks = null
+            pictureHold.onFirstFrame(SystemClock.uptimeMillis())
+            armPictureHoldCap()
             FlickLog.i(
                 "player",
                 "firstFrame decoder=${instrumentation.decoderName ?: "unknown"} " +
@@ -1042,7 +1056,7 @@ class PlayerController(context: Context) : SessionPlayer {
                 exo.stop()
                 exo.seekTo(positionMs)
                 exo.prepare()
-                exo.playWhenReady = true
+                exo.playWhenReady = pictureHold.gate(true)
             }
             PictureVerdict.ANNOUNCE -> {
                 resetPictureProgress()
@@ -1770,7 +1784,8 @@ class PlayerController(context: Context) : SessionPlayer {
             val exo = player ?: return@post
             exo.seekTo(lastGoodPositionMs)
             exo.prepare()
-            exo.playWhenReady = true
+            // A recovery inside the picture hold keeps the film at its frame for the release.
+            exo.playWhenReady = pictureHold.gate(true)
         }
     }
 
@@ -2029,6 +2044,10 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Save position + intent, then release the decoder (called on ON_STOP). */
     fun onStop() {
         cancelSubtitleReloadDeadline()
+        // The hold's release comes from a composition that is no longer drawing, so a
+        // film stopped inside it resumes on the viewer's word alone when it comes back.
+        val heldWanted = if (pictureHold.holding) pictureHold.wanted else null
+        clearPictureHold()
         // The decoder this was watching is about to be released with its player,
         // so there is nothing left for the deadline to be evidence about; [onStart]
         // engages a fresh one if the film is still turned. The hand-back goes with
@@ -2049,7 +2068,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // corrupt cumulativeRebufferMs with backgrounded wall-clock time.
         closeRebufferWindow()
         savedPositionMs = exo.currentPosition.coerceAtLeast(0L)
-        pendingPlayWhenReady = exo.playWhenReady
+        pendingPlayWhenReady = heldWanted ?: exo.playWhenReady
         releaseMediaSession()
         exo.removeListener(playerListener)
         exo.removeAnalyticsListener(analyticsListener)
@@ -2060,6 +2079,7 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Terminal teardown (onDestroy / Compose onDispose). */
     fun release() {
         cancelSubtitleReloadDeadline()
+        clearPictureHold()
         cancelTurnDeadline()
         cancelPendingAudioDelayLine()
         pendingTurnFallback.cancel()
@@ -2081,6 +2101,7 @@ class PlayerController(context: Context) : SessionPlayer {
     fun play(url: String) {
         startupCallbacks = null
         firstFrameGate.clear()
+        clearPictureHold()
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
@@ -2129,6 +2150,8 @@ class PlayerController(context: Context) : SessionPlayer {
         val startedAtMs = SystemClock.uptimeMillis()
         firstFrameGate.arm(mediaId)
         startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError, onRotationRePrepare)
+        cancelPictureHoldCap()
+        pictureHold.arm()
         currentUrl = url
         savedPositionMs = 0L
         pendingPlayWhenReady = true
@@ -2178,7 +2201,12 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.setMediaItem(mediaItemFor(url, mediaId, subtitle))
         if (startMs > 0) exo.seekTo(startMs)
         exo.prepare()
-        exo.playWhenReady = true
+        // Paused, not playing: the first frame still renders and still reports through
+        // onRenderedFirstFrame — the renderer of the playing period is enabled with
+        // mayRenderStartOfStream, which releases that frame before the renderer starts —
+        // so `loadReady` goes out at the same moment, and the film's clock waits for the
+        // picture to come up instead of running under the card. [onPictureUp] starts it.
+        exo.playWhenReady = false
         FlickLog.i(
             "main",
             "playStartup tookMs=${SystemClock.uptimeMillis() - startedAtMs} releaseMs=$releaseMs replaced=${previous != null}",
@@ -2274,6 +2302,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     override fun stop() {
         clearStartupListener()
+        clearPictureHold()
         pendingPlayWhenReady = false
         cancelSubtitleReloadDeadline()
         pendingRecovery.cancel()
@@ -2316,7 +2345,9 @@ class PlayerController(context: Context) : SessionPlayer {
     }
 
     fun togglePlayPause() {
-        player?.let { it.playWhenReady = !it.playWhenReady }
+        val exo = player ?: return
+        val playing = if (pictureHold.holding) pictureHold.wanted else exo.playWhenReady
+        exo.playWhenReady = pictureHold.request(!playing)
     }
 
     // --- Control-channel command surface -------------------------------------
@@ -2328,12 +2359,61 @@ class PlayerController(context: Context) : SessionPlayer {
     /** WS `play`: resume only if a session is loaded (never re-prepares from Idle). */
     override fun resume() {
         if (currentUrl == null) return
-        player?.let { it.playWhenReady = true }
+        val play = pictureHold.request(true)
+        player?.let { it.playWhenReady = play }
     }
 
     /** WS `pause`. */
     override fun pause() {
-        player?.let { it.playWhenReady = false }
+        val play = pictureHold.request(false)
+        player?.let { it.playWhenReady = play }
+    }
+
+    /**
+     * The house lights have released the picture: a film held at its first frame starts
+     * now, from exactly where it was prepared. A no-op for anything not held.
+     */
+    fun onPictureUp() = releasePictureHold("pictureUp")
+
+    private fun releasePictureHold(reason: String) {
+        cancelPictureHoldCap()
+        val heldSinceMs = pictureHold.firstFrameAtMs
+        val play = pictureHold.release() ?: return
+        FlickLog.i(
+            "player",
+            "pictureHold release reason=$reason play=$play " +
+                "heldMs=${heldSinceMs?.let { SystemClock.uptimeMillis() - it } ?: -1}",
+        )
+        player?.playWhenReady = play
+    }
+
+    private fun armPictureHoldCap() {
+        cancelPictureHoldCap()
+        val firstFrameAtMs = pictureHold.firstFrameAtMs ?: return
+        lateinit var cap: Runnable
+        cap = Runnable {
+            if (pendingPictureHoldCap !== cap) return@Runnable
+            pendingPictureHoldCap = null
+            val nowMs = SystemClock.uptimeMillis()
+            if (playbackMayStart(pictureUp = false, firstFrameAtMs = firstFrameAtMs, nowMs = nowMs)) {
+                releasePictureHold("cap")
+            } else {
+                pendingPictureHoldCap = cap
+                recoveryHandler.postDelayed(cap, firstFrameAtMs + PICTURE_HOLD_CAP_MS - nowMs)
+            }
+        }
+        pendingPictureHoldCap = cap
+        recoveryHandler.postDelayed(cap, PICTURE_HOLD_CAP_MS)
+    }
+
+    private fun cancelPictureHoldCap() {
+        pendingPictureHoldCap?.let { recoveryHandler.removeCallbacks(it) }
+        pendingPictureHoldCap = null
+    }
+
+    private fun clearPictureHold() {
+        cancelPictureHoldCap()
+        pictureHold.clear()
     }
 
     /** WS `seek`: absolute (optimistic target), clamped to [0, duration). */
@@ -2444,7 +2524,11 @@ class PlayerController(context: Context) : SessionPlayer {
         val pos = (exo?.currentPosition ?: 0L).coerceAtLeast(0L)
         val duration = exo?.duration?.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
         val buffered = exo?.bufferedPosition?.takeIf { it != C.TIME_UNSET } ?: 0L
-        val playing = exo?.isPlaying ?: false
+        // A film held at its first frame reads as the viewer's intent, not as paused: the
+        // remote's toggle and the phone both act on this frame, and a held film is about to
+        // play unless the viewer paused it during the card.
+        val held = pictureHold.holding && exo?.playbackState == Player.STATE_READY
+        val playing = if (held) pictureHold.wanted else exo?.isPlaying ?: false
         val volume = exo?.volume ?: lastVolume
         val phase = when {
             instrumentation.errorMessage != null -> PlaybackPhase.Error
@@ -2452,7 +2536,7 @@ class PlayerController(context: Context) : SessionPlayer {
             exo.playbackState == Player.STATE_BUFFERING -> PlaybackPhase.Buffering
             exo.playbackState == Player.STATE_ENDED -> PlaybackPhase.Ended
             exo.playbackState == Player.STATE_READY ->
-                if (exo.playWhenReady) PlaybackPhase.Playing else PlaybackPhase.Paused
+                if (if (held) pictureHold.wanted else exo.playWhenReady) PlaybackPhase.Playing else PlaybackPhase.Paused
             else -> PlaybackPhase.Idle
         }
         return PlaybackFrame(

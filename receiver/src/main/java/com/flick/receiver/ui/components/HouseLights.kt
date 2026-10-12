@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
@@ -125,6 +126,18 @@ internal fun apertureScale(p: Float): Float = p.coerceIn(0f, 1f) * APERTURE_S_OP
  */
 internal fun cardHoldLeftMs(enteredAtMs: Long?, nowMs: Long): Long =
     if (enteredAtMs == null) 0L else (enteredAtMs + FlickMotion.FLICK_CARD_MIN_SHOWN_MS - nowMs).coerceAtLeast(0L)
+
+/**
+ * When a card that began its flight at [enteredAtMs] was first really on screen: a display
+ * mode change at [lastChangeAtMs] blanks the panel until its resync grace has run, so a
+ * change landing after the card entered, or just before, restarts the card's time from
+ * the settle. Null for a card seated without a flight, which owes nothing.
+ */
+internal fun cardShownSinceMs(enteredAtMs: Long?, lastChangeAtMs: Long?): Long? {
+    if (enteredAtMs == null) return null
+    val settledAt = lastChangeAtMs?.plus(RESYNC_GRACE_MS) ?: return enteredAtMs
+    return max(enteredAtMs, settledAt)
+}
 
 /** Stops across the aperture's ramp: enough that the piecewise-linear curve shows no knees of its own. */
 private const val APERTURE_RAMP_STEPS = 8
@@ -417,7 +430,8 @@ private class HeadlineLatch {
  *
  * [onLightsDown] runs once the retained standby or error face is under full dark and
  * may leave composition. [onPictureUp] runs when the resync wait opens and the Flick
- * card has had its least time on screen, and the veil is about to lift;
+ * card has had its least time on screen, and the veil is about to lift; the film is held at
+ * its first frame until then, so every path into Film must call it.
  * [onPictureSettled] when the lift has finished.
  *
  * [freshRate] is read only inside the reveal's hold, so a caller can hand over a
@@ -494,10 +508,17 @@ internal fun HouseLights(
 
         fun startFlight() {
             card.flight?.cancel()
-            card.enteredAtMs = now()
+            card.enteredAtMs = null
             card.flight = cardScope.launch {
                 // The keyframes pin their start, so a flight only ever runs from 0.
                 card.arrive.snapTo(0f)
+                // The card's time starts on the flight's first drawn frame: the main thread
+                // can be held between the cue and that frame (the previous player's release
+                // runs there), and time spent before it was never on screen.
+                launch {
+                    withFrameMillis { }
+                    card.enteredAtMs = now()
+                }
                 launch { card.arrive.animateTo(ARRIVE_SEATED, spec(FlickMotion.flickCardArrive())) }
                 launch {
                     delay(FlickMotion.SPEED_BARS_LAG_MS)
@@ -595,19 +616,26 @@ internal fun HouseLights(
         fun capLeft(): Long = (STAGE_HOLD_CAP_MS - (now() - edge)).coerceAtLeast(0L)
 
         // Ends at the flight's end plus the card's least time on screen, a key, or the cap.
-        suspend fun awaitCardShown() {
+        // The least time counts only while the panel shows: a mode change restarts it
+        // from that change's settle.
+        suspend fun awaitCardShown(): String {
             val start = now()
             val ended = withTimeoutOrNull(capLeft()) {
                 merge(
                     flow {
                         card.flight?.join()
-                        delay(cardHoldLeftMs(card.enteredAtMs, now()))
+                        while (true) {
+                            val left = cardHoldLeftMs(cardShownSinceMs(card.enteredAtMs, cadence.lastChangeAtMs), now())
+                            if (left <= 0L) break
+                            withTimeoutOrNull(left) { cadence.changes.first() }
+                        }
                         emit("shown")
                     },
                     keyPresses.map { "key" },
                 ).first()
             } ?: "cap"
             FlickLog.i("stage", "card hold reason=$ended waitedMs=${now() - start}")
+            return ended
         }
 
         // The rate comes from the 2 Hz diagnostics arm, so at the first frame it can
@@ -615,7 +643,7 @@ internal fun HouseLights(
         // fresh one. A re-cast can also release the old pin at the seam and re-pin
         // once the rate lands, so a hold that settled on the first switch waits for
         // the second while the panel still cannot show the film's cadence.
-        suspend fun holdForReveal() {
+        suspend fun holdForReveal(): HoldReason {
             val rateWaitStart = now()
             val physicalAtSeam = cadence.physicalHz
             val changeAtSeam = cadence.lastChangeAtMs
@@ -629,7 +657,7 @@ internal fun HouseLights(
             val rateWaitMs = now() - rateWaitStart
             if (keyed) {
                 logHold(StageHold(0L, HoldReason.KeyPressed), rateWaitMs, freshRateNow())
-                return
+                return HoldReason.KeyPressed
             }
             val rate = freshRateNow()
             // A pin given up at the seam is a switch that may not be reported yet when
@@ -644,11 +672,13 @@ internal fun HouseLights(
             val settledRate = freshRateNow()
             val owed = held.reason == HoldReason.Settled && capLeft() > 0L &&
                 switchStillOwed(cadence.physicalHz, settledRate) { cadence.switchWouldBlank(settledRate) }
-            if (owed) {
+            return if (owed) {
                 val more = awaitOwedSwitch(cadence, now, keyPresses, capLeft())
                 logHold(StageHold(held.waitMs + more.waitMs, more.reason), rateWaitMs, settledRate)
+                more.reason
             } else {
                 logHold(held, rateWaitMs, rate)
+                held.reason
             }
         }
 
@@ -736,13 +766,17 @@ internal fun HouseLights(
                     FlickLog.i("stage", "card skip reason=expandOff held=${card.held}")
                     launch { exitCard(FlickMotion.crossDissolve()) }
                 }
-                val cardShown = if (expanding) launch { awaitCardShown() } else null
+                var cardHold: String? = null
+                val cardShown = if (expanding) launch { cardHold = awaitCardShown() } else null
                 if (aperture.value > CLOSED_APERTURE) aperture.animateTo(0f, spec(fastSpec))
                 // Also when Act I had already closed: releasing a face that is already
                 // gone is a no-op, and a face still retained would cover the film.
                 lightsDownNow()
-                holdForReveal()
+                val revealHold = holdForReveal()
                 cardShown?.join()
+                // A switch reported after the card's time ran out, while the reveal still
+                // waited, blanked part of that time.
+                if (cardHold == "shown" && revealHold != HoldReason.KeyPressed) awaitCardShown()
                 pictureUpNow()
                 if (expanding) launch { expandCard() }
                 delay(FlickMotion.REVEAL_VEIL_LAG_MS)

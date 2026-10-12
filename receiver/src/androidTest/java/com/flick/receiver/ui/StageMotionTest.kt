@@ -34,8 +34,10 @@ import com.flick.receiver.ui.components.HANDSHAKE_CARD_WIDTH
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RATE_KNOWN_WAIT_MS
+import com.flick.receiver.ui.components.RESYNC_GRACE_MS
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import kotlinx.coroutines.flow.Flow
@@ -397,13 +399,14 @@ class StageMotionTest {
             shot("revealWaitsForTheModeSwitch", seam).luma(0.5f, 0.1f) > covered + NOISE)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun revealWaitsForALateRate() {
         // The film's rate reaches the stage up to one 2 Hz snapshot after Active.
         rate = 0f
         cadence.physicalHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
@@ -428,6 +431,7 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the grace ran out", 1, up)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForTheSecondSwitch() {
         // A re-cast of a 23.976 film: the panel is already pinned to it, the seam
@@ -435,7 +439,7 @@ class StageMotionTest {
         rate = 23.976f
         cadence.physicalHz = 23.976f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         cadence.physicalHz = 60f
@@ -462,6 +466,7 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the second grace ran out", 1, up)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForAReleaseReportedAfterTheRate() {
         // A re-cast of a 23.976 film whose rate reaches the stage before the release
@@ -470,7 +475,7 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
@@ -525,6 +530,7 @@ class StageMotionTest {
         assertTrue("the picture came up at ${since(seam)} ms, not well before 800", since(seam) < 800)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun rateLessReCastWaitsForAPinReleasedAfterTheSeam() {
         // The seam's snapshot still holds the old film's pin; the new film reports no
@@ -534,7 +540,7 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val seam = cut(HouseStage.Film)
         advance(200)
@@ -664,6 +670,35 @@ class StageMotionTest {
         assertEquals("the picture never came up once the card had its time", upBefore + 1, up)
         assertTrue("the picture came up at ${since(handshake)} ms, not soon after its least time",
             since(handshake) < 1_700)
+    }
+
+    /**
+     * The pin at the first frame blanks the panel 200 ms into the reveal. The card had
+     * long since had its time, but the blank hid it, so it owes its least time again from
+     * the switch's settle before the picture comes up.
+     */
+    @Test
+    fun aModeSwitchRestartsTheCardsLeastTime() {
+        rate = 23.976f
+        cadence.physicalHz = 60f
+        cadence.blank = true
+        launch()
+        settleHandshake()
+        val seam = cut(HouseStage.Film)
+        advance(200)
+        cadence.physicalHz = 23.976f
+        val change = composeRule.mainClock.currentTime
+        cadence.emitChange(change)
+        val owed = RESYNC_GRACE_MS + FlickMotion.FLICK_CARD_MIN_SHOWN_MS
+        while (composeRule.mainClock.currentTime - change < owed - 20) {
+            frame()
+            assertEquals("the picture came up inside the card's restarted time at ${since(seam)} ms", 0, up)
+            assertTrue("the card left before it expanded at ${since(seam)} ms", cardExists())
+        }
+        advance(owed - (composeRule.mainClock.currentTime - change))
+        frame()
+        frame()
+        assertEquals("the picture did not come up once the card had its time after the switch", 1, up)
     }
 
     private fun PixelMap.sparkInColumn(x: Int, fromY: Int, toY: Int): Boolean {

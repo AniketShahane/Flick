@@ -398,9 +398,14 @@ How it arrives and leaves is the room's light:
   clear on the first frame, alpha on `crossDissolve()` (400 ms), an 11.5 dp sink on
   `focusSpatial()`. The card holds its seat, still, through the resync wait (§6.1) — so
   its expansion is never thrown into an HDMI mode switch's blank — and, in parallel, until
-  its flight has finished and **1 100 ms** have passed since the flight began
-  (`FLICK_CARD_MIN_SHOWN_MS`), bounded by the same 2.5 s cap and ended by any key, so a
-  fast handshake never shows the card for a blink. When the picture is released it
+  its flight has finished and **1 100 ms** have passed since the flight's first drawn
+  frame (`FLICK_CARD_MIN_SHOWN_MS`), bounded by the same 2.5 s cap and ended by any key, so
+  a fast handshake never shows the card for a blink. Those 1 100 ms count only while the
+  panel shows: an HDMI mode switch (usually the pin at the first frame) restarts them from
+  the switch's 500 ms resync settle, still within the cap. The film waits with the card: it
+  is held paused at its decoded first frame and starts at the release, so nothing of it —
+  sound or picture — plays under the card, and `loadReady` still goes to the phone at the
+  first frame. When the picture is released it
   **takes the screen**: over `flickCardExpand()` (600 ms,
   `cubic-bezier(.3, 0, .05, 1)`) it travels to the screen's centre, grows to fill it
   (width and height separately, so the 1.5:1 card meets a 16:9 screen without

@@ -14,12 +14,14 @@ import com.flick.receiver.ui.components.HouseGate
 import com.flick.receiver.ui.components.HouseMove
 import com.flick.receiver.ui.components.HouseMoveKind
 import com.flick.receiver.ui.components.HouseStage
+import com.flick.receiver.ui.components.RESYNC_GRACE_MS
 import com.flick.receiver.ui.components.RateSample
 import com.flick.receiver.ui.components.STAGE_HOLD_CAP_MS
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.components.apertureRampAlpha
 import com.flick.receiver.ui.components.apertureScale
 import com.flick.receiver.ui.components.cardHoldLeftMs
+import com.flick.receiver.ui.components.cardShownSinceMs
 import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
@@ -275,6 +277,16 @@ class HouseLightsPlanTest {
         assertEquals(min - 400L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_400L))
         assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_000L + min))
         assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 9_000L))
+    }
+
+    @Test fun aModeSwitchRestartsTheCardsTimeFromItsSettle() {
+        assertNull("seated without a flight", cardShownSinceMs(enteredAtMs = null, lastChangeAtMs = 5_000L))
+        assertEquals("no switch seen", 5_000L, cardShownSinceMs(enteredAtMs = 5_000L, lastChangeAtMs = null))
+        assertEquals("a switch settled before the card entered", 5_000L, cardShownSinceMs(5_000L, 4_000L))
+        assertEquals("a switch still resyncing as the card entered", 4_800L + RESYNC_GRACE_MS, cardShownSinceMs(5_000L, 4_800L))
+        assertEquals("a switch mid-flight", 5_600L + RESYNC_GRACE_MS, cardShownSinceMs(5_000L, 5_600L))
+        val since = cardShownSinceMs(5_000L, 5_600L)
+        assertEquals(FlickMotion.FLICK_CARD_MIN_SHOWN_MS, cardHoldLeftMs(since, 5_600L + RESYNC_GRACE_MS))
     }
 
     private fun move(
