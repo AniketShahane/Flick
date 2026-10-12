@@ -707,6 +707,13 @@ fun VideoTile(
                         .onSizeChanged { faceSize.px = it }
                         .cardFlipBounds(flipScopes.first, flipScopes.second, flipState, seat = false)
                         .hideWhileFlipping(flipScopes.first, flipState, landed)
+                        // Its own corner: the slot's clip is a parent's, and between the card
+                        // landing and the route settling this face still draws in the shared
+                        // overlay, where no parent clip reaches it.
+                        .graphicsLayer {
+                            this.shape = shape
+                            clip = true
+                        }
                         .fillMaxSize()
                 } else {
                     Modifier.onSizeChanged { faceSize.px = it }.fillMaxSize()
