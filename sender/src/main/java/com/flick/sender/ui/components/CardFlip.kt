@@ -215,6 +215,7 @@ internal fun Modifier.cardFlipBounds(
     animatedScope: AnimatedVisibilityScope,
     state: SharedTransitionScope.SharedContentState,
     seat: Boolean,
+    renderInOverlay: Boolean = true,
 ): Modifier = with(sharedScope) {
     this@cardFlipBounds.sharedBounds(
         sharedContentState = state,
@@ -223,7 +224,7 @@ internal fun Modifier.cardFlipBounds(
         exit = ExitTransition.None,
         boundsTransform = if (seat) SeatBounds else TileBounds,
         resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
-        renderInOverlayDuringTransition = true,
+        renderInOverlayDuringTransition = renderInOverlay,
     )
 }
 

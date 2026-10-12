@@ -705,11 +705,19 @@ fun VideoTile(
                 modifier = if (flipScopes != null && flipState != null) {
                     Modifier
                         .onSizeChanged { faceSize.px = it }
-                        .cardFlipBounds(flipScopes.first, flipScopes.second, flipState, seat = false)
+                        // Back in the slot's own layer the moment the card lands, so the marks
+                        // drawn over it here are not covered by an overlay copy for the rest of
+                        // the route's settle.
+                        .cardFlipBounds(
+                            flipScopes.first,
+                            flipScopes.second,
+                            flipState,
+                            seat = false,
+                            renderInOverlay = !landed(),
+                        )
                         .hideWhileFlipping(flipScopes.first, flipState, landed)
-                        // Its own corner: the slot's clip is a parent's, and between the card
-                        // landing and the route settling this face still draws in the shared
-                        // overlay, where no parent clip reaches it.
+                        // Its own corner as well, for any frame it still draws in the overlay,
+                        // where the slot's clip does not reach.
                         .graphicsLayer {
                             this.shape = shape
                             clip = true
