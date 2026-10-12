@@ -21,8 +21,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -56,12 +57,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.view.WindowCompat
 import com.flick.sender.media.MediaPermissionState
+import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
-import com.flick.sender.net.BackDisposition
 import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.support.SupportCatalog
+import com.flick.sender.ui.components.CardFlipHandoff
 import com.flick.sender.ui.components.FlickBottomNav
+import com.flick.sender.ui.components.LocalCardFlipHandoff
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
 import com.flick.sender.ui.components.NavMetrics
@@ -71,6 +74,7 @@ import com.flick.sender.ui.components.RevealOrigin
 import com.flick.sender.ui.components.RevealTarget
 import com.flick.sender.ui.components.originRevealMask
 import com.flick.sender.ui.components.remoteCardBounds
+import com.flick.sender.ui.motion.animatingFrameRate
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
 import com.flick.sender.ui.theme.ThemePreference
@@ -80,6 +84,8 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The floating surfaces that are summoned over whatever route is beneath them. Each
@@ -170,6 +176,9 @@ fun FlickApp(
     // also what puts the tile a returning poster flies into back on the screen — see
     // [SenderShellPolicy.heroReturn], whose whole premise is that the seat is there.
     val libraryUi = rememberLibraryUiState()
+    // Shared by the two ends of the card flip and read here: the card coming back down is what
+    // releases the chrome below.
+    val cardFlipHandoff = remember { CardFlipHandoff() }
 
     val destination = SenderShellPolicy.destinationOf(route)
     val dockLive = castingItem != null
@@ -199,6 +208,18 @@ fun FlickApp(
     val heroReturn = remember(route) {
         SenderShellPolicy.heroReturn(history.destination, destination)
     }
+    // Decided off the pair at the same moment, and handed to BOTH ends: each side's tracks
+    // need to know on their first frame whether they are half of the card flip, before
+    // either has been measured and long before a match between them could be found.
+    // Every route that arrives takes the next layer up, so it is drawn over whatever it is
+    // leaving — except the grid coming back under the card flip, which goes beneath every layer
+    // there is so the page it is leaving fades off it. A page keeps its layer for its whole
+    // stay, which is what keeps a page that turns round mid-transition on the side it was:
+    // reversing a flip makes the grid the target again, and the target is otherwise drawn last.
+    val routeLayers = remember { RouteLayers() }
+    val cardFlip = remember(route) {
+        !reduceMotion && routeMotion(history.destination, destination, dockLive) == RouteMotion.FLIP
+    }
     // Identity rather than the route itself: re-opening the remote while the minimize is
     // still in the air is a new flight, even though it lands where the last one started.
     val flight = remember(route) { Any() }
@@ -208,18 +229,22 @@ fun FlickApp(
         if (flightMorph) {
             delay(Motion.CardMorphLatchMs)
         } else if (heroReturn && !reduceMotion) {
-            delay(HeroLandMs)
+            // Released by the card itself, a little before it touches down, so the stack's
+            // rise overlaps the card's last settle instead of starting after it.
+            withTimeoutOrNull(HeroLandMs) {
+                snapshotFlow { cardFlipHandoff.current()?.nearContact == true }.first { it }
+            }
         }
         flown = flight
     }
     // Released once the geometry is out of the air, because after that a cast that ends
     // has to be able to take the bar out with an exit of its own.
     val morphing = flightMorph && flown !== flight
-    // The frame is drawn in the shell's overlay, which the transition layout paints after
+    // The card is drawn in the shell's overlay, which the transition layout paints after
     // every child of its own — so while it is up there, nothing the chrome does underneath
-    // can be seen, and where the frame lands the chrome is what it lands on. It gets the
-    // window to itself until the flight ENDS rather than until it looks landed: the end is
-    // when the overlay copy is handed back.
+    // can be seen, and where the card lands the chrome is what it lands on. The stack waits
+    // below the window until the card is nearly down; the card hands itself back to its tile
+    // as it lands, not when the route transition ends, so the rise is never under it for long.
     val heroLanding = heroReturn && !reduceMotion && flown !== flight
     // The bottom stack rises as ONE movement once the frame is down. Each bar's own
     // entrance would carry it only its own height, which walks the dock through the nav's
@@ -364,6 +389,7 @@ fun FlickApp(
         LocalSheetDepth provides sheetDepth,
         LocalQualityRevealOrigin provides qualityRevealOrigin,
         LocalNavMetrics provides navMetrics,
+        LocalCardFlipHandoff provides cardFlipHandoff,
     ) {
         // Over the routes AND over the shared-element overlay, which the transition layout
         // paints after all of its own children: the landing flash covers the whole window.
@@ -378,7 +404,14 @@ fun FlickApp(
         ) {
             SharedTransitionLayout {
                 val sharedScope = this
-                Box(Modifier.fillMaxSize().background(colors.surface)) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        // The window takes the highest vote any of its layers casts, so this one
+                        // also covers the overlay the travelling copy is drawn in.
+                        .animatingFrameRate(sharedScope.isTransitionActive)
+                        .background(colors.surface),
+                ) {
                     AnimatedContent(
                         modifier = Modifier
                             .fillMaxSize()
@@ -388,12 +421,26 @@ fun FlickApp(
                             .hazeSource(navHazeState),
                         targetState = route,
                         transitionSpec = {
-                            if (reduceMotion) {
-                                EnterTransition.None togetherWith ExitTransition.None
+                            val from = SenderShellPolicy.destinationOf(initialState)
+                            val to = SenderShellPolicy.destinationOf(targetState)
+                            val motion = routeMotion(from, to, flightDockLive)
+                            val transform = if (reduceMotion) {
+                                // The card does not turn: the two pages simply cross.
+                                if (motion == RouteMotion.FLIP) {
+                                    fadeIn(motionScheme.fastEffectsSpec()) togetherWith
+                                        fadeOut(motionScheme.fastEffectsSpec())
+                                } else {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                }
                             } else {
-                                val from = SenderShellPolicy.destinationOf(initialState)
-                                val to = SenderShellPolicy.destinationOf(targetState)
-                                when (routeMotion(from, to, flightDockLive)) {
+                                when (motion) {
+                                    // The card carries the movement and the page fades up around
+                                    // it on its own tracks, so the route itself does nothing but
+                                    // hold the grid under the page — going back too, which is why
+                                    // the arriving grid is put beneath the page that is leaving.
+                                    RouteMotion.FLIP ->
+                                        EnterTransition.None togetherWith ExitTransition.None
+
                                     // The frame carries the movement, so the chrome only has to get
                                     // out of its way: any slower fade would ghost the hero.
                                     RouteMotion.HERO ->
@@ -458,12 +505,19 @@ fun FlickApp(
                                             fadeOut(motionScheme.fastEffectsSpec())
                                 }
                             }
+                            transform.apply {
+                                targetContentZIndex = routeLayers.next(
+                                    below = !reduceMotion && motion == RouteMotion.FLIP &&
+                                        to == ShellDestination.LIBRARY,
+                                )
+                            }
                         },
                         label = "route",
                     ) { r ->
                         Box(
                             Modifier
                                 .fillMaxSize()
+                                .animatingFrameRate(this@AnimatedContent.transition.isRunning)
                                 .then(routeSemantics)
                                 .then(
                                     // Declared on the container, never inside the remote: the
@@ -498,6 +552,7 @@ fun FlickApp(
                                     uiState = libraryUi,
                                     sharedScope = sharedScope,
                                     animatedScope = this@AnimatedContent,
+                                    cardFlip = cardFlip,
                                 )
                                 Route.Settings -> PhoneSettingsScreen(
                                     controller = controller,
@@ -516,6 +571,7 @@ fun FlickApp(
                                     item = r.item,
                                     sharedScope = sharedScope,
                                     animatedScope = this@AnimatedContent,
+                                    cardFlip = cardFlip,
                                 )
                                 Route.Connecting -> ConnectingScreen(
                                     controller = controller,
@@ -563,7 +619,6 @@ fun FlickApp(
                             // passes underneath the dock.
                             allowed = SenderShellPolicy.dockVisible(route) && !sheetRaised,
                             morphing = morphing,
-                            flight = flight,
                             // The same source the pill below it reads. Both surfaces are
                             // siblings over the route, so one source at the route boundary
                             // serves the whole bottom stack.
@@ -710,8 +765,16 @@ fun FlickApp(
     }
 }
 
-/** The six arms of the route table. Every pair resolves to exactly one of them. */
-private enum class RouteMotion { HERO, CONTAINER, LAUNCH, RETURN, LATERAL, QUIET }
+/** Ever-higher layers for arriving routes, and ever-lower ones for a grid returning beneath. */
+private class RouteLayers {
+    private var top = 0f
+    private var bottom = 0f
+
+    fun next(below: Boolean): Float = if (below) --bottom else ++top
+}
+
+/** The seven arms of the route table. Every pair resolves to exactly one of them. */
+private enum class RouteMotion { FLIP, HERO, CONTAINER, LAUNCH, RETURN, LATERAL, QUIET }
 
 // The launch is the one transition that moves toward the TV rather than sideways: the
 // surface being left recedes, the surface arriving overshoots past the viewer.
@@ -719,13 +782,9 @@ private const val LaunchNear = 1.06f
 private const val LaunchFar = 0.92f
 
 /**
- * How long the bottom stack waits below the window edge while a frame flies back into the
- * grid. It is the FLIGHT's length and not the landing's: the copy in the overlay is handed
- * back to the grid cell only when its bounds animation terminates, so a stack released
- * when the frame merely looks home would be released under it. On the frame's own spring —
- * critically damped, `StiffnessMediumLow`, a pixel per edge — a full-window return
- * terminates at a little over half a second, and this may not be shorter than that without
- * putting a bar back under a poster. Longer only reads as a stall.
+ * The longest the bottom stack waits below the window edge for the card flying back into the
+ * grid to say it is nearly down ([com.flick.sender.ui.components.SeatFlight.nearContact]).
+ * Only a back flip with no card in it — a page that never registered a seat — runs it out.
  */
 private const val HeroLandMs = 560L
 
@@ -766,10 +825,11 @@ internal fun hostedOverlay(active: Overlay?, outgoing: Overlay?, supportAvailabl
 
 /**
  * Which arm a route pair takes. CONTAINER is the dock growing into the remote and back,
- * and it outranks everything because the dock's bounds already carry that movement;
- * HERO pairs carry a shared frame, so they drop every translation and let the frame
- * itself be the movement; the launch pair is the cast commit; a fault is always presented
- * still. [dockLive] gates CONTAINER because with no cast there is no bar to grow out of.
+ * and it outranks everything because the dock's bounds already carry that movement; FLIP is
+ * the library tile turning over into the detail page's poster and back; HERO pairs carry a
+ * shared frame, so they drop every translation and let the frame itself be the movement; the
+ * launch pair is the cast commit; a fault is always presented still. [dockLive] gates
+ * CONTAINER because with no cast there is no bar to grow out of.
  */
 private fun routeMotion(
     initial: ShellDestination,
@@ -777,8 +837,8 @@ private fun routeMotion(
     dockLive: Boolean,
 ): RouteMotion = when {
     dockLive && SenderShellPolicy.dockMorph(initial, target) -> RouteMotion.CONTAINER
-    initial == ShellDestination.LIBRARY && target == ShellDestination.DETAIL -> RouteMotion.HERO
-    initial == ShellDestination.DETAIL && target == ShellDestination.LIBRARY -> RouteMotion.HERO
+    initial == ShellDestination.LIBRARY && target == ShellDestination.DETAIL -> RouteMotion.FLIP
+    initial == ShellDestination.DETAIL && target == ShellDestination.LIBRARY -> RouteMotion.FLIP
     initial == ShellDestination.CONNECTING && target == ShellDestination.NOW_PLAYING -> RouteMotion.HERO
     initial == ShellDestination.DETAIL && target == ShellDestination.CONNECTING -> RouteMotion.LAUNCH
     target == ShellDestination.FAILURE || initial == ShellDestination.FAILURE -> RouteMotion.QUIET

@@ -3,77 +3,84 @@ package com.flick.sender.ui.screens
 import android.content.Intent
 import android.provider.Settings
 import android.widget.Toast
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ContainedLoadingIndicator
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialShapes
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
+import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.flick.sender.R
+import com.flick.sender.media.FilmArt
+import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.MediaProbe
+import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
@@ -81,85 +88,106 @@ import com.flick.sender.net.DecoderFaultCode
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
-import com.flick.sender.media.PlaybackProgressState
-import com.flick.sender.ui.FilmPosterBackdrop
+import com.flick.sender.ui.FilmSoftBackdrop
+import com.flick.sender.ui.FilmTitleLogo
 import com.flick.sender.ui.Format
+import com.flick.sender.ui.SoftBackdropRadiusPx
+import com.flick.sender.ui.SoftBackdropWidthPx
+import com.flick.sender.ui.components.CardFlipMotion
+import com.flick.sender.ui.components.CardFlipSeat
+import com.flick.sender.ui.components.FlickPad
+import com.flick.sender.ui.components.FlickPadMotion
+import com.flick.sender.ui.components.LocalCardFlipHandoff
+import com.flick.sender.ui.components.TileFace
+import com.flick.sender.ui.components.TileMarkings
+import com.flick.sender.ui.components.cardFlipKey
+import com.flick.sender.ui.components.fadeUp
+import com.flick.sender.ui.components.flipGlowPresence
+import com.flick.sender.ui.components.rememberCardFlipTracks
+import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
+import com.flick.sender.ui.components.rememberSoftFrameRequest
+import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.rememberFilmArt
-import com.flick.sender.ui.components.AdvisoryCard
-import com.flick.sender.ui.components.AdvisoryTone
-import com.flick.sender.ui.components.FlickPad
-import com.flick.sender.ui.components.flickSharedFrame
-import com.flick.sender.ui.components.posterKey
-import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
-import com.flick.sender.ui.components.rememberVideoImageLoader
+import com.flick.sender.ui.softBackdropHeightPx
 import com.flick.sender.ui.theme.CinemaDeep
+import com.flick.sender.ui.theme.CinemaDisc
+import com.flick.sender.ui.theme.CinemaDiscEdge
+import com.flick.sender.ui.theme.CinemaGlass
+import com.flick.sender.ui.theme.CinemaGlassEdge
+import com.flick.sender.ui.theme.CinemaInkDim
+import com.flick.sender.ui.theme.CinemaNoticeFoot
+import com.flick.sender.ui.theme.CinemaNoticeTop
+import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
-import com.flick.sender.ui.theme.PrimaryShadow
-import com.flick.sender.ui.theme.SheetShape
-import com.flick.sender.ui.theme.TileShadow
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
- * S4 — detail / "cast this". A risen sheet over the video's own frame: honest
- * badges, the direct-play promise, one blue CTA. Back and the scrim both route
- * through [FlickController.back], so the shell's own BackHandler stays the only
- * one on this route.
+ * S4 — detail / "cast this". A dark cinema page in every palette: the film's backdrop, blurred
+ * and deeply scrimmed, under the film's identity (logo, facts) and the poster you flick. The
+ * poster is the page's only send; there is no button. Back routes through
+ * [FlickController.back], so the shell's own BackHandler stays the only one on this route.
  *
- * The backdrop is not a new image — it is the tile the user just tapped, expanded.
+ * The poster is the tile the user just tapped, turned over (see [FlipCard]): the card flies
+ * from the grid into its seat while the page fades up around it, and [cardFlip] is the shell's
+ * word that this route pair is that one. On any other pair the page is simply there.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DetailScreen(
     controller: FlickController,
     item: MediaItem,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
+    cardFlip: Boolean = false,
 ) {
-    val colors = LocalFlickColors.current
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
     val castStart by controller.castStart.collectAsState()
     val playbackProgress by controller.playbackProgress.collectAsState()
     val unplayable by controller.unplayableFiles.collectAsState()
-    val decoderSuspects by controller.decoderSuspects.collectAsState()
     val selectedSubtitle by controller.selectedSubtitle.collectAsState()
     val subtitleOwnerKey by controller.subtitleOwnerKey.collectAsState()
     val imageLoader = rememberVideoImageLoader()
-    val rise = rememberSheetRise()
-    // Geometry and opacity on separate clocks: the sheet's own scrim is fixed here, so its
-    // transparency is the only thing standing between the frame and the copy over it.
-    val fade = rememberSheetFade()
+    val reduceMotion = rememberReduceMotion()
+    val tracks = animatedScope?.let { rememberCardFlipTracks(it.transition, cardFlip) }
+    val page = { (tracks?.page?.value ?: 1f).coerceIn(0f, 1f) }
     val displayName = item.displayName()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, displayName, tvName)
-    val startOverDescription = stringResource(R.string.a11y_start_video_over, displayName, tvName)
-    val playHereDescription = stringResource(R.string.a11y_play_video_here, displayName)
     val progressReady = playbackProgress is PlaybackProgressState.Ready
     val resumeMs = remember(item, playbackProgress) {
         controller.resumePosition(item, playbackProgress)
     }
     val resumeTime = resumeMs?.let(Format::timecode)
-    val primaryDescription = resumeTime?.let {
+    val actionDescription = resumeTime?.let {
         stringResource(R.string.a11y_resume_video, displayName, it, tvName)
     } ?: castDescription
-    val dismissDescription = stringResource(R.string.a11y_back_to_library)
+    val actionLabel = resumeTime?.let { stringResource(R.string.detail_resume_cta, it, tvName) }
+        ?: connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
+        ?: stringResource(R.string.detail_cta_noconnect)
+    val committing = castStart.isCommitting()
+    val caption = connectedTv?.let { stringResource(R.string.flick_pad_title_tv, it.name) }
+        ?: stringResource(R.string.flick_pad_title)
+    // Resume is never silent: the pad says where the film will start before it is thrown.
+    val note = when {
+        committing -> stringResource(R.string.flick_pad_sending, tvName)
+        resumeTime != null -> stringResource(R.string.flick_pad_resume, resumeTime)
+        connectedTv == null -> stringResource(R.string.flick_pad_no_tv)
+        else -> null
+    }
+    val backDescription = stringResource(R.string.a11y_back_to_library)
     // Null until the probe answers. Starting at NONE would print "SDR" — a verdict — for
-    // every file in the window between opening this sheet and reading its container.
+    // every file in the window between opening this page and reading its container.
     val hdr by produceState<HdrType?>(initialValue = null, item.uri) {
         value = MediaProbe.detectHdr(context, item.uri)
     }
     val refusal = unplayable[item.uriKey]
-    // One broken promise is not a verdict, but it is enough to stop repeating the promise.
-    // A file whose decoder failed to start once gets neither card: the sheet has no honest
-    // claim to make about it until the next attempt says which it was.
-    val decoderDoubt = refusal == null && item.uriKey in decoderSuspects
     val subtitle = selectedSubtitle?.takeIf { showAttachedSubtitle(subtitleOwnerKey, item.uriKey) }
 
     // What this file needs, against what this phone's link realistically carries. Polled
@@ -171,328 +199,469 @@ fun DetailScreen(
         LinkCapacityPolicy.requiredBitrateBps(item.sizeBytes, item.durationMs)
     }
     // Structural, so the RSSI moving one dBm — which it does on every poll — cannot
-    // recompose the sheet behind the flying poster. Unwrapped here rather than read in the
-    // branch below because raising or lowering the card IS a rebuild of the sheet's body.
+    // recompose the page behind the flying frame.
     val advisory = remember(signal, requiredBps) {
         derivedStateOf(structuralEqualityPolicy()) {
             LinkCapacityPolicy.preCastAdvisory(requiredBps, signal.value.link)
         }
     }.value
+    // Same predicate the button had: the send waits for the resume point and is single-flight.
+    val castEnabled = progressReady && !committing
 
     val request = rememberDetailVideoFrameRequest(item)
-    // The sheet is a portrait seat, so it takes the poster even where the tile had a backdrop.
-    val posterPath = item.rememberFilmArt()?.poster
-    val scrimSource = remember { MutableInteractionSource() }
-    val sheetSource = remember { MutableInteractionSource() }
-    val playHereSource = remember { MutableInteractionSource() }
-    val startOverSource = remember { MutableInteractionSource() }
-    val sheetScroll = rememberScrollState()
-
-    // Cinematic rather than the pale canvas: this route already declares a dark
-    // backdrop to the system bars, and the frame arrives out of darkness.
-    Box(Modifier.fillMaxSize().background(CinemaDeep)) {
-        // In place rather than in the shared overlay: the sheet has to stay above
-        // the frame while both are arriving.
-        val backdropModifier = Modifier
-            .flickSharedFrame(
-                sharedScope = sharedScope,
-                animatedScope = animatedScope,
-                key = posterKey(item.id),
-                renderInOverlay = false,
-            )
-            .fillMaxSize()
-        if (posterPath != null) {
-            FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = backdropModifier)
-        } else {
-            AsyncImage(
-                model = request,
-                contentDescription = null,
-                imageLoader = imageLoader,
-                contentScale = ContentScale.Crop,
-                modifier = backdropModifier,
-            )
-        }
-        // The scrim and the sheet body below it are a dismiss target and a click
-        // consumer, not controls: a state layer on either would advertise a tap target
-        // that isn't one, so both stay unindicated. It is deliberately not part of the
-        // shared frame: a fixed scrim means the frame flies under one constant wash.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(colors.scrim)
-                .semantics { contentDescription = dismissDescription }
-                .clickable(interactionSource = scrimSource, indication = null) { controller.back() },
-        )
-
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .heightIn(max = 640.dp)
-                .sheetRiseTransform(rise, fade)
-                .clip(SheetShape)
-                .background(colors.surface)
-                .clickable(interactionSource = sheetSource, indication = null, onClick = {})
-                .verticalScroll(sheetScroll)
-                .imePadding()
-                .navigationBarsPadding()
-                .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp),
+    val art = item.rememberFilmArt()
+    val posterPath = art?.poster
+    val pageScroll = rememberScrollState()
+    // The wide layout's pad column scrolls on its own, and only if the pad cannot fit it.
+    val padScroll = rememberScrollState()
+    val onSwitchNetwork = {
+        runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+            .onFailure {
+                Toast.makeText(context, R.string.error_no_wifi_settings_toast, Toast.LENGTH_SHORT).show()
+            }
+        Unit
+    }
+    val onFlick = { controller.flickToTv(item) }
+    val flipKey = cardFlipKey(item.id)
+    val handoff = LocalCardFlipHandoff.current
+    // The size the tapped tile drew its face at, so the card's front asks Coil for that very
+    // decode and is drawn from memory on its first frame.
+    val tileFacePx = remember(flipKey) { handoff.tileFaceFor(flipKey) }
+    val seat = if (sharedScope != null && animatedScope != null && tracks != null && !reduceMotion) {
+        CardFlipSeat(
+            sharedScope,
+            animatedScope,
+            flipKey,
+            tracks,
+            marks = {
+                if (cardFlip) handoff.marksFor(flipKey)?.let { TileMarkings(item, it, Modifier.fillMaxSize()) }
+            },
         ) {
-            SheetGrabber()
-            Spacer(Modifier.height(4.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
-                // A poster takes its own 2:3 at the frame's height, so the title beside it
-                // keeps the same line.
-                val thumbModifier = Modifier
-                    .size(width = if (posterPath != null) 52.dp else 122.dp, height = 78.dp)
-                    .shadow(
-                        elevation = 14.dp,
-                        shape = RoundedCornerShape(FlickCorners.detailPoster),
-                        clip = false,
-                        ambientColor = TileShadow,
-                        spotColor = TileShadow,
-                    )
-                    .clip(RoundedCornerShape(FlickCorners.detailPoster))
-                    .background(colors.surfaceRaisedAlt)
-                if (posterPath != null) {
-                    FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = thumbModifier)
-                } else {
-                    AsyncImage(
-                        model = request,
-                        contentDescription = null,
-                        imageLoader = imageLoader,
-                        contentScale = ContentScale.Crop,
-                        modifier = thumbModifier,
-                    )
-                }
-                Column(
-                    Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = displayName,
-                        style = FlickText.titleLarge.copy(color = colors.onSurface),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = detailMeta(item),
-                        style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(17.dp))
-            // Source-fact chips reflow on narrow or large-font windows instead of
-            // competing for one fixed row and clipping the resolution or file size.
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                // Resolution, dynamic range and size are the only source facts the
-                // phone can read; codec and frame rate never leave MediaStore. A fact it
-                // did not read takes the outlined chip: same seat, same type, no claim.
-                DetailChip(
-                    text = resolutionText(item),
-                    containerColor = if (item.knowsResolution) colors.inverseSurface else Color.Transparent,
-                    contentColor = if (item.knowsResolution) colors.onInverseSurface else colors.onSurfaceDim,
-                    outlineColor = colors.outline.takeIf { !item.knowsResolution },
-                )
-                DetailChip(
-                    text = hdrChipLabel(hdr),
-                    containerColor = if (hdr != null) colors.primaryContainer else Color.Transparent,
-                    contentColor = if (hdr != null) colors.onPrimaryContainer else colors.onSurfaceDim,
-                    outlineColor = colors.outline.takeIf { hdr == null },
-                )
-                DetailChip(
-                    text = Format.bytes(item.sizeBytes),
-                    containerColor = colors.primaryContainer,
-                    contentColor = colors.onPrimaryContainer,
+            if (cardFlip) {
+                TileFace(
+                    item = item,
+                    filmArt = art,
+                    imageLoader = imageLoader,
+                    unplayable = refusal != null,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    requestSizePx = tileFacePx,
                 )
             }
+        }
+    } else {
+        null
+    }
 
-            // With the file's own facts rather than under the CTA, because it is one of
-            // them: what will be sent when the button is pressed. Deliberately not a chip
-            // beside them — those are the three the phone reads off the file itself, and a
-            // selection is not a source fact. Deliberately not a card either: the seat
-            // below belongs to one arrival at a time, and this sheet is capped at 640 dp.
-            if (subtitle != null) {
-                Spacer(Modifier.height(12.dp))
-                AttachedSubtitleRow(subtitle.displayName, subtitle.language)
-            }
+    // Measured, so the poster takes exactly the height the rest of the page leaves it. Seeded
+    // from the last page measured rather than from an estimate: the card is already flying to
+    // the seat on the first frame, and a seat that moves a frame later bends its path.
+    var identityPx by remember { mutableIntStateOf(MeasuredSeat.identityPx) }
+    var padChromePx by remember { mutableIntStateOf(MeasuredSeat.padChromePx) }
+    var noticePx by remember { mutableIntStateOf(MeasuredSeat.noticePx) }
 
-            Spacer(Modifier.height(17.dp))
-            // One card, two truths, never both: "will direct-play at full quality" is a
-            // promise this TV has already broken for this file, and printing it above the
-            // refusal would make the sheet argue with itself.
-            //
-            // The flick pad belongs to the same verdict. It is an invitation to throw the
-            // film at the TV, and above a refusal it would be the sheet cheering for the
-            // thing it has just warned about. Its seat is directly above the CTA because
-            // it is the same action; FlickPad holds its first nudge back while the poster
-            // overhead is still flying in from the Library.
-            //
-            // The link advisory takes that same seat when it is raised, and does not open a
-            // new one. One seat between the promise and the CTA: an invitation to flick
-            // when there is nothing to say, the sentence when there is. Adding a block
-            // instead would put a fourth arrival into the moment the poster, the sheet and
-            // the pad already share, and would push the CTA down a sheet that is capped at
-            // 640 dp and already scrolls.
-            //
-            // A refusal outranks it. A file this TV has already refused will not play at any
-            // bitrate, so warning about the Wi-Fi carrying it is advice about a problem the
-            // user cannot reach from here.
-            if (refusal != null) {
-                RefusalCard(refusal)
-                Spacer(Modifier.height(17.dp))
+    FlickCinematicTheme {
+        val density = LocalDensity.current
+        val bars = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
+            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        BoxWithConstraints(Modifier.fillMaxSize().drawBehind { drawRect(CinemaDeep, alpha = page()) }) {
+            val viewport = maxHeight
+            val wide = maxWidth > maxHeight
+            val compact = viewport < CompactHeight
+            val heroGap = if (compact) HeroGapCompact else HeroGap
+            val chevronGap = if (compact) ChevronGapCompact else FlickPadMotion.ChevronGapDp.dp
+            val captionGap = if (compact) CaptionGapCompact else FlickPadMotion.TitleGapDp.dp
+            val identity = with(density) { identityPx.toDp() }.takeIf { identityPx > 0 }
+                ?: IdentityEstimate * density.fontScale.coerceAtLeast(1f)
+            val padChrome = with(density) { padChromePx.toDp() }.takeIf { padChromePx > 0 }
+                ?: PadChromeEstimate * density.fontScale.coerceAtLeast(1f)
+            val notice = with(density) { noticePx.toDp() }
+            val posterHeight = if (wide) {
+                (viewport - bars - PageVerticalPad * 2 - heroGap * 2 - padChrome - FitSlack)
+                    .coerceIn(PosterMinHeightWide, PosterMaxHeight)
             } else {
-                // Silence is the third verdict. A file this TV has already failed to find
-                // a decoder for gets no promise — the sheet cannot honestly repeat one it
-                // has broken — and no refusal either, because a decoder another app was
-                // holding is not the file's fault. Everything below keeps its seat, so the
-                // sheet loses a card rather than gaining a gap.
-                if (!decoderDoubt) {
-                    DirectPlayCard()
-                    Spacer(Modifier.height(17.dp))
-                }
-                if (advisory != null) {
-                    LinkAdvisory(
-                        advisory = advisory,
-                        onSwitchNetwork = {
-                            runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-                                .onFailure {
-                                    Toast.makeText(context, R.string.error_no_wifi_settings_toast, Toast.LENGTH_SHORT)
-                                        .show()
-                                }
-                        },
-                        castEnabled = progressReady && !castStart.isCommitting(),
-                        onCastAnyway = { controller.flickToTv(item) },
-                    )
-                    Spacer(Modifier.height(17.dp))
-                } else {
-                    FlickPad(
-                        posterPath = posterPath,
-                        frameRequest = request,
-                        imageLoader = imageLoader,
-                        enabled = progressReady && !castStart.isCommitting(),
-                        sheetScroll = sheetScroll,
-                        onFlick = { controller.flickToTv(item) },
-                    )
-                    Spacer(Modifier.height(17.dp))
-                }
+                // Sized so the page does not scroll: while it can, FlickPadPolicy hands an
+                // upward swipe to the page instead of the throw. A notice that cannot fit
+                // beside a usable poster shrinks the poster to its floor, so only the notice's
+                // overflow goes below the fold, never the whole notice.
+                val beside = viewport - bars - PageVerticalPad * 2 - identity - heroGap * 2 -
+                    padChrome - FitSlack
+                (beside - notice).coerceIn(PosterMinHeight, PosterMaxHeight)
             }
+            val posterWidth = posterHeight / FlickPadMotion.PosterAspect
+            val posterHeightPx = with(density) { posterHeight.roundToPx() }
 
-            FlickToTvButton(
-                text = resumeTime?.let { stringResource(R.string.detail_resume_cta, it, tvName) }
-                    ?: connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
-                    ?: stringResource(R.string.detail_cta_noconnect),
-                accessibilityLabel = primaryDescription,
-                committing = castStart.isCommitting(),
-                enabled = progressReady,
-                onClick = { controller.flickToTv(item) },
+            // Blurred once into a small bitmap rather than live: a full-screen blur re-runs on
+            // every frame the page is drawn, and the page's entrance is nothing but frames.
+            // Top-aligned, where a backdrop keeps its subject.
+            val viewportAspect = maxHeight / maxWidth
+            val backdropModifier = Modifier.fillMaxSize().graphicsLayer { alpha = page() }
+            val backdropPath = art?.backdrop
+            when {
+                backdropPath != null -> FilmSoftBackdrop(
+                    path = backdropPath,
+                    width = FilmPosterPolicy.BACKDROP_WIDTH,
+                    imageLoader = imageLoader,
+                    viewportAspect = viewportAspect,
+                    modifier = backdropModifier,
+                )
+                posterPath != null -> FilmSoftBackdrop(
+                    path = posterPath,
+                    width = FilmPosterPolicy.TILE_WIDTH,
+                    imageLoader = imageLoader,
+                    viewportAspect = viewportAspect,
+                    modifier = backdropModifier,
+                )
+                else -> AsyncImage(
+                    model = rememberSoftFrameRequest(
+                        item = item,
+                        imageLoader = imageLoader,
+                        boxWidthPx = SoftBackdropWidthPx,
+                        boxHeightPx = softBackdropHeightPx(viewportAspect),
+                        radiusPx = SoftBackdropRadiusPx,
+                        biasY = 0f,
+                    ),
+                    contentDescription = null,
+                    imageLoader = imageLoader,
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.TopCenter,
+                    modifier = backdropModifier,
+                )
+            }
+            // It deepens as the page scrolls, so copy carried up never stands on bright art.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .drawBehind {
+                        val lift = (pageScroll.value / ScrimLiftDistance.toPx()).coerceIn(0f, 1f)
+                        drawRect(cinemaScrim(lift), alpha = page())
+                    },
             )
 
-            Spacer(Modifier.height(10.dp))
-            // Both of these are ways NOT to do what the CTA above offers, so they share
-            // one row directly under it rather than stacking as two more full-width
-            // decisions. Intrinsic height, the same instrument the quality sheet's gauge
-            // pair uses: whichever label wraps sets the height and the other grows into
-            // it, so the two pills can never sit at different heights on a narrow window
-            // or a large font scale.
-            Row(
-                Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                // Withheld rather than disabled: with no checkpoint there is no position
-                // to start over FROM, and a dead control is a promise the sheet cannot
-                // keep. The phone action then takes the whole row on its own weight.
-                if (resumeMs != null) {
-                    SecondaryAction(
-                        icon = FlickIcons.Restart,
-                        label = stringResource(R.string.detail_start_over),
-                        accessibilityLabel = startOverDescription,
-                        interactionSource = startOverSource,
-                        enabled = !castStart.isCommitting(),
-                        onClick = { controller.startOver(item) },
+            val pad: @Composable (ScrollState) -> Unit = { scroll ->
+                FlickPad(
+                    posterPath = posterPath,
+                    frameRequest = request,
+                    imageLoader = imageLoader,
+                    enabled = castEnabled,
+                    pageScroll = scroll,
+                    caption = caption,
+                    note = note,
+                    actionDescription = actionDescription,
+                    actionLabel = actionLabel,
+                    onFlick = onFlick,
+                    posterWidth = posterWidth,
+                    chevronGap = chevronGap,
+                    captionGap = captionGap,
+                    seat = seat,
+                    // The throw waits for the card to land: until then the seat is not where
+                    // the finger is.
+                    throwReady = sharedScope?.isTransitionActive != true,
+                    glowIn = { tracks?.let { flipGlowPresence(it.glow.value, it.move.value) } ?: 1f },
+                    chevronsIn = { tracks?.chevrons?.value ?: 1f },
+                    captionIn = { tracks?.caption?.value ?: 1f },
+                    modifier = Modifier
+                        .padding(vertical = heroGap)
+                        .onSizeChanged {
+                            padChromePx = (it.height - posterHeightPx).coerceAtLeast(0)
+                            MeasuredSeat.padChromePx = padChromePx
+                        },
+                )
+            }
+            val identityBlock: @Composable () -> Unit = {
+                // Its dark disc, not its touch target, lines up with the gutter.
+                Column(
+                    Modifier.fillMaxWidth().onSizeChanged {
+                        identityPx = it.height
+                        MeasuredSeat.identityPx = it.height
+                    },
+                ) {
+                    BackDisc(
+                        description = backDescription,
+                        onClick = { controller.back() },
+                        modifier = Modifier
+                            .offset(x = -(BackTouchSize - BackDiscSize) / 2)
+                            .fadeUp({ tracks?.disc?.value ?: 1f }, CardFlipMotion.RiseDistance),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    DetailIdentity(
+                        item = item,
+                        art = art,
+                        title = displayName,
+                        hdr = hdr,
+                        subtitle = subtitle?.let { it.displayName to it.language },
+                        imageLoader = imageLoader,
+                        logoIn = { tracks?.logo?.value ?: 1f },
+                        metaIn = { tracks?.meta?.value ?: 1f },
+                        chipsIn = { tracks?.chips?.value ?: 1f },
                     )
                 }
-                SecondaryAction(
-                    icon = FlickIcons.Phone,
-                    label = stringResource(R.string.detail_play_here),
-                    accessibilityLabel = playHereDescription,
-                    interactionSource = playHereSource,
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW)
-                                    .setDataAndType(item.uri, "video/*")
-                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                            )
-                        }.onFailure {
-                            Toast.makeText(context, R.string.error_no_player_toast, Toast.LENGTH_SHORT).show()
-                        }
-                    },
+            }
+            val noticeBlock: @Composable () -> Unit = {
+                DetailNotice(
+                    refusal = refusal,
+                    advisory = advisory,
+                    castEnabled = castEnabled,
+                    onSwitchNetwork = onSwitchNetwork,
+                    onCastAnyway = onFlick,
+                    modifier = Modifier.fadeUp({ tracks?.caption?.value ?: 1f }, CardFlipMotion.CaptionRiseDistance),
                 )
+            }
+
+            if (wide) {
+                Row(
+                    Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = PageGutter),
+                    horizontalArrangement = Arrangement.spacedBy(PageGutter),
+                ) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(pageScroll)
+                            .padding(vertical = PageVerticalPad),
+                    ) {
+                        identityBlock()
+                        Spacer(Modifier.height(SectionGap))
+                        noticeBlock()
+                    }
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(padScroll)
+                            .heightIn(min = viewport - bars - FitSlack)
+                            .padding(vertical = PageVerticalPad),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        pad(padScroll)
+                    }
+                }
+            } else {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(pageScroll)
+                        // A minimum rather than a weight: inside a scroll there is no height
+                        // to share out, and SpaceBetween over this centres the pad in
+                        // whatever the identity and the notice leave.
+                        .heightIn(min = viewport)
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = PageGutter, vertical = PageVerticalPad),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    identityBlock()
+                    pad(pageScroll)
+                    // Always placed, empty or not, so SpaceBetween has a floor to centre on and
+                    // the measured height drops back to zero when the notice clears.
+                    Box(
+                        Modifier.fillMaxWidth().onSizeChanged {
+                            noticePx = it.height
+                            MeasuredSeat.noticePx = it.height
+                        },
+                    ) { noticeBlock() }
+                }
             }
         }
     }
 }
 
 /**
- * One of the two ways out from under the CTA. Tonal rather than the action blue — a
- * second saturated fill in the same column would read as the sheet asking twice — and it
- * carries a [FlickIcons] glyph rather than a colour-emoji, which is the only kind of mark
- * that survives beside a hand-authored 24 dp stroke set.
- *
- * Icon and label sit in one centred lockup, and the label is allowed two lines: half a
- * 360 dp sheet is not wide enough for "Play on this phone" on one, and truncating the
- * only escape from casting is worse than wrapping it.
+ * Darker than a poster page usually dares, top to bottom: the backdrop is atmosphere here,
+ * and every line of copy, the back disc and the chevrons stand on it. [lift] is how far the
+ * page has scrolled toward [ScrimLiftDistance].
  */
+private fun cinemaScrim(lift: Float): Brush = Brush.verticalGradient(
+    0f to CinemaDeep.copy(alpha = lerp(ScrimHead, ScrolledScrimAlpha, lift)),
+    0.35f to CinemaDeep.copy(alpha = lerp(ScrimBand, ScrolledScrimAlpha, lift)),
+    0.75f to CinemaDeep.copy(alpha = lerp(ScrimFoot, ScrolledScrimAlpha, lift)),
+    1f to CinemaDeep,
+)
+
+// The backdrop is blurred on every API level now, so the wash no longer has to stand in for
+// a blur the platform could not draw.
+private const val ScrimHead = 0.6f
+private const val ScrimBand = 0.7f
+private const val ScrimFoot = 0.92f
+// White and the dim ink both clear 4.5:1 over a white backdrop under this much CinemaDeep.
+private const val ScrolledScrimAlpha = 0.95f
+private val ScrimLiftDistance = 120.dp
+
+private val PageGutter = 24.dp
+private val PageVerticalPad = 12.dp
+private val HeroGap = 20.dp
+private val HeroGapCompact = 8.dp
+private val ChevronGapCompact = 4.dp
+private val CaptionGapCompact = 8.dp
+private val SectionGap = 24.dp
+private val BackDiscSize = 44.dp
+private val BackTouchSize = 48.dp
+private val LogoMaxWidth = 200.dp
+private val LogoMaxHeight = 64.dp
+
+/** Under this the gaps around the pad tighten, so the poster keeps the height instead. */
+private val CompactHeight = 700.dp
+
+// First-frame stand-ins for the measured blocks, scaled by the font size; the measured
+// values replace them a frame later.
+private val IdentityEstimate = 230.dp
+private val PadChromeEstimate = 92.dp
+
+/** The last page's measured blocks, for the next page's first frame. */
+private object MeasuredSeat {
+    var identityPx = 0
+    var padChromePx = 0
+    var noticePx = 0
+}
+
+/** Exactly 2:3 at every size; the corner is 8% of whatever width this gives. */
+private val PosterMinHeight = 140.dp
+private val PosterMinHeightWide = 120.dp
+private val PosterMaxHeight = 390.dp
+/** Rounding headroom: one pixel of overflow would make the page scrollable. */
+private val FitSlack = 2.dp
+
+/** A 44 dp dark disc inside a 48 dp target, white chevron, white hairline. */
 @Composable
-private fun RowScope.SecondaryAction(
-    icon: ImageVector,
-    label: String,
-    accessibilityLabel: String,
-    interactionSource: MutableInteractionSource,
+private fun BackDisc(
+    description: String,
     onClick: () -> Unit,
-    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
-    val colors = LocalFlickColors.current
-    Row(
-        modifier = Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .pressScale(interactionSource)
-            .heightIn(min = 48.dp)
-            .clip(PillShape)
-            .background(colors.fillControl)
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier
+            .size(BackTouchSize)
+            .pressScale(source)
+            .clip(CircleShape)
             .clickable(
-                interactionSource = interactionSource,
-                indication = flickRipple(colors.onSurface),
-                enabled = enabled,
+                interactionSource = source,
+                indication = flickRipple(Color.White),
                 role = Role.Button,
                 onClick = onClick,
             )
-            .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = colors.onSurface,
-            modifier = Modifier.size(19.dp),
+        Box(
+            Modifier
+                .size(BackDiscSize)
+                .clip(CircleShape)
+                .background(CinemaDisc)
+                .border(1.dp, CinemaDiscEdge, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = FlickIcons.ChevronLeft,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+/** Which film this is, before anything asks to be thrown: title, facts, attached subtitle. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DetailIdentity(
+    item: MediaItem,
+    art: FilmArt?,
+    title: String,
+    hdr: HdrType?,
+    subtitle: Pair<String, String?>?,
+    imageLoader: ImageLoader,
+    logoIn: () -> Float,
+    metaIn: () -> Float,
+    chipsIn: () -> Float,
+) {
+    val colors = LocalFlickColors.current
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        DetailTitle(
+            logoPath = art?.logo,
+            title = title,
+            imageLoader = imageLoader,
+            modifier = Modifier.fadeUp(logoIn, CardFlipMotion.RiseDistance),
         )
+        Spacer(Modifier.height(10.dp))
         Text(
-            text = label,
-            style = FlickText.labelMedium.copy(color = colors.onSurface),
+            text = detailMeta(item),
+            style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fadeUp(metaIn, CardFlipMotion.RiseDistance),
+        )
+        Spacer(Modifier.height(14.dp))
+        // Source-fact chips reflow on narrow or large-font windows instead of
+        // competing for one fixed row and clipping the resolution or file size.
+        FlowRow(
+            Modifier.fillMaxWidth().fadeUp(chipsIn, CardFlipMotion.RiseDistance),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Resolution, dynamic range and size are the only source facts the phone can
+            // read; codec and frame rate never leave MediaStore. A fact it did not read takes
+            // the outlined chip: same seat, same type, no claim.
+            DetailChip(text = resolutionText(item), known = item.knowsResolution)
+            DetailChip(text = hdrChipLabel(hdr), known = hdr != null)
+            DetailChip(text = Format.bytes(item.sizeBytes), known = true)
+        }
+        // With the file's own facts, because it is one of them: what will be sent with the
+        // flick. Not a chip — those are the three the phone reads off the file itself.
+        if (subtitle != null) {
+            Spacer(Modifier.height(12.dp))
+            AttachedSubtitleRow(
+                displayName = subtitle.first,
+                language = subtitle.second,
+                modifier = Modifier.fadeUp(chipsIn, CardFlipMotion.RiseDistance),
+            )
+        }
+    }
+}
+
+/**
+ * TMDB's own lettering when it has a logo for this film, the name in type when it has none
+ * or the logo will not load. Either way it is the page's heading. The logo's seat is a fixed
+ * height, so the facts below do not jump when it lands.
+ */
+@Composable
+private fun DetailTitle(
+    logoPath: String?,
+    title: String,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+) {
+    var logoFailed by remember(logoPath) { mutableStateOf(false) }
+    if (logoPath != null && !logoFailed) {
+        Box(
+            modifier.fillMaxWidth().height(LogoMaxHeight),
+            contentAlignment = Alignment.Center,
+        ) {
+            FilmTitleLogo(
+                logoPath = logoPath,
+                imageLoader = imageLoader,
+                contentDescription = title,
+                onFailed = { logoFailed = true },
+                modifier = Modifier
+                    .size(LogoMaxWidth, LogoMaxHeight)
+                    .semantics { heading() },
+            )
+        }
+    } else {
+        Text(
+            text = title,
+            style = FlickText.headlineMedium.copy(color = Color.White),
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            modifier = modifier.semantics { heading() },
         )
     }
 }
@@ -500,30 +669,30 @@ private fun RowScope.SecondaryAction(
 /**
  * The subtitle this film is already carrying.
  *
- * A remembered one attaches while the sheet is being read, and nothing on this route would
+ * A remembered one attaches while the page is being read, and nothing on this route would
  * otherwise admit to it: the only surface that names a selection is a sheet reachable from
  * Now Playing. Without this a viewer flicks a film carrying cues they did not choose in this
- * session and had no way to see. Resume is not silent like that either — the CTA above says
+ * session and had no way to see. Resume is not silent like that either — the CTA below says
  * where it will start.
  *
  * Read-only on purpose. Removing a subtitle also forgets the memory behind it, and that
  * decision stays where attaching lives rather than becoming a second destructive control on
- * a sheet whose other controls all start a cast.
+ * a page whose other controls all start a cast.
  *
  * The language when the record carries one, because that is what the viewer chose; the
  * file's own name when it does not, which is honest and is already what the subtitles sheet
  * shows. Neither is ever logged — a subtitle name names the film and the user's storage.
  */
 @Composable
-private fun AttachedSubtitleRow(displayName: String, language: String?) {
+private fun AttachedSubtitleRow(displayName: String, language: String?, modifier: Modifier = Modifier) {
     val colors = LocalFlickColors.current
     val label = languageLabel(language) ?: displayName
     val spoken = stringResource(R.string.a11y_detail_subtitle, label)
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .semantics(mergeDescendants = true) { contentDescription = spoken },
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -542,106 +711,112 @@ private fun AttachedSubtitleRow(displayName: String, language: String?) {
 }
 
 /**
- * Whether the sheet for [itemKey] may name the subtitle that is attached right now.
+ * Whether the detail page for [itemKey] may name the subtitle that is attached right now.
  *
  * There is one selection at a time and it belongs to the film it was picked or recalled
  * for. A live cast owns it, so browsing to another film mid-cast is the ordinary way to
  * arrive here with somebody else's subtitle attached — and `startCast` drops it rather than
- * send it, which is the promise a sheet that had drawn it would already have broken.
+ * send it, which is the promise a page that had drawn it would already have broken.
  */
 internal fun showAttachedSubtitle(ownerKey: String?, itemKey: String): Boolean =
     ownerKey == itemKey
 
 /**
- * The direct-play promise: what happens when nothing has gone wrong. Carried on a solid
- * accent fill with its own inverting ink, which is the one shape the accent is allowed in
- * the dark palette — an area, never a hairline.
- *
- * Set as a verdict over a note rather than as one run of type, unlike [RefusalCard] beside
- * it. That card's two halves are one sentence — every refusal body is written to continue
- * "Your TV couldn't play this file." — and breaking them apart would break the grammar. The
- * two sentences here are independent, and stacking them buys back the height that made this
- * the loudest area on a sheet whose blue CTA has to be the thing the eye lands on.
+ * The one notice the page may carry, at its foot. A refusal outranks the advisory: a file this
+ * TV has already refused will not play at any bitrate, so warning about the Wi-Fi carrying it
+ * is advice about a problem the user cannot reach from here.
  */
 @Composable
-private fun DirectPlayCard() {
-    val colors = LocalFlickColors.current
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(FlickCorners.qualityCard))
-            .background(colors.spark)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        // Against two lines, not the three this used to run to: top alignment left the
-        // check floating against a paragraph it was the verdict for.
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = FlickIcons.CheckCircle,
-            contentDescription = null,
-            tint = colors.onSpark,
-            modifier = Modifier.size(22.dp),
+private fun DetailNotice(
+    refusal: String?,
+    advisory: PreCastLinkAdvisory?,
+    castEnabled: Boolean,
+    onSwitchNetwork: () -> Unit,
+    onCastAnyway: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    when {
+        refusal != null -> RefusalCard(refusal, modifier)
+        advisory != null -> LinkAdvisory(
+            advisory = advisory,
+            onSwitchNetwork = onSwitchNetwork,
+            castEnabled = castEnabled,
+            onCastAnyway = onCastAnyway,
+            modifier = modifier,
         )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = stringResource(R.string.detail_directplay_title),
-                style = FlickText.labelLarge.copy(color = colors.onSpark),
-            )
-            Text(
-                text = stringResource(R.string.detail_directplay_body),
-                style = FlickText.bodySmall.copy(
-                    color = colors.onSpark.copy(alpha = VerdictNoteAlpha),
-                ),
-            )
-        }
     }
 }
 
 /**
- * The promise card's seat when a receiver has refused this file, in the app's advisory
- * vocabulary rather than its failure one: the caution hue — amber on light, vermilion on
- * the dark sets, where the action itself is gold — the same geometry, and the CTA below it
- * untouched. Crimson would read as a blocked file, and this file is not blocked
- * — the user may have remuxed it, or be standing in front of a different TV.
+ * Dark glass with a hairline, like the chips and the back disc, and an [accent] only on the
+ * icon: on this page the poster is the loudest thing, and a pale card would outshout it.
  */
 @Composable
-private fun RefusalCard(code: String) {
-    val colors = LocalFlickColors.current
+private fun GlassNotice(
+    icon: ImageVector,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(FlickCorners.warning)
     Row(
-        Modifier
-            .clip(RoundedCornerShape(FlickCorners.qualityCard))
-            .background(colors.caution)
-            .padding(15.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Brush.verticalGradient(listOf(CinemaNoticeTop, CinemaNoticeFoot)))
+            .border(1.dp, CinemaGlassEdge, shape)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Icon(
-            imageVector = FlickIcons.Warning,
-            contentDescription = null,
-            tint = colors.onCaution,
-            modifier = Modifier.size(21.dp),
-        )
-        Column {
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) {
-                        append(stringResource(R.string.detail_unplayable_title))
-                    }
-                    append(" ")
-                    append(stringResource(refusalBody(code)))
-                },
-                style = FlickText.bodySmall.copy(color = colors.onCaution),
-            )
-            Text(
-                text = stringResource(refusalNote(code)),
-                style = FlickText.bodySmall.copy(color = colors.onCaution.copy(alpha = VerdictNoteAlpha)),
-                modifier = Modifier.padding(top = 6.dp),
+        Box(
+            Modifier
+                .size(NoticeIconDisc)
+                .clip(CircleShape)
+                .background(accent.copy(alpha = NoticeAccentWash)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp),
             )
         }
+        Column(Modifier.weight(1f), content = content)
+    }
+}
+
+private val NoticeIconDisc = 36.dp
+private const val NoticeAccentWash = 0.16f
+
+/**
+ * A receiver has refused this file. The caution hue on the icon only: crimson would read as a
+ * blocked file, and this file is not blocked — the user may have remuxed it, or be standing in
+ * front of a different TV — so the pad above stays live.
+ */
+@Composable
+private fun RefusalCard(code: String, modifier: Modifier = Modifier) {
+    val colors = LocalFlickColors.current
+    GlassNotice(icon = FlickIcons.Warning, accent = colors.caution, modifier = modifier) {
+        Text(
+            text = stringResource(R.string.detail_unplayable_title),
+            style = FlickText.bodySmall.copy(color = Color.White, fontWeight = FontWeight.ExtraBold),
+        )
+        Text(
+            text = stringResource(refusalBody(code)),
+            style = FlickText.bodySmall.copy(color = CinemaInkDim),
+            modifier = Modifier.padding(top = 3.dp),
+        )
+        Text(
+            text = stringResource(refusalNote(code)),
+            style = FlickText.bodySmall.copy(color = CinemaInkDim.copy(alpha = VerdictNoteAlpha)),
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 
 /**
- * The receiver's own diagnosis, in the sheet's voice. Every branch continues the card's
+ * The receiver's own diagnosis, in the page's voice. Every branch continues the card's
  * "Your TV couldn't play this file" opener, so only codes a TV can reach belong here —
  * an unrecognised one, from a newer receiver or a category this build has never seen,
  * says only what is certain: it stopped.
@@ -663,36 +838,31 @@ private fun refusalNote(code: String): Int =
     if (code == DecoderFaultCode) R.string.detail_unplayable_note_twice
     else R.string.detail_unplayable_note
 
-/**
- * The second register on both verdict cards — the direct-play promise and the refusal that
- * takes its seat. A note, not a second paragraph of the same weight.
- */
+/** The refusal's second register: a note, not a second paragraph of the same weight. */
 private const val VerdictNoteAlpha = 0.82f
 
 /**
  * The pre-cast link advisory. It is not a gate and there is none anywhere in this feature:
  * before the first byte moves the phone knows only the negotiated PHY rate, which
  * over-reports usable throughput by 2–4x, so a refusal built on it would refuse casts that
- * play perfectly. The CTA below is untouched — same enabled state, same action.
+ * play perfectly. The pad above is untouched — same enabled state, same action.
  *
- * [AdvisoryTone.INFO] rather than the caution fill the band advisory wears, and the reason
- * is the card it always stands under: on the light palette [DirectPlayCard]'s `spark`
- * (#FFB61E) and `caution` (#FFA23A) are one hue step apart, so two saturated warm fills in
- * one column read as a single orange block. Caution is also the seat this sheet already
- * gives [RefusalCard], which is the harder claim — that this TV cannot play this file at
- * all — and the two must not wear the same clothes.
+ * Cyan on the icon, the LAN's colour, where the refusal takes caution: the two must not wear
+ * the same clothes, and this is the softer claim.
  *
- * "Cast anyway" is the cast, not a dismissal: it runs the CTA's own action under the CTA's
- * own guard. A label that says cast and only hides a card would be the one dishonest thing
- * on this screen, and on a short window this card can be the last thing above the fold.
+ * "Cast anyway" is the cast, not a dismissal: it runs the pad's own action under the pad's
+ * own guard, for a viewer who reads the card and would rather tap than swipe.
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun LinkAdvisory(
     advisory: PreCastLinkAdvisory,
     onSwitchNetwork: () -> Unit,
     castEnabled: Boolean,
     onCastAnyway: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val colors = LocalFlickColors.current
     val title = stringResource(R.string.link_advisory_title)
     val body = stringResource(
         R.string.link_advisory_body,
@@ -703,147 +873,108 @@ private fun LinkAdvisory(
     // Unmerged: the card carries two real buttons, and merging to speak the sentence once
     // would take both of them off TalkBack's traversal.
     val spoken = stringResource(R.string.a11y_link_advisory, "$title $body")
-    AdvisoryCard(
+    GlassNotice(
         icon = FlickIcons.Wifi,
-        title = title,
-        body = body,
-        tone = AdvisoryTone.INFO,
-        primaryLabel = stringResource(R.string.advisory_band_primary),
-        onPrimary = onSwitchNetwork,
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics { contentDescription = spoken },
-        secondaryLabel = stringResource(R.string.advisory_band_secondary),
-        onSecondary = onCastAnyway,
-        secondaryEnabled = castEnabled,
-    )
-}
-
-/**
- * The blue "Flick to <TV>" CTA. Falls back to pairing when no TV is connected.
- *
- * [committing] is read straight off `castStart`, never off a local boolean: a
- * handshake that fails in its first hop has to clear this label with it.
- */
-@Composable
-private fun FlickToTvButton(
-    text: String,
-    accessibilityLabel: String,
-    committing: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val colors = LocalFlickColors.current
-    val motionScheme = MaterialTheme.motionScheme
-    val reduceMotion = rememberReduceMotion()
-    val source = remember { MutableInteractionSource() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressScale(source)
-            .shadow(
-                elevation = 14.dp,
-                shape = PillShape,
-                clip = false,
-                ambientColor = PrimaryShadow,
-                spotColor = PrimaryShadow,
-            )
-            .clip(PillShape)
-            .background(colors.primary)
-            .clickable(
-                interactionSource = source,
-                indication = flickRipple(colors.onPrimary),
-                enabled = enabled && !committing,
-                role = Role.Button,
-                onClick = onClick,
-            )
-            .semantics(mergeDescendants = true) { contentDescription = accessibilityLabel }
-            .padding(20.dp),
-        horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+        accent = colors.link,
+        modifier = modifier.semantics { contentDescription = spoken },
     ) {
-        AnimatedContent(
-            targetState = committing,
-            transitionSpec = {
-                if (reduceMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    (
-                        fadeIn(motionScheme.defaultEffectsSpec()) +
-                            scaleIn(motionScheme.fastSpatialSpec(), initialScale = CtaSwapScale)
-                        ) togetherWith (
-                        fadeOut(motionScheme.fastEffectsSpec()) +
-                            scaleOut(motionScheme.fastSpatialSpec(), targetScale = CtaSwapScale)
-                        )
-                }
-            },
-            label = "cta",
-        ) { busy ->
-            if (busy) {
-                CommitIndicator()
-            } else {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(11.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = FlickIcons.Cast,
-                        contentDescription = null,
-                        tint = colors.onPrimary,
-                        modifier = Modifier.size(21.dp),
-                    )
-                    Text(text, style = FlickText.titleSmall.copy(color = colors.onPrimary))
-                }
-            }
+        Text(
+            text = title,
+            style = FlickText.bodySmall.copy(color = Color.White, fontWeight = FontWeight.ExtraBold),
+        )
+        Text(
+            text = body,
+            style = FlickText.bodySmall.copy(color = CinemaInkDim),
+            modifier = Modifier.padding(top = 3.dp),
+        )
+        // Wraps rather than ellipsizing "Cast anyway" at large font scales.
+        FlowRow(
+            Modifier.padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            GlassAction(
+                text = stringResource(R.string.advisory_band_primary),
+                filled = true,
+                enabled = true,
+                onClick = onSwitchNetwork,
+            )
+            GlassAction(
+                text = stringResource(R.string.advisory_band_secondary),
+                filled = false,
+                enabled = castEnabled,
+                onClick = onCastAnyway,
+            )
         }
     }
 }
 
-/**
- * The commit is a handshake, not a measurement, so this indicator never carries a
- * percentage — it only says the TV was asked.
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+/** A notice's action: a glass pill when [filled], bare white type when not; 48 dp tall. */
 @Composable
-private fun CommitIndicator() {
-    val colors = LocalFlickColors.current
-    if (rememberReduceMotion()) {
-        // A frozen spin reads as a hang, so the reduced form is a resting shape.
-        Box(
-            Modifier
-                .size(CommitRestSize)
-                .background(colors.onPrimary, MaterialShapes.Cookie4Sided.toShape()),
-        )
-    } else {
-        ContainedLoadingIndicator(
-            containerColor = colors.onPrimary.copy(alpha = CommitContainerAlpha),
-            indicatorColor = colors.onPrimary,
-        )
-    }
-}
-
-/** The swapped face arrives from under the finger rather than from nowhere. */
-private const val CtaSwapScale = 0.72f
-private const val CommitContainerAlpha = 0.18f
-private val CommitRestSize = 38.dp
-
-@Composable
-private fun DetailChip(
+private fun GlassAction(
     text: String,
-    containerColor: Color,
-    contentColor: Color,
-    modifier: Modifier = Modifier,
-    outlineColor: Color? = null,
+    filled: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
 ) {
+    val source = remember { MutableInteractionSource() }
     Text(
         text = text,
-        style = FlickText.monoChip.copy(color = contentColor),
+        style = FlickText.labelMedium.copy(
+            color = Color.White.copy(alpha = if (!enabled) 0.4f else if (filled) 1f else 0.8f),
+        ),
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = modifier
+        modifier = Modifier
+            .pressScale(source)
             .clip(PillShape)
-            .background(containerColor)
-            .then(if (outlineColor != null) Modifier.border(1.dp, outlineColor, PillShape) else Modifier)
+            .then(
+                if (filled) {
+                    Modifier.background(CinemaGlass).border(1.dp, CinemaGlassEdge, PillShape)
+                } else {
+                    Modifier
+                },
+            )
+            .clickable(
+                interactionSource = source,
+                indication = flickRipple(Color.White),
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+    )
+}
+
+/**
+ * Only the in-flight handshake states. An already-Active session must not strand this
+ * screen's pad when the user walks back into a detail page mid-cast.
+ */
+private fun CastStartState.isCommitting(): Boolean = when (this) {
+    is CastStartState.ConnectingControl,
+    is CastStartState.StartingSource,
+    is CastStartState.AwaitingAcceptance,
+    is CastStartState.AwaitingFirstFrame,
+    -> true
+    CastStartState.Idle, is CastStartState.Active, is CastStartState.Failed -> false
+}
+
+/**
+ * One source fact as a glass pill. [known] false is a fact the phone could not read: no fill
+ * and the dim ink, so the seat stays without making a claim.
+ */
+@Composable
+private fun DetailChip(text: String, known: Boolean) {
+    val colors = LocalFlickColors.current
+    Text(
+        text = text,
+        style = FlickText.monoChip.copy(color = if (known) Color.White else colors.onSurfaceDim),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .clip(PillShape)
+            .background(if (known) CinemaGlass else Color.Transparent)
+            .border(1.dp, if (known) CinemaGlassEdge else colors.outline, PillShape)
             .padding(horizontal = 12.dp, vertical = 9.dp),
     )
 }
@@ -872,19 +1003,6 @@ private fun hdrChipLabel(hdr: HdrType?): String = when (hdr) {
     HdrType.HDR10 -> stringResource(R.string.media_hdr10_badge)
     HdrType.NONE -> stringResource(R.string.media_sdr)
     null -> stringResource(R.string.detail_hdr_checking)
-}
-
-/**
- * Only the in-flight handshake states. An already-Active session must not strand this
- * screen's CTA when the user walks back into a detail sheet mid-cast.
- */
-private fun CastStartState.isCommitting(): Boolean = when (this) {
-    is CastStartState.ConnectingControl,
-    is CastStartState.StartingSource,
-    is CastStartState.AwaitingAcceptance,
-    is CastStartState.AwaitingFirstFrame,
-    -> true
-    CastStartState.Idle, is CastStartState.Active, is CastStartState.Failed -> false
 }
 
 /**

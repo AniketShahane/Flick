@@ -168,24 +168,24 @@
     <string name="toast_pick_a_video">Nothing is casting — pick a video to flick.</string>
 
     <!-- S4 · Detail. -->
-    <string name="detail_back">Back</string>
-    <string name="detail_directplay_title">Will direct-play at full quality.</string>
-    <string name="detail_directplay_body">No transcode, no downscale — nothing leaves your Wi-Fi.</string>
+    <!-- TalkBack's name for the poster pad's send action ("Double-tap to …"). -->
     <string name="detail_cta">Flick to %1$s</string>
     <string name="detail_cta_noconnect">Flick to your TV</string>
-    <!-- The poster pad above the CTA: swipe the film's poster up to send it. -->
-    <string name="flick_pad_title">Flick it toward your TV</string>
-    <string name="flick_pad_armed">Let go to send</string>
     <string name="detail_resume_cta">Resume from %1$s on %2$s</string>
+    <!-- The poster pad on the detail page: swipe the film's poster up to send it. It is the
+         page's only send, so its second line says where it starts and where it goes. -->
+    <string name="flick_pad_title">Flick it toward your TV</string>
+    <!-- %1$s is the connected TV's name. -->
+    <string name="flick_pad_title_tv">Flick it toward %1$s</string>
+    <string name="flick_pad_armed">Let go to send</string>
+    <!-- %1$s is a timecode such as 1:02:15. -->
+    <string name="flick_pad_resume">Picks up at %1$s</string>
+    <string name="flick_pad_no_tv">No TV connected yet — you\'ll pick one first</string>
+    <!-- %1$s is the TV's name. -->
+    <string name="flick_pad_sending">Reaching %1$s…</string>
     <!-- The subtitle this film was left with, confirmed where it is put back. The value is
          the language when the memory names one and the file's own name when it does not. -->
     <string name="detail_subtitle_attached">Subtitles · %1$s</string>
-    <!-- The pair under the CTA. Both are button labels now rather than trailing text
-         links, so the phone one lost its "instead": a button in a row of two is not a
-         continuation of the sentence above it. Sentence case, like every other action
-         in the app. -->
-    <string name="detail_start_over">Start over</string>
-    <string name="detail_play_here">Play on this phone</string>
 
     <!-- S5 · Connecting. -->
     <string name="connecting_hyperspace_title">On its way</string>
@@ -358,12 +358,8 @@
     <string name="a11y_open_connect">Connect to a TV</string>
     <string name="a11y_cast_video">Cast %1$s to %2$s</string>
     <string name="a11y_resume_video">Resume %1$s from %2$s on %3$s</string>
-    <string name="a11y_start_video_over">Start %1$s over on %2$s</string>
     <!-- The row states what is attached; the separator it is drawn with is not a word. -->
     <string name="a11y_detail_subtitle">Subtitles attached: %1$s</string>
-    <!-- The phone action names no TV: it is the one control on this sheet that does not
-         involve one. -->
-    <string name="a11y_play_video_here">Play %1$s on this phone</string>
     <string name="a11y_back_to_library">Back to your videos</string>
     <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
     <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>
@@ -794,7 +790,7 @@
     <!-- Same constraint as error_decoder_body: `decoder_init` is the wire code for every
          AudioTrack failure too, so this may not claim a decoder exists or that video was
          what failed. -->
-    <string name="detail_unplayable_decoder">It couldn\'t start playing this film\'s tracks — twice in a row.</string>
+    <string name="detail_unplayable_decoder">It couldn\'t start playing this video\'s tracks — twice in a row.</string>
     <string name="detail_unplayable_note">That was one attempt, on one TV. Flick it again whenever you want.</string>
     <string name="detail_unplayable_note_twice">That was two attempts, on one TV. Flick it again whenever you want.</string>
     <!-- ===== S12 · the faces a diagnosed failure earns ===== -->
@@ -1017,7 +1013,7 @@
     <!-- Link capacity. Every one of these quotes measured numbers or it does not appear.
          Throughput arguments are pre-formatted "12.4 Mbps" strings (Format.bitrate) so the
          unit lives in one place. Nothing here ever refuses or stops a cast. -->
-    <string name="link_advisory_title">This film may outrun this Wi-Fi.</string>
+    <string name="link_advisory_title">This video may outrun this Wi-Fi.</string>
     <!-- The fix clause names both moves and prescribes neither band. This card is raised
          whenever usable throughput is under the film's bitrate, which a 5 GHz phone at range
          with a collapsed MCS reaches too — "switch to 5 GHz" would then be advice it has

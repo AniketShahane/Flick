@@ -22,8 +22,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,20 +37,30 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.center
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import coil.ImageLoader
@@ -58,10 +68,13 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.flick.sender.R
 import com.flick.sender.ui.FilmPosterBackdrop
+import com.flick.sender.ui.motion.ambientFrameRate
+import com.flick.sender.ui.motion.animatingFrameRate
+import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.Motion
-import com.flick.sender.ui.theme.TileShadow
+import com.flick.sender.ui.theme.posterCardShape
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
@@ -70,17 +83,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * The film's poster as the thing you throw: swipe it up toward the TV and it sends, exactly
- * as the CTA under it does. [onFlick] must be that same action.
+ * The film's poster as the thing you throw: swipe it up toward the TV and it sends. It is the
+ * detail page's only send, so [onFlick] is the whole action, including the bounce to pairing
+ * when no TV is connected.
  *
- * Decoration to accessibility — the CTA already carries the action and its label, and a
- * second node saying the same thing would only make TalkBack read it twice.
+ * A plain tap never sends; it lifts the poster once to show which way it goes. TalkBack and
+ * switch access get the send as the node's click action, labelled [actionLabel] and spoken
+ * as [actionDescription].
  *
- * [enabled] false is the CTA's own disabled state: no drag is accepted and the idle nudge
- * stops, so the poster never invites a send the button would refuse.
+ * [enabled] false means the send is not available yet (resume progress still loading) or is
+ * already under way: no drag is accepted and the idle nudge stops.
  *
- * [sheetScroll] is the scroll of the sheet the pad sits in. While that sheet can still
- * scroll, a swipe starting on the poster is the sheet's, never a send.
+ * [pageScroll] is the scroll of the page the pad sits in. While that page can still
+ * scroll, a swipe starting on the poster is the page's, never a send.
+ *
+ * [caption] is the line under the poster; [note] is a quieter second line (resume point,
+ * no TV yet, sending), and its seat is kept when it is null so the pad never changes height.
+ *
+ * [seat], when given, is the flip that carries the library tile into the poster's seat; the
+ * pad's chrome then arrives on the page's tracks — [glowIn] under the card, [chevronsIn] above
+ * it, [captionIn] below — and [throwReady] holds the throw until the card has landed.
+ *
+ * Drawn for the dark detail page only: its ink is white whatever the palette.
  */
 @Composable
 internal fun FlickPad(
@@ -88,11 +112,22 @@ internal fun FlickPad(
     frameRequest: ImageRequest,
     imageLoader: ImageLoader,
     enabled: Boolean,
-    sheetScroll: ScrollState,
+    pageScroll: ScrollState,
+    caption: String,
+    note: String?,
+    actionDescription: String,
+    actionLabel: String,
     onFlick: () -> Unit,
     modifier: Modifier = Modifier,
+    posterWidth: Dp = FlickPadMotion.PosterWidthDp.dp,
+    chevronGap: Dp = FlickPadMotion.ChevronGapDp.dp,
+    captionGap: Dp = FlickPadMotion.TitleGapDp.dp,
+    seat: CardFlipSeat? = null,
+    throwReady: Boolean = true,
+    glowIn: () -> Float = { 1f },
+    chevronsIn: () -> Float = { 1f },
+    captionIn: () -> Float = { 1f },
 ) {
-    val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
     val resumed = rememberIsResumed()
@@ -107,10 +142,13 @@ internal fun FlickPad(
     val offsetY = remember { Animatable(0f) }
     val held = remember { Animatable(0f) }
     val nudge = remember { Animatable(0f) }
+    val hint = remember { Animatable(0f) }
     val presence = remember { Animatable(1f) }
     var touched by remember { mutableStateOf(false) }
     var armed by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
+    // From the finger taking the poster until it is back at rest in its seat.
+    var dragging by remember { mutableStateOf(false) }
 
     LaunchedEffect(touched, reduceMotion, resumed, enabled) {
         if (touched || reduceMotion || !resumed || !enabled) {
@@ -118,7 +156,7 @@ internal fun FlickPad(
             if (reduceMotion) nudge.snapTo(0f) else nudge.animateTo(0f, tween(FlickPadMotion.NudgeFallMs))
             return@LaunchedEffect
         }
-        // The sheet and the backdrop are still arriving when this route opens.
+        // The page and the backdrop are still arriving when this route opens.
         delay(FlickPadMotion.NudgeFirstDelayMs)
         while (true) {
             nudge.animateTo(1f, tween(FlickPadMotion.NudgeRiseMs, easing = FlickPadMotion.NudgeRise))
@@ -127,17 +165,23 @@ internal fun FlickPad(
         }
     }
 
-    // Keyed on the sheet's scroll state too: a new state object means the predicate below
+    // Keyed on the page's scroll state too: a new state object means the predicate below
     // would otherwise keep asking the old one.
-    val gesture = Modifier.pointerInput(enabled && !sending, sheetScroll) {
-        if (!enabled || sending) return@pointerInput
+    val gesture = Modifier.pointerInput(enabled && !sending && throwReady, pageScroll) {
+        if (!enabled || sending || !throwReady) return@pointerInput
         val flyPx = FlickPadMotion.FlyDistanceDp.dp.toPx()
 
         fun settle() {
             armed = false
-            scope.launch { held.animateTo(0f, motionScheme.fastSpatialSpec<Float>()) }
-            scope.launch { offsetX.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
-            scope.launch { offsetY.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
+            scope.launch {
+                val lower = launch { held.animateTo(0f, motionScheme.fastSpatialSpec<Float>()) }
+                val across = launch { offsetX.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
+                offsetY.animateTo(0f, motionScheme.defaultSpatialSpec<Float>())
+                lower.join()
+                across.join()
+                // Not reached when a new drag takes the poster mid-settle: that cancels these.
+                dragging = false
+            }
         }
 
         // Measured from the down position, not from where slop was crossed, so the arm and
@@ -157,23 +201,39 @@ internal fun FlickPad(
         }
 
         awaitEachGesture {
-            // Unconsumed, so the sheet's own scroll still sees every gesture this declines.
+            // Unconsumed, so the page's own scroll still sees every gesture this declines.
             val down = awaitFirstDown(requireUnconsumed = false)
             val tracker = VelocityTracker()
             tracker.addPointerInputChange(down)
-            // A change left unconsumed here goes on to the sheet's scroll, which takes it and
-            // cancels this wait: the poster only claims a drag the sheet has no use for.
+            // A change left unconsumed here goes on to the page's scroll, which takes it and
+            // cancels this wait: the poster only claims a drag the page has no use for.
             val start = awaitTouchSlopOrCancellation(down.id) { change, _ ->
                 val travelYDp = (change.position.y - down.position.y) / density
-                if (FlickPadPolicy.claims(sheetScroll.canScrollForward, sheetScroll.canScrollBackward, travelYDp)) {
+                if (FlickPadPolicy.claims(pageScroll.canScrollForward, pageScroll.canScrollBackward, travelYDp)) {
                     change.consume()
                 }
-            } ?: return@awaitEachGesture
+            }
+            if (start == null) {
+                // Released inside slop and nobody took it: a tap. It shows the throw instead
+                // of making it, because a tap on a poster is too easy to make by accident.
+                val release = currentEvent.changes.firstOrNull { it.id == down.id }
+                if (release != null && release.changedToUp()) {
+                    touched = true
+                    if (!currentReduceMotion) {
+                        scope.launch {
+                            hint.animateTo(1f, tween(FlickPadMotion.HintRiseMs, easing = FlickPadMotion.NudgeRise))
+                            hint.animateTo(0f, motionScheme.defaultSpatialSpec<Float>())
+                        }
+                    }
+                }
+                return@awaitEachGesture
+            }
 
             // Also reached when the key changes mid-drag, which cancels this coroutine
             // without any release: the poster must not be left displaced or armed.
             try {
                 touched = true
+                dragging = true
                 scope.launch { nudge.snapTo(0f) }
                 scope.launch { held.animateTo(1f, motionScheme.fastSpatialSpec<Float>()) }
                 tracker.addPointerInputChange(start)
@@ -216,6 +276,7 @@ internal fun FlickPad(
                         offsetY.snapTo(0f)
                         presence.animateTo(1f, Motion.orSnap(snap, tween(FlickPadMotion.ReturnFadeMs)))
                         sending = false
+                        dragging = false
                     }
                 }
             } finally {
@@ -224,70 +285,167 @@ internal fun FlickPad(
         }
     }
 
-    val shape = RoundedCornerShape(FlickPadMotion.PosterCornerDp.dp)
     Column(
-        modifier.fillMaxWidth().clearAndSetSemantics {},
+        modifier.fillMaxWidth().clearAndSetSemantics {
+            contentDescription = actionDescription
+            role = Role.Button
+            if (enabled) {
+                onClick(label = actionLabel) {
+                    currentOnFlick()
+                    true
+                }
+            } else {
+                disabled()
+            }
+        },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         FlickChevrons(
             armed = { armed },
             live = enabled && !reduceMotion && resumed,
             dimmed = !enabled,
-            color = colors.primary,
-            modifier = Modifier.size(
-                width = FlickPadMotion.ChevronWidthDp.dp,
-                height = FlickPadMotion.ChevronRowDp.dp,
-            ),
+            color = Color.White,
+            modifier = Modifier
+                .size(
+                    width = FlickPadMotion.ChevronWidthDp.dp,
+                    height = FlickPadMotion.ChevronRowDp.dp,
+                )
+                .fadeUp(chevronsIn, CardFlipMotion.RiseDistance),
         )
-        Spacer(Modifier.height(FlickPadMotion.ChevronGapDp.dp))
-        Box(
-            Modifier
-                .size(width = FlickPadMotion.PosterWidthDp.dp, height = FlickPadMotion.PosterHeightDp.dp)
-                // Outside the layer, so the hit area stays at the seat while the poster
-                // moves; inside it the finger's own deltas would shrink as the poster
-                // followed them.
-                .then(gesture)
+        Spacer(Modifier.height(chevronGap))
+        FlickPosterCard(
+            posterPath = posterPath,
+            frameRequest = frameRequest,
+            imageLoader = imageLoader,
+            width = posterWidth,
+            seat = seat,
+            glowIn = glowIn,
+            // Outside the layer, so the hit area stays at the seat while the poster moves;
+            // inside it the finger's own deltas would shrink as the poster followed them.
+            modifier = gesture
+                .animatingFrameRate(dragging || sending)
                 .graphicsLayer {
-                    val nudgePx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value
+                    val liftPx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value +
+                        FlickPadMotion.HintDp.dp.toPx() * hint.value
                     translationX = offsetX.value
-                    translationY = offsetY.value - nudgePx
+                    translationY = offsetY.value - liftPx
                     rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density)
                     val scale = lerp(1f, FlickPadMotion.HeldScale, held.value)
                     scaleX = scale
                     scaleY = scale
                     alpha = presence.value
-                }
-                .shadow(FlickPadMotion.PosterShadowDp.dp, shape, clip = false, ambientColor = TileShadow, spotColor = TileShadow)
-                .clip(shape)
-                .background(colors.surfaceRaisedAlt),
-        ) {
-            if (posterPath != null) {
-                FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = Modifier.fillMaxSize())
-            } else {
-                AsyncImage(
-                    model = frameRequest,
-                    contentDescription = null,
-                    imageLoader = imageLoader,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-        Spacer(Modifier.height(FlickPadMotion.TitleGapDp.dp))
-        Text(
-            text = stringResource(if (armed) R.string.flick_pad_armed else R.string.flick_pad_title),
-            style = FlickText.titleSmall.copy(color = if (armed) colors.primary else colors.onSurface),
-            textAlign = TextAlign.Center,
-            // One line in both states, so arming never moves the CTA below.
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+                    // An offscreen layer would clip the glow and the shadow, which paint outside
+                    // the card, for as long as the poster is fading.
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                },
         )
+        Spacer(Modifier.height(captionGap))
+        Column(
+            Modifier.fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = if (armed) stringResource(R.string.flick_pad_armed) else caption,
+                style = FlickText.titleSmall.copy(color = Color.White),
+                textAlign = TextAlign.Center,
+                // One line in both states, so arming never moves anything below.
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = note.orEmpty(),
+                style = FlickText.bodySmall.copy(color = CinemaInkDim),
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
     }
 }
 
 /**
+ * The film's portrait card at the pad's size: the TMDB poster, else the video's own frame,
+ * cropped into an exact 2:3 so nothing is letterboxed and a corner proportional to the width
+ * takes nothing that matters. [modifier] goes on outside the card's size and its layers, so a
+ * caller's gesture and layer move the glow and the shadow with the card.
+ *
+ * The glow and the shadow are a layer of their own under the card rather than part of it: the
+ * card is what turns over when it flies in from the grid ([seat]), and light cast on the page
+ * stays flat on the page. They grow in with [glowIn] once the card is nearly seated.
+ */
+@Composable
+internal fun FlickPosterCard(
+    posterPath: String?,
+    frameRequest: ImageRequest,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+    width: Dp = FlickPadMotion.PosterWidthDp.dp,
+    seat: CardFlipSeat? = null,
+    glowIn: () -> Float = { 1f },
+) {
+    val colors = LocalFlickColors.current
+    val shape = posterCardShape(width)
+    val glow = colors.primary
+    val ground = colors.surfaceRaisedAlt
+    Box(modifier.size(width = width, height = width * FlickPadMotion.PosterAspect)) {
+        Box(
+            Modifier
+                .matchParentSize()
+                // The elevation rather than the layer's opacity: an opacity under 1 draws the
+                // layer offscreen and would cut the glow and the shadow at the card's edge.
+                .graphicsLayer {
+                    val g = glowIn().coerceIn(0f, 1f)
+                    val scale = lerp(CardFlipMotion.GlowFromScale, 1f, g)
+                    scaleX = scale
+                    scaleY = scale
+                    shadowElevation = FlickPadMotion.PosterShadowDp.dp.toPx() * g
+                    this.shape = shape
+                    clip = false
+                    ambientShadowColor = glow
+                    spotShadowColor = glow
+                }
+                // Painted rather than left to the shadow: a tinted shadow is a no-op before
+                // Android 9 and barely reads on a near-black ground after it.
+                .drawWithCache {
+                    val reach = size.width * FlickPadMotion.GlowReach
+                    val brush = Brush.radialGradient(
+                        colors = listOf(glow.copy(alpha = FlickPadMotion.GlowAlpha), Color.Transparent),
+                        center = size.center,
+                        radius = reach,
+                    )
+                    val stretch = size.height / size.width
+                    onDrawBehind {
+                        scale(1f, stretch, pivot = center) {
+                            drawCircle(brush = brush, radius = reach, center = center, alpha = glowIn().coerceIn(0f, 1f))
+                        }
+                    }
+                },
+        )
+        FlipCard(seat = seat, seatCorner = width * PosterCornerShare, modifier = Modifier.matchParentSize()) {
+            Box(Modifier.fillMaxSize().background(ground)) {
+                if (posterPath != null) {
+                    FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = Modifier.fillMaxSize())
+                } else {
+                    AsyncImage(
+                        model = frameRequest,
+                        contentDescription = null,
+                        imageLoader = imageLoader,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** [posterCardShape]'s corner as a share of the width, for a card that has to animate it. */
+private const val PosterCornerShare = 0.08f
+
+/**
  * Three up-chevrons with a brightness wave travelling up through them. One canvas, and the
- * clock is read in the draw phase, so the ripple never recomposes the sheet.
+ * clock is read in the draw phase, so the ripple never recomposes the page.
  */
 @Composable
 private fun FlickChevrons(
@@ -310,11 +468,14 @@ private fun FlickChevrons(
     } else {
         null
     }
-    Canvas(modifier) {
+    // The ripple is a slow loop and reads the same at a quarter of the panel's peak rate.
+    Canvas(modifier.ambientFrameRate()) {
         val stroke = FlickPadMotion.ChevronStrokeDp.dp.toPx()
         val rise = FlickPadMotion.ChevronRiseDp.dp.toPx()
         val pitch = FlickPadMotion.ChevronPitchDp.dp.toPx()
-        val inset = stroke
+        val haloStroke = stroke + FlickPadMotion.ChevronHaloDp.dp.toPx()
+        val halo = Offset(0f, FlickPadMotion.ChevronHaloDropDp.dp.toPx())
+        val inset = haloStroke / 2f
         val isArmed = armed()
         for (index in 0 until FlickPadMotion.ChevronCount) {
             val alpha = when {
@@ -326,8 +487,14 @@ private fun FlickChevrons(
             // Index 0 is the bottom chevron; the wave starts there and climbs.
             val baseY = size.height - inset - index * pitch
             val apex = Offset(size.width / 2f, baseY - rise)
-            drawLine(color, Offset(inset, baseY), apex, stroke, StrokeCap.Round, alpha = alpha)
-            drawLine(color, apex, Offset(size.width - inset, baseY), stroke, StrokeCap.Round, alpha = alpha)
+            val left = Offset(inset, baseY)
+            val right = Offset(size.width - inset, baseY)
+            // A soft dark bed under each stroke, so the white holds over a bright backdrop.
+            val haloAlpha = alpha * FlickPadMotion.ChevronHaloAlpha
+            drawLine(Color.Black, left + halo, apex + halo, haloStroke, StrokeCap.Round, alpha = haloAlpha)
+            drawLine(Color.Black, apex + halo, right + halo, haloStroke, StrokeCap.Round, alpha = haloAlpha)
+            drawLine(color, left, apex, stroke, StrokeCap.Round, alpha = alpha)
+            drawLine(color, apex, right, stroke, StrokeCap.Round, alpha = alpha)
         }
     }
 }
@@ -346,17 +513,23 @@ internal fun chevronAlpha(clock: Float, index: Int): Float {
 
 /** Still, the chevrons brighten toward the top: the direction without the motion. */
 internal fun chevronRestAlpha(index: Int): Float = when (index) {
-    0 -> 0.35f
-    1 -> 0.6f
-    else -> 0.85f
+    0 -> 0.6f
+    1 -> 0.8f
+    else -> 1f
 }
 
 /** Every number in docs/flick-hyperspace-phone.md; change either and change both. */
 internal object FlickPadMotion {
-    const val PosterWidthDp = 104f
-    const val PosterHeightDp = 156f
-    const val PosterCornerDp = 14f
-    const val PosterShadowDp = 14f
+    /**
+     * Exactly 2:3, so a poster crops by nothing and a frame crops evenly. The detail page
+     * sizes the width to its window; this is the size when nothing says otherwise.
+     */
+    const val PosterWidthDp = 150f
+    const val PosterAspect = 1.5f
+    const val PosterShadowDp = 24f
+    /** The painted glow's centre alpha and its horizontal reach, as a share of the width. */
+    const val GlowAlpha = 0.42f
+    const val GlowReach = 0.8f
     const val HeldScale = 1.03f
 
     const val NudgeDp = 12f
@@ -365,6 +538,9 @@ internal object FlickPadMotion {
     const val NudgeFallMs = 420
     /** Rise + fall + rest is the 2.8 s period. */
     const val NudgeRestMs = 2100L
+    /** A tap's answer: one higher lift, settled on the default spatial spring. */
+    const val HintDp = 22f
+    const val HintRiseMs = 200
     val NudgeRise: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
     val NudgeFall: Easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
 
@@ -379,15 +555,18 @@ internal object FlickPadMotion {
     const val ChevronCount = 3
     const val ChevronCycleMs = 1200
     const val ChevronPeakAt = 0.25f
-    const val ChevronBaseAlpha = 0.25f
-    const val ChevronDimmedAlpha = 0.2f
-    const val ChevronStrokeDp = 2.5f
-    const val ChevronRiseDp = 5f
-    const val ChevronPitchDp = 6.5f
-    const val ChevronWidthDp = 24f
-    const val ChevronRowDp = 24f
+    const val ChevronBaseAlpha = 0.55f
+    const val ChevronDimmedAlpha = 0.3f
+    const val ChevronStrokeDp = 3.2f
+    const val ChevronRiseDp = 6f
+    const val ChevronPitchDp = 8f
+    const val ChevronWidthDp = 30f
+    const val ChevronRowDp = 32f
+    const val ChevronHaloDp = 3f
+    const val ChevronHaloDropDp = 1f
+    const val ChevronHaloAlpha = 0.35f
 
-    /** Chevrons, gap, poster, gap, one title line: about 210 dp of sheet in all. */
-    const val ChevronGapDp = 6f
-    const val TitleGapDp = 8f
+    /** Roomy gaps; the detail page passes tighter ones on a short window. */
+    const val ChevronGapDp = 10f
+    const val TitleGapDp = 16f
 }

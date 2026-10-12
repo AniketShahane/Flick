@@ -73,13 +73,55 @@ class RefreshRatePolicyTest {
 
     @Test fun playbackEndingReleasesImmediately() {
         // The measured complaint: idle and pairing must get the panel's own rate
-        // back the moment there is no film, not after a settle.
+        // back the moment there is no film, not after a settle. Only a stop straight
+        // off a presenting film waits, and only for the handshake's settle.
         assertEquals(
             0L,
             refreshRateHintDelayMs(
                 requestedRate = SYSTEM_DEFAULT_REFRESH_RATE,
                 castHandshakeInFlight = false,
             ),
+        )
+        assertEquals(
+            0L,
+            refreshRateHintDelayMs(
+                requestedRate = SYSTEM_DEFAULT_REFRESH_RATE,
+                castHandshakeInFlight = false,
+                filmJustStopped = false,
+            ),
+        )
+    }
+
+    @Test fun aStopBetweenTwoFilmsDefersTheRelease() {
+        // The phone re-casts as stop then loadMedia, so Active -> None -> Checking.
+        // Released at the None, the panel resyncs there and again at the re-pin.
+        assertEquals(
+            CAST_HANDSHAKE_SETTLE_MS,
+            refreshRateHintDelayMs(
+                requestedRate = SYSTEM_DEFAULT_REFRESH_RATE,
+                castHandshakeInFlight = false,
+                filmJustStopped = true,
+            ),
+        )
+    }
+
+    @Test fun aStopNeverDefersAPin() {
+        assertEquals(
+            0L,
+            refreshRateHintDelayMs(
+                requestedRate = 23.976f,
+                castHandshakeInFlight = false,
+                filmJustStopped = true,
+            ),
+        )
+    }
+
+    @Test fun aStopSettlesNoLongerThanAHandshake() {
+        // A stop with no cast behind it is the idle screen at a film's cadence for
+        // the whole settle; it may not outlast the handshake's.
+        assertEquals(
+            refreshRateHintDelayMs(SYSTEM_DEFAULT_REFRESH_RATE, castHandshakeInFlight = true),
+            refreshRateHintDelayMs(SYSTEM_DEFAULT_REFRESH_RATE, castHandshakeInFlight = false, filmJustStopped = true),
         )
     }
 

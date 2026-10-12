@@ -45,6 +45,14 @@ object FilmPosterPolicy {
     // upscales visibly; the original is the next size up.
     const val HERO_WIDTH = "original"
 
+    // A backdrop is already landscape, so a portrait screen crops it to under half its width;
+    // the original is often 4K, which Coil would decode whole for a Crop that only upscales.
+    const val HERO_BACKDROP_WIDTH = "w1280"
+
+    // The detail page fits its logo into a 200 × 64 dp slot, up to 750 px wide on a 600 dpi
+    // phone; w500 upscales there. Coil decodes the original down to the slot's size.
+    const val HERO_LOGO_WIDTH = "original"
+
     /**
      * Only names the parser already judged safe to send to a search API. A camera roll's
      * `PXL_20240101_120000.mp4` never leaves the phone.

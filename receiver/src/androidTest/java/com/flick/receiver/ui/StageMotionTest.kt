@@ -29,12 +29,15 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.DisplayCadenceSource
+import com.flick.receiver.ui.components.FLICK_CARD_HEIGHT
 import com.flick.receiver.ui.components.HANDSHAKE_CARD_WIDTH
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RATE_KNOWN_WAIT_MS
+import com.flick.receiver.ui.components.RESYNC_GRACE_MS
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.theme.FlickColor
+import com.flick.receiver.ui.theme.FlickMotion
 import com.flick.receiver.ui.theme.FlickTvTheme
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import kotlinx.coroutines.flow.Flow
@@ -205,9 +208,10 @@ class StageMotionTest {
     private fun cardExists(): Boolean =
         composeRule.onAllNodesWithTag(CARD_TAG).fetchSemanticsNodes().isNotEmpty()
 
+    // Past the card's flight and its least time on screen, so a reveal waits on the display alone.
     private fun settleHandshake() {
         cut(HouseStage.Handshake)
-        advance(1_000)
+        advance(1_600)
     }
 
     private fun settleFilm() {
@@ -395,13 +399,14 @@ class StageMotionTest {
             shot("revealWaitsForTheModeSwitch", seam).luma(0.5f, 0.1f) > covered + NOISE)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun revealWaitsForALateRate() {
         // The film's rate reaches the stage up to one 2 Hz snapshot after Active.
         rate = 0f
         cadence.physicalHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
@@ -426,6 +431,7 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the grace ran out", 1, up)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForTheSecondSwitch() {
         // A re-cast of a 23.976 film: the panel is already pinned to it, the seam
@@ -433,7 +439,7 @@ class StageMotionTest {
         rate = 23.976f
         cadence.physicalHz = 23.976f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         cadence.physicalHz = 60f
@@ -460,6 +466,7 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the second grace ran out", 1, up)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForAReleaseReportedAfterTheRate() {
         // A re-cast of a 23.976 film whose rate reaches the stage before the release
@@ -468,7 +475,7 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
@@ -523,6 +530,7 @@ class StageMotionTest {
         assertTrue("the picture came up at ${since(seam)} ms, not well before 800", since(seam) < 800)
     }
 
+    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun rateLessReCastWaitsForAPinReleasedAfterTheSeam() {
         // The seam's snapshot still holds the old film's pin; the new film reports no
@@ -532,7 +540,7 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch()
+        launch(expand = false)
         settleHandshake()
         val seam = cut(HouseStage.Film)
         advance(200)
@@ -608,6 +616,102 @@ class StageMotionTest {
         val ramp = if (lit) STANDBY else FILM
         val under = lumaOf(ramp[0]) + (lumaOf(ramp[1]) - lumaOf(ramp[0])) * fy
         return (under - luma(fx, fy)) / (under - lumaOf(FlickColor.Canvas))
+    }
+
+    /** A re-cast arrives as stop then loadMedia, so the Room lasts only a moment. */
+    @Test
+    fun aStopThenCastStillFliesTheCard() {
+        launch()
+        settleFilm()
+        cut(HouseStage.Room)
+        advance(250)
+        val seam = cut(HouseStage.Handshake)
+        frame()
+        val cardH = with(density) { FLICK_CARD_HEIGHT.toPx() }
+        val reach = with(density) { 120.dp.toPx() }
+        val glassH = glassHeightPx()
+        var barsSeenAt: Long? = null
+        while (since(seam) < 1_500) {
+            frame()
+            val px = shot("aStopThenCastStillFliesTheCard", seam)
+            val seatBottom = ((px.height - glassH) / 2f + cardH).roundToInt()
+            if (barsSeenAt == null && px.sparkInColumn(px.width / 2, seatBottom, seatBottom + reach.roundToInt())) {
+                barsSeenAt = since(seam)
+            }
+        }
+        // Only a flight runs the speed bars; a card seated in place never shows them.
+        assertTrue("the speed bars never showed, so the card did not fly", barsSeenAt != null)
+        assertTrue("the card was not left up for the handshake", cardExists())
+    }
+
+    /** A re-cast whose first frame lands 400 ms into the handshake, mid-flight. */
+    @Test
+    fun aQuickFirstFrameWaitsForTheCardsLeastTime() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.restHz = 60f
+        cadence.blank = false
+        launch()
+        settleFilm()
+        val upBefore = up
+        val handshake = cut(HouseStage.Handshake)
+        advance(400)
+        cut(HouseStage.Film)
+        // The veil reaches the card's cue about 240 ms in, and the card owes 1100 ms from there.
+        while (since(handshake) < 1_300) {
+            frame()
+            val t = since(handshake)
+            assertEquals("the picture came up before the card's least time at $t ms", upBefore, up)
+            assertTrue("the card left before it expanded at $t ms", cardExists())
+            val px = shot("aQuickFirstFrameWaitsForTheCardsLeastTime", handshake)
+            assertTrue("the card took the screen at $t ms", !px.isPrimaryAt(0.05f, 0.05f))
+        }
+        while (up == upBefore && since(handshake) < 2_000) frame()
+        assertEquals("the picture never came up once the card had its time", upBefore + 1, up)
+        assertTrue("the picture came up at ${since(handshake)} ms, not soon after its least time",
+            since(handshake) < 1_700)
+    }
+
+    /**
+     * The pin at the first frame blanks the panel 200 ms into the reveal. The card had
+     * long since had its time, but the blank hid it, so it owes its least time again from
+     * the switch's settle before the picture comes up.
+     */
+    @Test
+    fun aModeSwitchRestartsTheCardsLeastTime() {
+        rate = 23.976f
+        cadence.physicalHz = 60f
+        cadence.blank = true
+        launch()
+        settleHandshake()
+        val seam = cut(HouseStage.Film)
+        advance(200)
+        cadence.physicalHz = 23.976f
+        val change = composeRule.mainClock.currentTime
+        cadence.emitChange(change)
+        val owed = RESYNC_GRACE_MS + FlickMotion.FLICK_CARD_MIN_SHOWN_MS
+        while (composeRule.mainClock.currentTime - change < owed - 20) {
+            frame()
+            assertEquals("the picture came up inside the card's restarted time at ${since(seam)} ms", 0, up)
+            assertTrue("the card left before it expanded at ${since(seam)} ms", cardExists())
+        }
+        advance(owed - (composeRule.mainClock.currentTime - change))
+        frame()
+        frame()
+        assertEquals("the picture did not come up once the card had its time after the switch", 1, up)
+    }
+
+    private fun PixelMap.sparkInColumn(x: Int, fromY: Int, toY: Int): Boolean {
+        for (y in fromY.coerceIn(0, height - 1)..toY.coerceIn(0, height - 1)) {
+            val c = this[x, y]
+            if (c.red - c.blue > SPARK_RED_OVER_BLUE) return true
+        }
+        return false
+    }
+
+    private fun PixelMap.isPrimaryAt(fx: Float, fy: Float): Boolean {
+        val c = this[(fx * width).roundToInt().coerceIn(0, width - 1), (fy * height).roundToInt().coerceIn(0, height - 1)]
+        return c.blue - c.red > PRIMARY_BLUE_OVER_RED
     }
 
     @Test
@@ -877,6 +981,10 @@ class StageMotionTest {
         const val GLYPHS_VISIBLE = 8f
         const val CARD_ENTER_DENSITY = 0.88f
         const val DENSITY_NOISE = 0.02f
+
+        // Spark is amber and Primary blue; no underlay under the curtain comes near either.
+        const val SPARK_RED_OVER_BLUE = 0.35f
+        const val PRIMARY_BLUE_OVER_RED = 0.5f
 
         val STANDBY = listOf(Color.White, Color(0xFFFFB61E))
         val FILM = listOf(Color.White, Color(0xFF1240E8))

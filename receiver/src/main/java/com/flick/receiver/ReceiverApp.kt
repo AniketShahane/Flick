@@ -346,6 +346,11 @@ private data class ShellSlot(
     val interactive: Boolean,
 )
 
+/** Whether the last committed composition was presenting a film. Written only from a SideEffect. */
+private class PresentingMemory {
+    var wasPresenting = false
+}
+
 /**
  * Written only from a SideEffect and ON_STOP, and never observed: the edge frame is detected by
  * comparing it against the live stage, which is what lets the outgoing face be
@@ -515,6 +520,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val rootFocus = remember { FocusRequester() }
 
     val cadence = rememberDisplayCadence(window)
+    val presentingMemory = remember { PresentingMemory() }
     // Any key-down ends a stage's resync wait; the key itself is dispatched as normal.
     val houseKeys = remember { MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
     // Read here because this sits above FlickTvTheme, where LocalReducedMotion is not provided.
@@ -827,7 +833,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val filmVisible = stage is MediaStage.Active &&
         surfaceMode == PlayerSurfaceMode.VisiblePlayback &&
         pictureSettled
-    val onPictureUp = remember { { pictureUpEpoch++; Unit } }
+    // The starting film is held paused at its first frame until here, so none of it plays
+    // under the card; the player's own cap starts it if this never comes.
+    val onPictureUp = remember {
+        {
+            controller.onPictureUp()
+            pictureUpEpoch++
+            Unit
+        }
+    }
     val onPictureSettled = remember {
         { pictureSettledCastId = (session.stage as? MediaStage.Active)?.castId }
     }
@@ -1116,11 +1130,19 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // undone a second later at the same cadence — see [refreshRateHintDelayMs].
     // The effect is re-keyed on the delay so the settle is abandoned, not merely
     // outlived, the moment the next stage decides what the hint should be.
+    // Recomputed only when the stage enters or leaves None, so it holds for the
+    // whole None stretch and the settle it starts carries on into the handshake.
+    val filmJustStopped = remember(stage is MediaStage.None) {
+        stage is MediaStage.None && presentingMemory.wasPresenting
+    }
+    SideEffect { presentingMemory.wasPresenting = surfaceMode == PlayerSurfaceMode.VisiblePlayback }
     val refreshRateDelayMs = refreshRateHintDelayMs(
         requestedRate = requestedRefreshRate,
         castHandshakeInFlight = surfaceMode == PlayerSurfaceMode.CoveredConnecting,
+        filmJustStopped = filmJustStopped,
     )
     LaunchedEffect(window, requestedRefreshRate, refreshRateDelayMs, playerView) {
+        FlickLog.i("display", "pin hz=$requestedRefreshRate delayMs=$refreshRateDelayMs")
         if (refreshRateDelayMs > 0L) delay(refreshRateDelayMs)
         RefreshRateHelper.applyToWindow(window, requestedRefreshRate)
         // Only a `SurfaceView` has a surface of its own for the display to match a

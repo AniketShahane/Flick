@@ -15,6 +15,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,7 +30,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -70,7 +70,6 @@ import com.flick.sender.ui.Format
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
-import com.flick.sender.ui.components.FlickPadMotion
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.Hyperspace
 import com.flick.sender.ui.components.HyperspaceField
@@ -80,6 +79,7 @@ import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.motion.loopFrameRate
 import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -87,7 +87,9 @@ import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
+import com.flick.sender.ui.theme.PosterHairline
 import com.flick.sender.ui.theme.PosterShadow
+import com.flick.sender.ui.theme.posterCardShape
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
@@ -192,7 +194,7 @@ fun ConnectingScreen(
     val filmName = film?.displayName()
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
     val routeLine = filmName?.let { stringResource(R.string.connecting_route, it, tvName) } ?: tvName
-    // The warp throws the same portrait card the detail sheet held, never a backdrop.
+    // The warp throws the portrait poster the detail page threw, never a backdrop.
     val posterPath = film?.rememberFilmArt()?.poster
 
     FlickCinematicTheme {
@@ -226,11 +228,13 @@ fun ConnectingScreen(
             val vanishingY = copyTop - copyGap
             val vanishingFraction = if (maxHeight.value > 0f) vanishingY / maxHeight else Hyperspace.VanishingY
 
+            // The peak only for the throw into the warp; the wait after it is a slow loop, and
+            // the landing is under the shell's own vote for the shared transition.
             HyperspaceField(
                 loop = !reduceMotion && resumed,
                 intensity = { warp.value },
                 vanishingFraction = vanishingFraction,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().loopFrameRate(!reduceMotion && resumed && !warped),
             )
 
             // The seat the remote's poster grows out of when the first frame lands: empty,
@@ -255,7 +259,7 @@ fun ConnectingScreen(
                     progress = { warp.value },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .offset(y = vanishingY - FlickPadMotion.PosterHeightDp.dp / 2),
+                        .offset(y = vanishingY - WarpPosterHeight / 2),
                 )
             }
 
@@ -410,10 +414,10 @@ private fun WarpPoster(
 ) {
     val colors = LocalFlickColors.current
     val imageLoader = rememberVideoImageLoader()
-    val shape = RoundedCornerShape(FlickPadMotion.PosterCornerDp.dp)
+    val shape = posterCardShape(WarpPosterWidth)
     Box(
         modifier
-            .size(width = FlickPadMotion.PosterWidthDp.dp, height = FlickPadMotion.PosterHeightDp.dp)
+            .size(width = WarpPosterWidth, height = WarpPosterHeight)
             .graphicsLayer {
                 val p = progress()
                 val scale = lerp(1f, Hyperspace.WarpEndScale, p)
@@ -424,7 +428,8 @@ private fun WarpPoster(
             }
             .shadow(20.dp, shape, clip = false, ambientColor = PosterShadow, spotColor = PosterShadow)
             .clip(shape)
-            .background(colors.surfaceRaisedAlt),
+            .background(colors.surfaceRaisedAlt)
+            .border(1.dp, PosterHairline, shape),
     ) {
         if (posterPath != null) {
             FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = Modifier.fillMaxSize())
@@ -442,6 +447,11 @@ private fun WarpPoster(
         }
     }
 }
+
+// Smaller than the detail page's hero card on purpose: the roomy budget below is measured
+// against half of this height, and the card shrinks into the warp from the moment it shows.
+private val WarpPosterWidth = 104.dp
+private val WarpPosterHeight = 156.dp
 
 // A 16:9 speck at the vanishing point. Only its bounds matter: the remote's poster is what
 // is drawn across the flight, so this seat never shows anything of its own.
@@ -467,7 +477,7 @@ private const val NavAllowanceDp = 48f
 // a navigation bar, at scale 1. Below this the column would start clipping its own terminal
 // control at full spacing.
 private val RoomyColumnHeightDp =
-    FlickPadMotion.PosterHeightDp / 2f + CopyGapRoomy.value + CopyBudgetDp + StatusPillBand.value + NavAllowanceDp
+    WarpPosterHeight.value / 2f + CopyGapRoomy.value + CopyBudgetDp + StatusPillBand.value + NavAllowanceDp
 
 /**
  * Where the copy starts, in dp from the top: just under the vanishing point at its

@@ -52,15 +52,20 @@ const val CAST_HANDSHAKE_SETTLE_MS = 2_000L
 /**
  * How long the window must wait before it commits [requestedRate].
  *
- * Only a release is ever deferred, and only across a handshake. Pinning is always
- * immediate, and playback ending, an error and disposal all release at once —
- * that immediate release is what hands the pairing, idle and settings surfaces
- * back to the panel's own refresh rate.
+ * Only a release is ever deferred, and only across a handshake or a stop that left
+ * a presenting film for no stage at all ([filmJustStopped]). The phone sends a
+ * re-cast as `stop` then `loadMedia`, so the stage can pass through None between
+ * the two films; released there, the panel resyncs once at the stop and again when
+ * the next film re-pins. Pinning is always immediate, and an error and disposal
+ * release at once, as does a stop once the settle has run out — that release is
+ * what hands the pairing, idle and settings surfaces back to the panel's own
+ * refresh rate.
  */
 fun refreshRateHintDelayMs(
     requestedRate: Float,
     castHandshakeInFlight: Boolean,
-): Long = if (castHandshakeInFlight && requestedRate == SYSTEM_DEFAULT_REFRESH_RATE) {
+    filmJustStopped: Boolean = false,
+): Long = if ((castHandshakeInFlight || filmJustStopped) && requestedRate == SYSTEM_DEFAULT_REFRESH_RATE) {
     CAST_HANDSHAKE_SETTLE_MS
 } else {
     0L

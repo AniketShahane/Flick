@@ -24,10 +24,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
@@ -58,11 +60,13 @@ import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalReducedMotion
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.preferredWindowRefreshRate
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -115,6 +119,25 @@ internal const val CARD_ENTER_APERTURE = 0.12f
 internal val VEIL_DENSITY: Float = FlickColor.ScrimVeil.alpha
 
 internal fun apertureScale(p: Float): Float = p.coerceIn(0f, 1f) * APERTURE_S_OPEN
+
+/**
+ * How much longer a card that began its flight at [enteredAtMs] must stay before it may
+ * take the screen. A card seated without a flight (null) owes nothing.
+ */
+internal fun cardHoldLeftMs(enteredAtMs: Long?, nowMs: Long): Long =
+    if (enteredAtMs == null) 0L else (enteredAtMs + FlickMotion.FLICK_CARD_MIN_SHOWN_MS - nowMs).coerceAtLeast(0L)
+
+/**
+ * When a card that began its flight at [enteredAtMs] was first really on screen: a display
+ * mode change at [lastChangeAtMs] blanks the panel until its resync grace has run, so a
+ * change landing after the card entered, or just before, restarts the card's time from
+ * the settle. Null for a card seated without a flight, which owes nothing.
+ */
+internal fun cardShownSinceMs(enteredAtMs: Long?, lastChangeAtMs: Long?): Long? {
+    if (enteredAtMs == null) return null
+    val settledAt = lastChangeAtMs?.plus(RESYNC_GRACE_MS) ?: return enteredAtMs
+    return max(enteredAtMs, settledAt)
+}
 
 /** Stops across the aperture's ramp: enough that the piecewise-linear curve shows no knees of its own. */
 private const val APERTURE_RAMP_STEPS = 8
@@ -307,6 +330,7 @@ class FilmDimReading {
 }
 
 private class HouseCurtain(
+    val from: HouseStage?,
     val move: HouseMove,
     val aperture: Animatable<Float, AnimationVector1D>,
     val density: Animatable<Float, AnimationVector1D>,
@@ -334,6 +358,17 @@ private class HouseCard {
     /** The speed bars' run; 1 is spent. */
     val bars = Animatable(1f)
 
+    /**
+     * The arrival and its speed bars. Run in the composition's scope rather than a
+     * seam's, so the first frame landing mid-flight does not cut it short.
+     */
+    var flight: Job? = null
+
+    /** When the current flight began; null for a card seated without one, or gone. */
+    var enteredAtMs: Long? = null
+
+    val flying: Boolean get() = flight?.isActive == true
+
     /** The bob's phase in cycles. Only its fraction is drawn, so a resumed bob carries on from it. */
     val bob = Animatable(0f)
     val expand = Animatable(0f)
@@ -348,6 +383,7 @@ private class HouseCard {
     var columnHeight by mutableIntStateOf(0)
 
     suspend fun seat() {
+        land()
         alpha.snapTo(1f)
         rise.snapTo(0f)
         sink.snapTo(0f)
@@ -362,7 +398,14 @@ private class HouseCard {
         settledIn = true
     }
 
+    fun land() {
+        flight?.cancel()
+        flight = null
+        enteredAtMs = null
+    }
+
     suspend fun retire() {
+        land()
         held = false
         settledIn = false
         alpha.snapTo(0f)
@@ -386,8 +429,10 @@ private class HeadlineLatch {
  * The room's light: a draw-only curtain over every stage seam, and the handshake card.
  *
  * [onLightsDown] runs once the retained standby or error face is under full dark and
- * may leave composition. [onPictureUp] runs when the resync wait opens and the veil
- * is about to lift; [onPictureSettled] when the lift has finished.
+ * may leave composition. [onPictureUp] runs when the resync wait opens and the Flick
+ * card has had its least time on screen, and the veil is about to lift; the film is held at
+ * its first frame until then, so every path into Film must call it.
+ * [onPictureSettled] when the lift has finished.
  *
  * [freshRate] is read only inside the reveal's hold, so a caller can hand over a
  * reader of state that changes while the film plays without recomposing this.
@@ -425,6 +470,7 @@ internal fun HouseLights(
     val reduced = LocalReducedMotion.current
     val memory = remember { HouseMemory() }
     val card = remember { HouseCard() }
+    val cardScope = rememberCoroutineScope()
 
     val curtain = remember(stage) {
         val prev = memory.lastCurtain
@@ -432,7 +478,7 @@ internal fun HouseLights(
         val pd = prev?.let { Snapshot.withoutReadObservation { it.density.value } } ?: 1f
         val fd = Snapshot.withoutReadObservation { filmDimNow() }
         val move = houseMove(memory.lastStage, stage, pp, pd, fd, reduced, offstage)
-        HouseCurtain(move, Animatable(move.seedAperture), Animatable(move.seedDensity))
+        HouseCurtain(memory.lastStage, move, Animatable(move.seedAperture), Animatable(move.seedDensity))
     }
     SideEffect {
         memory.lastStage = stage
@@ -460,37 +506,58 @@ internal fun HouseLights(
         val releasedAtSeam = pinnedRateNow() <= 0f
         fun <T> spec(s: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> = FlickMotion.orSnap(reduced, s)
 
-        // Rising, the Flick card flies up from below the screen into the last light;
-        // otherwise (over a film) it fades in already seated, because a travelling
-        // card over a film is a moving edge at the film's cadence.
+        fun startFlight() {
+            card.flight?.cancel()
+            card.enteredAtMs = null
+            card.flight = cardScope.launch {
+                // The keyframes pin their start, so a flight only ever runs from 0.
+                card.arrive.snapTo(0f)
+                // The card's time starts on the flight's first drawn frame: the main thread
+                // can be held between the cue and that frame (the previous player's release
+                // runs there), and time spent before it was never on screen.
+                launch {
+                    withFrameMillis { }
+                    card.enteredAtMs = now()
+                }
+                launch { card.arrive.animateTo(ARRIVE_SEATED, spec(FlickMotion.flickCardArrive())) }
+                launch {
+                    delay(FlickMotion.SPEED_BARS_LAG_MS)
+                    card.bars.snapTo(0f)
+                    card.bars.animateTo(1f, spec(FlickMotion.speedBars()))
+                }
+            }
+        }
+
+        // Rising, the Flick card flies up from below the screen into the last light,
+        // or over a film into the veil; otherwise it fades in already seated.
         suspend fun enterCard(alphaSpec: FiniteAnimationSpec<Float>, rising: Boolean) {
             card.held = true
             card.settledIn = false
+            val flies = rising && card.arrive.value <= 0f
+            FlickLog.i("stage", "card enter rising=$rising flies=$flies sinceSeamMs=${now() - edge}")
+            if (flies) startFlight()
             coroutineScope {
                 launch { card.alpha.animateTo(1f, spec(alphaSpec)) }
                 launch { card.copy.animateTo(1f, spec(alphaSpec)) }
                 launch { card.rise.animateTo(0f, spec(panelSpec)) }
                 launch { card.sink.animateTo(0f, spec(panelSpec)) }
                 when {
+                    flies -> Unit
                     !rising -> card.arrive.snapTo(ARRIVE_SEATED)
-                    card.arrive.value <= 0f -> {
-                        launch { card.arrive.animateTo(ARRIVE_SEATED, spec(FlickMotion.flickCardArrive())) }
-                        launch {
-                            delay(FlickMotion.SPEED_BARS_LAG_MS)
-                            card.bars.snapTo(0f)
-                            card.bars.animateTo(1f, spec(FlickMotion.speedBars()))
-                        }
-                    }
                     // Caught mid-exit: the keyframes pin their start, so settle from here.
                     else -> launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
                 }
             }
+            card.flight?.join()
             card.settledIn = true
+            FlickLog.i("stage", "card seated sinceSeamMs=${now() - edge}")
         }
 
         suspend fun exitCard(alphaSpec: FiniteAnimationSpec<Float>) {
             if (!card.held) return
+            FlickLog.i("stage", "card exit flying=${card.flying} sinceSeamMs=${now() - edge}")
             card.settledIn = false
+            card.land()
             coroutineScope {
                 launch { card.alpha.animateTo(0f, spec(alphaSpec)) }
                 launch { card.sink.animateTo(1f, spec(focusSpec)) }
@@ -505,6 +572,8 @@ internal fun HouseLights(
         }
 
         suspend fun expandCard() {
+            val start = now()
+            FlickLog.i("stage", "card expand start flying=${card.flying} sinceSeamMs=${start - edge}")
             coroutineScope {
                 launch { card.mark.animateTo(0f, spec(FlickMotion.flickCardMarkFade())) }
                 launch { card.expand.animateTo(1f, spec(FlickMotion.flickCardExpand())) }
@@ -514,6 +583,7 @@ internal fun HouseLights(
                 }
             }
             card.retire()
+            FlickLog.i("stage", "card expand done tookMs=${now() - start}")
         }
 
         fun recentChange(): Boolean {
@@ -545,12 +615,35 @@ internal fun HouseLights(
 
         fun capLeft(): Long = (STAGE_HOLD_CAP_MS - (now() - edge)).coerceAtLeast(0L)
 
+        // Ends at the flight's end plus the card's least time on screen, a key, or the cap.
+        // The least time counts only while the panel shows: a mode change restarts it
+        // from that change's settle.
+        suspend fun awaitCardShown(): String {
+            val start = now()
+            val ended = withTimeoutOrNull(capLeft()) {
+                merge(
+                    flow {
+                        card.flight?.join()
+                        while (true) {
+                            val left = cardHoldLeftMs(cardShownSinceMs(card.enteredAtMs, cadence.lastChangeAtMs), now())
+                            if (left <= 0L) break
+                            withTimeoutOrNull(left) { cadence.changes.first() }
+                        }
+                        emit("shown")
+                    },
+                    keyPresses.map { "key" },
+                ).first()
+            } ?: "cap"
+            FlickLog.i("stage", "card hold reason=$ended waitedMs=${now() - start}")
+            return ended
+        }
+
         // The rate comes from the 2 Hz diagnostics arm, so at the first frame it can
         // be unknown or still the previous film's; the pin, and any blank, follow the
         // fresh one. A re-cast can also release the old pin at the seam and re-pin
         // once the rate lands, so a hold that settled on the first switch waits for
         // the second while the panel still cannot show the film's cadence.
-        suspend fun holdForReveal() {
+        suspend fun holdForReveal(): HoldReason {
             val rateWaitStart = now()
             val physicalAtSeam = cadence.physicalHz
             val changeAtSeam = cadence.lastChangeAtMs
@@ -564,7 +657,7 @@ internal fun HouseLights(
             val rateWaitMs = now() - rateWaitStart
             if (keyed) {
                 logHold(StageHold(0L, HoldReason.KeyPressed), rateWaitMs, freshRateNow())
-                return
+                return HoldReason.KeyPressed
             }
             val rate = freshRateNow()
             // A pin given up at the seam is a switch that may not be reported yet when
@@ -579,14 +672,17 @@ internal fun HouseLights(
             val settledRate = freshRateNow()
             val owed = held.reason == HoldReason.Settled && capLeft() > 0L &&
                 switchStillOwed(cadence.physicalHz, settledRate) { cadence.switchWouldBlank(settledRate) }
-            if (owed) {
+            return if (owed) {
                 val more = awaitOwedSwitch(cadence, now, keyPresses, capLeft())
                 logHold(StageHold(held.waitMs + more.waitMs, more.reason), rateWaitMs, settledRate)
+                more.reason
             } else {
                 logHold(held, rateWaitMs, rate)
+                held.reason
             }
         }
 
+        FlickLog.i("stage", "move from=${curtain.from} to=${move.to} kind=${move.kind}")
         if (reduced || move.kind == HouseMoveKind.Snap) {
             val (p, d) = houseRest(move.to)
             aperture.snapTo(p)
@@ -638,26 +734,49 @@ internal fun HouseLights(
             }
 
             HouseMoveKind.PictureUp -> {
-                val expanding = expandNow && card.held
+                val expanding = expandNow
+                FlickLog.i(
+                    "stage",
+                    "card pictureUp held=${card.held} flying=${card.flying} " +
+                        "shownMs=${card.enteredAtMs?.let { now() - it }}",
+                )
                 if (expanding) {
                     // The copy leaves at once; the card holds its seat through the resync
                     // wait, so its expansion is never thrown into a mode switch's blank.
                     card.settledIn = false
-                    launch { card.copy.animateTo(0f, spec(FlickMotion.crossDissolve())) }
+                    if (card.held) {
+                        launch { card.copy.animateTo(0f, spec(FlickMotion.crossDissolve())) }
+                    } else {
+                        // The first frame beat the card's cue: it flies in without its copy.
+                        card.held = true
+                        card.copy.snapTo(0f)
+                        FlickLog.i("stage", "card enter rising=true flies=true sinceSeamMs=${now() - edge}")
+                        startFlight()
+                    }
                     launch { card.sink.animateTo(1f, spec(focusSpec)) }
                     launch { card.alpha.animateTo(1f, spec(stateSpec)) }
-                    launch { card.bars.animateTo(1f, spec(FlickMotion.speedBars())) }
-                    if (card.arrive.value < ARRIVE_SEATED) {
-                        launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
+                    // A flight in progress keeps its own arrival and bars.
+                    if (!card.flying) {
+                        launch { card.bars.animateTo(1f, spec(FlickMotion.speedBars())) }
+                        if (card.arrive.value < ARRIVE_SEATED) {
+                            launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
+                        }
                     }
                 } else {
+                    FlickLog.i("stage", "card skip reason=expandOff held=${card.held}")
                     launch { exitCard(FlickMotion.crossDissolve()) }
                 }
+                var cardHold: String? = null
+                val cardShown = if (expanding) launch { cardHold = awaitCardShown() } else null
                 if (aperture.value > CLOSED_APERTURE) aperture.animateTo(0f, spec(fastSpec))
                 // Also when Act I had already closed: releasing a face that is already
                 // gone is a no-op, and a face still retained would cover the film.
                 lightsDownNow()
-                holdForReveal()
+                val revealHold = holdForReveal()
+                cardShown?.join()
+                // A switch reported after the card's time ran out, while the reveal still
+                // waited, blanked part of that time.
+                if (cardHold == "shown" && revealHold != HoldReason.KeyPressed) awaitCardShown()
                 pictureUpNow()
                 if (expanding) launch { expandCard() }
                 delay(FlickMotion.REVEAL_VEIL_LAG_MS)
@@ -677,7 +796,7 @@ internal fun HouseLights(
                     val threshold = seed + (VEIL_DENSITY - seed) * FlickMotion.CARD_AFTER_DIM_FRACTION
                     snapshotFlow { density.value >= threshold }.first { it }
                     clearing.join()
-                    enterCard(FlickMotion.crossDissolve(), rising = false)
+                    enterCard(FlickMotion.crossDissolve(), rising = true)
                 }
                 density.animateTo(VEIL_DENSITY, spec(FlickMotion.filmReveal()))
             }
