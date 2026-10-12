@@ -57,6 +57,7 @@ available. A link advisory also keeps its "Cast anyway" action.
 | Fade | every ring and streak: in over its first 12%, linear out to 0 at end of life (seamless wrap) |
 | Copy text | "On its way" (Bricolage 26 sp, white); "film · TV name" (`#A8B8DC`); stage line, slow-link card, Cancel, status pill unchanged |
 | Reduce motion | static wash and copy only: no poster, no loop. A paused window stops the loop too |
+| Frame rate | the panel's peak through the hold and the warp; 30 Hz for the wait after it (`loopFrameRate`). The landing is under the shell's peak vote for the shared transition |
 
 The shared `CastPosterKey` seat is now a 32 × 18 dp empty box at the vanishing point, so the
 remote's poster grows out of the warp when the first frame lands.
@@ -71,39 +72,66 @@ System bars: Connecting already declares a dark backdrop (`SenderShellPolicy.dar
 ## 4. Card flip (library tile ⇄ detail poster)
 
 The tapped tile lifts, turns over in 3D as it travels to the pad's seat, and lands with the
-poster on its back; the page fades up around it. Back is the same path on no-bounce springs and
-the lift lets go last, so the card drops into its slot. Transform and opacity only: one
+poster on its back; the page fades up around it. Back is the same path on no-bounce springs,
+and the card is handed back to its tile the moment it lands. Transform and opacity only: one
 `sharedBounds` per end (`card-flip-<id>`, remeasured, in the overlay, no fades), and the seat's
 side draws both faces while the tile's own copy is hidden. The faces swap edge-on (90°) and the
-back is turned a further half-turn so it reads unmirrored. Every track is a spring
-(damping, stiffness) that waits its delay only when it starts from rest, so a flip reversed
-mid-flight turns straight round from where it is.
+back is turned a further half-turn so it reads unmirrored.
+
+Every track is a plain spring (damping, stiffness), so a transition turned round mid-flight
+keeps every track on its own spring, turning from the pose and velocity it has. The delays are
+a stagger applied only to a leg that starts from rest: until a track's delay has passed its
+target is the pose it is already in. A leg that reverses a flight releases every track at once.
+The travel has no delay, because the bounds carry its spring and a bounds transform cannot hold
+one; back has no delays at all.
 
 | Track | Open: delay, damping, stiffness | Back |
 |---|---|---|
-| Lift — scale 1 + 0.08 × lift × (1 − travel) | 0 ms, 0.75, 900 | 300 ms, 0.85, 1000 |
-| Grid badges, running time and slot shadow fade | 0 ms, 1, 2500 | 360 ms, 1, 2500 |
-| Travel to the seat (the bounds; also eases the corner 26 dp → 8% of the poster's width) | 60 ms, 0.86, 260 | 0 ms, 1, 520 |
-| Flip — rotationY 180° × flip, roll −6° × sin(π × flip), camera distance 12 × density | 60 ms, 0.6, 190 | 0 ms, 1, 420 |
-| Page — ground, backdrop and scrim opacity | 60 ms, 1, 360 | 80 ms, 1, 620 |
+| Lift — scale 1 + 0.08 × lift × (1 − travel); back, × travel as well, so it is 0 at contact | 0 ms, 0.75, 900 | 0 ms, 1, 1000 |
+| Grid badges, running time, slot ground and shadow fade | 0 ms, 1, 2500 | follow the travel: whole from 6% of it left to contact |
+| Travel to the seat (the bounds; also eases the corner 26 dp → 8% of the poster's width) | 0 ms, 0.86, 260 | 0 ms, 1, 520 |
+| Flip — rotationY 180° × flip, roll −6° × sin(π × flip), camera distance 12 × density | 60 ms, 0.6, 190 | 0 ms, 1, 520 |
+| Page — ground, backdrop and scrim opacity | 60 ms, 1, 360 | 0 ms, 1, 620 |
 | Back disc / title / meta / chips (and attached subtitle) — rise 14 dp and fade in | 260 / 290 / 320 / 350 ms, 1, 500 | 0 ms, 1, 1400 |
 | Glow and shadow under the seated card — grow from 0.7 × and fade in | 380 ms, 1, 300 | 0 ms, 1, 1100 |
 | Chevrons — rise 14 dp | 460 ms, 1, 500 | 0 ms, 1, 1400 |
 | Caption, note and notice card — rise 18 dp | 480 ms, 1, 500 | 0 ms, 1, 1400 |
 
+- **Landing and hand-back.** Coming back, the card is down when the travel and the turn are both
+  within 0.003 of home (a pixel or two, and half a degree); the turn home is as stiff as the
+  travel so neither waits on the other. On that frame the seat stops drawing and the
+  tile's own copy shows; neither waits for the route transition to end, which runs as long as
+  the slowest page track. The seat is a card in flight only while a shared transition is
+  active; otherwise it is the seated poster, fading with the page.
+- **The slot's marks.** The tile's badges, running time and watched line are drawn in the shared
+  overlay above the card while it flies (as on the design board): they fade off the card as it
+  lifts and back onto it over the last 6% of the travel home, so they are whole at contact and
+  nothing about the tile changes at the hand-back.
 - **Layering.** The page's ground, backdrop, scrim and glow sit under the card; the card is drawn
   in the shared-element overlay, so it also passes over the chrome while it travels. Going back,
   the library is placed beneath the page it is leaving, and every arriving route otherwise takes
   a higher layer, so a flip reversed mid-way keeps the page on top while it fades.
+- **Chrome.** The nav and dock wait below the window while the card comes back and are released
+  when 12% of the travel is left, so their rise overlaps the card's last settle (at most 560 ms
+  if no card is flying).
 - **Faces.** Front: the tile's own art and scrim (`TileFace`), desaturated when the TV refused
-  the file. Back: the pad's poster with its hairline. The poster is requested when the tile is
-  tapped, at both sizes the page draws it.
+  the file, asked for at the size the tile drew it so it is the tile's own decode in memory; the
+  copy cached under the plain URL stands in if it is not. The art's ground is the tile's surface,
+  never black. Back: the pad's poster with its hairline, over the small poster (w342) at 228 ×
+  342 px, which the tap puts in memory. While a tile is on screen its small poster is kept in
+  memory at 114 × 171 px, and stands in for both until they land, so the back is never an empty
+  ground. At the tap the full-size poster is fetched to disk only, and the seat decodes it at
+  its own size. No warm is unsized, so none evicts the grid the card lands back on.
 - **The seat is measured.** The page's first frame sizes the seat from the blocks it measured
-  last time rather than from an estimate, so the card flies to the seat it lands in.
+  last time (identity, pad chrome and notice) rather than from an estimate, so the card flies to
+  the seat it lands in.
 - **No match** (the page opened from anywhere but the grid, or a grid that no longer holds the
   tile): the card stays seated, poster up, and fades with the page.
-- **Taps and the throw.** A tile ignores a second tap while its page is already opening. The
-  pad does not take a throw until the card has landed.
+- **Taps and the throw.** A tile ignores a tap while its page is already opening and while any
+  shared transition is active, so a tap during the flight home cannot open another page mid-air.
+  The pad does not take a throw until the card has landed.
 - **Reduce motion.** No flip and no travel: library and detail cross-fade.
 - **Frame rate.** The flight is in the shell's overlay, so the shell's peak-rate vote while a
   shared transition is active covers it.
+- **Tracing.** `CardFlipTrace` in `CardFlip.kt` logs each leg (fresh or reversed, its stagger)
+  and each landing under the `FlickFlip` tag in debug builds.

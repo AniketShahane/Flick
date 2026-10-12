@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -40,6 +41,7 @@ import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.ui.components.videoImageLoader
+import com.flick.sender.ui.theme.LocalFlickColors
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -67,20 +69,43 @@ fun MediaItem.rememberFilmArt(): FilmArt? {
     return art?.takeIf { enabled }
 }
 
+/**
+ * [sizePx], when given, is the size a tile drew this art at: asking for exactly that makes the
+ * card the tile turns into a memory hit on the tile's own decode. Without it the request is
+ * sized by its layout, and a seat measured larger than the tile misses the cache — so the copy
+ * cached under the plain url (the key Coil gives a request with no transformations) stands in
+ * while the larger one decodes, rather than an empty ground.
+ */
 @Composable
-private fun rememberArtRequest(path: String, width: String): ImageRequest? {
+private fun rememberArtRequest(path: String, width: String, sizePx: IntSize? = null): ImageRequest? {
     val context = LocalContext.current
-    return remember(path, width) {
+    return remember(path, width, sizePx) {
         FilmPosterPolicy.imageUrl(path, width)?.let { url ->
-            ImageRequest.Builder(context).data(url).crossfade(true).build()
+            ImageRequest.Builder(context)
+                .data(url)
+                .crossfade(true)
+                .placeholderMemoryCacheKey(MemoryCache.Key(url))
+                .sizedTo(sizePx)
+                .build()
         }
+    }
+}
+
+private fun ImageRequest.Builder.sizedTo(sizePx: IntSize?): ImageRequest.Builder = apply {
+    if (sizePx != null && sizePx.width > 0 && sizePx.height > 0) {
+        size(sizePx.width, sizePx.height)
+        precision(Precision.INEXACT)
     }
 }
 
 /**
  * The library tile's art. A film's backdrop fills the landscape seat edge to edge with its
  * title logo set low on the leading side, opposite the running time; with no backdrop the
- * poster stands whole on a wash of itself.
+ * poster stands whole on a wash of itself. [requestSizePx] is the size the grid's tile drew
+ * this at, for a copy of it drawn elsewhere — see [rememberArtRequest].
+ *
+ * The ground under the art is the tile's own surface, never black: it is what shows for the
+ * frame or two before a decode lands, and a black rect on a light grid reads as a flash.
  */
 @Composable
 fun FilmTileArt(
@@ -89,14 +114,17 @@ fun FilmTileArt(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     colorFilter: ColorFilter? = null,
+    requestSizePx: IntSize? = null,
 ) {
-    val backdrop = art.backdrop?.let { rememberArtRequest(it, FilmPosterPolicy.BACKDROP_WIDTH) }
+    val backdrop = art.backdrop?.let { rememberArtRequest(it, FilmPosterPolicy.BACKDROP_WIDTH, requestSizePx) }
     if (backdrop == null) {
-        art.poster?.let { FilmPosterOnGround(it, imageLoader, contentDescription, modifier, colorFilter) }
+        art.poster?.let {
+            FilmPosterOnGround(it, imageLoader, contentDescription, modifier, colorFilter, requestSizePx)
+        }
         return
     }
     val logo = art.logo?.let { rememberArtRequest(it, FilmPosterPolicy.LOGO_WIDTH) }
-    Box(modifier.background(Color.Black)) {
+    Box(modifier.background(LocalFlickColors.current.surfaceTonal)) {
         AsyncImage(
             model = backdrop,
             contentDescription = contentDescription,
@@ -139,21 +167,28 @@ fun FilmTileArt(
 }
 
 @Composable
-private fun rememberPosterRequest(posterPath: String, width: String): ImageRequest? =
-    rememberHeroRequest(posterPath, width, FilmPosterPolicy.TILE_WIDTH)
+private fun rememberPosterRequest(posterPath: String, width: String, sizePx: IntSize? = null): ImageRequest? =
+    rememberHeroRequest(posterPath, width, FilmPosterPolicy.TILE_WIDTH, sizePx)
 
 @Composable
-private fun rememberHeroRequest(path: String, width: String, tileWidth: String): ImageRequest? {
+private fun rememberHeroRequest(
+    path: String,
+    width: String,
+    tileWidth: String,
+    sizePx: IntSize? = null,
+): ImageRequest? {
     val context = LocalContext.current
-    return remember(path, width, tileWidth) {
+    return remember(path, width, tileWidth, sizePx) {
         val url = FilmPosterPolicy.imageUrl(path, width) ?: return@remember null
         // The tile's smaller copy stands in while the larger one arrives, so art that flies
-        // from the grid into the detail page never flashes empty on landing.
-        val tileUrl = FilmPosterPolicy.imageUrl(path, tileWidth)
+        // from the grid into the detail page never flashes empty on landing. At the tile's
+        // own width it is this request's own url, decoded at whatever size it was drawn.
+        val tileUrl = FilmPosterPolicy.imageUrl(path, tileWidth) ?: url
         ImageRequest.Builder(context)
             .data(url)
             .crossfade(true)
-            .apply { if (tileUrl != null && tileUrl != url) placeholderMemoryCacheKey(MemoryCache.Key(tileUrl)) }
+            .placeholderMemoryCacheKey(MemoryCache.Key(tileUrl))
+            .sizedTo(sizePx)
             .build()
     }
 }
@@ -173,8 +208,9 @@ fun FilmPosterOnGround(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     colorFilter: ColorFilter? = null,
+    requestSizePx: IntSize? = null,
 ) {
-    val request = rememberPosterRequest(posterPath, FilmPosterPolicy.TILE_WIDTH) ?: return
+    val request = rememberPosterRequest(posterPath, FilmPosterPolicy.TILE_WIDTH, requestSizePx) ?: return
     val ground = rememberSoftArtRequest(
         path = posterPath,
         width = FilmPosterPolicy.TILE_WIDTH,
@@ -184,7 +220,7 @@ fun FilmPosterOnGround(
         biasY = 0.5f,
         crossfade = true,
     )
-    Box(modifier.background(Color.Black)) {
+    Box(modifier.background(LocalFlickColors.current.surfaceTonal)) {
         if (ground != null) {
             AsyncImage(
                 model = ground,
@@ -293,7 +329,15 @@ internal const val SoftBackdropRadiusPx = 6
 private const val SoftBackdropMinAspect = 0.25f
 private const val SoftBackdropMaxAspect = 4f
 
-/** The poster filling its seat edge to edge (Crop): the detail page's card, or its backdrop. */
+/**
+ * The poster filling its seat edge to edge (Crop): the detail page's card, or its backdrop.
+ *
+ * Over the small poster the tap warmed ([warmFilmPoster]), asked for at that warm's size so it
+ * is the same decode: the card turns over to this face a tenth of a second after the tap, far
+ * sooner than the full-size poster arrives. Until either lands, the full one's placeholder is
+ * whatever copy of the small poster is in memory ([warmTilePoster]), so the back is never an
+ * empty ground.
+ */
 @Composable
 fun FilmPosterBackdrop(
     posterPath: String,
@@ -301,15 +345,31 @@ fun FilmPosterBackdrop(
     modifier: Modifier = Modifier,
     alignment: Alignment = Alignment.Center,
 ) {
+    val context = LocalContext.current
     val request = rememberPosterRequest(posterPath, FilmPosterPolicy.HERO_WIDTH) ?: return
-    AsyncImage(
-        model = request,
-        contentDescription = null,
-        imageLoader = imageLoader,
-        contentScale = ContentScale.Crop,
-        alignment = alignment,
-        modifier = modifier,
-    )
+    val base = remember(posterPath) {
+        FilmPosterPolicy.imageUrl(posterPath, FilmPosterPolicy.TILE_WIDTH)?.let { warmPosterRequest(context, it) }
+    }
+    Box(modifier) {
+        if (base != null) {
+            AsyncImage(
+                model = base,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop,
+                alignment = alignment,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        AsyncImage(
+            model = request,
+            contentDescription = null,
+            imageLoader = imageLoader,
+            contentScale = ContentScale.Crop,
+            alignment = alignment,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }
 
 /** The film's landscape backdrop filling a full-screen seat, as the detail page's ground. */
@@ -441,17 +501,60 @@ private const val GroundRadiusPx = 6
 private const val GroundAlpha = 0.7f
 
 /**
- * Starts loading the poster the detail page's card turns over to, at both sizes that page
- * draws it, as the tile is tapped: the card is edge-on about a tenth of a second later, and
- * the smaller copy is what the larger one shows while it arrives.
+ * The small poster in memory, at a thumbnail's size, for as long as its tile is on screen, so
+ * the detail card's back has a picture from its first frame even if the tap's own warm has not
+ * landed — and the poster is on disk before anyone taps. Tiny, because the memory cache is
+ * shared with the grid and every tile on screen pays it; an unsized decode would be a
+ * display-sized bitmap that evicts the tiles around it.
+ */
+fun warmTilePoster(context: Context, imageLoader: ImageLoader, posterPath: String) {
+    val url = FilmPosterPolicy.imageUrl(posterPath, FilmPosterPolicy.TILE_WIDTH) ?: return
+    imageLoader.enqueue(
+        ImageRequest.Builder(context.applicationContext)
+            .data(url)
+            .size(PlaceholderPosterWidthPx, PlaceholderPosterHeightPx)
+            .precision(Precision.INEXACT)
+            .build(),
+    )
+}
+
+/**
+ * At the tap: the small poster at the size the card's back draws it under the full one
+ * ([warmPosterRequest]), and the full-size one onto disk only, so the seat's own request
+ * decodes it at the seat's size without fetching it. In memory it would be a display-sized
+ * bitmap evicting the grid the card is about to land back on.
  */
 fun warmFilmPoster(context: Context, imageLoader: ImageLoader, posterPath: String) {
     val appContext = context.applicationContext
-    for (width in listOf(FilmPosterPolicy.TILE_WIDTH, FilmPosterPolicy.HERO_WIDTH)) {
-        val url = FilmPosterPolicy.imageUrl(posterPath, width) ?: continue
-        imageLoader.enqueue(ImageRequest.Builder(appContext).data(url).build())
+    FilmPosterPolicy.imageUrl(posterPath, FilmPosterPolicy.TILE_WIDTH)?.let { url ->
+        imageLoader.enqueue(warmPosterRequest(appContext, url))
     }
+    val heroUrl = FilmPosterPolicy.imageUrl(posterPath, FilmPosterPolicy.HERO_WIDTH) ?: return
+    imageLoader.enqueue(
+        ImageRequest.Builder(appContext)
+            .data(heroUrl)
+            .size(WarmPosterWidthPx, WarmPosterHeightPx)
+            .precision(Precision.INEXACT)
+            .memoryCachePolicy(CachePolicy.DISABLED)
+            .build(),
+    )
 }
+
+/** The request the tap's warm and the card's base layer share, so they are one decode. */
+internal fun warmPosterRequest(context: Context, url: String): ImageRequest =
+    ImageRequest.Builder(context)
+        .data(url)
+        .size(WarmPosterWidthPx, WarmPosterHeightPx)
+        .precision(Precision.INEXACT)
+        .build()
+
+// Two thirds of w342: about 0.3 MB, enough for the card while the full poster loads.
+internal const val WarmPosterWidthPx = 228
+internal const val WarmPosterHeightPx = 342
+
+// A third of w342, about 80 KB: paid by every tile on screen, and only ever a stand-in.
+private const val PlaceholderPosterWidthPx = 114
+private const val PlaceholderPosterHeightPx = 171
 
 /**
  * Looks up art for every title in [items] and puts the images a tile draws into Coil's disk

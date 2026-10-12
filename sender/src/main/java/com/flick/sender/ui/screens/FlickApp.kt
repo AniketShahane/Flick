@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -61,7 +62,9 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.Route
 import com.flick.sender.net.SenderNavigationPolicy
 import com.flick.sender.support.SupportCatalog
+import com.flick.sender.ui.components.CardFlipHandoff
 import com.flick.sender.ui.components.FlickBottomNav
+import com.flick.sender.ui.components.LocalCardFlipHandoff
 import com.flick.sender.ui.components.LocalNavMetrics
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
 import com.flick.sender.ui.components.NavMetrics
@@ -81,6 +84,8 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The floating surfaces that are summoned over whatever route is beneath them. Each
@@ -171,6 +176,9 @@ fun FlickApp(
     // also what puts the tile a returning poster flies into back on the screen — see
     // [SenderShellPolicy.heroReturn], whose whole premise is that the seat is there.
     val libraryUi = rememberLibraryUiState()
+    // Shared by the two ends of the card flip and read here: the card coming back down is what
+    // releases the chrome below.
+    val cardFlipHandoff = remember { CardFlipHandoff() }
 
     val destination = SenderShellPolicy.destinationOf(route)
     val dockLive = castingItem != null
@@ -221,18 +229,22 @@ fun FlickApp(
         if (flightMorph) {
             delay(Motion.CardMorphLatchMs)
         } else if (heroReturn && !reduceMotion) {
-            delay(HeroLandMs)
+            // Released by the card itself, a little before it touches down, so the stack's
+            // rise overlaps the card's last settle instead of starting after it.
+            withTimeoutOrNull(HeroLandMs) {
+                snapshotFlow { cardFlipHandoff.current()?.nearContact == true }.first { it }
+            }
         }
         flown = flight
     }
     // Released once the geometry is out of the air, because after that a cast that ends
     // has to be able to take the bar out with an exit of its own.
     val morphing = flightMorph && flown !== flight
-    // The frame is drawn in the shell's overlay, which the transition layout paints after
+    // The card is drawn in the shell's overlay, which the transition layout paints after
     // every child of its own — so while it is up there, nothing the chrome does underneath
-    // can be seen, and where the frame lands the chrome is what it lands on. It gets the
-    // window to itself until the flight ENDS rather than until it looks landed: the end is
-    // when the overlay copy is handed back.
+    // can be seen, and where the card lands the chrome is what it lands on. The stack waits
+    // below the window until the card is nearly down; the card hands itself back to its tile
+    // as it lands, not when the route transition ends, so the rise is never under it for long.
     val heroLanding = heroReturn && !reduceMotion && flown !== flight
     // The bottom stack rises as ONE movement once the frame is down. Each bar's own
     // entrance would carry it only its own height, which walks the dock through the nav's
@@ -377,6 +389,7 @@ fun FlickApp(
         LocalSheetDepth provides sheetDepth,
         LocalQualityRevealOrigin provides qualityRevealOrigin,
         LocalNavMetrics provides navMetrics,
+        LocalCardFlipHandoff provides cardFlipHandoff,
     ) {
         // Over the routes AND over the shared-element overlay, which the transition layout
         // paints after all of its own children: the landing flash covers the whole window.
@@ -769,13 +782,9 @@ private const val LaunchNear = 1.06f
 private const val LaunchFar = 0.92f
 
 /**
- * How long the bottom stack waits below the window edge while the card flies back into the
- * grid. It is the FLIGHT's length and not the landing's: the card is drawn in the overlay
- * until the whole route transition ends, so a stack released when the card merely looks home
- * would be released under it. The back flip's last tracks — the lift letting go 300 ms in,
- * the grid's badges returning 360 ms in — terminate at a little over half a second, and this
- * may not be shorter than that without putting a bar back under the card. Longer only reads
- * as a stall.
+ * The longest the bottom stack waits below the window edge for the card flying back into the
+ * grid to say it is nearly down ([com.flick.sender.ui.components.SeatFlight.nearContact]).
+ * Only a back flip with no card in it — a page that never registered a seat — runs it out.
  */
 private const val HeroLandMs = 560L
 

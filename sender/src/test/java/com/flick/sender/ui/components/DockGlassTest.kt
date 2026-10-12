@@ -37,6 +37,21 @@ class DockGlassTest {
         assertEquals(1f, dockGrowth(67f, restPx = 66f, spanPx = 0f), 0f)
     }
 
+    @Test fun growthFromTravelIsGrowthFromTheBoundsItDescribes() {
+        val bar = 66f * 3f
+        val window = 900f * 3f
+        val span = (window - bar) * CornerResolve
+        for (t in steps) {
+            val height = bar + (window - bar) * t
+            assertEquals("t=$t", dockGrowth(height, restPx = bar, spanPx = span), dockGrowthAt(t), 1e-5f)
+        }
+        assertEquals(0f, dockGrowthAt(0f), 0f)
+        assertEquals(1f, dockGrowthAt(CornerResolve), 0f)
+        // A spring past either end is clamped, never a radius the card does not have.
+        assertEquals(0f, dockGrowthAt(-0.05f), 0f)
+        assertEquals(1f, dockGrowthAt(1.05f), 0f)
+    }
+
     @Test fun atRestTheBarIsExactlyTheGlassItRidesWith() {
         assertEquals(1f, dockGlass(0f), 0f)
         assertEquals(1f, dockEdges(0f), 0f)

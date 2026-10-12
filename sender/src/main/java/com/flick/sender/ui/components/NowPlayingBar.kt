@@ -9,6 +9,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -33,14 +34,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableFloatState
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -118,7 +116,10 @@ private val CardCorner = 0.dp
 private val DockShadowBleed = 32.dp
 
 /** Fraction of the card's growth the corner radius is resolved over. */
-private const val CornerResolve = 0.7f
+internal const val CornerResolve = 0.7f
+
+/** Where the dock's own travel float counts as landed: about a pixel of a phone's height. */
+private const val DockTravelThreshold = 0.0005f
 
 /** Room a screen that reserves its own bottom padding has to add while a cast is live. */
 internal val NowPlayingDockClearance: Dp = DockHeight + DockGap
@@ -165,11 +166,13 @@ internal fun NowPlayingDock(
     val playback = controller.playback.collectAsState()
     val departing = rememberDeparting(item)
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
-    // Written by the travelling clip while the morph is in the air, read only by the bar's
-    // draw and haze blocks; see [DockBar]. Back to rest between morphs, so a morph's first
-    // frame — drawn before its clip has been asked for anything — starts from the bar.
-    val growth = remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(morphing) { if (!morphing) growth.floatValue = 0f }
+    // The card's travel, on the morph's own spring. The bounds are driven by the end that is
+    // entering: this transition when minimizing, and when opening one that starts on the same
+    // frame as this one.
+    val travelSpec = Motion.cardMorphSpec(
+        motionScheme.defaultSpatialSpec<Float>(),
+        visibilityThreshold = DockTravelThreshold,
+    )
 
     AnimatedVisibility(
         visible = allowed && item != null,
@@ -188,6 +191,16 @@ internal fun NowPlayingDock(
         },
         label = "dock",
     ) {
+        // How far the card has travelled from the bar toward the window: 0 at rest, 1 as the
+        // remote. Not a morph — any other entrance or exit — holds it at 0. Computed off the
+        // transition rather than written by the travelling clip during draw, so the glass and
+        // the clip read one value on the same frame, and a minimize's first frame is already
+        // the card rather than the bar.
+        val travel = transition.animateFloat(
+            transitionSpec = { if (reduceMotion) snap<Float>() else travelSpec },
+            label = "dock-travel",
+        ) { state -> if (morphing && state != EnterExitState.Visible) 1f else 0f }
+        val growth = remember(travel) { { dockGrowthAt(travel.value) } }
         if (departing != null) {
             DockBar(
                 item = departing,
@@ -196,7 +209,6 @@ internal fun NowPlayingDock(
                 hazeState = hazeState,
                 morphing = morphing,
                 growth = growth,
-                sharedScope = sharedScope,
                 // The bar is the surface being left only when it is on its way out INTO
                 // the remote; every other departure is the cast itself ending.
                 morphBounds = Modifier.remoteCardBounds(
@@ -227,8 +239,9 @@ internal fun NowPlayingDock(
  * ordering in which the card never shows the screen behind it through itself and neither
  * end is a cut. [shadowBleed] is room the travelling clip leaves outside the silhouette
  * for an end that draws an elevation shadow — an end that draws none must ask for zero,
- * or its own surface would spill past the card's edge. [growth], when given, receives how
- * far the card has grown on every frame it is drawn in the overlay — see [CardMorphShape.growth].
+ * or its own surface would spill past the card's edge. [growth], when given, is how far the
+ * card has grown (see [dockGrowthAt]); the clip rounds by it, so an end that also paints by it
+ * cannot disagree with its own silhouette. Without it the clip reads growth off the bounds.
  * Both scopes null leaves the modifier inert.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -238,7 +251,7 @@ internal fun Modifier.remoteCardBounds(
     animatedScope: AnimatedVisibilityScope?,
     leaving: Boolean,
     shadowBleed: Dp = 0.dp,
-    growth: MutableFloatState? = null,
+    growth: (() -> Float)? = null,
 ): Modifier {
     if (sharedScope == null || animatedScope == null) return this
     val reduceMotion = rememberReduceMotion()
@@ -277,7 +290,7 @@ internal fun Modifier.remoteCardBounds(
 @Composable
 private fun rememberCardMorphClip(
     shadowBleed: Dp,
-    growth: MutableFloatState?,
+    growth: (() -> Float)?,
 ): CardMorphClip {
     val density = LocalDensity.current
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
@@ -300,15 +313,14 @@ private fun rememberCardMorphClip(
 }
 
 /**
- * The clip both ends travel under, and the one place the travelling bounds are visible to
- * the dock. Under the transform's default resize the dock is measured at its own resting
- * size and scaled, so nothing in its own layout ever sees the card's height; the clip is
- * handed those bounds on every frame it is drawn, which is why [growth] is written here.
+ * The clip both ends travel under. It only reads: writing state from here, during the
+ * overlay's draw, reached the bar's glass a frame late, and the first frame of a minimize —
+ * drawn before the clip had been asked anything — painted the bar's glass on a card.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 private class CardMorphClip(
     private val shape: CardMorphShape,
-    private val growth: MutableFloatState?,
+    private val growth: (() -> Float)?,
 ) : SharedTransitionScope.OverlayClip {
     private val path = Path()
 
@@ -318,9 +330,9 @@ private class CardMorphClip(
         layoutDirection: LayoutDirection,
         density: Density,
     ): Path {
-        growth?.floatValue = shape.growth(bounds.height)
+        val grown = growth?.invoke() ?: shape.growth(bounds.height)
         path.reset()
-        path.addOutline(shape.createOutline(bounds.size, layoutDirection, density))
+        path.addOutline(shape.outline(bounds.size, grown))
         path.translate(bounds.topLeft)
         return path
     }
@@ -344,8 +356,10 @@ private class CardMorphShape(
         size: Size,
         layoutDirection: LayoutDirection,
         density: Density,
-    ): Outline {
-        val radius = barRadiusPx + (cardRadiusPx - barRadiusPx) * growth(size.height)
+    ): Outline = outline(size, growth(size.height))
+
+    fun outline(size: Size, grown: Float): Outline {
+        val radius = barRadiusPx + (cardRadiusPx - barRadiusPx) * grown
         return Outline.Rounded(
             RoundRect(
                 left = -bleedPx,
@@ -371,7 +385,7 @@ private fun rememberDeparting(item: MediaItem?): MediaItem? {
 
 /**
  * The bar itself. Its material follows ONE number, [growth]: how far the morph's travelling
- * bounds have grown from the bar toward the card (0 at rest — see [CardMorphShape.growth]).
+ * bounds have grown from the bar toward the card (0 at rest — see [dockGrowthAt]).
  * Everything it drives is read in a draw or haze block, so the morph repaints the bar and
  * never recomposes it.
  */
@@ -383,8 +397,7 @@ private fun DockBar(
     playback: State<PlaybackUiState>,
     hazeState: HazeState,
     morphing: Boolean,
-    growth: FloatState,
-    sharedScope: SharedTransitionScope?,
+    growth: () -> Float,
     morphBounds: Modifier,
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
@@ -416,12 +429,8 @@ private fun DockBar(
         )
     }
     val blurAvailable = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
-    // The growth the clip last wrote is only meaningful while this morph is in the air: once
-    // it lands the clip is no longer consulted, and another flight on screen (a card flipping
-    // in the grid behind the bar) is not this one.
-    val p: () -> Float = {
-        if (morphing && sharedScope?.isTransitionActive == true) growth.floatValue else 0f
-    }
+    // Zero whenever this is not a morph: the travel only moves when one is in the air.
+    val p: () -> Float = growth
     val backdropEffect = Modifier.hazeEffect(state = hazeState, style = hazeStyle) {
         // Read here rather than in composition: this block is observed by the effect node
         // itself, so the morph repaints the blur layer it already has and never recomposes
@@ -565,6 +574,12 @@ private fun DockBar(
 /** How far a container [heightPx] tall has grown from a [restPx] bar over [spanPx]: 0..1. */
 internal fun dockGrowth(heightPx: Float, restPx: Float, spanPx: Float): Float =
     ((heightPx - restPx) / spanPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+
+/**
+ * [dockGrowth] for a card [travel] of the way from the bar to the window: the corner resolves
+ * over the first [CornerResolve] of the travel, so it is the same number whatever the window.
+ */
+internal fun dockGrowthAt(travel: Float): Float = (travel / CornerResolve).coerceIn(0f, 1f)
 
 /** Hermite step from 0 at [edge0] to 1 at [edge1], flat at both ends. */
 internal fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {

@@ -53,6 +53,16 @@ fun Modifier.animatingFrameRate(active: Boolean): Modifier {
 }
 
 /**
+ * One vote for a surface that is always moving but only sometimes moving fast: the peak while
+ * [fast], the ambient rate otherwise. One modifier, so switching is a value, not a layer.
+ */
+@Composable
+fun Modifier.loopFrameRate(fast: Boolean): Modifier {
+    val peak = rememberPeakRefreshRate()
+    return preferredFrameRate(if (fast) peak else AmbientFrameRateHz)
+}
+
+/**
  * A low vote for a loop that is always running but slow enough to read the same at a
  * quarter of the panel's peak. The platform picks the highest vote in the window, so this
  * only lowers the rate while nothing else on screen is moving.

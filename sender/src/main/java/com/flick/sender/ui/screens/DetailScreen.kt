@@ -97,6 +97,7 @@ import com.flick.sender.ui.components.CardFlipMotion
 import com.flick.sender.ui.components.CardFlipSeat
 import com.flick.sender.ui.components.FlickPad
 import com.flick.sender.ui.components.FlickPadMotion
+import com.flick.sender.ui.components.LocalCardFlipHandoff
 import com.flick.sender.ui.components.TileFace
 import com.flick.sender.ui.components.cardFlipKey
 import com.flick.sender.ui.components.fadeUp
@@ -219,8 +220,13 @@ fun DetailScreen(
         Unit
     }
     val onFlick = { controller.flickToTv(item) }
+    val flipKey = cardFlipKey(item.id)
+    val handoff = LocalCardFlipHandoff.current
+    // The size the tapped tile drew its face at, so the card's front asks Coil for that very
+    // decode and is drawn from memory on its first frame.
+    val tileFacePx = remember(flipKey) { handoff.tileFaceFor(flipKey) }
     val seat = if (sharedScope != null && animatedScope != null && tracks != null && !reduceMotion) {
-        CardFlipSeat(sharedScope, animatedScope, cardFlipKey(item.id), tracks) {
+        CardFlipSeat(sharedScope, animatedScope, flipKey, tracks) {
             if (cardFlip) {
                 TileFace(
                     item = item,
@@ -229,6 +235,7 @@ fun DetailScreen(
                     unplayable = refusal != null,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
+                    requestSizePx = tileFacePx,
                 )
             }
         }
@@ -241,7 +248,7 @@ fun DetailScreen(
     // the seat on the first frame, and a seat that moves a frame later bends its path.
     var identityPx by remember { mutableIntStateOf(MeasuredSeat.identityPx) }
     var padChromePx by remember { mutableIntStateOf(MeasuredSeat.padChromePx) }
-    var noticePx by remember { mutableIntStateOf(0) }
+    var noticePx by remember { mutableIntStateOf(MeasuredSeat.noticePx) }
 
     FlickCinematicTheme {
         val density = LocalDensity.current
@@ -443,7 +450,12 @@ fun DetailScreen(
                     pad(pageScroll)
                     // Always placed, empty or not, so SpaceBetween has a floor to centre on and
                     // the measured height drops back to zero when the notice clears.
-                    Box(Modifier.fillMaxWidth().onSizeChanged { noticePx = it.height }) { noticeBlock() }
+                    Box(
+                        Modifier.fillMaxWidth().onSizeChanged {
+                            noticePx = it.height
+                            MeasuredSeat.noticePx = it.height
+                        },
+                    ) { noticeBlock() }
                 }
             }
         }
@@ -495,6 +507,7 @@ private val PadChromeEstimate = 92.dp
 private object MeasuredSeat {
     var identityPx = 0
     var padChromePx = 0
+    var noticePx = 0
 }
 
 /** Exactly 2:3 at every size; the corner is 8% of whatever width this gives. */

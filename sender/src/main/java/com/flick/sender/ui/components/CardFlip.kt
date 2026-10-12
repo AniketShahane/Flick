@@ -1,5 +1,6 @@
 package com.flick.sender.ui.components
 
+import android.util.Log
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.EnterExitState
@@ -7,15 +8,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.AnimationVector
-import androidx.compose.animation.core.AnimationVector1D
-import androidx.compose.animation.core.AnimationVector2D
-import androidx.compose.animation.core.AnimationVector3D
-import androidx.compose.animation.core.AnimationVector4D
-import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.Transition
-import androidx.compose.animation.core.TwoWayConverter
-import androidx.compose.animation.core.VectorizedFiniteAnimationSpec
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
@@ -23,8 +17,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -35,18 +39,21 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
+import com.flick.sender.BuildConfig
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.PosterHairline
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
+import kotlinx.coroutines.delay
 
 /**
  * The library tile ⇄ poster seat transition: the tile lifts, turns over as it travels, and
  * lands in the detail page's poster seat with the poster on its back. Back is the same path
- * on no-bounce springs, and the lift lets go last so the card drops into its slot.
+ * on no-bounce springs, and the card is handed back to the tile the moment it lands.
  *
  * One composable draws both faces, on the SEAT's side ([FlipCard]); the tile's own copy is
  * hidden for the flight ([hideWhileFlipping]). The bounds come from one `sharedBounds` per
@@ -55,14 +62,21 @@ import kotlin.math.sin
  */
 internal fun cardFlipKey(itemId: Long): String = "card-flip-$itemId"
 
-/** One track: a spring, held for [delayMs] when it starts from rest. */
-internal class FlipTrack(val delayMs: Int, val dampingRatio: Float, val stiffness: Float)
+/**
+ * One track: a spring, held for [delayMs] when its leg starts from rest. The spring is a plain
+ * [SpringSpec] so a transition that is turned round mid-flight keeps it — anything else is
+ * swapped for the transition's default spring on interruption, and the tracks drift apart.
+ */
+internal class FlipTrack(val delayMs: Int, val dampingRatio: Float, val stiffness: Float) {
+    fun springSpec(): SpringSpec<Float> = spring(dampingRatio, stiffness, TrackThreshold)
+}
 
 /** Every number in docs/flick-hyperspace-phone.md's card-flip table; change both together. */
 internal object CardFlipMotion {
     val LiftOpen = FlipTrack(0, 0.75f, 900f)
     val BadgeOpen = FlipTrack(0, 1f, 2500f)
-    val MoveOpen = FlipTrack(60, 0.86f, 260f)
+    // No delay: the bounds carry this spring and a bounds transform cannot hold one.
+    val MoveOpen = FlipTrack(0, 0.86f, 260f)
     val FlipOpen = FlipTrack(60, 0.6f, 190f)
     val PageOpen = FlipTrack(60, 1f, 360f)
     val DiscOpen = FlipTrack(260, 1f, 500f)
@@ -73,13 +87,22 @@ internal object CardFlipMotion {
     val ChevronsOpen = FlipTrack(460, 1f, 500f)
     val CaptionOpen = FlipTrack(480, 1f, 500f)
 
-    val LiftBack = FlipTrack(300, 0.85f, 1000f)
-    val BadgeBack = FlipTrack(360, 1f, 2500f)
+    // Back has no delays: every tail here is time the card spends over a tile it has reached.
+    val LiftBack = FlipTrack(0, 1f, 1000f)
+    /** Only where no seat is flying; with one, the slot follows [BadgeReturnTravel]. */
+    val BadgeBack = FlipTrack(0, 1f, 2500f)
     val MoveBack = FlipTrack(0, 1f, 520f)
-    val FlipBack = FlipTrack(0, 1f, 420f)
-    val PageBack = FlipTrack(80, 1f, 620f)
+    // As stiff as the travel, so the turn is home when the card is and the hand-back waits on neither.
+    val FlipBack = FlipTrack(0, 1f, 520f)
+    val PageBack = FlipTrack(0, 1f, 620f)
     val ChromeBack = FlipTrack(0, 1f, 1400f)
     val GlowBack = FlipTrack(0, 1f, 1100f)
+
+    val OpenTracks = listOf(
+        LiftOpen, MoveOpen, FlipOpen, PageOpen, DiscOpen, LogoOpen, MetaOpen, ChipsOpen, GlowOpen,
+        ChevronsOpen, CaptionOpen,
+    )
+    val BackTracks = listOf(LiftBack, MoveBack, FlipBack, PageBack, ChromeBack, GlowBack)
 
     /** How much bigger the card is while it is lifted and has not yet travelled. */
     const val LiftScale = 0.08f
@@ -90,95 +113,62 @@ internal object CardFlipMotion {
     const val GlowFromScale = 0.7f
     val RiseDistance = 14.dp
     val CaptionRiseDistance = 18.dp
+
+    /** Travel still left when the slot's badges start returning; they are whole at contact. */
+    const val BadgeReturnTravel = 0.06f
+    /** Travel and turn left at which the card counts as down: a pixel or two, and half a degree. */
+    const val LandedWithin = 0.003f
+    /** Travel left when the shell lets its bottom stack rise, so the rise overlaps the settle. */
+    const val ChromeRiseTravel = 0.12f
 }
-
-/**
- * [spec] with a start delay that only applies when the animation begins at rest. A transition
- * reversed mid-flight hands its spring the velocity it had, and a delay there would freeze the
- * card in the air before it turned round; one started fresh has none.
- */
-internal fun <T> restDelayed(delayMs: Int, spec: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> =
-    if (delayMs <= 0) spec else RestDelayedSpec(delayMs * 1_000_000L, spec)
-
-private class RestDelayedSpec<T>(
-    private val delayNanos: Long,
-    private val spec: FiniteAnimationSpec<T>,
-) : FiniteAnimationSpec<T> {
-    override fun <V : AnimationVector> vectorize(
-        converter: TwoWayConverter<T, V>,
-    ): VectorizedFiniteAnimationSpec<V> = RestDelayedVectorizedSpec(delayNanos, spec.vectorize(converter))
-
-    override fun equals(other: Any?): Boolean =
-        other is RestDelayedSpec<*> && other.delayNanos == delayNanos && other.spec == spec
-
-    override fun hashCode(): Int = 31 * spec.hashCode() + delayNanos.hashCode()
-}
-
-private class RestDelayedVectorizedSpec<V : AnimationVector>(
-    private val delayNanos: Long,
-    private val spec: VectorizedFiniteAnimationSpec<V>,
-) : VectorizedFiniteAnimationSpec<V> {
-    private fun delayFor(initialVelocity: V): Long = if (initialVelocity.atRest()) delayNanos else 0L
-
-    override fun getValueFromNanos(playTimeNanos: Long, initialValue: V, targetValue: V, initialVelocity: V): V {
-        val delay = delayFor(initialVelocity)
-        return if (playTimeNanos < delay) {
-            initialValue
-        } else {
-            spec.getValueFromNanos(playTimeNanos - delay, initialValue, targetValue, initialVelocity)
-        }
-    }
-
-    override fun getVelocityFromNanos(playTimeNanos: Long, initialValue: V, targetValue: V, initialVelocity: V): V {
-        val delay = delayFor(initialVelocity)
-        return if (playTimeNanos < delay) {
-            initialVelocity
-        } else {
-            spec.getVelocityFromNanos(playTimeNanos - delay, initialValue, targetValue, initialVelocity)
-        }
-    }
-
-    override fun getDurationNanos(initialValue: V, targetValue: V, initialVelocity: V): Long =
-        delayFor(initialVelocity) + spec.getDurationNanos(initialValue, targetValue, initialVelocity)
-}
-
-private fun AnimationVector.atRest(): Boolean = when (this) {
-    is AnimationVector1D -> abs(value) < RestVelocity
-    is AnimationVector2D -> abs(v1) < RestVelocity && abs(v2) < RestVelocity
-    is AnimationVector3D -> abs(v1) < RestVelocity && abs(v2) < RestVelocity && abs(v3) < RestVelocity
-    is AnimationVector4D ->
-        abs(v1) < RestVelocity && abs(v2) < RestVelocity && abs(v3) < RestVelocity && abs(v4) < RestVelocity
-    else -> true
-}
-
-private const val RestVelocity = 1e-3f
-
-private fun FlipTrack.floatSpec(threshold: Float = TrackThreshold): FiniteAnimationSpec<Float> =
-    restDelayed(delayMs, spring(dampingRatio, stiffness, threshold))
 
 /** Fine enough that the half-turn lands without a visible last-frame snap (0.18°). */
 private const val TrackThreshold = 0.001f
+
+/** A pose this close to 0 or 1 on every track is a leg that has finished. */
+private const val RestWithin = 0.005f
+
+/**
+ * The card's scale. Open, the lift is all there before the card travels and goes as it does.
+ * Back, the same lift is also scaled by the travel still left, so it is exactly zero at
+ * contact whatever the lift's own spring is doing: the card meets the tile at the tile's size.
+ */
+internal fun flipLiftScale(lift: Float, move: Float, backLeg: Boolean): Float {
+    val m = move.coerceIn(0f, 1f)
+    val reach = if (backLeg) (1f - m) * m else 1f - m
+    return 1f + CardFlipMotion.LiftScale * lift * reach
+}
+
+/** How much of the grid slot is still gone while the card comes back with [move] left to go. */
+internal fun flipBadgeHidden(move: Float): Float =
+    smoothstep(0f, CardFlipMotion.BadgeReturnTravel, move)
+
+/** Whether a card coming back has touched down. */
+internal fun flipLanded(move: Float, flip: Float): Boolean =
+    abs(move) <= CardFlipMotion.LandedWithin && abs(flip) <= CardFlipMotion.LandedWithin
+
+/** Whether every track of a pose is at rest at one end — a leg starting here starts fresh. */
+internal fun flipPoseAtRest(values: List<Float>): Boolean =
+    values.all { abs(it) <= RestWithin } || values.all { abs(it - 1f) <= RestWithin }
+
+/** The distinct, positive delays of [tracks], in the order a fresh leg releases them. */
+internal fun flipStaggerSteps(tracks: List<FlipTrack>): List<Int> =
+    tracks.map { it.delayMs }.filter { it > 0 }.distinct().sorted()
 
 /**
  * The entering end of a shared bounds drives it, so each end names its own direction's spring
  * and never has to read the geometry to guess which way it is going: the seat only ever
  * arrives on the way out of the grid, the tile only ever on the way back. A pixel per edge is
- * where the card is home.
+ * where the card is home. Plain springs, for the reason [FlipTrack] gives.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 private val SeatBounds = BoundsTransform { _, _ ->
-    restDelayed(
-        CardFlipMotion.MoveOpen.delayMs,
-        spring(CardFlipMotion.MoveOpen.dampingRatio, CardFlipMotion.MoveOpen.stiffness, Rect.VisibilityThreshold),
-    )
+    spring(CardFlipMotion.MoveOpen.dampingRatio, CardFlipMotion.MoveOpen.stiffness, Rect.VisibilityThreshold)
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 private val TileBounds = BoundsTransform { _, _ ->
-    restDelayed(
-        CardFlipMotion.MoveBack.delayMs,
-        spring(CardFlipMotion.MoveBack.dampingRatio, CardFlipMotion.MoveBack.stiffness, Rect.VisibilityThreshold),
-    )
+    spring(CardFlipMotion.MoveBack.dampingRatio, CardFlipMotion.MoveBack.stiffness, Rect.VisibilityThreshold)
 }
 
 /**
@@ -205,71 +195,198 @@ internal fun Modifier.cardFlipBounds(
     )
 }
 
-/** Hides the tile's own copy while the seat is drawing the card in its place. */
+/**
+ * Hides the tile's own copy while the seat is drawing the card in its place, and shows it
+ * again the moment the card lands — not when the route transition ends, which is as long as
+ * the slowest of the page's tracks and would hold a badge-less copy over the tile for it.
+ */
 @OptIn(ExperimentalSharedTransitionApi::class)
 internal fun Modifier.hideWhileFlipping(
     sharedScope: SharedTransitionScope,
     state: SharedTransitionScope.SharedContentState,
+    landed: () -> Boolean,
 ): Modifier = graphicsLayer {
-    alpha = if (state.isMatchFound && sharedScope.isTransitionActive) 0f else 1f
+    alpha = if (state.isMatchFound && sharedScope.isTransitionActive && !landed()) 0f else 1f
+}
+
+/**
+ * What the two ends of a flip share outside the shared-element machinery: the seat in flight,
+ * so the grid can tell when its card is down and the shell when to bring its chrome back, and
+ * the size the tapped tile's face was drawn at, so the seat can ask Coil for the very bitmap
+ * the tile is showing.
+ */
+@Stable
+internal class CardFlipHandoff {
+    private var flight by mutableStateOf<SeatFlight?>(null)
+    private var tileKey: String? = null
+    private var tileFace: IntSize = IntSize.Zero
+
+    /** The seat flying [key]'s card, if one is registered. Snapshot state: read it in a layer. */
+    fun flightFor(key: String): SeatFlight? = flight?.takeIf { it.key == key }
+
+    /** Whichever seat is registered. */
+    fun current(): SeatFlight? = flight
+
+    fun register(seat: SeatFlight) {
+        flight = seat
+    }
+
+    fun unregister(seat: SeatFlight) {
+        if (flight === seat) flight = null
+    }
+
+    /** Written at the tap, before the route changes, so the page's first composition has it. */
+    fun armTile(key: String, facePx: IntSize) {
+        tileKey = key
+        tileFace = facePx
+    }
+
+    fun tileFaceFor(key: String): IntSize? =
+        tileFace.takeIf { tileKey == key && it.width > 0 && it.height > 0 }
+}
+
+internal val LocalCardFlipHandoff = staticCompositionLocalOf { CardFlipHandoff() }
+
+/** A seat's flight as the rest of the shell sees it. Every read is a snapshot read. */
+@Stable
+internal class SeatFlight(
+    val key: String,
+    private val tracks: CardFlipTracks,
+    private val transition: Transition<EnterExitState>,
+) {
+    val backLeg: Boolean get() = transition.targetState != EnterExitState.Visible
+    val move: Float get() = tracks.move.value
+    val landed: Boolean get() = backLeg && flipLanded(tracks.move.value, tracks.flip.value)
+    val nearContact: Boolean get() = backLeg && tracks.move.value <= CardFlipMotion.ChromeRiseTravel
 }
 
 /**
  * The page side's tracks. [paired] is the shell's verdict that this transition is the
  * library ⇄ detail pair; on any other route pair every track rests at 1 and the page simply
  * is there, so the route's own transition is the only motion.
+ *
+ * Filled in by [CardFlipTrackHost], a scope of its own, so the stagger releasing a track
+ * recomposes the eleven track declarations and nothing of the page around them.
  */
 @Stable
-internal class CardFlipTracks(
-    val lift: State<Float>,
-    val move: State<Float>,
-    val flip: State<Float>,
-    val page: State<Float>,
-    val disc: State<Float>,
-    val logo: State<Float>,
-    val meta: State<Float>,
-    val chips: State<Float>,
-    val glow: State<Float>,
-    val chevrons: State<Float>,
-    val caption: State<Float>,
-)
+internal class CardFlipTracks {
+    lateinit var lift: State<Float>
+    lateinit var move: State<Float>
+    lateinit var flip: State<Float>
+    lateinit var page: State<Float>
+    lateinit var disc: State<Float>
+    lateinit var logo: State<Float>
+    lateinit var meta: State<Float>
+    lateinit var chips: State<Float>
+    lateinit var glow: State<Float>
+    lateinit var chevrons: State<Float>
+    lateinit var caption: State<Float>
+    internal var all: List<State<Float>> = emptyList()
+}
 
 @Composable
 internal fun rememberCardFlipTracks(
     transition: Transition<EnterExitState>,
     paired: Boolean,
-): CardFlipTracks = with(CardFlipMotion) {
-    CardFlipTracks(
-        lift = transition.seatTrack(paired, LiftOpen, LiftBack, "flip-lift"),
-        move = transition.seatTrack(paired, MoveOpen, MoveBack, "flip-move"),
-        flip = transition.seatTrack(paired, FlipOpen, FlipBack, "flip-turn"),
-        page = transition.seatTrack(paired, PageOpen, PageBack, "flip-page"),
-        disc = transition.seatTrack(paired, DiscOpen, ChromeBack, "flip-disc"),
-        logo = transition.seatTrack(paired, LogoOpen, ChromeBack, "flip-logo"),
-        meta = transition.seatTrack(paired, MetaOpen, ChromeBack, "flip-meta"),
-        chips = transition.seatTrack(paired, ChipsOpen, ChromeBack, "flip-chips"),
-        glow = transition.seatTrack(paired, GlowOpen, GlowBack, "flip-glow"),
-        chevrons = transition.seatTrack(paired, ChevronsOpen, ChromeBack, "flip-chevrons"),
-        caption = transition.seatTrack(paired, CaptionOpen, ChromeBack, "flip-caption"),
+): CardFlipTracks {
+    val tracks = remember(transition) { CardFlipTracks() }
+    CardFlipTrackHost(transition, paired, tracks)
+    return tracks
+}
+
+/**
+ * The stagger. A leg that starts from rest releases each track at its delay; until then the
+ * track's target is the pose it is already in, so it does not move. A leg that turns the
+ * transition round mid-flight releases everything at once, and every track turns from where
+ * it is, at the velocity it has, on its own spring.
+ */
+@Stable
+private class FlipGate {
+    private var leg by mutableStateOf<EnterExitState?>(null)
+    private var releasedMs by mutableIntStateOf(0)
+
+    fun released(target: EnterExitState, delayMs: Int): Boolean =
+        delayMs <= 0 || (leg == target && releasedMs >= delayMs)
+
+    suspend fun run(target: EnterExitState, steps: List<Int>) {
+        leg = target
+        releasedMs = 0
+        var elapsed = 0
+        for (step in steps) {
+            delay((step - elapsed).toLong())
+            elapsed = step
+            releasedMs = step
+        }
+    }
+}
+
+@Composable
+private fun CardFlipTrackHost(
+    transition: Transition<EnterExitState>,
+    paired: Boolean,
+    tracks: CardFlipTracks,
+) {
+    val target = transition.targetState
+    // Read without subscribing: the pose only decides, once per leg, whether it starts fresh.
+    val fresh = remember(target) {
+        Snapshot.withoutReadObservation { flipPoseAtRest(tracks.all.map { it.value }) }
+    }
+    val gate = remember { FlipGate() }
+    LaunchedEffect(target, fresh) {
+        val steps = when {
+            !fresh || !paired -> emptyList()
+            target == EnterExitState.Visible -> flipStaggerSteps(CardFlipMotion.OpenTracks)
+            else -> flipStaggerSteps(CardFlipMotion.BackTracks)
+        }
+        flipLog { "leg target=$target fresh=$fresh paired=$paired steps=$steps" }
+        gate.run(target, steps)
+    }
+    val released: (FlipTrack) -> Boolean = { track -> !fresh || gate.released(target, track.delayMs) }
+    with(CardFlipMotion) {
+        tracks.lift = transition.seatTrack(paired, LiftOpen, LiftBack, released, "flip-lift")
+        tracks.move = transition.seatTrack(paired, MoveOpen, MoveBack, released, "flip-move")
+        tracks.flip = transition.seatTrack(paired, FlipOpen, FlipBack, released, "flip-turn")
+        tracks.page = transition.seatTrack(paired, PageOpen, PageBack, released, "flip-page")
+        tracks.disc = transition.seatTrack(paired, DiscOpen, ChromeBack, released, "flip-disc")
+        tracks.logo = transition.seatTrack(paired, LogoOpen, ChromeBack, released, "flip-logo")
+        tracks.meta = transition.seatTrack(paired, MetaOpen, ChromeBack, released, "flip-meta")
+        tracks.chips = transition.seatTrack(paired, ChipsOpen, ChromeBack, released, "flip-chips")
+        tracks.glow = transition.seatTrack(paired, GlowOpen, GlowBack, released, "flip-glow")
+        tracks.chevrons = transition.seatTrack(paired, ChevronsOpen, ChromeBack, released, "flip-chevrons")
+        tracks.caption = transition.seatTrack(paired, CaptionOpen, ChromeBack, released, "flip-caption")
+    }
+    tracks.all = listOf(
+        tracks.lift, tracks.move, tracks.flip, tracks.page, tracks.disc, tracks.logo, tracks.meta,
+        tracks.chips, tracks.glow, tracks.chevrons, tracks.caption,
     )
 }
+
+private fun restValue(state: EnterExitState, paired: Boolean): Float =
+    if (state == EnterExitState.Visible || !paired) 1f else 0f
 
 @Composable
 private fun Transition<EnterExitState>.seatTrack(
     paired: Boolean,
     open: FlipTrack,
     back: FlipTrack,
+    released: (FlipTrack) -> Boolean,
     label: String,
-): State<Float> = animateFloat(
-    transitionSpec = {
-        if (targetState == EnterExitState.Visible) open.floatSpec() else back.floatSpec()
-    },
-    label = label,
-) { state -> if (state == EnterExitState.Visible || !paired) 1f else 0f }
+): State<Float> {
+    val current = currentState
+    val target = targetState
+    val leg = if (target == EnterExitState.Visible) open else back
+    return animateFloat(
+        transitionSpec = { if (targetState == EnterExitState.Visible) open.springSpec() else back.springSpec() },
+        label = label,
+    ) { state ->
+        if (state == target && !released(leg)) restValue(current, paired) else restValue(state, paired)
+    }
+}
 
 /**
  * The grid side's one track: how far the tile's slot — its badges, its running time, its
- * shadow — has faded out from under the card that lifted off it.
+ * shadow — has faded out from under the card that lifted off it. Coming back, a tile whose
+ * card is in the air follows that card's travel instead ([flipBadgeHidden]).
  */
 @Composable
 internal fun rememberTileBadgeTrack(
@@ -278,9 +395,9 @@ internal fun rememberTileBadgeTrack(
 ): State<Float> = transition.animateFloat(
     transitionSpec = {
         if (targetState == EnterExitState.PostExit) {
-            CardFlipMotion.BadgeOpen.floatSpec()
+            CardFlipMotion.BadgeOpen.springSpec()
         } else {
-            CardFlipMotion.BadgeBack.floatSpec()
+            CardFlipMotion.BadgeBack.springSpec()
         }
     },
     label = "flip-badge",
@@ -314,7 +431,8 @@ internal class CardFlipSeat(
  * vertical axis. The faces swap where the card is edge-on, and the back is turned a further
  * half-turn so it reads the right way round. With no match — this page opened from anywhere
  * but the grid, or a grid that no longer holds the tile — the card stays seated, poster up,
- * and only fades with the page.
+ * and only fades with the page. Coming back, it stops drawing the frame it lands: from then
+ * on the tile, badges and all, is the card.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -337,24 +455,41 @@ internal fun FlipCard(
     }
     val state = with(seat.sharedScope) { rememberSharedContentState(seat.key) }
     val tracks = seat.tracks
-    val matched = { state.isMatchFound }
-    val turn = { if (matched()) tracks.flip.value else 1f }
+    val handoff = LocalCardFlipHandoff.current
+    val flight = remember(seat.key, tracks, seat.animatedScope) {
+        SeatFlight(seat.key, tracks, seat.animatedScope.transition)
+    }
+    DisposableEffect(handoff, flight) {
+        handoff.register(flight)
+        onDispose { handoff.unregister(flight) }
+    }
+    if (CardFlipTrace) {
+        LaunchedEffect(flight) {
+            snapshotFlow { flight.landed }.collect { flipLog { "key=${flight.key} landed=$it" } }
+        }
+    }
+    val inFlight = { state.isMatchFound && seat.sharedScope.isTransitionActive }
+    val turn = { if (inFlight()) tracks.flip.value else 1f }
     val corner: Density.() -> Float = {
-        val move = if (matched()) tracks.move.value else 1f
+        val move = if (inFlight()) tracks.move.value else 1f
         lerp(FlickCorners.tile.toPx(), seatCorner.toPx(), move.coerceIn(0f, 1f))
     }
     Box(
         modifier
             .cardFlipBounds(seat.sharedScope, seat.animatedScope, state, seat = true)
             .graphicsLayer {
-                val inFlight = matched()
-                val move = if (inFlight) tracks.move.value else 1f
-                val lift = if (inFlight) tracks.lift.value else 0f
-                val scale = 1f + CardFlipMotion.LiftScale * lift * (1f - move)
+                val flying = inFlight()
+                val move = if (flying) tracks.move.value else 1f
+                val lift = if (flying) tracks.lift.value else 0f
+                val scale = flipLiftScale(lift, move, flight.backLeg)
                 scaleX = scale
                 scaleY = scale
                 rotationZ = CardFlipMotion.TiltDegrees * sin(PI.toFloat() * turn())
-                alpha = if (inFlight) 1f else tracks.page.value.coerceIn(0f, 1f)
+                alpha = when {
+                    flying && flight.landed -> 0f
+                    flying -> 1f
+                    else -> tracks.page.value.coerceIn(0f, 1f)
+                }
             }
             .graphicsLayer {
                 val degrees = 180f * turn()
@@ -395,3 +530,10 @@ private fun Modifier.posterHairline(corner: Density.() -> Float): Modifier =
     }
 
 private val PosterHairlineWidth = 1.dp
+
+/** Flip to true for a logcat trace of each leg and each landing; debug builds only. */
+private const val CardFlipTrace = false
+
+private inline fun flipLog(message: () -> String) {
+    if (CardFlipTrace && BuildConfig.DEBUG) Log.d("FlickFlip", message())
+}

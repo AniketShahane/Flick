@@ -79,7 +79,7 @@ import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
-import com.flick.sender.ui.motion.animatingFrameRate
+import com.flick.sender.ui.motion.loopFrameRate
 import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -228,11 +228,13 @@ fun ConnectingScreen(
             val vanishingY = copyTop - copyGap
             val vanishingFraction = if (maxHeight.value > 0f) vanishingY / maxHeight else Hyperspace.VanishingY
 
+            // The peak only for the throw into the warp; the wait after it is a slow loop, and
+            // the landing is under the shell's own vote for the shared transition.
             HyperspaceField(
                 loop = !reduceMotion && resumed,
                 intensity = { warp.value },
                 vanishingFraction = vanishingFraction,
-                modifier = Modifier.fillMaxSize().animatingFrameRate(!reduceMotion && resumed),
+                modifier = Modifier.fillMaxSize().loopFrameRate(!reduceMotion && resumed && !warped),
             )
 
             // The seat the remote's poster grows out of when the first frame lands: empty,

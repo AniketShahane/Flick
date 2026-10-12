@@ -208,11 +208,12 @@ reads the peak from the display's modes at the current resolution, and `animatin
 votes it with `Modifier.preferredFrameRate` only while something moves: the route
 `AnimatedContent` while its transition runs, the shell while any shared element is in flight
 (the window takes the highest vote, so this covers the overlay), the dock's morph, the
-connecting warp, the flick pad's poster from the finger going down until it is back at rest
-(and through a throw), and the card flip. Always-running slow loops vote 30 Hz
-(`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple and the dock's progress
-hairline. The platform resolves to the highest vote in the window, so a low vote only lowers
-the rate while nothing else is moving.
+connecting warp's hold and throw, the flick pad's poster from the finger going down until it is
+back at rest (and through a throw), and the card flip. Always-running slow loops vote 30 Hz
+(`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple, the dock's progress
+hairline, and the connecting field once the warp is over (`loopFrameRate`, one vote that is the
+peak during the warp and 30 Hz for the wait). The platform resolves to the highest vote in the
+window, so a low vote only lowers the rate while nothing else is moving.
 
 GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded:
 
@@ -227,16 +228,26 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   blurred backdrop cannot show.
 - **Gradients are built once per size** (`drawWithCache`), not per frame: the pad poster's glow
   and the warp's rings, which share one stroke paint.
-- **The dock's glass is one number.** While the dock grows into the remote, the travelling clip
-  writes how far the bounds have grown (`p`, 0 at the bar and 1 once the corner has resolved)
-  into a float state that only draw and Haze blocks read, so the morph never recomposes the bar.
+- **No warm is unsized.** The image loader's memory cache is shared with the grid and capped
+  (16 MB, 8 MB on low-RAM phones). The card flip's small poster (w342) is warmed into memory at
+  114 × 171 px while its tile is on screen and at 228 × 342 px at the tap; the full-size poster
+  is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's
+  front asks for its art at the size the tile drew it, so it is the tile's own decode. An unsized warm decodes at the display's
+  size and evicted the very tiles the card lands back on, which then re-showed their ground.
+- **The dock's glass is one number.** While the dock grows into the remote, `p` is how far the
+  card has grown (0 at the bar, 1 once the corner has resolved): the card's travel, animated on
+  the dock's own enter/exit transition on the morph's spring and mapped by `dockGrowthAt`
+  (`travel / 0.7`, clamped). The dock's travelling clip and its draw and Haze blocks all read
+  that one value, so the morph never recomposes the bar, the glass never trails its clip by a
+  frame, and a minimize's first frame is already the card's glass rather than the bar's.
   The blur radius scales by `1 − smoothstep(0, 0.25, p)` and the blur turns off below 1%; the
   fill makes up the coverage the blur no longer hides, so the glass tint plus the fill always
   hide `lerp(tint, 0.9, 1 − glass)` of the backdrop, and the fill's hue turns from the glass
   tint to the remote's ground between `p` 0.15 and 0.6. The sheen, rim and shadow fade by
-  `1 − smoothstep(0.6, 1, p)`. Minimizing is the same function read backwards. `p` is taken
-  from the clip rather than from a layout modifier because the morph's default resize measures
-  the bar at its resting size and scales it, so nothing in its layout ever sees the card's height.
+  `1 − smoothstep(0.6, 1, p)`. Minimizing is the same function read backwards. `p` is not read
+  from the layout because the morph's default resize measures the bar at its resting size and
+  scales it, so nothing in its layout ever sees the card's height; and it is not written by the
+  clip, which is only asked during draw, so a value it wrote reached the glass a frame late.
 
 ## Architecture
 
@@ -542,7 +553,7 @@ Before adopting media, `ControlServer` strictly validates `loadMedia` and the ca
 
 For playback, each Media3 `DataSpec` creates one `HttpURLConnection` with `instanceFollowRedirects=false`; every 3xx is rejected before any second request. The video codec selector filters software codecs and extension renderers are disabled. It filters on Media3's own `MediaCodecInfo.hardwareAccelerated`, which carries a usable verdict at **every** API level: on 29+ it is the platform's `isHardwareAccelerated()` flag, and below that Media3 derives it by naming the software/reference namespaces (`OMX.google.*`, `OMX.ffmpeg.*`, `OMX.SEC.*.sw.*`, `omx.qcom.video.decoder.hevcswvdec`, `c2.android.*`, `c2.google.*`, and anything outside `omx.`/`c2.` entirely, with `arc.*` excepted as hardware). `HardwareDecoderPolicy` mirrors that inversion as its fallback for a caller with no `MediaCodecInfo` to ask. An earlier `>= 29` gate discarded the pre-29 verdict and fell back to a MediaTek-only allow-list, which refused to play at all on the Amlogic, Realtek, Broadcom, Qualcomm and Samsung silicon that most of the API 26-28 Android TV installed base runs. An empty filtered list still deliberately makes Media3 report an unsupported video format rather than dropping to software.
 
-The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind the house-lights veil (see [Stage motion](#stage-motion-house-lights-and-the-resync-wait)), then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
+The current cast/generation first-frame callback is installed before media/prepare. A single movable `PlayerSurface` stays attached to Media3 throughout Checking/Preparing behind the house-lights veil (see [Stage motion](#stage-motion-house-lights-and-the-resync-wait)), then the same surface is revealed for Active playback; this preserves the real video output needed for the first-frame callback. A fresh start prepares with `playWhenReady = false`: Media3 still renders the first frame paused, so `loadReady` goes out on time, and `PictureHold` starts the film only when the stage hands over the picture (see the stage-motion section). Only `Player.Listener.onRenderedFirstFrame` transitions `Preparing` to `Active` and emits `loadReady`; `STATE_READY` alone is insufficient. The receiver's adoption-to-first-frame deadline is 18 seconds. Startup permits only two short transient-network retries (250 ms, then 500 ms) within that deadline; format/parser/decoder errors fail without entering the four-attempt steady-state recovery policy.
 
 The budget answers exactly one question — can this link carry this file — and `StartupDeadlinePolicy` names the one thing it does not charge for. A picture-orientation re-prepare (see [Picture orientation](#picture-orientation)) is the receiver deciding on its own initiative to configure the decoder a second time; it discards the fill and re-fetches it, and charging that to the link would fail a sideways-filed film on a marginal link with `startup_timeout` — identically on every retry, because the automatic verdict recomputes the same, turning "the film looks sideways" into "the film will not cast". The grant is **6 seconds, at most once per cast**, sized on what the re-prepare has to buy back: `bufferForPlaybackMs`, which `BufferBudgetPolicy` caps at 2.5 s on every device tier, plus a codec teardown/configure and one byte-range round trip. That covers the re-fetch down to about half the file's bitrate, and a link delivering less than half cannot direct-play the file at all — so a genuinely slow link still fails, at 24 s rather than 18. A cast with no correction is untouched: same deadline, same timing, same failure. The grant is unchanged in size by the move to a view turn, and it is now charged strictly less often: `onRotationRePrepare` fires from `rePrepareForRotation` alone, so it is spent only by the films whose container declares a rotation and whose codec therefore has to be taken back to 0 — a film that merely earns a turn on a container of 0 issues no re-prepare and asks for nothing. The more expensive thing this used to cover as well, a whole new `ExoPlayer` instance to start the effects graph, no longer exists, so six seconds buys a strictly smaller piece of work than it was sized against. Extending re-arms the **timer**, not merely the timestamp `startPlayer` and `StartupRetryPolicy` read — a `delay(18_000)` job left running would otherwise still tear the cast down on the original schedule — and the grant is cleared with the rest of the startup transaction, so a re-target starts from a clean budget. `startupMs` is deliberately left alone: the real time to first frame from the single epoch is the honest number.
 
@@ -726,7 +737,7 @@ The receiver's committed profile has since caught up: `FlickRenderersFactory`, `
 
 Panel capability is recorded, never enforced. `DisplayCapabilityPolicy` compares the decoded format against the display's advertised HDR types and its physical mode and logs any shortfall (`panelShortfall hdr:DolbyVision`, `downscaled:3840x2160`) when the video input format becomes known. It does not refuse playback: there is no transcode and no downscale here, so the only alternative to presenting the film anyway is refusing it, and `Display.HdrCapabilities` is under-reported often enough on Android TV that refusing on it would break films that play correctly today. An empty HDR-type list is read as unknown rather than as a shortfall for the same reason. This is separate from the decoder question above, which is enforced.
 
-Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. Two states neither pin nor release at once. One is the moment a presenting film drops to `None`: the phone's re-cast sends `stop` as its own step before `loadMedia`, so `refreshRateHintDelayMs(filmJustStopped = true)` defers that release by the same 2-second settle, and a re-cast never blanks the panel between films (a real stop releases 2 s late). The other is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
+Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. Two states neither pin nor release at once. One is the moment a presenting film drops to `None`: the phone's re-cast sends `stop` as its own step before `loadMedia`, so `refreshRateHintDelayMs(filmJustStopped = true)` defers that release by the same 2-second settle, and a re-cast never blanks the panel between films (a real stop releases 2 s late). The other is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The pin itself still lands at the first frame and can blank the panel while the Flick card is up; the stage waits that switch out, the card's least time restarts from its settle (see [Stage motion](#stage-motion-house-lights-and-the-resync-wait)), and the film is held at its first frame meanwhile, so the switch costs no film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
 
 ### Stage motion: house lights and the resync wait
 
@@ -794,8 +805,43 @@ rather than being skipped. The release then waits, alongside the resync hold, fo
 finish and for `FLICK_CARD_MIN_SHOWN_MS` 1 100 from its start (`cardHoldLeftMs`), bounded by
 the same `STAGE_HOLD_CAP_MS` from the seam and ended by any key: a re-cast's handshake lands in
 about a second, and without the floor the card would be on screen for a few hundred
-milliseconds. A seated card from a reduced-motion seat owes nothing. A card caught mid-exit by
-the first frame springs to its seat (`panelSpatial()`) during the hold and expands from there.
+milliseconds. The start is the flight's first **drawn** frame (`withFrameMillis`), not the cue,
+because the main thread can be held between the two by the previous player's synchronous
+release. The least time counts only while the panel is showing: a display-mode change that
+lands after the card entered, or whose `RESYNC_GRACE_MS` was still running when it did, restarts
+it from that change's settle (`cardShownSinceMs`), and the wait re-reads it on every change.
+The pin made at the first frame is the usual case, so a hold that already had its time and
+then saw the reveal wait out a switch checks again before the release, unless a key ended that
+wait. All of it stays inside `STAGE_HOLD_CAP_MS` from the seam. A seated card from a
+reduced-motion seat owes nothing. A card caught mid-exit by the first frame springs to its seat
+(`panelSpatial()`) during the hold and expands from there.
+
+**No film is spent under the card.** The hold would otherwise cost the opening second or two of
+the film: `playStartup` used to prepare with `playWhenReady = true`, so the audio played and
+the film's clock ran behind the veil while the card had its time. It now prepares **paused**.
+The first frame still renders and still fires `onRenderedFirstFrame` — the renderer of the
+playing period is enabled with `mayRenderStartOfStream`, which releases that frame before the
+renderer starts, exactly as a paused seek shows its frame — so `loadReady`, `startupMs`, the
+Active stage and the phone's own animation all happen at the same moment as before. The film
+sits at its decoded first frame, at exactly the requested start position (a resume included),
+and keeps filling its buffer. `HouseLights`' `onPictureUp` calls `PlayerController.onPictureUp`,
+which starts it; every path into Film calls it, including the reduced-motion, offstage and
+lit-to-Film snaps. `PictureHold` is the state: while held, the viewer's play, pause and toggle
+(the remote, the phone's `play`/`pause`, and a media button reaching the `MediaSession`, which
+is caught in `onPlayWhenReadyChanged`) are recorded rather than applied, so a pause pressed
+during the card is honoured at release. A steady-state recovery or a frozen-picture re-prepare
+inside the hold keeps the film at its frame (`gate`), and an audio-sink rebuild, a rotation
+re-prepare, a subtitle drop or an in-place subtitle reload carries the player's own paused state
+across, so each of them stays held too. `readPlaybackState` reports a held, READY film by that intent — `playing` and phase
+`Playing` unless paused — so the remote's toggle and the phone read the film as starting, not
+paused. A paused, READY player opens no stall window and is not sampled by the frozen-picture
+or turn watchdogs, so the hold is never counted as buffering. The safety net is
+`PICTURE_HOLD_CAP_MS` 3 500 from the first frame (`playbackMayStart`): a second past the stage's
+own cap, so it only fires when the release was lost (a composition not drawing, a seam cancelled
+under it), and playback can never hang. `onStop` inside the hold ends it and keeps the viewer's
+intent for `onStart`; `stop`, `play` and `release` clear it, and the next `playStartup` re-arms
+it. `reloadInPlace` outside the hold is untouched and never pauses. The log carries
+`[player] pictureHold release reason=pictureUp|cap play=… heldMs=…`.
 
 The phone re-casts as `stop` then `loadMedia`, so a re-cast usually reaches the TV as
 Film → Room → Handshake within a few hundred milliseconds. Film → Room seeds closed and fully
@@ -817,6 +863,7 @@ The card logs its life alongside the hold line, all under `[stage]` (`move` once
 [stage] card seated sinceSeamMs=1070
 [stage] card pictureUp held=true flying=false shownMs=840
 [stage] card hold reason=shown waitedMs=262
+[player] pictureHold release reason=pictureUp play=true heldMs=290
 [stage] card expand start flying=false sinceSeamMs=268
 [stage] card expand done tookMs=606
 [display] pin hz=0.0 delayMs=2000
@@ -870,8 +917,9 @@ re-pin, within the cap. `stageHold` then waits until the observed change
 + `RESYNC_GRACE_MS`, or `SWITCH_EXPECT_WINDOW_MS` 500 — counted from when the rate became known,
 because that is when the pin is written — for a change that has not been seen yet, and never
 past `STAGE_HOLD_CAP_MS` 2 500 from the seam, which includes the rate wait. Any remote key ends it at once (the key
-is still dispatched as normal). Only pixels wait: the stage, the first frame, `loadReady`, the
-18 s deadline and every key are untouched. A re-cast can switch twice — release the old pin
+is still dispatched as normal). Only pixels and the film's clock wait: the stage, the first
+frame, `loadReady`, the 18 s deadline and every key are untouched, and the film itself is held
+paused at its first frame until the release (see above), so nothing of it plays under the veil. A re-cast can switch twice — release the old pin
 at the seam, re-pin once the rate lands — so a hold that ends `Settled` checks again
 (`switchStillOwed`): while the panel still cannot show the film's rate and the pin would blank,
 `awaitOwedSwitch` waits once more, up to `SWITCH_EXPECT_WINDOW_MS` for a newer switch and then

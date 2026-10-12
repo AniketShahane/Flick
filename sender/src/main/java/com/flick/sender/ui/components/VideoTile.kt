@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -52,6 +53,7 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -63,6 +65,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
@@ -102,6 +105,7 @@ import com.flick.sender.ui.theme.pressMorph
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 import com.flick.sender.ui.warmFilmPoster
+import com.flick.sender.ui.warmTilePoster
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -594,17 +598,37 @@ fun VideoTile(
     val flipState = flipScopes?.let { (shared, _) ->
         with(shared) { rememberSharedContentState(cardFlipKey(item.id)) }
     }
+    val handoff = LocalCardFlipHandoff.current
+    val flipKey = cardFlipKey(item.id)
     val badge = flipScopes?.let { (_, animated) -> rememberTileBadgeTrack(animated.transition, cardFlip) }
+    // How much of the slot — its ground, shadow, badges and running time — is gone from under
+    // the card. Coming back it follows the card's own travel, so it is whole as the card lands.
     val slot: () -> Float = {
-        if (badge != null && flipState?.isMatchFound == true) 1f - badge.value.coerceIn(0f, 1f) else 1f
+        if (badge != null && flipState?.isMatchFound == true) {
+            val flight = handoff.flightFor(flipKey)?.takeIf { it.backLeg }
+            1f - (flight?.let { flipBadgeHidden(it.move) } ?: badge.value.coerceIn(0f, 1f))
+        } else {
+            1f
+        }
+    }
+    val landed: () -> Boolean = { handoff.flightFor(flipKey)?.landed == true }
+    // Plain, not state: read once, at the tap.
+    val faceSize = remember { FaceSize() }
+    // The detail card turns over to this poster about a tenth of a second after a tap.
+    val posterPath = filmArt?.poster
+    LaunchedEffect(posterPath) {
+        posterPath?.let { warmTilePoster(context, imageLoader, it) }
     }
     val currentOnClick by rememberUpdatedState(onClick)
     val open = {
         // A second tap while the first is still lifting the card off would open the page
-        // under a card already in the air.
+        // under a card already in the air; so would a tap on any tile while a card is coming
+        // back down onto the grid.
         val leaving = animatedScope != null && animatedScope.transition.targetState != EnterExitState.Visible
-        if (!leaving) {
-            filmArt?.poster?.let { warmFilmPoster(context, imageLoader, it) }
+        val flying = sharedScope?.isTransitionActive == true
+        if (!leaving && !flying) {
+            handoff.armTile(flipKey, faceSize.px)
+            posterPath?.let { warmFilmPoster(context, imageLoader, it) }
             currentOnClick()
         }
     }
@@ -640,49 +664,79 @@ fun VideoTile(
                     spotShadowColor = TileShadow
                 }
                 .pressMorph(interaction, restRadius = FlickCorners.tile, pressedRadius = 20.dp)
-                .graphicsLayer { alpha = slot() }
-                .background(colors.surfaceTonal)
                 // The amber media accent rather than the action blue: this surface is a
                 // decoded frame, not a palette surface, and only a light, high-chroma
                 // ripple survives both a blown-out still and a near-black one.
                 .indication(interaction, flickRipple(colors.spark)),
         ) {
+            // The slot's ground on a layer of its own: the face above it must be whole the
+            // instant the card is handed back, whatever the slot is still doing.
+            Box(Modifier.matchParentSize().graphicsLayer { alpha = slot() }.background(colors.surfaceTonal))
             TileFace(
                 item = item,
                 filmArt = filmArt,
                 imageLoader = imageLoader,
                 unplayable = unplayable,
                 contentDescription = displayName,
+                // Measured outside the flip's bounds, which remeasure the face while it flies:
+                // this is the size it rests at in the slot.
                 modifier = if (flipScopes != null && flipState != null) {
                     Modifier
+                        .onSizeChanged { faceSize.px = it }
                         .cardFlipBounds(flipScopes.first, flipScopes.second, flipState, seat = false)
-                        .hideWhileFlipping(flipScopes.first, flipState)
+                        .hideWhileFlipping(flipScopes.first, flipState, landed)
                         .fillMaxSize()
                 } else {
-                    Modifier.fillMaxSize()
+                    Modifier.onSizeChanged { faceSize.px = it }.fillMaxSize()
                 },
             )
-            // Stacked, not swapped: the two chips answer different questions, and a file
-            // the TV refused still has whatever metadata it always had.
-            Column(
-                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+            // The slot's marks. While a card is in the air they are drawn in the shared
+            // overlay, above it, as the design has them: fading off the card as it lifts, and
+            // back onto it as it lands, so nothing about the tile changes at the hand-back.
+            // The overlay bypasses every ancestor layer, so they carry their own fade and clip.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .then(
+                        if (flipScopes != null && flipState != null) {
+                            with(flipScopes.first) {
+                                Modifier.renderInSharedTransitionScopeOverlay(
+                                    renderInOverlay = { flipState.isMatchFound && isTransitionActive },
+                                    zIndexInOverlay = TileMarksZIndex,
+                                )
+                            }
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .graphicsLayer {
+                        alpha = slot()
+                        this.shape = shape
+                        clip = true
+                    },
             ) {
-                MetadataBadge(hdr = hdr, item = item)
-                if (unplayable) RefusedBadge()
-                if (noSound) NoSoundBadge()
+                // Stacked, not swapped: the two chips answer different questions, and a file
+                // the TV refused still has whatever metadata it always had.
+                Column(
+                    modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    MetadataBadge(hdr = hdr, item = item)
+                    if (unplayable) RefusedBadge()
+                    if (noSound) NoSoundBadge()
+                }
+                // A zero duration means MediaStore had no value, not a zero-length film.
+                if (item.knowsDuration) {
+                    Text(
+                        text = Format.timecode(item.durationMs),
+                        style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = 10.dp, end = 11.dp),
+                    )
+                }
+                resume?.let { ResumeLine(fraction = it.fraction, played = colors.spark) }
             }
-            // A zero duration means MediaStore had no value, not a zero-length film.
-            if (item.knowsDuration) {
-                Text(
-                    text = Format.timecode(item.durationMs),
-                    style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(bottom = 10.dp, end = 11.dp),
-                )
-            }
-            resume?.let { ResumeLine(fraction = it.fraction, played = colors.spark) }
         }
         Column {
             Text(
@@ -708,7 +762,8 @@ fun VideoTile(
 /**
  * The card face a library tile shows: the film's art, else a decoded frame, under the scrim
  * the tile's badges read against. It is also the front of the card that turns over into the
- * detail page's poster, so the detail page draws exactly this to fly it.
+ * detail page's poster, so the detail page draws exactly this to fly it — at [requestSizePx],
+ * the size the tile drew it, so its art is the tile's own decode rather than a fresh one.
  *
  * [unplayable] holds the still back rather than dimming it: a scrim on top would fight the
  * one the badges already read against, and a frame at full chroma beside a refusal chip
@@ -722,6 +777,7 @@ fun TileFace(
     unplayable: Boolean,
     contentDescription: String?,
     modifier: Modifier = Modifier,
+    requestSizePx: IntSize? = null,
 ) {
     val frameFilter = remember(unplayable) {
         if (unplayable) ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(RefusedSaturation) }) else null
@@ -734,6 +790,7 @@ fun TileFace(
                 contentDescription = contentDescription,
                 colorFilter = frameFilter,
                 modifier = Modifier.fillMaxSize(),
+                requestSizePx = requestSizePx,
             )
         } else {
             AsyncImage(
@@ -894,6 +951,14 @@ private const val WithheldFill = 0.62f
 private const val RefusedSaturation = 0.45f
 
 private val TileElevation = 10.dp
+
+/** Above the flying card (0), which the slot's marks fade off and back onto. */
+private const val TileMarksZIndex = 1f
+
+/** The size the face was last laid out at; plain, so a layout pass never recomposes the tile. */
+private class FaceSize {
+    var px: IntSize = IntSize.Zero
+}
 
 // A rule, not a bar. Thin enough to read as a property of the still rather than as a
 // control laid over it, thick enough to survive a 1x-density phone rounding it away.
