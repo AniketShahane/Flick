@@ -75,6 +75,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.structuralEqualityPolicy
@@ -289,8 +290,9 @@ internal fun LibraryScreen(
     val imageLoader = rememberVideoImageLoader()
     // State, not a value: the 2 s telemetry poll must stop at the pill that shows it
     // rather than rebuilding the whole grid.
-    val signal = rememberSignalState()
-    val wifiLinkUp = rememberWifiLinkUp(signal)
+    // Held while the detail page is up over the grid: the page polls the same link itself.
+    val signal = rememberSignalState(polling = active)
+    val wifiLinkUp = rememberWifiLinkUp(signal, polling = active)
     val on24GHz by remember(signal) { derivedStateOf { signal.value.on24GHz } }
     val compactTiles = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
@@ -815,9 +817,10 @@ internal fun linkPillState(paired: Boolean, casting: Boolean, wifiLinkUp: Boolea
  * and only its ambiguous `false` is asked again here.
  */
 @Composable
-private fun rememberWifiLinkUp(signal: State<SignalInfo>): State<Boolean> {
+private fun rememberWifiLinkUp(signal: State<SignalInfo>, polling: () -> Boolean): State<Boolean> {
     val context = LocalContext.current
     val confirmed = remember(context) { mutableStateOf(NetworkUtils.getWifiLinkInfo(context) != null) }
+    val currentPolling by rememberUpdatedState(polling)
     LaunchedEffect(context, signal) {
         // Collected off composition on purpose: reading the shared record at this
         // function's scope would put the whole grid behind the pill on the 2 s poll.
@@ -827,6 +830,7 @@ private fun rememberWifiLinkUp(signal: State<SignalInfo>): State<Boolean> {
                 return@collectLatest
             }
             while (true) {
+                snapshotFlow { currentPolling() }.first { it }
                 confirmed.value = withContext(Dispatchers.IO) { NetworkUtils.getWifiLinkInfo(context) != null }
                 delay(WifiLinkRecheckMs)
             }
