@@ -68,6 +68,8 @@ import com.flick.sender.ui.theme.flickGlass
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberPressAmount
 import com.flick.sender.ui.theme.rememberReduceMotion
+import dev.chrisbanes.haze.ExperimentalHazeApi
+import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
@@ -93,6 +95,7 @@ import kotlinx.coroutines.launch
  * row's 12 dp margins are 252 dp, which still leaves free space to distribute inside the
  * 328 dp the bar spans on the narrowest phone the app supports.
  */
+@OptIn(ExperimentalHazeApi::class)
 @Composable
 internal fun FlickBottomNav(
     selected: NavTab,
@@ -134,6 +137,7 @@ internal fun FlickBottomNav(
         // translucent tint as a fallback without the global pre-draw invalidation or
         // RenderScript work that can make a scrolling grid pay for a small glass pill.
         blurEnabled = navBackdropBlurEnabled(Build.VERSION.SDK_INT)
+        inputScale = HazeInputScale.Fixed(GlassInputScaleFactor)
     }
 
     // Seats are measured, not composed: a plain map plus an epoch keeps a layout pass
@@ -563,6 +567,12 @@ private const val DarkGlassStabilizerAlpha = 0.14f
 /** Both surfaces are cut from the same material; only the tint budget above differs. */
 internal const val GlassNoiseFactor = 0.04f
 internal val GlassBlurRadius = 20.dp
+
+/**
+ * Both glass surfaces blur a copy of the route a third the size: a 20 dp blur has no detail
+ * finer than that copy's pixels to lose, and the blur pass costs a ninth of the full-size one.
+ */
+internal const val GlassInputScaleFactor = 0.33f
 
 internal fun navBackdropBlurEnabled(sdkInt: Int): Boolean =
     sdkInt >= Build.VERSION_CODES.TIRAMISU

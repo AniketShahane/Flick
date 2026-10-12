@@ -21,10 +21,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorProducer
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.unit.dp
@@ -217,6 +224,10 @@ fun Modifier.flickGlass(
  * The same material with a fill that moves. [fill] is read in the draw scope, so a fill
  * that animates repaints this one node rather than recomposing the surface it paints, and
  * it lands in the fill's own seat — under the sheen and the rim, never over them.
+ *
+ * [edges] scales the sheen, the rim and the shadow together, also read at draw time: they
+ * are what makes the surface read as a floating bar, and a surface on its way to becoming
+ * something else can let them go without changing anything about its fill.
  */
 fun Modifier.flickGlass(
     colors: FlickColors,
@@ -225,6 +236,7 @@ fun Modifier.flickGlass(
     underlay: Color = Color.Transparent,
     showSheen: Boolean = true,
     backdropEffect: Modifier? = null,
+    edges: (() -> Float)? = null,
 ): Modifier = flickGlassLayers(
     colors = colors,
     shape = shape,
@@ -238,6 +250,7 @@ fun Modifier.flickGlass(
     underlay = underlay,
     showSheen = showSheen,
     backdropEffect = backdropEffect,
+    edges = edges,
 )
 
 private fun Modifier.flickGlassLayers(
@@ -247,36 +260,106 @@ private fun Modifier.flickGlassLayers(
     underlay: Color,
     showSheen: Boolean,
     backdropEffect: Modifier?,
-): Modifier = this
-    .shadow(
-        elevation = 20.dp,
-        shape = shape,
-        clip = false,
-        // Both halves of the treatment are a claim about light, and a dark canvas has a
-        // different amount of it: the tinted shadow is invisible against near-black and
-        // the sheen is a blown highlight on it. Read from the palette rather than from
-        // the platform's night mode, so a forced-cinematic screen gets the dark pair too.
-        ambientColor = if (colors.isLight) NavShadow else NavShadowOnNight,
-        spotColor = if (colors.isLight) NavShadow else NavShadowOnNight,
-    )
-    .then(
-        backdropEffect?.let { Modifier.clip(shape).then(it) } ?: Modifier,
-    )
-    .then(
-        if (underlay.alpha > 0f) Modifier.background(color = underlay, shape = shape) else Modifier,
-    )
-    .then(fillLayer)
-    .then(
-        if (showSheen) {
-            Modifier.background(
-                brush = if (colors.isLight) FlickGradients.navSheen else FlickGradients.navSheenDark,
-                shape = shape,
+    edges: (() -> Float)? = null,
+): Modifier {
+    // Both halves of the treatment are a claim about light, and a dark canvas has a
+    // different amount of it: the tinted shadow is invisible against near-black and the
+    // sheen is a blown highlight on it. Read from the palette rather than from the
+    // platform's night mode, so a forced-cinematic screen gets the dark pair too.
+    val shadowColor = if (colors.isLight) NavShadow else NavShadowOnNight
+    val sheen = if (colors.isLight) FlickGradients.navSheen else FlickGradients.navSheenDark
+    return this
+        .then(
+            if (edges == null) {
+                Modifier.shadow(
+                    elevation = GlassElevation,
+                    shape = shape,
+                    clip = false,
+                    ambientColor = shadowColor,
+                    spotColor = shadowColor,
+                )
+            } else {
+                Modifier.graphicsLayer {
+                    shadowElevation = GlassElevation.toPx() * edges().coerceIn(0f, 1f)
+                    this.shape = shape
+                    clip = false
+                    ambientShadowColor = shadowColor
+                    spotShadowColor = shadowColor
+                }
+            },
+        )
+        .then(
+            backdropEffect?.let { Modifier.clip(shape).then(it) } ?: Modifier,
+        )
+        .then(
+            if (underlay.alpha > 0f) Modifier.background(color = underlay, shape = shape) else Modifier,
+        )
+        .then(fillLayer)
+        .then(
+            when {
+                !showSheen -> Modifier
+                edges == null -> Modifier.background(brush = sheen, shape = shape)
+                else -> Modifier.drawWithCache {
+                    val outline = shape.createOutline(size, layoutDirection, this)
+                    onDrawBehind {
+                        val k = edges().coerceIn(0f, 1f)
+                        if (k > 0f) drawOutline(outline, sheen, alpha = k)
+                    }
+                }
+            },
+        )
+        .then(
+            if (edges == null) {
+                Modifier.border(width = GlassRim, color = colors.glassBorder, shape = shape)
+            } else {
+                Modifier.drawWithCache {
+                    val outline = shape.createOutline(size, layoutDirection, this)
+                    val rim = GlassRim.toPx()
+                    onDrawWithContent {
+                        drawContent()
+                        val k = edges().coerceIn(0f, 1f)
+                        if (k > 0f) drawRim(outline, colors.glassBorder, rim, k)
+                    }
+                }
+            },
+        )
+}
+
+/**
+ * The rim [Modifier.border] draws, stroked inside the outline rather than across it, so a
+ * rim that fades lands on exactly the pixels the static one covers.
+ */
+private fun DrawScope.drawRim(outline: Outline, color: Color, strokePx: Float, alpha: Float) {
+    val half = strokePx / 2f
+    val stroke = Stroke(width = strokePx)
+    when (outline) {
+        is Outline.Rectangle -> drawRect(
+            color = color,
+            topLeft = Offset(half, half),
+            size = Size(size.width - strokePx, size.height - strokePx),
+            style = stroke,
+            alpha = alpha,
+        )
+        is Outline.Rounded -> {
+            val corner = outline.roundRect.topLeftCornerRadius
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(half, half),
+                size = Size(size.width - strokePx, size.height - strokePx),
+                cornerRadius = CornerRadius(
+                    (corner.x - half).coerceAtLeast(0f),
+                    (corner.y - half).coerceAtLeast(0f),
+                ),
+                style = stroke,
+                alpha = alpha,
             )
-        } else {
-            Modifier
-        },
-    )
-    .border(width = 1.dp, color = colors.glassBorder, shape = shape)
+        }
+        is Outline.Generic -> drawOutline(outline, color, alpha = alpha, style = stroke)
+    }
+}
+
+private val GlassElevation = 20.dp
+private val GlassRim = 1.dp
 
 fun Modifier.flickRaised(
     colors: FlickColors,

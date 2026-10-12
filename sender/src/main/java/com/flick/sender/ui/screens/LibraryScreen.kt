@@ -257,6 +257,7 @@ internal fun LibraryScreen(
     uiState: LibraryUiState,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
+    cardFlip: Boolean = false,
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
@@ -606,6 +607,7 @@ internal fun LibraryScreen(
                         onClick = { controller.openDetail(item) },
                         sharedScope = sharedScope,
                         animatedScope = animatedScope,
+                        cardFlip = cardFlip,
                         modifier = Modifier
                             .animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
@@ -1578,6 +1580,7 @@ private fun LibraryTile(
     modifier: Modifier = Modifier,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
+    cardFlip: Boolean = false,
 ) {
     val context = LocalContext.current
     // This tile's own share of the checkpoint map, and the reason the map itself is
@@ -1617,6 +1620,7 @@ private fun LibraryTile(
         modifier = modifier,
         sharedScope = sharedScope,
         animatedScope = animatedScope,
+        cardFlip = cardFlip,
     )
 }
 

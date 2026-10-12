@@ -13,14 +13,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.PaintingStyle
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
 import kotlin.math.floor
@@ -76,6 +75,9 @@ internal fun HyperspaceField(
             // Far enough that the largest ring has left every edge before it fades out.
             val maxRingWidth = max(size.width, size.height / Hyperspace.RingAspect) * Hyperspace.RingReach
             val reach = max(size.width, size.height)
+            // One paint for every ring: each ring's stroke width moves with its phase, and a
+            // Stroke per ring per frame is an allocation the loop does not need.
+            val ringPaint = Paint().apply { style = PaintingStyle.Stroke }
             onDrawBehind {
                 drawRect(wash)
                 val t = clock?.value ?: return@onDrawBehind
@@ -83,6 +85,7 @@ internal fun HyperspaceField(
                 if (strength <= 0f) return@onDrawBehind
                 for (index in 0 until Hyperspace.RingCount) {
                     drawRing(
+                        paint = ringPaint,
                         phase = ringPhase(t, index),
                         amber = index == Hyperspace.AmberRing,
                         centre = centre,
@@ -116,6 +119,7 @@ internal fun HyperspaceField(
 }
 
 private fun DrawScope.drawRing(
+    paint: Paint,
     phase: Float,
     amber: Boolean,
     centre: Offset,
@@ -130,13 +134,17 @@ private fun DrawScope.drawRing(
     if (width < 1f) return
     val height = width * Hyperspace.RingAspect
     val corner = width * Hyperspace.RingCorner
-    drawRoundRect(
-        color = if (amber) Hyperspace.Amber else Hyperspace.RingBlue,
-        topLeft = Offset(centre.x - width / 2f, centre.y - height / 2f),
-        size = Size(width, height),
-        cornerRadius = CornerRadius(corner, corner),
-        style = Stroke(width = stroke + strokeGrowth * phase),
-        alpha = alpha,
+    val colour = if (amber) Hyperspace.Amber else Hyperspace.RingBlue
+    paint.color = colour.copy(alpha = colour.alpha * alpha)
+    paint.strokeWidth = stroke + strokeGrowth * phase
+    drawContext.canvas.drawRoundRect(
+        left = centre.x - width / 2f,
+        top = centre.y - height / 2f,
+        right = centre.x + width / 2f,
+        bottom = centre.y + height / 2f,
+        radiusX = corner,
+        radiusY = corner,
+        paint = paint,
     )
 }
 

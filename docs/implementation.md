@@ -200,6 +200,44 @@ lines to the user. The remaining rules keep Ktor, kotlinx-coroutines, the slf4j-
 service provider, ML Kit's bundled barcode runtime, and ZXing, and silence the JVM-only
 classpath references that Guava, CameraX, Coil/OkHttp and ML Kit drag in.
 
+### Phone frame pacing and GPU cost
+
+The verified phone runs an adaptive panel with a 120 Hz peak, and its platform "high" frame-rate
+category resolves to 90 Hz there, so motion asks for the rate itself. `ui/motion/FrameRate.kt`
+reads the peak from the display's modes at the current resolution, and `animatingFrameRate(active)`
+votes it with `Modifier.preferredFrameRate` only while something moves: the route
+`AnimatedContent` while its transition runs, the shell while any shared element is in flight
+(the window takes the highest vote, so this covers the overlay), the dock's morph, the
+connecting warp, the flick pad's poster from the finger going down until it is back at rest
+(and through a throw), and the card flip. Always-running slow loops vote 30 Hz
+(`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple and the dock's progress
+hairline. The platform resolves to the highest vote in the window, so a low vote only lowers
+the rate while nothing else is moving.
+
+GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded:
+
+- **No full-screen live blur.** The detail page's ground is the backdrop (else the poster, else
+  the film's own frame) blurred once on Coil's decode thread by `SoftBlurTransformation`
+  (`ui/SoftBlur.kt`: a three-pass box blur, about a gaussian, edges clamped) into a bitmap
+  200 px wide with the viewport's aspect, drawn `Crop`/`TopCenter` under the unchanged scrim
+  (0.60 / 0.70 / 0.92 / 1.0). The library tile's poster-on-ground wash is the same treatment at
+  72 × 49 px. The blur is a pure function over an `IntArray` and is unit-tested (`SoftBlurTest`).
+- **Glass samples a third of the pixels.** The nav pill and the dock pass
+  `HazeInputScale.Fixed(0.33)`: the backdrop is downsampled before it is blurred, which a
+  blurred backdrop cannot show.
+- **Gradients are built once per size** (`drawWithCache`), not per frame: the pad poster's glow
+  and the warp's rings, which share one stroke paint.
+- **The dock's glass is one number.** While the dock grows into the remote, the travelling clip
+  writes how far the bounds have grown (`p`, 0 at the bar and 1 once the corner has resolved)
+  into a float state that only draw and Haze blocks read, so the morph never recomposes the bar.
+  The blur radius scales by `1 − smoothstep(0, 0.25, p)` and the blur turns off below 1%; the
+  fill makes up the coverage the blur no longer hides, so the glass tint plus the fill always
+  hide `lerp(tint, 0.9, 1 − glass)` of the backdrop, and the fill's hue turns from the glass
+  tint to the remote's ground between `p` 0.15 and 0.6. The sheen, rim and shadow fade by
+  `1 − smoothstep(0.6, 1, p)`. Minimizing is the same function read backwards. `p` is taken
+  from the clip rather than from a layout modifier because the morph's default resize measures
+  the bar at its resting size and scales it, so nothing in its layout ever sees the card's height.
+
 ## Architecture
 
 ```text

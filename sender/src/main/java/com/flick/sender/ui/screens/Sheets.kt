@@ -785,33 +785,6 @@ internal fun sheetDismissedByDrag(
 }
 
 /**
- * Drives the shared sheet entry. Returned as a lambda so the transform is read in
- * the draw phase and the sheet's content is never recomposed by the animation.
- *
- * The rise is geometry, so it takes the scheme's spatial spring and overshoots — the
- * sheet is the consequence of a flick, and a flick lands with a little more travel
- * than it was aimed with.
- */
-@Composable
-internal fun rememberSheetRise(): () -> Float =
-    rememberEntranceProgress(MaterialTheme.motionScheme.defaultSpatialSpec<Float>())
-
-/** Every alpha in a sheet's entrance: an effects spring, which must not overshoot. */
-@Composable
-internal fun rememberSheetFade(): () -> Float =
-    rememberEntranceProgress(MaterialTheme.motionScheme.fastEffectsSpec<Float>())
-
-@Composable
-private fun rememberEntranceProgress(spec: FiniteAnimationSpec<Float>): () -> Float {
-    val reduceMotion = rememberReduceMotion()
-    val progress = remember { Animatable(0f) }
-    LaunchedEffect(reduceMotion) {
-        if (reduceMotion) progress.snapTo(1f) else progress.animateTo(1f, spec)
-    }
-    return remember(progress) { { progress.value } }
-}
-
-/**
  * Translate + scale + fade a sheet up from its own bottom edge, all of it in the draw
  * phase. [progress] is the spatial clock and carries the geometry; [fade] is the effects
  * clock and carries the opacity alone. The two are separate because the spatial spring

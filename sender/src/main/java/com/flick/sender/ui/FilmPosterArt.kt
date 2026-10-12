@@ -3,7 +3,6 @@ package com.flick.sender.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
-import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -20,7 +19,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -34,6 +32,8 @@ import coil.compose.AsyncImage
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
@@ -41,6 +41,7 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.ui.components.videoImageLoader
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -161,6 +162,9 @@ private fun rememberHeroRequest(path: String, width: String, tileWidth: String):
  * The poster whole, at its own 2:3, standing on a blurred wash of itself that fills whatever
  * shape the seat is. The library's seats are landscape; cropping a poster into one keeps a
  * strip of somebody's face and loses the title, which is the one part that says which film.
+ *
+ * The wash is the same poster blurred once into a bitmap a few dozen pixels wide, not a live
+ * blur: a grid of these would otherwise re-blur every visible tile on every frame of a fling.
  */
 @Composable
 fun FilmPosterOnGround(
@@ -171,18 +175,27 @@ fun FilmPosterOnGround(
     colorFilter: ColorFilter? = null,
 ) {
     val request = rememberPosterRequest(posterPath, FilmPosterPolicy.TILE_WIDTH) ?: return
+    val ground = rememberSoftArtRequest(
+        path = posterPath,
+        width = FilmPosterPolicy.TILE_WIDTH,
+        boxWidthPx = GroundWidthPx,
+        boxHeightPx = GroundHeightPx,
+        radiusPx = GroundRadiusPx,
+        biasY = 0.5f,
+        crossfade = true,
+    )
     Box(modifier.background(Color.Black)) {
-        AsyncImage(
-            model = request,
-            contentDescription = null,
-            imageLoader = imageLoader,
-            contentScale = ContentScale.Crop,
-            colorFilter = colorFilter,
-            alpha = GroundAlpha,
-            // Blur is a no-op before Android 12; the dimmer alpha there keeps the sharp copy
-            // underneath from competing with the poster in front of it.
-            modifier = Modifier.fillMaxSize().blur(GroundBlur),
-        )
+        if (ground != null) {
+            AsyncImage(
+                model = ground,
+                contentDescription = null,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop,
+                colorFilter = colorFilter,
+                alpha = GroundAlpha,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         AsyncImage(
             model = request,
             contentDescription = contentDescription,
@@ -193,6 +206,92 @@ fun FilmPosterOnGround(
         )
     }
 }
+
+/**
+ * TMDB art blurred once, off the main thread, into a [boxWidthPx] × [boxHeightPx] bitmap
+ * already cropped to that box at [biasY]. Drawn with [ContentScale.Crop] at the same
+ * alignment it is only scaled up, so the box's aspect should be the seat's.
+ */
+@Composable
+internal fun rememberSoftArtRequest(
+    path: String,
+    width: String,
+    boxWidthPx: Int,
+    boxHeightPx: Int,
+    radiusPx: Int,
+    biasY: Float,
+    crossfade: Boolean = false,
+): ImageRequest? {
+    val context = LocalContext.current
+    return remember(path, width, boxWidthPx, boxHeightPx, radiusPx, biasY, crossfade) {
+        FilmPosterPolicy.imageUrl(path, width)?.let { url ->
+            ImageRequest.Builder(context)
+                .data(url)
+                .softBlur(boxWidthPx, boxHeightPx, radiusPx, biasY)
+                .crossfade(crossfade)
+                .build()
+        }
+    }
+}
+
+/** The size, scale and transformation every soft-blurred request shares. */
+internal fun ImageRequest.Builder.softBlur(
+    boxWidthPx: Int,
+    boxHeightPx: Int,
+    radiusPx: Int,
+    biasY: Float,
+): ImageRequest.Builder = this
+    .size(boxWidthPx.coerceAtLeast(1), boxHeightPx.coerceAtLeast(1))
+    .scale(Scale.FILL)
+    .precision(Precision.INEXACT)
+    .transformations(SoftBlurTransformation(radiusPx, biasY))
+
+/**
+ * The detail page's ground: [path]'s art at TMDB [width], pre-blurred into a bitmap
+ * [SoftBackdropWidthPx] across with the viewport's own aspect, and drawn top-aligned so the
+ * crop keeps the backdrop's subject. No crossfade: the page fades it in with everything else.
+ */
+@Composable
+fun FilmSoftBackdrop(
+    path: String,
+    width: String,
+    imageLoader: ImageLoader,
+    viewportAspect: Float,
+    modifier: Modifier = Modifier,
+) {
+    val request = rememberSoftArtRequest(
+        path = path,
+        width = width,
+        boxWidthPx = SoftBackdropWidthPx,
+        boxHeightPx = softBackdropHeightPx(viewportAspect),
+        radiusPx = SoftBackdropRadiusPx,
+        biasY = 0f,
+    ) ?: return
+    AsyncImage(
+        model = request,
+        contentDescription = null,
+        imageLoader = imageLoader,
+        contentScale = ContentScale.Crop,
+        alignment = Alignment.TopCenter,
+        modifier = modifier,
+    )
+}
+
+/** Height of the soft backdrop's box for a viewport [aspect] of height over width. */
+internal fun softBackdropHeightPx(aspect: Float): Int =
+    (SoftBackdropWidthPx * aspect.coerceIn(SoftBackdropMinAspect, SoftBackdropMaxAspect))
+        .roundToInt()
+        .coerceAtLeast(1)
+
+/**
+ * Sized against the 24 dp live blur this replaced: on a phone a few hundred dp wide that blur
+ * spread about 3.4% of the width (its sigma), and a 3-pass box of radius 6 spreads 6.5 px —
+ * the same 3.4% of a 200 px box.
+ */
+internal const val SoftBackdropWidthPx = 200
+internal const val SoftBackdropRadiusPx = 6
+private const val SoftBackdropMinAspect = 0.25f
+private const val SoftBackdropMaxAspect = 4f
 
 /** The poster filling its seat edge to edge (Crop): the detail page's card, or its backdrop. */
 @Composable
@@ -334,8 +433,25 @@ private const val LogoWidthFraction = 0.42f
 private const val LogoHeightFraction = 0.36f
 private const val LogoShadeAlpha = 0.6f
 private const val LogoShadeReach = 0.75f
-private val GroundBlur = 28.dp
-private val GroundAlpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.7f else 0.35f
+// The tile's 179:122 seat, small. The 28 dp live blur this replaced spread about 9% of a
+// tile's width; radius 6 spreads 6.5 px, the same share of 72.
+private const val GroundWidthPx = 72
+private const val GroundHeightPx = 49
+private const val GroundRadiusPx = 6
+private const val GroundAlpha = 0.7f
+
+/**
+ * Starts loading the poster the detail page's card turns over to, at both sizes that page
+ * draws it, as the tile is tapped: the card is edge-on about a tenth of a second later, and
+ * the smaller copy is what the larger one shows while it arrives.
+ */
+fun warmFilmPoster(context: Context, imageLoader: ImageLoader, posterPath: String) {
+    val appContext = context.applicationContext
+    for (width in listOf(FilmPosterPolicy.TILE_WIDTH, FilmPosterPolicy.HERO_WIDTH)) {
+        val url = FilmPosterPolicy.imageUrl(posterPath, width) ?: continue
+        imageLoader.enqueue(ImageRequest.Builder(appContext).data(url).build())
+    }
+}
 
 /**
  * Looks up art for every title in [items] and puts the images a tile draws into Coil's disk

@@ -79,6 +79,7 @@ import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
+import com.flick.sender.ui.motion.animatingFrameRate
 import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickCinematicTheme
@@ -231,7 +232,7 @@ fun ConnectingScreen(
                 loop = !reduceMotion && resumed,
                 intensity = { warp.value },
                 vanishingFraction = vanishingFraction,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().animatingFrameRate(!reduceMotion && resumed),
             )
 
             // The seat the remote's poster grows out of when the first frame lands: empty,

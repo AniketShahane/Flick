@@ -63,9 +63,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -99,9 +99,6 @@ import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkStall
 import com.flick.sender.net.LinkVerdict
 import com.flick.sender.ui.Format
-import com.flick.sender.ui.displayName
-import com.flick.sender.ui.nextRotation
-import com.flick.sender.ui.rotationLabelRes
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
 import com.flick.sender.ui.components.CastPosterKey
@@ -115,6 +112,10 @@ import com.flick.sender.ui.components.flickSharedFrame
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.components.revealOrigin
+import com.flick.sender.ui.displayName
+import com.flick.sender.ui.motion.ambientFrameRate
+import com.flick.sender.ui.nextRotation
+import com.flick.sender.ui.rotationLabelRes
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
@@ -388,6 +389,7 @@ private fun BoxScope.AmbientGlow() {
             .align(Alignment.TopCenter)
             .offset(y = (-80).dp)
             .size(width = 360.dp, height = 250.dp)
+            .ambientFrameRate()
             .graphicsLayer {
                 // One drawing instruction lives in this layer — the gradient below — so
                 // modulating its alpha per op is pixel-identical to compositing it through

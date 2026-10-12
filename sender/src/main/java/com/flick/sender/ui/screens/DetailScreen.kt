@@ -1,7 +1,6 @@
 package com.flick.sender.ui.screens
 
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibilityScope
@@ -53,11 +52,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -79,6 +78,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.flick.sender.R
 import com.flick.sender.media.FilmArt
+import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.media.PlaybackProgressState
 import com.flick.sender.model.HdrType
@@ -88,18 +88,25 @@ import com.flick.sender.net.DecoderFaultCode
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkCapacityPolicy
 import com.flick.sender.net.PreCastLinkAdvisory
-import com.flick.sender.ui.FilmBackdropHero
-import com.flick.sender.ui.FilmPosterBackdrop
+import com.flick.sender.ui.FilmSoftBackdrop
 import com.flick.sender.ui.FilmTitleLogo
 import com.flick.sender.ui.Format
-import com.flick.sender.ui.displayName
-import com.flick.sender.ui.rememberFilmArt
+import com.flick.sender.ui.SoftBackdropRadiusPx
+import com.flick.sender.ui.SoftBackdropWidthPx
+import com.flick.sender.ui.components.CardFlipMotion
+import com.flick.sender.ui.components.CardFlipSeat
 import com.flick.sender.ui.components.FlickPad
 import com.flick.sender.ui.components.FlickPadMotion
-import com.flick.sender.ui.components.flickSharedFrame
-import com.flick.sender.ui.components.posterKey
+import com.flick.sender.ui.components.TileFace
+import com.flick.sender.ui.components.cardFlipKey
+import com.flick.sender.ui.components.fadeUp
+import com.flick.sender.ui.components.rememberCardFlipTracks
 import com.flick.sender.ui.components.rememberDetailVideoFrameRequest
+import com.flick.sender.ui.components.rememberSoftFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
+import com.flick.sender.ui.displayName
+import com.flick.sender.ui.rememberFilmArt
+import com.flick.sender.ui.softBackdropHeightPx
 import com.flick.sender.ui.theme.CinemaDeep
 import com.flick.sender.ui.theme.CinemaDisc
 import com.flick.sender.ui.theme.CinemaDiscEdge
@@ -116,6 +123,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
+import com.flick.sender.ui.theme.rememberReduceMotion
 
 /**
  * S4 — detail / "cast this". A dark cinema page in every palette: the film's backdrop, blurred
@@ -123,7 +131,9 @@ import com.flick.sender.ui.theme.pressScale
  * poster is the page's only send; there is no button. Back routes through
  * [FlickController.back], so the shell's own BackHandler stays the only one on this route.
  *
- * The backdrop is not a new image — it is the tile the user just tapped, expanded.
+ * The poster is the tile the user just tapped, turned over (see [FlipCard]): the card flies
+ * from the grid into its seat while the page fades up around it, and [cardFlip] is the shell's
+ * word that this route pair is that one. On any other pair the page is simply there.
  */
 @Composable
 fun DetailScreen(
@@ -131,6 +141,7 @@ fun DetailScreen(
     item: MediaItem,
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
+    cardFlip: Boolean = false,
 ) {
     val context = LocalContext.current
     val connectedTv by controller.connectedTv.collectAsState()
@@ -140,10 +151,9 @@ fun DetailScreen(
     val selectedSubtitle by controller.selectedSubtitle.collectAsState()
     val subtitleOwnerKey by controller.subtitleOwnerKey.collectAsState()
     val imageLoader = rememberVideoImageLoader()
-    val rise = rememberSheetRise()
-    // Geometry and opacity on separate clocks: the spatial spring overshoots by design, and
-    // copy whose transparency rang with it would flicker over the backdrop on the way in.
-    val fade = rememberSheetFade()
+    val reduceMotion = rememberReduceMotion()
+    val tracks = animatedScope?.let { rememberCardFlipTracks(it.transition, cardFlip) }
+    val page = { (tracks?.page?.value ?: 1f).coerceIn(0f, 1f) }
     val displayName = item.displayName()
     val tvName = connectedTv?.name ?: stringResource(R.string.np_tv_generic)
     val castDescription = stringResource(R.string.a11y_cast_video, displayName, tvName)
@@ -209,17 +219,35 @@ fun DetailScreen(
         Unit
     }
     val onFlick = { controller.flickToTv(item) }
+    val seat = if (sharedScope != null && animatedScope != null && tracks != null && !reduceMotion) {
+        CardFlipSeat(sharedScope, animatedScope, cardFlipKey(item.id), tracks) {
+            if (cardFlip) {
+                TileFace(
+                    item = item,
+                    filmArt = art,
+                    imageLoader = imageLoader,
+                    unplayable = refusal != null,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    } else {
+        null
+    }
 
-    // Measured, so the poster takes exactly the height the rest of the page leaves it.
-    var identityPx by remember { mutableIntStateOf(0) }
-    var padChromePx by remember { mutableIntStateOf(0) }
+    // Measured, so the poster takes exactly the height the rest of the page leaves it. Seeded
+    // from the last page measured rather than from an estimate: the card is already flying to
+    // the seat on the first frame, and a seat that moves a frame later bends its path.
+    var identityPx by remember { mutableIntStateOf(MeasuredSeat.identityPx) }
+    var padChromePx by remember { mutableIntStateOf(MeasuredSeat.padChromePx) }
     var noticePx by remember { mutableIntStateOf(0) }
 
     FlickCinematicTheme {
         val density = LocalDensity.current
         val bars = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        BoxWithConstraints(Modifier.fillMaxSize().background(CinemaDeep)) {
+        BoxWithConstraints(Modifier.fillMaxSize().drawBehind { drawRect(CinemaDeep, alpha = page()) }) {
             val viewport = maxHeight
             val wide = maxWidth > maxHeight
             val compact = viewport < CompactHeight
@@ -246,34 +274,36 @@ fun DetailScreen(
             val posterWidth = posterHeight / FlickPadMotion.PosterAspect
             val posterHeightPx = with(density) { posterHeight.roundToPx() }
 
-            // In place rather than in the shared overlay: the page has to stay above the
-            // frame while both are arriving. Aligned to the top, where a backdrop keeps its
-            // subject; blurred where the platform can, so it is mood rather than content.
-            val backdropModifier = Modifier
-                .flickSharedFrame(
-                    sharedScope = sharedScope,
-                    animatedScope = animatedScope,
-                    key = posterKey(item.id),
-                    renderInOverlay = false,
-                )
-                .fillMaxSize()
-                .then(if (BackdropBlurs) Modifier.blur(BackdropBlur) else Modifier)
+            // Blurred once into a small bitmap rather than live: a full-screen blur re-runs on
+            // every frame the page is drawn, and the page's entrance is nothing but frames.
+            // Top-aligned, where a backdrop keeps its subject.
+            val viewportAspect = maxHeight / maxWidth
+            val backdropModifier = Modifier.fillMaxSize().graphicsLayer { alpha = page() }
             val backdropPath = art?.backdrop
             when {
-                backdropPath != null -> FilmBackdropHero(
-                    backdropPath = backdropPath,
+                backdropPath != null -> FilmSoftBackdrop(
+                    path = backdropPath,
+                    width = FilmPosterPolicy.BACKDROP_WIDTH,
                     imageLoader = imageLoader,
-                    alignment = Alignment.TopCenter,
+                    viewportAspect = viewportAspect,
                     modifier = backdropModifier,
                 )
-                posterPath != null -> FilmPosterBackdrop(
-                    posterPath = posterPath,
+                posterPath != null -> FilmSoftBackdrop(
+                    path = posterPath,
+                    width = FilmPosterPolicy.TILE_WIDTH,
                     imageLoader = imageLoader,
-                    alignment = Alignment.TopCenter,
+                    viewportAspect = viewportAspect,
                     modifier = backdropModifier,
                 )
                 else -> AsyncImage(
-                    model = request,
+                    model = rememberSoftFrameRequest(
+                        item = item,
+                        imageLoader = imageLoader,
+                        boxWidthPx = SoftBackdropWidthPx,
+                        boxHeightPx = softBackdropHeightPx(viewportAspect),
+                        radiusPx = SoftBackdropRadiusPx,
+                        biasY = 0f,
+                    ),
                     contentDescription = null,
                     imageLoader = imageLoader,
                     contentScale = ContentScale.Crop,
@@ -281,14 +311,13 @@ fun DetailScreen(
                     modifier = backdropModifier,
                 )
             }
-            // Not part of the shared frame, so the frame flies under one constant wash. It
-            // deepens as the page scrolls, so copy carried up never stands on bright art.
+            // It deepens as the page scrolls, so copy carried up never stands on bright art.
             Box(
                 Modifier
                     .fillMaxSize()
                     .drawBehind {
                         val lift = (pageScroll.value / ScrimLiftDistance.toPx()).coerceIn(0f, 1f)
-                        drawRect(cinemaScrim(lift))
+                        drawRect(cinemaScrim(lift), alpha = page())
                     },
             )
 
@@ -307,18 +336,35 @@ fun DetailScreen(
                     posterWidth = posterWidth,
                     chevronGap = chevronGap,
                     captionGap = captionGap,
+                    seat = seat,
+                    // The throw waits for the card to land: until then the seat is not where
+                    // the finger is.
+                    throwReady = sharedScope?.isTransitionActive != true,
+                    glowIn = { tracks?.glow?.value ?: 1f },
+                    chevronsIn = { tracks?.chevrons?.value ?: 1f },
+                    captionIn = { tracks?.caption?.value ?: 1f },
                     modifier = Modifier
                         .padding(vertical = heroGap)
-                        .onSizeChanged { padChromePx = (it.height - posterHeightPx).coerceAtLeast(0) },
+                        .onSizeChanged {
+                            padChromePx = (it.height - posterHeightPx).coerceAtLeast(0)
+                            MeasuredSeat.padChromePx = padChromePx
+                        },
                 )
             }
             val identityBlock: @Composable () -> Unit = {
                 // Its dark disc, not its touch target, lines up with the gutter.
-                Column(Modifier.fillMaxWidth().onSizeChanged { identityPx = it.height }) {
+                Column(
+                    Modifier.fillMaxWidth().onSizeChanged {
+                        identityPx = it.height
+                        MeasuredSeat.identityPx = it.height
+                    },
+                ) {
                     BackDisc(
                         description = backDescription,
                         onClick = { controller.back() },
-                        modifier = Modifier.offset(x = -(BackTouchSize - BackDiscSize) / 2),
+                        modifier = Modifier
+                            .offset(x = -(BackTouchSize - BackDiscSize) / 2)
+                            .fadeUp({ tracks?.disc?.value ?: 1f }, CardFlipMotion.RiseDistance),
                     )
                     Spacer(Modifier.height(4.dp))
                     DetailIdentity(
@@ -328,6 +374,9 @@ fun DetailScreen(
                         hdr = hdr,
                         subtitle = subtitle?.let { it.displayName to it.language },
                         imageLoader = imageLoader,
+                        logoIn = { tracks?.logo?.value ?: 1f },
+                        metaIn = { tracks?.meta?.value ?: 1f },
+                        chipsIn = { tracks?.chips?.value ?: 1f },
                     )
                 }
             }
@@ -338,6 +387,7 @@ fun DetailScreen(
                     castEnabled = castEnabled,
                     onSwitchNetwork = onSwitchNetwork,
                     onCastAnyway = onFlick,
+                    modifier = Modifier.fadeUp({ tracks?.caption?.value ?: 1f }, CardFlipMotion.CaptionRiseDistance),
                 )
             }
 
@@ -345,7 +395,6 @@ fun DetailScreen(
                 Row(
                     Modifier
                         .fillMaxSize()
-                        .sheetRiseTransform(rise, fade)
                         .statusBarsPadding()
                         .navigationBarsPadding()
                         .padding(horizontal = PageGutter),
@@ -379,7 +428,6 @@ fun DetailScreen(
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .sheetRiseTransform(rise, fade)
                         .verticalScroll(pageScroll)
                         // A minimum rather than a weight: inside a scroll there is no height
                         // to share out, and SpaceBetween over this centres the pad in
@@ -404,9 +452,8 @@ fun DetailScreen(
 
 /**
  * Darker than a poster page usually dares, top to bottom: the backdrop is atmosphere here,
- * and every line of copy, the back disc and the chevrons stand on it. Without blur (before
- * Android 12) the sharp image underneath gets a heavier wash. [lift] is how far the page has
- * scrolled toward [ScrimLiftDistance].
+ * and every line of copy, the back disc and the chevrons stand on it. [lift] is how far the
+ * page has scrolled toward [ScrimLiftDistance].
  */
 private fun cinemaScrim(lift: Float): Brush = Brush.verticalGradient(
     0f to CinemaDeep.copy(alpha = lerp(ScrimHead, ScrolledScrimAlpha, lift)),
@@ -415,11 +462,10 @@ private fun cinemaScrim(lift: Float): Brush = Brush.verticalGradient(
     1f to CinemaDeep,
 )
 
-// Modifier.blur draws nothing before Android 12.
-private val BackdropBlurs = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-private val BackdropBlur = 24.dp
-private val ScrimHead = if (BackdropBlurs) 0.6f else 0.76f
-private val ScrimBand = if (BackdropBlurs) 0.7f else 0.84f
+// The backdrop is blurred on every API level now, so the wash no longer has to stand in for
+// a blur the platform could not draw.
+private const val ScrimHead = 0.6f
+private const val ScrimBand = 0.7f
 private const val ScrimFoot = 0.92f
 // White and the dim ink both clear 4.5:1 over a white backdrop under this much CinemaDeep.
 private const val ScrolledScrimAlpha = 0.95f
@@ -444,6 +490,12 @@ private val CompactHeight = 700.dp
 // values replace them a frame later.
 private val IdentityEstimate = 230.dp
 private val PadChromeEstimate = 92.dp
+
+/** The last page's measured blocks, for the next page's first frame. */
+private object MeasuredSeat {
+    var identityPx = 0
+    var padChromePx = 0
+}
 
 /** Exactly 2:3 at every size; the corner is 8% of whatever width this gives. */
 private val PosterMinHeight = 140.dp
@@ -502,10 +554,18 @@ private fun DetailIdentity(
     hdr: HdrType?,
     subtitle: Pair<String, String?>?,
     imageLoader: ImageLoader,
+    logoIn: () -> Float,
+    metaIn: () -> Float,
+    chipsIn: () -> Float,
 ) {
     val colors = LocalFlickColors.current
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        DetailTitle(logoPath = art?.logo, title = title, imageLoader = imageLoader)
+        DetailTitle(
+            logoPath = art?.logo,
+            title = title,
+            imageLoader = imageLoader,
+            modifier = Modifier.fadeUp(logoIn, CardFlipMotion.RiseDistance),
+        )
         Spacer(Modifier.height(10.dp))
         Text(
             text = detailMeta(item),
@@ -513,12 +573,13 @@ private fun DetailIdentity(
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fadeUp(metaIn, CardFlipMotion.RiseDistance),
         )
         Spacer(Modifier.height(14.dp))
         // Source-fact chips reflow on narrow or large-font windows instead of
         // competing for one fixed row and clipping the resolution or file size.
         FlowRow(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().fadeUp(chipsIn, CardFlipMotion.RiseDistance),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -533,7 +594,11 @@ private fun DetailIdentity(
         // flick. Not a chip — those are the three the phone reads off the file itself.
         if (subtitle != null) {
             Spacer(Modifier.height(12.dp))
-            AttachedSubtitleRow(subtitle.first, subtitle.second)
+            AttachedSubtitleRow(
+                displayName = subtitle.first,
+                language = subtitle.second,
+                modifier = Modifier.fadeUp(chipsIn, CardFlipMotion.RiseDistance),
+            )
         }
     }
 }
@@ -544,11 +609,16 @@ private fun DetailIdentity(
  * height, so the facts below do not jump when it lands.
  */
 @Composable
-private fun DetailTitle(logoPath: String?, title: String, imageLoader: ImageLoader) {
+private fun DetailTitle(
+    logoPath: String?,
+    title: String,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+) {
     var logoFailed by remember(logoPath) { mutableStateOf(false) }
     if (logoPath != null && !logoFailed) {
         Box(
-            Modifier.fillMaxWidth().height(LogoMaxHeight),
+            modifier.fillMaxWidth().height(LogoMaxHeight),
             contentAlignment = Alignment.Center,
         ) {
             FilmTitleLogo(
@@ -568,7 +638,7 @@ private fun DetailTitle(logoPath: String?, title: String, imageLoader: ImageLoad
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.semantics { heading() },
+            modifier = modifier.semantics { heading() },
         )
     }
 }
@@ -591,12 +661,12 @@ private fun DetailTitle(logoPath: String?, title: String, imageLoader: ImageLoad
  * shows. Neither is ever logged — a subtitle name names the film and the user's storage.
  */
 @Composable
-private fun AttachedSubtitleRow(displayName: String, language: String?) {
+private fun AttachedSubtitleRow(displayName: String, language: String?, modifier: Modifier = Modifier) {
     val colors = LocalFlickColors.current
     val label = languageLabel(language) ?: displayName
     val spoken = stringResource(R.string.a11y_detail_subtitle, label)
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .semantics(mergeDescendants = true) { contentDescription = spoken },
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
