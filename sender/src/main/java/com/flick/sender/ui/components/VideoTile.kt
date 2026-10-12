@@ -111,6 +111,7 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 import com.flick.sender.ui.warmFilmPoster
 import com.flick.sender.ui.warmTilePoster
+import kotlinx.coroutines.Dispatchers
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -135,6 +136,10 @@ fun videoImageLoader(context: Context): ImageLoader {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }
             .crossfade(true)
+            // Two at a time: a fling or a flip asks for a dozen decodes at once, and an
+            // unbounded fan-out spends the frame's CPU on lock contention and garbage.
+            .decoderDispatcher(ArtDecodeDispatcher)
+            .transformationDispatcher(ArtDecodeDispatcher)
             // An absolute ceiling keeps a large-heap phone from turning a proportional
             // default into an oversized gallery cache. The proportional half still lets
             // the platform's low-memory verdict shrink it further.
@@ -148,9 +153,16 @@ fun videoImageLoader(context: Context): ImageLoader {
     }
 }
 
+private val ArtDecodeDispatcher = Dispatchers.IO.limitedParallelism(2)
+
 /**
- * The smaller of a conservative heap share and a hard byte ceiling. Low-RAM devices get
- * both a smaller share and a smaller ceiling.
+ * The smaller of a heap share and a hard byte ceiling. Low-RAM devices get both a smaller
+ * share and a smaller ceiling.
+ *
+ * Sized to hold a screen of tiles AND the detail page opened over them (its poster at the
+ * seat's size, the blurred ground, the logo, the hero frame): any less and every open evicted
+ * the grid it closes back onto, and every close and scroll decoded it again. The share is
+ * Coil's own default; the art among it is hardware bitmaps, counted here but not Java heap.
  */
 private fun frameCacheBudgetBytes(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -169,9 +181,9 @@ internal fun frameCacheBudgetBytes(memoryClassMb: Int, lowRam: Boolean): Int {
 
 private const val BytesPerMiB = 1_048_576L
 private const val DefaultMemoryClassMb = 96
-private const val FrameBudgetDivisor = 8L
+private const val FrameBudgetDivisor = 4L
 private const val LowRamBudgetDivisor = 12L
-private const val FrameCacheCapBytes = 16 * 1_048_576
+private const val FrameCacheCapBytes = 48 * 1_048_576
 private const val LowRamFrameCacheCapBytes = 8 * 1_048_576
 
 // Library and Detail ask at their own sizes; the cast surfaces take the larger box because
