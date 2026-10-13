@@ -445,6 +445,10 @@ private class HeadlineLatch {
  * [expandAtPictureUp] false lets the Flick card leave with its copy at the first frame
  * instead of taking the screen once the resync wait ends. The stage tests use it to read
  * the veil's lift, which the expanded card covers.
+ *
+ * [awaitOnScreen] returns once the window is really on screen; the card's flight waits
+ * for it, so a cast that summons the app from the background flies the card after the
+ * system's open animation rather than under it.
  */
 @Composable
 internal fun HouseLights(
@@ -466,6 +470,7 @@ internal fun HouseLights(
     freshRate: () -> Float = { requestedRefreshRate },
     pinnedRate: () -> Float = { requestedRefreshRate },
     now: () -> Long = SystemClock::uptimeMillis,
+    awaitOnScreen: suspend () -> Unit = {},
 ) {
     val reduced = LocalReducedMotion.current
     val memory = remember { HouseMemory() }
@@ -492,6 +497,7 @@ internal fun HouseLights(
     val lightsDownNow by rememberUpdatedState(onLightsDown)
     val pictureUpNow by rememberUpdatedState(onPictureUp)
     val pictureSettledNow by rememberUpdatedState(onPictureSettled)
+    val awaitOnScreenNow by rememberUpdatedState(awaitOnScreen)
     val stateSpec by rememberUpdatedState(FlickMotion.stateEffects<Float>())
     val fastSpec by rememberUpdatedState(FlickMotion.fastStateEffects<Float>())
     val panelSpec by rememberUpdatedState(FlickMotion.panelSpatial<Float>())
@@ -512,6 +518,10 @@ internal fun HouseLights(
             card.flight = cardScope.launch {
                 // The keyframes pin their start, so a flight only ever runs from 0.
                 card.arrive.snapTo(0f)
+                val waitStart = now()
+                awaitOnScreenNow()
+                val waitedMs = now() - waitStart
+                if (waitedMs > 0L) FlickLog.i("stage", "card flight waited for window waitedMs=$waitedMs")
                 // The card's time starts on the flight's first drawn frame: the main thread
                 // can be held between the cue and that frame (the previous player's release
                 // runs there), and time spent before it was never on screen.
