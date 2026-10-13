@@ -125,7 +125,8 @@ one; back has no delays at all.
   display lists and all be re-recorded in the close's first frame), hidden from TalkBack and focus, and takes no touches. Each end
   of the flip's bounds is switched off while it rests, so every leg matches from where the tile
   and the seat are now, not where the last leg left them. A stack left with its page up (for
-  the cast, or the Connect tab) is a new entry if it comes back, and arrives without a flip.
+  the cast, or the Connect tab) arrives back without a flip: once its exit is over its page is
+  closed unseen, and only one asked back while that exit still runs is replaced by a new entry.
 - **Chrome.** The nav and dock wait below the window while the card comes back and are released
   when 12% of the travel is left, so their rise overlaps the card's last settle (at most 560 ms
   if no card is flying).
