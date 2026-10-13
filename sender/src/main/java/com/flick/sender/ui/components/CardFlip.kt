@@ -207,6 +207,17 @@ internal fun flipFaceHome(offset: Offset, size: IntSize, slot: IntSize): Boolean
  */
 internal fun flipSeatFitsFace(seat: IntSize?, face: IntSize?): Boolean = seat != null && seat == face
 
+/**
+ * Which tile has taken the card over, after [key]'s tile composes with the card [landed] or not.
+ * Composed landed is the only proof its face has left the overlay: that switch is a composition
+ * parameter and takes a frame longer than the landing, which the draw phase sees at once.
+ */
+internal fun flipHandedOff(current: String?, key: String, landed: Boolean): String? = when {
+    landed -> key
+    current == key -> null
+    else -> current
+}
+
 private const val FaceHomeWithinPx = 0.5f
 
 /** Whether every track of a pose is at rest at one end — a leg starting here starts fresh. */
@@ -299,16 +310,16 @@ internal class FlipEndConfig(
 
 /**
  * Hides the tile's own copy while the seat is drawing the card in its place, and shows it
- * again the moment the card lands — not when the route transition ends, which is as long as
- * the slowest of the page's tracks and would hold a badge-less copy over the tile for it.
+ * again the moment the card is handed back — not when the route transition ends, which is as
+ * long as the slowest of the page's tracks and would hold a badge-less copy over the tile for it.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 internal fun Modifier.hideWhileFlipping(
     sharedScope: SharedTransitionScope,
     state: SharedTransitionScope.SharedContentState,
-    landed: () -> Boolean,
+    handedBack: () -> Boolean,
 ): Modifier = graphicsLayer {
-    alpha = if (state.isMatchFound && sharedScope.isTransitionActive && !landed()) 0f else 1f
+    alpha = if (state.isMatchFound && sharedScope.isTransitionActive && !handedBack()) 0f else 1f
 }
 
 /**
@@ -324,6 +335,7 @@ internal class CardFlipHandoff {
     private var tileFace: IntSize = IntSize.Zero
     private var tileMarks by mutableStateOf<TileMarks?>(null)
     private var homeFace by mutableStateOf<String?>(null)
+    private var handedOff by mutableStateOf<String?>(null)
     // Plain: written at placement, and only the verdict they make is read anywhere.
     private var faceAtRest = false
     private var faceSize: IntSize? = null
@@ -352,6 +364,7 @@ internal class CardFlipHandoff {
         faceSize = null
         seatSize = null
         homeFace = null
+        handedOff = null
     }
 
     /** Written at the tap, before the route changes, so the page's first composition has it. */
@@ -398,6 +411,20 @@ internal class CardFlipHandoff {
      * size, so the copy that takes over shows the pixels the card did. Snapshot state.
      */
     fun faceHome(key: String): Boolean = homeFace == key
+
+    /** Written from [key]'s tile after each composition, with the landing that composition read. */
+    fun reportComposed(key: String, landed: Boolean) {
+        if (flight?.key != key) return
+        handedOff = flipHandedOff(handedOff, key, landed)
+    }
+
+    /**
+     * Whether [key]'s card is down AND its tile has composed out of the overlay since, so the
+     * seat may stop drawing it. The landing alone is a frame early: on it the tile's face is
+     * still in the overlay, over its own marks. Snapshot state: read it in a layer.
+     */
+    fun handedBack(key: String): Boolean =
+        handedOff == key && flightFor(key)?.landed == true
 
     fun tileFaceFor(key: String): IntSize? =
         tileFace.takeIf { tileKey == key && it.width > 0 && it.height > 0 }
@@ -606,8 +633,8 @@ internal class CardFlipSeat(
  * vertical axis. The faces swap where the card is edge-on, and the back is turned a further
  * half-turn so it reads the right way round. With no match — this page opened from anywhere
  * but the grid, or a grid that no longer holds the tile — the card stays seated, poster up,
- * and only fades with the page. Coming back, it stops drawing the frame it lands: from then
- * on the tile, badges and all, is the card.
+ * and only fades with the page. Coming back, it stops drawing once it has landed and the tile
+ * has composed out of the overlay: from then on the tile, badges and all, is the card.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -668,7 +695,7 @@ internal fun FlipCard(
                 scaleY = scale
                 rotationZ = CardFlipMotion.TiltDegrees * sin(PI.toFloat() * turn())
                 alpha = when {
-                    flying && flight.landed -> 0f
+                    flying && handoff.handedBack(flight.key) -> 0f
                     flying -> 1f
                     else -> tracks.page.value.coerceIn(0f, 1f)
                 }

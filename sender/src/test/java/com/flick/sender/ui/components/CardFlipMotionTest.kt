@@ -158,6 +158,14 @@ class CardFlipMotionTest {
         assertFalse(flipFaceHome(Offset.Zero, IntSize(412, 236), slot))
     }
 
+    @Test fun theTileTakesTheCardOverOnlyOnceItHasComposedLanded() {
+        assertEquals("a", flipHandedOff(null, "a", landed = true))
+        assertEquals(null, flipHandedOff(null, "a", landed = false))
+        assertEquals(null, flipHandedOff("a", "a", landed = false))
+        // Another tile's composition never takes over or clears the one that holds the card.
+        assertEquals("a", flipHandedOff("a", "b", landed = false))
+    }
+
     private fun FlipTrack.legMs(): Long =
         TargetBasedAnimation(springSpec(), Float.VectorConverter, 1f, 0f).durationNanos / 1_000_000
 

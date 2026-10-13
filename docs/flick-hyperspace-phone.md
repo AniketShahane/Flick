@@ -121,8 +121,15 @@ one; back has no delays at all.
   per shared-transition activation, not per leg: a Back pressed before the open has settled, or
   any flight turned round mid-way, keeps both ends on the spring the activation started with, so
   they still follow one path. A seat left on the open spring while the tile's end took the back
-  one overshot the tile by a few pixels and snapped back at the hand-off. On that frame the seat stops drawing and the
-  tile's own copy shows; neither waits for the route transition to end, which runs as long as
+  one overshot the tile by a few pixels and snapped back at the hand-off. The hand-off itself is
+  two-step: the landing is seen in the draw phase on the frame it happens, but taking the tile's
+  face out of the overlay (`renderInOverlayDuringTransition`) is a composition parameter and only
+  takes effect when the tile next composes. Swapping on the landing frame drew the tile's face
+  in the overlay, over its own in-place marks, for one frame (badges and running time missing,
+  face a pixel off). So the tile reports each composition's landing (`reportComposed`), and the
+  seat stops drawing, and the tile's face and marks show, only once it is landed AND the tile
+  has composed landed (`handedBack`); for that one extra frame the seat covers the tile with
+  identical pixels. Neither waits for the route transition to end, which runs as long as
   the slowest page track. Ending that transition stops the shared bounds wherever they are and
   places both ends at their targets, and the bounds start a frame or two after the travel: with
   the travel the slowest back track, they were still 1–2 px short when it ended and stepped home
