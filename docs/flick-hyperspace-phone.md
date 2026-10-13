@@ -103,6 +103,7 @@ one; back has no delays at all.
 | Glow and shadow under the seated card — grow from 0.7 × and fade in; also × smoothstep over the last 15% of the travel, so back they are gone by 15% of the way | 380 ms, 1, 300 | 0 ms, 1, 1100 |
 | Chevrons — rise 14 dp | 460 ms, 1, 500 | 0 ms, 1, 1400 |
 | Caption, note and notice card — rise 18 dp | 480 ms, 1, 500 | 0 ms, 1, 1400 |
+| Settle — drives nothing; holds the stack transition open until the bounds have arrived on their own spring (see below) | 0 ms, 1, 360 | 0 ms, 1, 360 |
 
 - **Landing and hand-back.** Coming back, the card is down when the travel and the turn as drawn
   are both within 0.003 of home (a pixel or two, and half a degree); the turn home is as stiff
@@ -122,7 +123,12 @@ one; back has no delays at all.
   they still follow one path. A seat left on the open spring while the tile's end took the back
   one overshot the tile by a few pixels and snapped back at the hand-off. On that frame the seat stops drawing and the
   tile's own copy shows; neither waits for the route transition to end, which runs as long as
-  the slowest page track. The seat is a card in flight only while a shared transition is
+  the slowest page track. Ending that transition stops the shared bounds wherever they are and
+  places both ends at their targets, and the bounds start a frame or two after the travel: with
+  the travel the slowest back track, they were still 1–2 px short when it ended and stepped home
+  (the hand-back then followed the step). So back carries a softer settle track that nothing
+  reads, ending ~80 ms after the travel, and the bounds close their last pixels on their own
+  spring before the transition ends. The seat is a card in flight only while a shared transition is
   active; otherwise it is the seated poster, fading with the page.
 - **The slot's marks.** The tile's badges, running time and watched line (`TileMarkings`) ride on
   the card's front face while it flies, so they take its bounds, lift, turn and corner exactly:

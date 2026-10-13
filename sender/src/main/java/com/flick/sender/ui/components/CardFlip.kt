@@ -100,12 +100,20 @@ internal object CardFlipMotion {
     val PageBack = FlipTrack(0, 1f, 620f)
     val ChromeBack = FlipTrack(0, 1f, 1400f)
     val GlowBack = FlipTrack(0, 1f, 1100f)
+    /**
+     * Read by nothing. The stack transition ends when its slowest track does, and ending it stops
+     * the shared bounds wherever they are and places both ends at their targets; the bounds start
+     * a frame or two after the travel, so with the travel the slowest they were still a pixel or
+     * two short and stepped home. Softer than [MoveBack], this keeps the transition running until
+     * they arrive on their own spring. Open, it ends well inside the page's own tail.
+     */
+    val SettleBack = FlipTrack(0, 1f, 360f)
 
     val OpenTracks = listOf(
         LiftOpen, MoveOpen, FlipOpen, PageOpen, DiscOpen, LogoOpen, MetaOpen, ChipsOpen, GlowOpen,
         ChevronsOpen, CaptionOpen,
     )
-    val BackTracks = listOf(LiftBack, MoveBack, FlipBack, PageBack, ChromeBack, GlowBack)
+    val BackTracks = listOf(LiftBack, MoveBack, FlipBack, PageBack, ChromeBack, GlowBack, SettleBack)
 
     /** How much bigger the card is while it is lifted and has not yet travelled. */
     const val LiftScale = 0.08f
@@ -508,6 +516,8 @@ private fun CardFlipTrackHost(
         tracks.glow = transition.seatTrack(paired, GlowOpen, GlowBack, released, "flip-glow")
         tracks.chevrons = transition.seatTrack(paired, ChevronsOpen, ChromeBack, released, "flip-chevrons")
         tracks.caption = transition.seatTrack(paired, CaptionOpen, ChromeBack, released, "flip-caption")
+        // Not in [CardFlipTracks.all]: a leg that starts while it is still settling starts fresh.
+        transition.seatTrack(paired, SettleBack, SettleBack, released, "flip-settle")
     }
     tracks.all = listOf(
         tracks.lift, tracks.move, tracks.flip, tracks.page, tracks.disc, tracks.logo, tracks.meta,

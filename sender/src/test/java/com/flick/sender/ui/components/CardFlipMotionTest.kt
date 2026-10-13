@@ -1,6 +1,8 @@
 package com.flick.sender.ui.components
 
 import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.TargetBasedAnimation
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.PI
@@ -154,5 +156,20 @@ class CardFlipMotionTest {
         assertFalse(flipFaceHome(Offset(-1f, 0f), slot, slot))
         assertFalse(flipFaceHome(Offset.Zero, IntSize(413, 232), slot))
         assertFalse(flipFaceHome(Offset.Zero, IntSize(412, 236), slot))
+    }
+
+    private fun FlipTrack.legMs(): Long =
+        TargetBasedAnimation(springSpec(), Float.VectorConverter, 1f, 0f).durationNanos / 1_000_000
+
+    @Test fun theBackLegOutlastsTheTravelSoTheBoundsArriveOnTheirOwn() {
+        val move = CardFlipMotion.MoveBack.legMs()
+        val longest = CardFlipMotion.BackTracks.maxOf { it.legMs() }
+        assertEquals(CardFlipMotion.SettleBack.legMs(), longest)
+        // The bounds start a frame or two after the travel and need a few more to close their
+        // last pixels: at least six frames at 120 Hz.
+        assertTrue("move=$move settle=$longest", longest - move >= 50)
+        // Open, it ends inside the page's own tail.
+        val open = CardFlipMotion.OpenTracks.maxOf { it.delayMs + it.legMs() }
+        assertTrue(CardFlipMotion.SettleBack.legMs() < open)
     }
 }
