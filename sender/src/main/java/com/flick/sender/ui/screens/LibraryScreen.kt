@@ -360,6 +360,7 @@ internal fun LibraryScreen(
             showSupportInvitation = supportInvitationVisible,
             onOpenSupport = onOpenSupport,
             onDismissSupportInvitation = controller::dismissSupportInvitation,
+            hidden = hidden,
         )
         return
     }
@@ -1734,6 +1735,7 @@ private fun EmptyState(
     showSupportInvitation: Boolean,
     onOpenSupport: () -> Unit,
     onDismissSupportInvitation: () -> Unit,
+    hidden: () -> Boolean,
 ) {
     val colors = LocalFlickColors.current
     val blocked = face == LibraryEmptyFace.NO_ACCESS && mediaPermission == MediaPermissionState.BLOCKED
@@ -1795,6 +1797,7 @@ private fun EmptyState(
             castingItem = castingItem,
             signal = signal,
             wifiLinkUp = wifiLinkUp,
+            hidden = hidden,
         )
         if (showSupportInvitation) {
             Spacer(Modifier.height(13.dp))
