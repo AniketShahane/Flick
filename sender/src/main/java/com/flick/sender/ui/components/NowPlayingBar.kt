@@ -487,7 +487,8 @@ private fun DockBar(
                 backdropEffect = backdropEffect,
                 edges = { dockEdges(p()) },
             )
-            .clip(shape),
+            .clip(shape)
+            .holdsTouches(),
     ) {
         // A layer of its own so the clock that moves it can ask for no more frames than a
         // 3 dp line needs, whatever the bar around it is doing.
