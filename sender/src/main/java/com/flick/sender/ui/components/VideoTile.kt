@@ -58,7 +58,9 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -656,11 +658,12 @@ fun VideoTile(
         derivedStateOf { handoff.flightFor(flipKey)?.landed == true }
     }
     val landed: () -> Boolean = { landedState.value }
+    val handedBack: () -> Boolean = { handoff.handedBack(flipKey) }
     // The card carries the marks while it is away from the slot, so the slot's own copy goes
     // and comes back with the face's.
     val cardAway: () -> Boolean = {
         flipScopes != null && flipState != null &&
-            flipState.isMatchFound && flipScopes.first.isTransitionActive && !landed()
+            flipState.isMatchFound && flipScopes.first.isTransitionActive && !handedBack()
     }
     // The tile's own colours travel with the marks: the detail page draws the card under its
     // cinematic palette, and the marks must land looking as the tile draws them.
@@ -672,7 +675,12 @@ fun VideoTile(
         colors = colors,
     )
     if (flipScopes != null) {
-        SideEffect { handoff.refreshMarks(flipKey, marks) }
+        // The landing as this composition read it, the one its overlay switch below was built from.
+        val composedLanded = landed()
+        SideEffect {
+            handoff.refreshMarks(flipKey, marks)
+            handoff.reportComposed(flipKey, composedLanded)
+        }
     }
     // Plain, not state: read once, at the tap.
     val faceSize = remember { FaceSize() }
@@ -767,7 +775,18 @@ fun VideoTile(
                             seat = false,
                             renderInOverlay = !landed(),
                         )
-                        .hideWhileFlipping(flipScopes.first, flipState, landed)
+                        .onPlaced { face ->
+                            // Before any coordinates are touched: reading them here makes every
+                            // tile's placement depend on them, and the grid re-place on each scroll.
+                            if (handoff.flightFor(flipKey) == null) return@onPlaced
+                            val slotCoords = face.parentLayoutCoordinates ?: return@onPlaced
+                            handoff.reportFace(
+                                flipKey,
+                                flipFaceHome(face.positionInParent(), face.size, slotCoords.size),
+                                face.size,
+                            )
+                        }
+                        .hideWhileFlipping(flipScopes.first, flipState, handedBack)
                         // Its own corner as well, for any frame it still draws in the overlay,
                         // where the slot's clip does not reach.
                         .graphicsLayer {
