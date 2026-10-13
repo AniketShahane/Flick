@@ -38,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.center
 import androidx.compose.ui.graphics.Brush
@@ -51,6 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -144,6 +146,11 @@ internal fun FlickPad(
     val nudge = remember { Animatable(0f) }
     val hint = remember { Animatable(0f) }
     val presence = remember { Animatable(1f) }
+    // The light-speed streak after a send, 0 to 1 on a linear clock; its curves are applied
+    // in the layer.
+    val streak = remember { Animatable(0f) }
+    // Relative to the window, so the streak clears the top on a tall one too.
+    val streakDistance = LocalConfiguration.current.screenHeightDp * FlickPadMotion.StreakReach
     var touched by remember { mutableStateOf(false) }
     var armed by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
@@ -169,7 +176,6 @@ internal fun FlickPad(
     // would otherwise keep asking the old one.
     val gesture = Modifier.pointerInput(enabled && !sending && throwReady, pageScroll) {
         if (!enabled || sending || !throwReady) return@pointerInput
-        val flyPx = FlickPadMotion.FlyDistanceDp.dp.toPx()
 
         fun settle() {
             armed = false
@@ -258,20 +264,27 @@ internal fun FlickPad(
                         val snap = currentReduceMotion
                         held.snapTo(0f)
                         val flight = launch {
-                            offsetY.animateTo(
-                                offsetY.value - flyPx,
-                                Motion.orSnap(snap, tween(FlickPadMotion.FlyMs, easing = FlickPadMotion.FlyEasing)),
-                            )
+                            streak.animateTo(1f, Motion.orSnap(snap, tween(FlickPadMotion.StreakMs, easing = LinearEasing)))
                         }
+                        // Cut over the streak's last frames: by then it is a sliver of light
+                        // leaving the top of the window.
                         presence.animateTo(
                             0f,
-                            Motion.orSnap(snap, tween(FlickPadMotion.FlyMs, easing = FlickPadMotion.FadeEasing)),
+                            Motion.orSnap(
+                                snap,
+                                tween(
+                                    FlickPadMotion.StreakFadeMs,
+                                    delayMillis = FlickPadMotion.StreakMs - FlickPadMotion.StreakFadeMs,
+                                    easing = LinearEasing,
+                                ),
+                            ),
                         )
                         flight.join()
                         // Still composed after this long means nothing navigated — a CTA
                         // that resolves to pairing, say — so the poster comes back to its
                         // seat instead of leaving an empty one.
                         delay(FlickPadMotion.ReturnDelayMs)
+                        streak.snapTo(0f)
                         offsetX.snapTo(0f)
                         offsetY.snapTo(0f)
                         presence.animateTo(1f, Motion.orSnap(snap, tween(FlickPadMotion.ReturnFadeMs)))
@@ -320,6 +333,7 @@ internal fun FlickPad(
             width = posterWidth,
             seat = seat,
             glowIn = glowIn,
+            glare = { FlickPadMotion.StreakGlare * FlickPadMotion.StreakEasing.transform(streak.value) },
             // Outside the layer, so the hit area stays at the seat while the poster moves;
             // inside it the finger's own deltas would shrink as the poster followed them.
             modifier = gesture
@@ -327,12 +341,16 @@ internal fun FlickPad(
                 .graphicsLayer {
                     val liftPx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value +
                         FlickPadMotion.HintDp.dp.toPx() * hint.value
-                    translationX = offsetX.value
-                    translationY = offsetY.value - liftPx
-                    rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density)
+                    // The streak straightens the throw as it goes: the sideways offset and the
+                    // tilt are let go while the card stretches into a line and leaves upward.
+                    val s = streak.value
+                    val e = FlickPadMotion.StreakEasing.transform(s)
+                    translationX = offsetX.value * (1f - s)
+                    translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
+                    rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density) * (1f - s)
                     val scale = lerp(1f, FlickPadMotion.HeldScale, held.value)
-                    scaleX = scale
-                    scaleY = scale
+                    scaleX = scale * lerp(1f, FlickPadMotion.StreakEndScaleX, e)
+                    scaleY = scale * lerp(1f, FlickPadMotion.StreakEndScaleY, e)
                     alpha = presence.value
                     // An offscreen layer would clip the glow and the shadow, which paint outside
                     // the card, for as long as the poster is fading.
@@ -372,7 +390,8 @@ internal fun FlickPad(
  *
  * The glow and the shadow are a layer of their own under the card rather than part of it: the
  * card is what turns over when it flies in from the grid ([seat]), and light cast on the page
- * stays flat on the page. They grow in with [glowIn] once the card is nearly seated.
+ * stays flat on the page. They grow in with [glowIn] once the card is nearly seated. [glare]
+ * washes the art toward white, for the send's streak; read in the draw phase.
  */
 @Composable
 internal fun FlickPosterCard(
@@ -383,6 +402,7 @@ internal fun FlickPosterCard(
     width: Dp = FlickPadMotion.PosterWidthDp.dp,
     seat: CardFlipSeat? = null,
     glowIn: () -> Float = { 1f },
+    glare: () -> Float = { 0f },
 ) {
     val colors = LocalFlickColors.current
     val shape = posterCardShape(width)
@@ -423,7 +443,18 @@ internal fun FlickPosterCard(
                 },
         )
         FlipCard(seat = seat, seatCorner = width * PosterCornerShare, modifier = Modifier.matchParentSize()) {
-            Box(Modifier.fillMaxSize().background(ground)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(ground)
+                    // Over the art, inside the card's clip: the poster burning white as it
+                    // becomes the streak.
+                    .drawWithContent {
+                        drawContent()
+                        val g = glare()
+                        if (g > 0f) drawRect(FlickPadMotion.StreakLight, alpha = g)
+                    },
+            ) {
                 if (posterPath != null) {
                     FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = Modifier.fillMaxSize())
                 } else {
@@ -544,11 +575,20 @@ internal object FlickPadMotion {
     val NudgeRise: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
     val NudgeFall: Easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
 
-    const val FlyMs = 250
-    const val FlyDistanceDp = 640f
-    /** The flick's Release curve: breaks hard, glides long. */
-    val FlyEasing: Easing = CubicBezierEasing(0.12f, 0.62f, 0.24f, 1f)
-    val FadeEasing: Easing = CubicBezierEasing(0.4f, 0f, 1f, 1f)
+    /**
+     * The send as a jump to light speed: the card stretches to a line [StreakEndScaleX] wide
+     * and [StreakEndScaleY] tall, burns toward white and leaves [StreakReach] window heights
+     * up, all on one accelerating curve, and is cut over the last [StreakFadeMs], by when it
+     * is mostly past the top of the window.
+     */
+    const val StreakMs = 200
+    const val StreakFadeMs = 30
+    const val StreakReach = 1.4f
+    const val StreakEndScaleX = 0.12f
+    const val StreakEndScaleY = 3.2f
+    const val StreakGlare = 0.9f
+    val StreakLight = Color(0xFFEAF1FF)
+    val StreakEasing: Easing = CubicBezierEasing(0.32f, 0f, 0.67f, 0f)
     const val ReturnDelayMs = 700L
     const val ReturnFadeMs = 220
 
