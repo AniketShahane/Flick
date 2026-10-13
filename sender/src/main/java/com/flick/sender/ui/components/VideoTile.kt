@@ -90,6 +90,7 @@ import coil.size.Precision
 import com.flick.sender.R
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.ResumeProgress
+import com.flick.sender.media.Still
 import com.flick.sender.media.VideoStills
 import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
@@ -113,6 +114,7 @@ import com.flick.sender.ui.theme.rememberReduceMotion
 import com.flick.sender.ui.warmFilmPoster
 import com.flick.sender.ui.warmTilePoster
 import kotlinx.coroutines.Dispatchers
+import java.io.IOException
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -206,20 +208,25 @@ private const val LibraryFrameHeightPx = 288
  *
  * Returning null hands the request back to Coil's own [VideoFrameDecoder], which decodes
  * the fixed one-third frame the request already names: a file this cannot open at all is
- * drawn exactly as it was before any of this existed.
+ * drawn exactly as it was before any of this existed. A file that decodes only to one
+ * colour fails the request instead, since that decoder would paint the same colour, and the
+ * seat's own ground shows through.
  */
 private object VideoStillFetcher : Fetcher.Factory<Uri> {
     override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher = Fetcher {
         val target = options.thumbnailTargetSize()
-        VideoStills.still(
+        val still = VideoStills.still(
             context = options.context,
             uri = data,
             durationMs = options.parameters.value<Long>(SourceDurationKey) ?: 0L,
             width = target.width,
             height = target.height,
-        )?.let { bitmap ->
-            DrawableResult(
-                drawable = BitmapDrawable(options.context.resources, bitmap),
+        )
+        when (still) {
+            Still.NoPicture -> throw NoPictureException(data)
+            null -> null
+            is Still.Picture -> DrawableResult(
+                drawable = BitmapDrawable(options.context.resources, still.bitmap),
                 // Every request for a key asks the same box, and this is already the best still
                 // that box gets. Marked sampled, any still short of the box on both axes (a
                 // portrait or low-resolution film, a provider thumbnail under the hero's larger
@@ -230,6 +237,8 @@ private object VideoStillFetcher : Fetcher.Factory<Uri> {
         }
     }
 }
+
+private class NoPictureException(uri: Uri) : IOException("only uniform frames decode from $uri")
 
 private fun Options.thumbnailTargetSize(): AndroidSize = AndroidSize(
     (size.width as? Dimension.Pixels)?.px ?: LibraryFrameWidthPx,

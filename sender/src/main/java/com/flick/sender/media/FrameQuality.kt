@@ -47,6 +47,13 @@ internal data class FrameStats(val meanLuma: Int, val spread: Int) {
     val blank: Boolean get() = meanLuma < MinMeanLuma || spread < MinSpread
 
     /**
+     * One colour edge to edge: not even a dark picture, and never a tile's last resort. A
+     * decoder that fails without throwing hands back exactly this — a zeroed buffer reads as
+     * a flat green — and a fade to black or a slate is no more a picture of the film.
+     */
+    val uniform: Boolean get() = spread < MinPictureSpread
+
+    /**
      * Which of two frames to prefer when the whole search came back blank — a film that
      * really is dark throughout still has to put something on its tile.
      *
@@ -139,6 +146,13 @@ internal sealed interface StillVerdict {
     object ProviderThumbnail : StillVerdict
 
     /**
+     * Every frame the search decoded was [FrameStats.uniform]. Remembered so a tile that
+     * keeps binding does not re-run four decodes to reach the same answer; the provider's
+     * thumbnail is still re-read each time, since it is regenerated when the file changes.
+     */
+    object NoPicture : StillVerdict
+
+    /**
      * The search settled at [positionMs]. [passed] separates the two ways it can settle:
      * on a frame that cleared the judgement, or — when nothing in the schedule did — on
      * the best of a bad set.
@@ -202,6 +216,10 @@ private const val MinMeanLuma = 12
 // The flattest a real photograph gets. A gentle sky gradient still clears this several
 // times over; a fade, a slate and a black leader do not clear it at all.
 private const val MinSpread = 6
+
+// Below the floor any real frame clears, dark or not: JPEG noise alone puts a photograph
+// above it, and a single colour sits at zero.
+private const val MinPictureSpread = 2
 
 // Where the brightness credit stops. Well past a dim scene, well below a blown-out one.
 private const val MidtoneLuma = 96

@@ -15,6 +15,18 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
+/** What the still search settled on, when it could read the file at all. */
+internal sealed interface Still {
+    class Picture(val bitmap: Bitmap) : Still
+
+    /**
+     * The file decoded, and every frame of it came back one colour — the tell of a decoder
+     * that failed without saying so. Drawing it would paint the tile that colour, and the
+     * file's own fixed-offset frame would come from that same decoder.
+     */
+    object NoPicture : Still
+}
+
 /**
  * The one place a still is chosen for a local video — the tiles, the detail backdrop, the
  * cast poster and the media notification all end up here, so a film shows the same frame
@@ -67,7 +79,8 @@ internal object VideoStills {
      * only when the frame it settled on stops holding up.
      *
      * Null means every path failed — the caller's cue to fall back to whatever it drew
-     * before this existed.
+     * before this existed. [Still.NoPicture] is the opposite verdict: there is nothing to
+     * fall back to, and the caller draws no frame at all.
      */
     suspend fun still(
         context: Context,
@@ -75,11 +88,13 @@ internal object VideoStills {
         durationMs: Long,
         width: Int,
         height: Int,
-    ): Bitmap? {
+    ): Still? {
         val key = uri.toString()
         val memo = memory.verdict(key)
+        if (memo == StillVerdict.NoPicture) return noPictureAgain(context, uri, key, width, height)
         var provider: Bitmap? = null
         var providerUnread = false
+        var providerUniform = false
         if (memo == null || memo is StillVerdict.ProviderThumbnail) {
             provider = providerThumbnail(context, uri, width, height)
             if (provider == null) {
@@ -93,7 +108,12 @@ internal object VideoStills {
                 // Unjudgeable is not blank: nothing is overruled unseen.
                 if (stats == null || !stats.blank) {
                     memory.remember(key, StillVerdict.ProviderThumbnail)
-                    return provider
+                    return Still.Picture(provider)
+                }
+                if (stats.uniform) {
+                    provider.recycle()
+                    provider = null
+                    providerUniform = true
                 }
             }
         }
@@ -103,11 +123,32 @@ internal object VideoStills {
         val record = !(memo is StillVerdict.ProviderThumbnail && providerUnread)
         val known = memo as? StillVerdict.Searched
         // A blank provider thumbnail is still a picture, so it is held as the last resort
-        // for a file whose every decode fails — and released the moment one succeeds.
-        val chosen = searched(context, uri, key, known, durationMs, width, height, record)
-            ?: return provider
-        provider?.recycle()
-        return chosen
+        // for a file whose every decode fails — and released the moment one succeeds. A
+        // uniform one is not, and was let go above.
+        return when (val chosen = searched(context, uri, key, known, durationMs, width, height, record)) {
+            is Still.Picture -> {
+                provider?.recycle()
+                chosen
+            }
+            Still.NoPicture -> provider?.let(Still::Picture) ?: Still.NoPicture
+            null -> provider?.let(Still::Picture) ?: if (providerUniform) Still.NoPicture else null
+        }
+    }
+
+    /**
+     * A file whose search found only uniform frames. The provider's thumbnail is the one
+     * thing re-read, since it is regenerated when the file is rewritten; the search is not
+     * run again for a decoder that has already shown what it makes of this file.
+     */
+    private suspend fun noPictureAgain(context: Context, uri: Uri, key: String, width: Int, height: Int): Still {
+        val provider = providerThumbnail(context, uri, width, height) ?: return Still.NoPicture
+        val stats = judge(provider)
+        if (stats != null && stats.uniform) {
+            provider.recycle()
+            return Still.NoPicture
+        }
+        if (stats == null || !stats.blank) memory.remember(key, StillVerdict.ProviderThumbnail)
+        return Still.Picture(provider)
     }
 
     /**
@@ -164,7 +205,7 @@ internal object VideoStills {
         width: Int,
         height: Int,
         record: Boolean,
-    ): Bitmap? = withContext(stillDispatcher) {
+    ): Still? = withContext(stillDispatcher) {
         val retriever = runCatching { MediaMetadataRetriever() }.getOrNull()
             ?: return@withContext null
         // Released on the spot when the container will not open: a retriever that threw
@@ -186,7 +227,7 @@ internal object VideoStills {
                     // deliberately, and a film that is dark throughout would otherwise
                     // re-run the whole search on every cache miss, forever.
                     val stats = if (decided.passed) judge(decoded) else null
-                    if (!decided.stale(stats)) return@withContext decoded
+                    if (!decided.stale(stats)) return@withContext Still.Picture(decoded)
                     decoded.recycle()
                 }
                 // A verdict whose frame no longer decodes, or no longer holds up, belongs to
@@ -198,6 +239,7 @@ internal object VideoStills {
             var bestScore = -1
             var bestPositionMs = -1L
             var bestPassed = false
+            var sawUniform = false
             for (positionMs in thumbnailCandidatesMs(sourceDurationMs(retriever, durationMs))) {
                 currentCoroutineContext().ensureActive()
                 val candidate = MediaProbe.decodeStill(retriever, positionMs, width, height) ?: continue
@@ -209,6 +251,11 @@ internal object VideoStills {
                     bestPassed = true
                     break
                 }
+                if (stats.uniform) {
+                    candidate.recycle()
+                    sawUniform = true
+                    continue
+                }
                 if (stats.score > bestScore) {
                     best?.recycle()
                     best = candidate
@@ -218,10 +265,17 @@ internal object VideoStills {
                     candidate.recycle()
                 }
             }
-            if (best != null && record) {
-                memory.remember(key, StillVerdict.Searched(bestPositionMs, bestPassed))
+            when {
+                best != null -> {
+                    if (record) memory.remember(key, StillVerdict.Searched(bestPositionMs, bestPassed))
+                    Still.Picture(best)
+                }
+                sawUniform -> {
+                    if (record) memory.remember(key, StillVerdict.NoPicture)
+                    Still.NoPicture
+                }
+                else -> null
             }
-            best
         } finally {
             runCatching { retriever.release() }
         }
@@ -301,8 +355,8 @@ internal class CastArtwork(val bitmap: Bitmap, val data: ByteArray)
 internal suspend fun castArtwork(context: Context, uri: Uri): CastArtwork? = withContext(Dispatchers.IO) {
     // Zero duration: a start intent carries a URI, a name and a size, and the length is
     // read off the container only if the search actually needs it.
-    val still = VideoStills.still(context, uri, 0L, ARTWORK_SOURCE_BOX_PX, ARTWORK_SOURCE_BOX_PX)
-        ?: return@withContext null
+    val still = (VideoStills.still(context, uri, 0L, ARTWORK_SOURCE_BOX_PX, ARTWORK_SOURCE_BOX_PX) as? Still.Picture)
+        ?.bitmap ?: return@withContext null
     // The still is this function's own — `still` decodes a fresh bitmap per call and memoizes
     // only the position it chose — so once the artwork has been drawn out of it it is nothing's
     // picture but garbage.
