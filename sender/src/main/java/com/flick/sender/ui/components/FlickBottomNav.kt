@@ -103,6 +103,7 @@ internal fun FlickBottomNav(
     hazeState: HazeState,
     onSelect: (NavTab) -> Unit,
     modifier: Modifier = Modifier,
+    holdTouches: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
     val density = LocalDensity.current
@@ -269,7 +270,7 @@ internal fun FlickBottomNav(
                 showSheen = navShowsGlassSheen(colors),
                 backdropEffect = backdropEffect,
             )
-            .holdsTouches()
+            .then(if (holdTouches) Modifier.holdsTouches() else Modifier)
             .onGloballyPositioned { host.value = it }
             // The routes this floats over reserve their own room for it, and how much is
             // not a constant — see [LocalNavMetrics].

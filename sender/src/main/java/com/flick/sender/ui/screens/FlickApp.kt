@@ -461,6 +461,16 @@ fun FlickApp(
                     // Hoisted so the stack can tell when its entry is still sliding or scaling in:
                     // it is laid out at rest, so a touch then would land off the tile drawn under it.
                     val routeTransition = updateTransition(baseRoute, label = "route")
+                    // Past this the entry is close enough to rest that a tap lands on the tile
+                    // drawn under it; waiting for the spring's tail read as a dead grid.
+                    // Kept as the target it was granted for, so the frame the target changes on is
+                    // already outside it.
+                    var routeTouchGraceFor by remember { mutableStateOf<Any?>(null) }
+                    LaunchedEffect(routeTransition.targetState) {
+                        routeTouchGraceFor = null
+                        delay(RouteTouchGraceMs)
+                        routeTouchGraceFor = routeTransition.targetState
+                    }
                     routeTransition.AnimatedContent(
                         modifier = Modifier
                             .fillMaxSize()
@@ -646,7 +656,8 @@ fun FlickApp(
                             LibraryStack(
                                 top = entryTop.route,
                                 epoch = revival.epoch,
-                                interactive = live && route == Route.Library && routeTransition.settled,
+                                interactive = live && route == Route.Library &&
+                                    (routeTransition.settled || routeTouchGraceFor == routeTransition.targetState),
                                 sharedScope = sharedScope,
                                 reduceMotion = reduceMotion,
                                 library = { tileScope ->
@@ -752,6 +763,9 @@ fun FlickApp(
                             FlickBottomNav(
                                 selected = history.seat,
                                 hazeState = navHazeState,
+                                // Leaving, the bar must not take the taps meant for what it uncovers.
+                                holdTouches = this@AnimatedVisibility.transition.targetState ==
+                                    EnterExitState.Visible,
                                 onSelect = { tab ->
                                     // Re-selecting the current tab is a no-op: openConnect() also arms the
                                     // in-flow back behavior, which would strand Back on the launch route.
@@ -897,6 +911,8 @@ private class StackGeneration {
 
 /** Whether a stack was the route at its last composition, and how often its page was closed unseen. */
 private class StackRevival(var wasLive: Boolean, var epoch: Int = 0)
+
+private const val RouteTouchGraceMs = 150L
 
 /** Neither moving nor about to: the target has been reached and nothing is running. */
 private val Transition<*>.settled: Boolean
