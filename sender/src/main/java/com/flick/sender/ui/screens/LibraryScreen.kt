@@ -145,6 +145,7 @@ import com.flick.sender.ui.Format
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
+import com.flick.sender.ui.components.ArtPipelineWarmup
 import com.flick.sender.ui.components.FlickMark
 import com.flick.sender.ui.components.FlickPrimaryButton
 import com.flick.sender.ui.components.LibraryFolderChip
@@ -622,6 +623,10 @@ internal fun LibraryScreen(
                 }
             }
         }
+        ArtPipelineWarmup(
+            ground = colors.canvas,
+            ready = { active() && !uiState.grid.isScrollInProgress },
+        )
         if (choosingFolder) {
             LibraryFolderSheet(
                 folders = library.folders,

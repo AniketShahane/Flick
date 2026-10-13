@@ -253,6 +253,11 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   entry in the switch, so it takes that entry's transitions unchanged. With another route up it
   is not drawn, sits under the switch for touches, is cleared from semantics and focus, and its
   lifecycle is held at STARTED so its loops stop. It is disposed only when left with its page up.
+- **Bitmap pipelines are warmed.** Once per process, a second and a half after the library
+  first settles, `ArtPipelineWarmup` draws for one frame a few ground-coloured pixels of each
+  bitmap draw the grid makes (software and hardware, opaque and translucent, full and modulated
+  alpha, on and off the pixel grid), straight and inside an offscreen layer. Otherwise the GPU
+  compiled each pipeline mid-fling the first time a new kind of tile passed under the glass.
 - **The dock's glass is one number.** While the dock grows into the remote, `p` is how far the
   card has grown (0 at the bar, 1 once the corner has resolved): the card's travel, animated on
   the dock's own enter/exit transition on the morph's spring and mapped by `dockGrowthAt`
