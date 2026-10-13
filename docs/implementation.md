@@ -243,7 +243,11 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
 - **A prefetch never decodes.** Library-wide art prefetch and the tap's full-size poster warm
   go to disk through a no-op decoder (`diskOnly()` in `ui/FilmPosterArt.kt`); with the memory
   cache merely turned off Coil still decoded every one, three full-size decodes per film queued
-  ahead of the grid's.
+  ahead of the grid's. The no-op decode runs on the fetch's own thread, not the grid's two decode
+  threads. The library-wide prefetch runs two requests at a time inside its own job (every resume
+  reloads the library, and enqueueing it whole put hundreds of fetches on the disk cache's single
+  lock, which it holds through journal writes, and outlived a cancel), and skips any url this
+  process has already put on disk.
 - **A video still is cached as final.** `VideoStillFetcher` reports its stills as not sampled:
   every request for a key asks the same box, so a still smaller than that box on both axes (a
   portrait or low-resolution film, a provider thumbnail under the hero's box) is a memory hit
