@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -48,6 +49,7 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -238,11 +240,20 @@ internal class LibraryUiState(val grid: LazyGridState) {
     val sortTitles = LibrarySortTitles<MediaItem>(id = { it.id }, name = { it.name })
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun rememberLibraryUiState(): LibraryUiState {
-    val grid = rememberLazyGridState()
+    val grid = rememberLazyGridState(cacheWindow = GridCacheWindow)
     return remember(grid) { LibraryUiState(grid) }
 }
+
+/**
+ * Rows just scrolled off stay composed and measured for a screen's height, so a fling back
+ * places them rather than composing them again in its first frames; rows ahead are composed half
+ * a screen early, so their art is decoded before they come into view.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private val GridCacheWindow = LazyLayoutCacheWindow(aheadFraction = 0.5f, behindFraction = 1f)
 
 /**
  * S3 — the library. A gallery, not a file browser: real MediaStore videos.

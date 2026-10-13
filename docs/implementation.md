@@ -248,6 +248,9 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   reloads the library, and enqueueing it whole put hundreds of fetches on the disk cache's single
   lock, which it holds through journal writes, and outlived a cancel), and skips any url this
   process has already put on disk.
+- **The grid keeps rows around it.** Its state takes a `LazyLayoutCacheWindow`: half a screen
+  ahead is composed early, so its art is decoded before the row shows, and a screen behind stays
+  composed and measured, so a fling back places rows instead of composing them.
 - **A video still is cached as final.** `VideoStillFetcher` reports its stills as not sampled:
   every request for a key asks the same box, so a still smaller than that box on both axes (a
   portrait or low-resolution film, a provider thumbnail under the hero's box) is a memory hit

@@ -787,8 +787,12 @@ fun VideoTile(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            val unknown = stringResource(R.string.media_unknown)
+            // Remembered: a tile composed into a fling row would otherwise run a String.format
+            // for it on that row's first frame.
+            val meta = remember(item.durationMs, item.sizeBytes, unknown) { metaLabel(item, unknown) }
             Text(
-                text = metaLabel(item, stringResource(R.string.media_unknown)),
+                text = meta,
                 // onSurfaceFaint is cleared only for tracked uppercase labels: this line
                 // is 11 sp mixed case and it is under every tile in the grid, which makes
                 // it the most-read text in the app and the least readable ink for it.
@@ -833,7 +837,7 @@ internal fun TileMarkings(item: MediaItem, marks: TileMarks, modifier: Modifier 
             // A zero duration means MediaStore had no value, not a zero-length film.
             if (item.knowsDuration) {
                 Text(
-                    text = Format.timecode(item.durationMs),
+                    text = remember(item.durationMs) { Format.timecode(item.durationMs) },
                     style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
