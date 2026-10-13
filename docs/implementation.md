@@ -237,6 +237,11 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's
   front asks for its art at the size the tile drew it, so it is the tile's own decode. An unsized warm decodes at the display's
   size and evicted the very tiles the card lands back on, which then re-showed their ground.
+- **The library is never rebuilt by another route.** The stack is composed beside the route
+  switch (`LibraryHosts` in `FlickApp.kt`), recorded into a graphics layer and drawn only by its
+  entry in the switch, so it takes that entry's transitions unchanged. With another route up it
+  is not drawn, sits under the switch for touches, is cleared from semantics and focus, and its
+  lifecycle is held at STARTED so its loops stop. It is disposed only when left with its page up.
 - **The dock's glass is one number.** While the dock grows into the remote, `p` is how far the
   card has grown (0 at the bar, 1 once the corner has resolved): the card's travel, animated on
   the dock's own enter/exit transition on the morph's spring and mapped by `dockGrowthAt`
