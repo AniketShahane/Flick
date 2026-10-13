@@ -262,7 +262,10 @@ internal fun houseMove(
     if (reducedMotion) return snap()
     // Nothing composed while the viewer was elsewhere is on screen to carry on from.
     // Closed and fully dense is opaque Canvas, the same black as the covered surface.
-    if (offstage) {
+    // A first composition into a handshake is the same case: an Activity created for
+    // a cast (one the system destroyed in the background, then summoned) has nothing
+    // on screen yet either, and its card must still fly.
+    if (offstage || (from == null && to == HouseStage.Handshake)) {
         return if (to == HouseStage.Handshake) HouseMove(to, HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None) else snap()
     }
     if (from == null) {

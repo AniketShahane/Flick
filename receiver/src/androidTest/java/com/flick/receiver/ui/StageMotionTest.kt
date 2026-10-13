@@ -644,6 +644,28 @@ class StageMotionTest {
         assertTrue("the card was not left up for the handshake", cardExists())
     }
 
+    /** An Activity created for a cast composes straight into the handshake. */
+    @Test
+    fun aFirstCompositionIntoAHandshakeFliesTheCard() {
+        launch(initial = HouseStage.Handshake, settle = false)
+        val start = composeRule.mainClock.currentTime
+        val cardH = with(density) { FLICK_CARD_HEIGHT.toPx() }
+        val reach = with(density) { 120.dp.toPx() }
+        val glassH = glassHeightPx()
+        var barsSeenAt: Long? = null
+        while (since(start) < 1_500) {
+            frame()
+            val px = shot("aFirstCompositionIntoAHandshakeFliesTheCard", start)
+            val seatBottom = ((px.height - glassH) / 2f + cardH).roundToInt()
+            if (barsSeenAt == null && px.sparkInColumn(px.width / 2, seatBottom, seatBottom + reach.roundToInt())) {
+                barsSeenAt = since(start)
+            }
+        }
+        assertTrue("the speed bars never showed, so the card did not fly", barsSeenAt != null)
+        assertEquals("onLightsDown must fire at once", 1, lightsDown)
+        assertTrue("the card was not left up for the handshake", cardExists())
+    }
+
     /** A re-cast whose first frame lands 400 ms into the handshake, mid-flight. */
     @Test
     fun aQuickFirstFrameWaitsForTheCardsLeastTime() {
