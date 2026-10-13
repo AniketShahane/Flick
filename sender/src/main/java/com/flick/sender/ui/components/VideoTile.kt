@@ -220,7 +220,11 @@ private object VideoStillFetcher : Fetcher.Factory<Uri> {
         )?.let { bitmap ->
             DrawableResult(
                 drawable = BitmapDrawable(options.context.resources, bitmap),
-                isSampled = true,
+                // Every request for a key asks the same box, and this is already the best still
+                // that box gets. Marked sampled, any still short of the box on both axes (a
+                // portrait or low-resolution film, a provider thumbnail under the hero's larger
+                // box) fails Coil's memory check and is searched for again on every request.
+                isSampled = false,
                 dataSource = DataSource.DISK,
             )
         }
@@ -661,8 +665,11 @@ fun VideoTile(
     val faceSize = remember { FaceSize() }
     // The detail card turns over to this poster about a tenth of a second after a tap.
     val posterPath = filmArt?.poster
-    LaunchedEffect(posterPath) {
-        posterPath?.let { warmTilePoster(context, imageLoader, it) }
+    // Only for a tile that does not draw the poster itself: one that does already holds it under
+    // the same key, and a second, smaller decode racing it would leave the tile's own too small.
+    val warmPath = posterPath?.takeIf { filmArt?.backdrop != null }
+    LaunchedEffect(warmPath) {
+        warmPath?.let { warmTilePoster(context, imageLoader, it) }
     }
     val currentOnClick by rememberUpdatedState(onClick)
     val open = {

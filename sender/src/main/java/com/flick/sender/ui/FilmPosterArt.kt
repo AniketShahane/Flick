@@ -2,6 +2,7 @@ package com.flick.sender.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.DecodeResult
+import coil.decode.Decoder
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -533,9 +536,7 @@ fun warmFilmPoster(context: Context, imageLoader: ImageLoader, posterPath: Strin
     imageLoader.enqueue(
         ImageRequest.Builder(appContext)
             .data(heroUrl)
-            .size(WarmPosterWidthPx, WarmPosterHeightPx)
-            .precision(Precision.INEXACT)
-            .memoryCachePolicy(CachePolicy.DISABLED)
+            .diskOnly()
             .build(),
     )
 }
@@ -580,9 +581,22 @@ suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
             loader.enqueue(
                 ImageRequest.Builder(appContext)
                     .data(url)
-                    .memoryCachePolicy(CachePolicy.DISABLED)
+                    .diskOnly()
                     .build(),
             )
         }
     }
+}
+
+/**
+ * Fetches onto disk and stops there. A request with its memory cache off still DECODES, and a
+ * prefetch of the whole library is three full-size decodes per film queued ahead of the ones the
+ * grid is waiting for.
+ */
+private fun ImageRequest.Builder.diskOnly(): ImageRequest.Builder = this
+    .memoryCachePolicy(CachePolicy.DISABLED)
+    .decoderFactory(DiskOnlyDecoder)
+
+private val DiskOnlyDecoder = Decoder.Factory { _, _, _ ->
+    Decoder { DecodeResult(drawable = ColorDrawable(), isSampled = false) }
 }

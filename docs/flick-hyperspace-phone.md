@@ -132,9 +132,9 @@ one; back has no delays at all.
   the file, asked for at the size the tile drew it so it is the tile's own decode in memory; the
   copy cached under the plain URL stands in if it is not. The art's ground is the tile's surface,
   never black. Back: the pad's poster with its hairline, over the small poster (w342) at 228 ×
-  342 px, which the tap puts in memory. While a tile is on screen its small poster is kept in
-  memory at 114 × 171 px, and stands in for both until they land, so the back is never an empty
-  ground. At the tap the full-size poster is fetched to disk only, and the seat decodes it at
+  342 px, which the tap puts in memory. While a tile is on screen its small poster is in memory
+  (at 114 × 171 px for a backdrop tile, at the tile's own size for a poster tile), and stands in
+  for both until they land, so the back is never an empty ground. At the tap the full-size poster is fetched to disk only, and the seat decodes it at
   its own size. No warm is unsized, so none evicts the grid the card lands back on.
 - **The seat is measured.** The page's first frame sizes the seat from the blocks it measured
   last time (identity, pad chrome and notice) rather than from an estimate, so the card flies to

@@ -237,6 +237,17 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's
   front asks for its art at the size the tile drew it, so it is the tile's own decode. An unsized warm decodes at the display's
   size and evicted the very tiles the card lands back on, which then re-showed their ground.
+  Only a backdrop tile warms the small poster: a poster tile already holds it under the same
+  key at its own size, and a smaller warm racing that decode left the tile's copy too small to
+  reuse.
+- **A prefetch never decodes.** Library-wide art prefetch and the tap's full-size poster warm
+  go to disk through a no-op decoder (`diskOnly()` in `ui/FilmPosterArt.kt`); with the memory
+  cache merely turned off Coil still decoded every one, three full-size decodes per film queued
+  ahead of the grid's.
+- **A video still is cached as final.** `VideoStillFetcher` reports its stills as not sampled:
+  every request for a key asks the same box, so a still smaller than that box on both axes (a
+  portrait or low-resolution film, a provider thumbnail under the hero's box) is a memory hit
+  rather than a fresh search each time it is asked for.
 - **The library is never rebuilt by another route.** The stack is composed beside the route
   switch (`LibraryHosts` in `FlickApp.kt`), recorded into a graphics layer and drawn only by its
   entry in the switch, so it takes that entry's transitions unchanged. With another route up it
