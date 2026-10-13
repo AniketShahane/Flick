@@ -58,7 +58,9 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -767,6 +769,13 @@ fun VideoTile(
                             seat = false,
                             renderInOverlay = !landed(),
                         )
+                        .onPlaced { face ->
+                            val slotCoords = face.parentLayoutCoordinates ?: return@onPlaced
+                            handoff.reportFace(
+                                flipKey,
+                                flipFaceHome(face.positionInParent(), face.size, slotCoords.size),
+                            )
+                        }
                         .hideWhileFlipping(flipScopes.first, flipState, landed)
                         // Its own corner as well, for any frame it still draws in the overlay,
                         // where the slot's clip does not reach.

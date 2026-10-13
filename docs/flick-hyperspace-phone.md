@@ -108,7 +108,14 @@ one; back has no delays at all.
   are both within 0.003 of home (a pixel or two, and half a degree); the turn home is as stiff
   as the travel so neither waits on the other, and the drawn turn is squared to the travel over
   its last 15%, so a flight reversed mid-way (whose turn lags its travel) still lands flat and at
-  the tile's size rather than settling a few degrees on top of it. On that frame the seat stops drawing and the
+  the tile's size rather than settling a few degrees on top of it. It also waits for the tile's
+  face to be placed at rest in its slot (within half a pixel, at the slot's size): the travel
+  track and the bounds are separate animations and the bounds start a frame or two later. Each
+  end of a shared bounds measures and places itself from its own bounds animation, so the seat's
+  end — the card that is drawn — takes the travel spring of the leg it starts (open 0.86 / 260,
+  back 1 / 520), the same one the tile's end and the travel track are on; a seat left on the open
+  spring for the way back overshot the tile by a few pixels and snapped back at the hand-off. A
+  flight turned round mid-way keeps the bounds spring its leg started with. On that frame the seat stops drawing and the
   tile's own copy shows; neither waits for the route transition to end, which runs as long as
   the slowest page track. The seat is a card in flight only while a shared transition is
   active; otherwise it is the seated poster, fading with the page.

@@ -1,5 +1,8 @@
 package com.flick.sender.ui.components
 
+import androidx.compose.animation.EnterExitState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntSize
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -117,5 +120,28 @@ class CardFlipMotionTest {
         assertEquals(0, CardFlipMotion.MoveOpen.delayMs)
         // No-bounce home: an underdamped spring would carry the card past the tile.
         for (track in CardFlipMotion.BackTracks) assertEquals(1f, track.dampingRatio, 0f)
+    }
+
+    @Test fun theCardThatIsDrawnTravelsOnTheSameSpringAsTheEndThatTakesItBack() {
+        assertEquals(CardFlipMotion.MoveOpen, seatBoundsTrack(EnterExitState.Visible))
+        for (leaving in listOf(EnterExitState.PostExit, EnterExitState.PreEnter)) {
+            val seat = seatBoundsTrack(leaving)
+            assertEquals(TileBoundsTrack.dampingRatio, seat.dampingRatio, 0f)
+            assertEquals(TileBoundsTrack.stiffness, seat.stiffness, 0f)
+            // And the travel track the landing is judged on.
+            assertEquals(CardFlipMotion.MoveBack.dampingRatio, seat.dampingRatio, 0f)
+            assertEquals(CardFlipMotion.MoveBack.stiffness, seat.stiffness, 0f)
+            assertEquals(1f, seat.dampingRatio, 0f)
+        }
+    }
+
+    @Test fun theFaceIsHomeOnlyWithinHalfAPixelAtTheSlotsOwnSize() {
+        val slot = IntSize(412, 232)
+        assertTrue(flipFaceHome(Offset.Zero, slot, slot))
+        assertTrue(flipFaceHome(Offset(0.5f, -0.5f), slot, slot))
+        assertFalse(flipFaceHome(Offset(0f, 1f), slot, slot))
+        assertFalse(flipFaceHome(Offset(-1f, 0f), slot, slot))
+        assertFalse(flipFaceHome(Offset.Zero, IntSize(413, 232), slot))
+        assertFalse(flipFaceHome(Offset.Zero, IntSize(412, 236), slot))
     }
 }
