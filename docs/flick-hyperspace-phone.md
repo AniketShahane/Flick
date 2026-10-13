@@ -32,7 +32,7 @@ splits: identity and card in a scrolling left column, the pad centred on the rig
 | Claim | the page scrolls when it overflows, so the pad takes a drag only once it crosses touch slop with the page unable to scroll further down (`!canScrollForward`), and not a downward one the page could scroll back; anything else is left unconsumed and scrolls the page |
 | Arm | finger ≥ 80 dp up from where it went down (touch slop included) → "Let go to send" + `GestureThresholdActivate` haptic |
 | Send | armed, or ≥ 20 dp up and ≥ 1000 dp/s upward at release |
-| Send motion | `GestureEnd` haptic and `flickToTv` at release; then, decoratively, the light-speed streak: over 200 ms on one ease-in cubic (0.32, 0, 0.67, 0) the poster stretches to 0.12 × its width and 3.2 × its height, burns toward `#EAF1FF` (0.9 over the art, inside the card's clip) and leaves 900 dp up; its sideways offset and tilt are let go linearly over the same 200 ms; cut over the last 50 ms. The glow under it stretches with it into a beam |
+| Send motion | `GestureEnd` haptic and `flickToTv` at release; then, decoratively, the light-speed streak: over 200 ms on one ease-in cubic (0.32, 0, 0.67, 0) the poster stretches to 0.12 × its width and 3.2 × its height, burns toward `#EAF1FF` (0.9 over the art, inside the card's clip) and leaves 1.4 × the window's height up, so it is mostly past the top by the cut; its sideways offset and tilt are let go linearly over the same 200 ms; cut over the last 30 ms. The glow under it stretches with it into a beam |
 | Not sent | springs back on the scheme's default spatial spring — also when the gesture is cut off mid-drag (the pad disabled, or the page taking the drag) |
 | Still composed 700 ms after a send | poster returns to its seat, 220 ms fade |
 | Disabled | `!progressReady \|\| castStart.isCommitting()` |
@@ -51,7 +51,7 @@ available. A link advisory also keeps its "Cast anyway" action.
 | Copy | starts at `min(0.38·H + gap, H − 78 dp pill band − nav bar − 212 dp × max(fontScale, 1))`, never closer than gap + 24 dp to the top; the vanishing point is `copy top − gap`, so on a short window (landscape, split screen) the whole scene lifts and Cancel stays above the fold. Gap 72 dp roomy, 40 dp compact |
 | Roomy | H ≥ 488 dp × max(fontScale, 1): 78 dp kept above the vanishing point (where the warp poster used to sit; the landing still grows out of it) + 72 gap + 212 copy + 78 pill band + 48 nav bar |
 | Arrival | the screen is placed **under** the detail page and shown at once (no enter transition); the page fades off it over 220 ms, ease-in cubic, no scale (`LaunchFadeMs`), so the poster's streak is seen whole. There is no second poster here: the thrown one is the jump |
-| Jump | one 1600 ms linear clock from the screen's first frame (`LightSpeed`, read in the draw phase only). Field: dark until 120 ms, in over 100 ms. Flash at 180 ms: radial from the top centre, `#EBF2FF` → `#6FA0FF` at 0.4, radius 1 × the window height, over everything; 0 → 0.75 in 60 ms (linear), → 0 in 350 ms (0.4, 0, 1, 1). Surge from 180 ms over 1400 ms: the field runs 1 extra loop ahead on a speed decaying as e^(−3.1·x) (≈ 4.7× at the flash, 1× at the end), streaks up to 2.6 × as long at its peak. Title and route line fade up 12 dp from 450 ms over 350 ms (0.2, 0, 0, 1) |
+| Jump | one 1600 ms linear clock from the screen's first frame (`LightSpeed`, read in the draw phase only). Field: dark until 120 ms, in over 100 ms. Flash at 180 ms: radial from the top centre, `#EBF2FF` → `#6FA0FF` at 0.4, radius 1 × the window height, over the whole connecting screen (the detail page is still fading above it for its first 40 ms); 0 → 0.75 in 60 ms (linear), → 0 in 350 ms (0.4, 0, 1, 1). Surge from 180 ms over 1400 ms: the field runs 1 extra loop ahead on a speed decaying as e^(−3.1·x) (≈ 5.2× at the flash, easing to exactly 1× at the end, so it never hitches into the loop), streaks up to 2.6 × as long at its peak. Title and route line fade up 12 dp from 450 ms over 350 ms (0.2, 0, 0, 1) |
 | Loop | one 1600 ms linear clock, read in the draw phase of one canvas; the surge is an offset on it, so every phase stays continuous |
 | Rings | 4 phone-shaped (height 2.05 × width, corner 0.16 × width), staggered ¼ period; size ∝ phase²; reach 1.3 × the window; stroke 1.5 → 3 dp; `rgba(111,160,255,.55)`, ring 2 is amber `#FFB61E` at 0.8 |
 | Streaks | 12 radial, 30° apart ± fixed jitter; speed 1× or 2× the clock; 2 dp, born 18 dp out, up to 72 dp long; white / `#9FC0FF` / amber |
@@ -124,7 +124,7 @@ one; back has no delays at all.
   are gone by 15% of the way instead of fading in place over the library.
 - **Layering.** The page's ground, backdrop, scrim and glow sit under the card; the card is drawn
   in the shared-element overlay, so it also passes over the chrome while it travels. Going back,
-  the library is placed beneath the page it is leaving, and every arriving route otherwise takes
+  the library is placed beneath the page it is leaving (as is the connecting screen at a send, §2), and every arriving route otherwise takes
   a higher layer, so a flip reversed mid-way keeps the page on top while it fades.
 - **Chrome.** The nav and dock wait below the window while the card comes back and are released
   when 12% of the travel is left, so their rise overlaps the card's last settle (at most 560 ms

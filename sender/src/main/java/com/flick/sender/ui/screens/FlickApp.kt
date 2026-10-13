@@ -766,7 +766,11 @@ fun FlickApp(
     }
 }
 
-/** Ever-higher layers for arriving routes, and ever-lower ones for a grid returning beneath. */
+/**
+ * Ever-higher layers for arriving routes, and ever-lower ones for a route that arrives
+ * beneath the one it replaces: a grid returning under its page, and the connecting screen
+ * the detail page fades off at a send.
+ */
 private class RouteLayers {
     private var top = 0f
     private var bottom = 0f

@@ -52,6 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -148,6 +149,8 @@ internal fun FlickPad(
     // The light-speed streak after a send, 0 to 1 on a linear clock; its curves are applied
     // in the layer.
     val streak = remember { Animatable(0f) }
+    // Relative to the window, so the streak clears the top on a tall one too.
+    val streakDistance = LocalConfiguration.current.screenHeightDp * FlickPadMotion.StreakReach
     var touched by remember { mutableStateOf(false) }
     var armed by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
@@ -343,7 +346,7 @@ internal fun FlickPad(
                     val s = streak.value
                     val e = FlickPadMotion.StreakEasing.transform(s)
                     translationX = offsetX.value * (1f - s)
-                    translationY = offsetY.value - liftPx - FlickPadMotion.StreakDistanceDp.dp.toPx() * e
+                    translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
                     rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density) * (1f - s)
                     val scale = lerp(1f, FlickPadMotion.HeldScale, held.value)
                     scaleX = scale * lerp(1f, FlickPadMotion.StreakEndScaleX, e)
@@ -574,12 +577,13 @@ internal object FlickPadMotion {
 
     /**
      * The send as a jump to light speed: the card stretches to a line [StreakEndScaleX] wide
-     * and [StreakEndScaleY] tall, burns toward white and leaves [StreakDistanceDp] up, all on
-     * one accelerating curve, and is cut over the last [StreakFadeMs].
+     * and [StreakEndScaleY] tall, burns toward white and leaves [StreakReach] window heights
+     * up, all on one accelerating curve, and is cut over the last [StreakFadeMs], by when it
+     * is mostly past the top of the window.
      */
     const val StreakMs = 200
-    const val StreakFadeMs = 50
-    const val StreakDistanceDp = 900f
+    const val StreakFadeMs = 30
+    const val StreakReach = 1.4f
     const val StreakEndScaleX = 0.12f
     const val StreakEndScaleY = 3.2f
     const val StreakGlare = 0.9f

@@ -208,11 +208,11 @@ reads the peak from the display's modes at the current resolution, and `animatin
 votes it with `Modifier.preferredFrameRate` only while something moves: the route
 `AnimatedContent` while its transition runs, the shell while any shared element is in flight
 (the window takes the highest vote, so this covers the overlay), the dock's morph, the
-connecting warp's hold and throw, the flick pad's poster from the finger going down until it is
+connecting screen's light-speed jump, the flick pad's poster from the finger going down until it is
 back at rest (and through a throw), and the card flip. Always-running slow loops vote 30 Hz
 (`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple, the dock's progress
-hairline, and the connecting field once the warp is over (`loopFrameRate`, one vote that is the
-peak during the warp and 30 Hz for the wait). The platform resolves to the highest vote in the
+hairline, and the connecting field once the jump is over (`loopFrameRate`, one vote that is the
+peak during the jump and 30 Hz for the wait). The platform resolves to the highest vote in the
 window, so a low vote only lowers the rate while nothing else is moving.
 
 GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded:

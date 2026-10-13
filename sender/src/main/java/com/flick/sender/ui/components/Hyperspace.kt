@@ -212,13 +212,17 @@ internal object LightSpeed {
         ((ms - Hyperspace.JumpFieldDelayMs) / Hyperspace.JumpFieldInMs).coerceIn(0f, 1f)
 
     /**
-     * The surge's progress: the integral of a speed that starts at its peak at the flash
-     * and decays exponentially back to the cruising loop, normalised to end at exactly 1.
+     * The surge's progress: the integral of a speed that starts at its peak at the flash and
+     * decays exponentially, less its own end value, so the extra speed is exactly 0 when the
+     * surge hands back to the cruising loop and the field never hitches there. Normalised to
+     * end at exactly 1.
      */
     fun surge(ms: Float): Float {
         val x = ((ms - Hyperspace.JumpFlashAtMs) / Hyperspace.SurgeMs).coerceIn(0f, 1f)
         val k = Hyperspace.SurgeDecay
-        return ((1f - exp(-k * x)) / (1f - exp(-k))).coerceIn(0f, 1f)
+        val tail = k * exp(-k)
+        val g = 1f - exp(-k * x) - tail * x
+        return (g / (1f - exp(-k) - tail)).coerceIn(0f, 1f)
     }
 
     /** The flash's opacity: a linear rise to its peak, then out on the landing's fade curve. */
@@ -268,7 +272,7 @@ internal object Hyperspace {
 
     /**
      * The surge: [SurgeLoops] extra loops over [SurgeMs], on a speed decaying at [SurgeDecay]
-     * — about 4.7× the cruising speed at the flash, back to 1× by the end.
+     * — about 5.2× the cruising speed at the flash, easing to exactly 1× at the end.
      */
     const val SurgeMs = 1400f
     const val SurgeLoops = 1f
