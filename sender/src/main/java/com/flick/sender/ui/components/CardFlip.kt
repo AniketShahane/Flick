@@ -35,6 +35,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Density
@@ -226,6 +227,29 @@ internal fun Modifier.cardFlipBounds(
         resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
         renderInOverlayDuringTransition = renderInOverlay,
     )
+}
+
+/**
+ * One end of the flip, switched off while it rests on [restingIn]. Both ends stay composed while
+ * the page is up, and a match left standing between legs keeps the bounds it last animated: Back
+ * would start from where the seat was when the card landed, not from where the page has since
+ * moved it. Off at rest, each leg matches afresh from the ends' current bounds. The seat's switch
+ * is the one that clears a match at the settle: an end that is not the target is not watched then.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Stable
+internal class FlipEndConfig(
+    private val transition: Transition<EnterExitState>,
+    private val restingIn: EnterExitState,
+    private val placed: () -> Boolean = { true },
+) : SharedTransitionScope.SharedContentConfig {
+    // [placed] is false for an end kept composed off screen, whose bounds are the last it was
+    // placed at: matching them would fly the card to where it no longer is.
+    override val SharedTransitionScope.SharedContentState.isEnabled: Boolean
+        get() = (transition.currentState != restingIn || transition.targetState != restingIn) && placed()
+
+    override val shouldKeepEnabledForOngoingAnimation: Boolean
+        get() = false
 }
 
 /**
@@ -450,12 +474,18 @@ internal fun rememberTileBadgeTrack(
 /**
  * Rises [distance] into place and fades in with [progress]: the page's chrome arriving
  * around the card. Read in the layer, so the tracks never recompose what they move.
+ *
+ * [flat] is content that never draws over itself (a line of type, an icon beside it): its fade
+ * can modulate each draw, instead of the platform allocating an offscreen layer for every
+ * frame the fade is part-way, which on the page's first frames is a fresh allocation per fade.
  */
-internal fun Modifier.fadeUp(progress: () -> Float, distance: Dp): Modifier = graphicsLayer {
-    val p = progress()
-    alpha = p.coerceIn(0f, 1f)
-    translationY = (1f - p) * distance.toPx()
-}
+internal fun Modifier.fadeUp(progress: () -> Float, distance: Dp, flat: Boolean = false): Modifier =
+    graphicsLayer {
+        val p = progress()
+        alpha = p.coerceIn(0f, 1f)
+        translationY = (1f - p) * distance.toPx()
+        if (flat) compositingStrategy = CompositingStrategy.ModulateAlpha
+    }
 
 /**
  * What the seat needs to draw the flight: the shared bounds' scopes and the page's tracks.
@@ -502,7 +532,9 @@ internal fun FlipCard(
         }
         return
     }
-    val state = with(seat.sharedScope) { rememberSharedContentState(seat.key) }
+    val seatTransition = seat.animatedScope.transition
+    val config = remember(seatTransition) { FlipEndConfig(seatTransition, EnterExitState.Visible) }
+    val state = with(seat.sharedScope) { rememberSharedContentState(seat.key, config) }
     val tracks = seat.tracks
     val handoff = LocalCardFlipHandoff.current
     val flight = remember(seat.key, tracks, seat.animatedScope) {

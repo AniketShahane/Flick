@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
@@ -52,6 +53,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -110,6 +112,7 @@ import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberReduceMotion
 import com.flick.sender.ui.warmFilmPoster
 import com.flick.sender.ui.warmTilePoster
+import kotlinx.coroutines.Dispatchers
 
 // One process-wide loader (application-scoped) so the video-frame memory cache
 // survives navigation. Building a fresh ImageLoader per screen visit threw the cache
@@ -134,6 +137,11 @@ fun videoImageLoader(context: Context): ImageLoader {
         sharedVideoImageLoader ?: ImageLoader.Builder(appContext)
             .components { add(VideoFrameDecoder.Factory()) }
             .crossfade(true)
+            // Two at a time: a fling or a flip asks for a dozen decodes at once, and an
+            // unbounded fan-out spends the frame's CPU on lock contention and garbage.
+            .decoderDispatcher(ArtDecodeDispatcher)
+            // Apart from the decodes, so the detail page's blur never queues behind a fling's.
+            .transformationDispatcher(ArtTransformDispatcher)
             // An absolute ceiling keeps a large-heap phone from turning a proportional
             // default into an oversized gallery cache. The proportional half still lets
             // the platform's low-memory verdict shrink it further.
@@ -147,9 +155,17 @@ fun videoImageLoader(context: Context): ImageLoader {
     }
 }
 
+private val ArtDecodeDispatcher = Dispatchers.IO.limitedParallelism(2)
+private val ArtTransformDispatcher = Dispatchers.Default.limitedParallelism(1)
+
 /**
- * The smaller of a conservative heap share and a hard byte ceiling. Low-RAM devices get
- * both a smaller share and a smaller ceiling.
+ * The smaller of a heap share and a hard byte ceiling. Low-RAM devices get both a smaller
+ * share and a smaller ceiling.
+ *
+ * Sized to hold a screen of tiles AND the detail page opened over them (its poster at the
+ * seat's size, the blurred ground, the logo, the hero frame): any less and every open evicted
+ * the grid it closes back onto, and every close and scroll decoded it again. A quarter, above
+ * Coil's 0.2 default, for that reason. Hardware bitmaps count against it without being Java heap.
  */
 private fun frameCacheBudgetBytes(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -168,9 +184,9 @@ internal fun frameCacheBudgetBytes(memoryClassMb: Int, lowRam: Boolean): Int {
 
 private const val BytesPerMiB = 1_048_576L
 private const val DefaultMemoryClassMb = 96
-private const val FrameBudgetDivisor = 8L
+private const val FrameBudgetDivisor = 4L
 private const val LowRamBudgetDivisor = 12L
-private const val FrameCacheCapBytes = 16 * 1_048_576
+private const val FrameCacheCapBytes = 48 * 1_048_576
 private const val LowRamFrameCacheCapBytes = 8 * 1_048_576
 
 // Library and Detail ask at their own sizes; the cast surfaces take the larger box because
@@ -204,7 +220,11 @@ private object VideoStillFetcher : Fetcher.Factory<Uri> {
         )?.let { bitmap ->
             DrawableResult(
                 drawable = BitmapDrawable(options.context.resources, bitmap),
-                isSampled = true,
+                // Every request for a key asks the same box, and this is already the best still
+                // that box gets. Marked sampled, any still short of the box on both axes (a
+                // portrait or low-resolution film, a provider thumbnail under the hero's larger
+                // box) fails Coil's memory check and is searched for again on every request.
+                isSampled = false,
                 dataSource = DataSource.DISK,
             )
         }
@@ -566,6 +586,7 @@ fun VideoTile(
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
     cardFlip: Boolean = false,
+    placed: () -> Boolean = { true },
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
@@ -599,8 +620,13 @@ fun VideoTile(
     } else {
         null
     }
-    val flipState = flipScopes?.let { (shared, _) ->
-        with(shared) { rememberSharedContentState(cardFlipKey(item.id)) }
+    val currentPlaced by rememberUpdatedState(placed)
+    val flipState = flipScopes?.let { (shared, animated) ->
+        val tileTransition = animated.transition
+        val config = remember(tileTransition) {
+            FlipEndConfig(tileTransition, EnterExitState.PostExit) { currentPlaced() }
+        }
+        with(shared) { rememberSharedContentState(cardFlipKey(item.id), config) }
     }
     val handoff = LocalCardFlipHandoff.current
     val flipKey = cardFlipKey(item.id)
@@ -615,7 +641,12 @@ fun VideoTile(
             1f
         }
     }
-    val landed: () -> Boolean = { handoff.flightFor(flipKey)?.landed == true }
+    // Derived, so the overlay switch below recomposes this tile only when the card touches down,
+    // not on every frame of the flight or whenever any seat comes and goes.
+    val landedState = remember(handoff, flipKey) {
+        derivedStateOf { handoff.flightFor(flipKey)?.landed == true }
+    }
+    val landed: () -> Boolean = { landedState.value }
     // The card carries the marks while it is away from the slot, so the slot's own copy goes
     // and comes back with the face's.
     val cardAway: () -> Boolean = {
@@ -638,8 +669,11 @@ fun VideoTile(
     val faceSize = remember { FaceSize() }
     // The detail card turns over to this poster about a tenth of a second after a tap.
     val posterPath = filmArt?.poster
-    LaunchedEffect(posterPath) {
-        posterPath?.let { warmTilePoster(context, imageLoader, it) }
+    // Only for a tile that does not draw the poster itself: one that does already holds it under
+    // the same key, and a second, smaller decode racing it would leave the tile's own too small.
+    val warmPath = posterPath?.takeIf { filmArt?.backdrop != null }
+    LaunchedEffect(warmPath) {
+        warmPath?.let { warmTilePoster(context, imageLoader, it) }
     }
     val currentOnClick by rememberUpdatedState(onClick)
     val open = {
@@ -692,8 +726,17 @@ fun VideoTile(
                 .indication(interaction, flickRipple(colors.spark)),
         ) {
             // The slot's ground on a layer of its own: the face above it must be whole the
-            // instant the card is handed back, whatever the slot is still doing.
-            Box(Modifier.matchParentSize().graphicsLayer { alpha = slot() }.background(colors.surfaceTonal))
+            // instant the card is handed back, whatever the slot is still doing. One fill, so
+            // its fade needs no offscreen copy.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        alpha = slot()
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                    }
+                    .background(colors.surfaceTonal),
+            )
             TileFace(
                 item = item,
                 filmArt = filmArt,
@@ -748,8 +791,12 @@ fun VideoTile(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            val unknown = stringResource(R.string.media_unknown)
+            // Remembered: a tile composed into a fling row would otherwise run a String.format
+            // for it on that row's first frame.
+            val meta = remember(item.durationMs, item.sizeBytes, unknown) { metaLabel(item, unknown) }
             Text(
-                text = metaLabel(item, stringResource(R.string.media_unknown)),
+                text = meta,
                 // onSurfaceFaint is cleared only for tracked uppercase labels: this line
                 // is 11 sp mixed case and it is under every tile in the grid, which makes
                 // it the most-read text in the app and the least readable ink for it.
@@ -794,7 +841,7 @@ internal fun TileMarkings(item: MediaItem, marks: TileMarks, modifier: Modifier 
             // A zero duration means MediaStore had no value, not a zero-length film.
             if (item.knowsDuration) {
                 Text(
-                    text = Format.timecode(item.durationMs),
+                    text = remember(item.durationMs) { Format.timecode(item.durationMs) },
                     style = FlickText.monoSmall.copy(fontSize = 10.5.sp, color = Color.White),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)

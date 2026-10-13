@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -102,6 +103,7 @@ internal fun FlickBottomNav(
     hazeState: HazeState,
     onSelect: (NavTab) -> Unit,
     modifier: Modifier = Modifier,
+    holdTouches: Boolean = true,
 ) {
     val colors = LocalFlickColors.current
     val density = LocalDensity.current
@@ -268,6 +270,7 @@ internal fun FlickBottomNav(
                 showSheen = navShowsGlassSheen(colors),
                 backdropEffect = backdropEffect,
             )
+            .then(if (holdTouches) Modifier.holdsTouches() else Modifier)
             .onGloballyPositioned { host.value = it }
             // The routes this floats over reserve their own room for it, and how much is
             // not a constant — see [LocalNavMetrics].
@@ -573,6 +576,14 @@ internal val GlassBlurRadius = 20.dp
  * finer than that copy's pixels to lose, and the blur pass costs a ninth of the full-size one.
  */
 internal const val GlassInputScaleFactor = 0.33f
+
+/**
+ * Makes a floating surface the end of the hit test for every touch inside it, so one that misses
+ * its controls stops here instead of reaching the route underneath. Nothing is consumed: a parent
+ * consuming in the Main pass would cancel its children's taps on the first move.
+ */
+internal fun Modifier.holdsTouches(): Modifier =
+    pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }
 
 internal fun navBackdropBlurEnabled(sdkInt: Int): Boolean =
     sdkInt >= Build.VERSION_CODES.TIRAMISU

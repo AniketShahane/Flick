@@ -2,6 +2,9 @@ package com.flick.sender.net
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import com.flick.sender.BuildConfig
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
@@ -14,11 +17,16 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Film art from TMDB — poster, backdrop and title logo — looked up once per title and
@@ -27,7 +35,8 @@ import java.util.concurrent.ConcurrentHashMap
  * A hit is kept for good: a film's poster path does not change under it. A miss is kept for
  * a week so a home video is not asked about on every scroll. A failure — no network, a
  * refusal, a timeout — is never written down, so the next launch on a better link tries
- * again; within this process it backs off instead of asking on every tile that binds.
+ * again; within this process it backs off instead of asking on every tile that binds, until a
+ * network arrives and [retries] moves.
  */
 object FilmPosters {
     private val key = BuildConfig.TMDB_API_KEY.trim()
@@ -51,6 +60,13 @@ object FilmPosters {
     @Volatile private var prefs: SharedPreferences? = null
 
     @Volatile private var keyRejected = false
+
+    private val _retries = MutableStateFlow(0)
+
+    /** Moves when a network arrives after a lookup failed: what failed is worth asking again. */
+    val retries: StateFlow<Int> = _retries.asStateFlow()
+
+    private val watchingNetwork = AtomicBoolean(false)
 
     /**
      * What is already known, without touching the network: a tile that has its art from
@@ -88,7 +104,7 @@ object FilmPosters {
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        failed(query, e.message ?: e.javaClass.simpleName)
+        failed(context, query, e.message ?: e.javaClass.simpleName)
         null
     }
 
@@ -117,10 +133,42 @@ object FilmPosters {
         }
     }
 
-    private fun failed(query: FilmPosterQuery, why: String) {
+    private fun failed(context: Context, query: FilmPosterQuery, why: String) {
         failedUntil[query.cacheKey] = System.currentTimeMillis() + FAILURE_BACKOFF_MS
         FlickLog.d("posters", "lookup failed $why")
+        watchNetwork(context)
     }
+
+    // Registered on the first failure and kept for the process: a phone that started offline
+    // would otherwise draw frames until the next launch. Validated, not merely available: a
+    // retry before DNS answers fails again and backs off for the full window.
+    private fun watchNetwork(context: Context) {
+        if (!watchingNetwork.compareAndSet(false, true)) return
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            @Volatile private var online = runCatching {
+                manager.getNetworkCapabilities(manager.activeNetwork)?.validated() == true
+            }.getOrDefault(false)
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val now = capabilities.validated()
+                val arrived = now && !online
+                online = now
+                if (!arrived || failedUntil.isEmpty()) return
+                failedUntil.clear()
+                _retries.update { it + 1 }
+            }
+
+            override fun onLost(network: Network) {
+                online = false
+            }
+        }
+        runCatching { manager.registerDefaultNetworkCallback(callback) }
+            .onFailure { FlickLog.d("posters", "network watch unavailable ${it.javaClass.simpleName}") }
+    }
+
+    private fun NetworkCapabilities.validated(): Boolean =
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 
     private class Entry(val art: FilmArt?, val atMs: Long)
 

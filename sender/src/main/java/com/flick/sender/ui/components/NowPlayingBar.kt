@@ -209,6 +209,9 @@ internal fun NowPlayingDock(
                 hazeState = hazeState,
                 morphing = morphing,
                 growth = growth,
+                // A bar on its way out — into the card or off the window — must not take the
+                // taps meant for what it is uncovering.
+                holdTouches = this@AnimatedVisibility.transition.targetState == EnterExitState.Visible,
                 // The bar is the surface being left only when it is on its way out INTO
                 // the remote; every other departure is the cast itself ending.
                 morphBounds = Modifier.remoteCardBounds(
@@ -398,6 +401,7 @@ private fun DockBar(
     hazeState: HazeState,
     morphing: Boolean,
     growth: () -> Float,
+    holdTouches: Boolean,
     morphBounds: Modifier,
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
@@ -487,7 +491,8 @@ private fun DockBar(
                 backdropEffect = backdropEffect,
                 edges = { dockEdges(p()) },
             )
-            .clip(shape),
+            .clip(shape)
+            .then(if (holdTouches) Modifier.holdsTouches() else Modifier),
     ) {
         // A layer of its own so the clock that moves it can ask for no more frames than a
         // 3 dp line needs, whatever the bar around it is doing.

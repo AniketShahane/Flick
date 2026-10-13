@@ -359,7 +359,7 @@ internal fun FlickPad(
         )
         Spacer(Modifier.height(captionGap))
         Column(
-            Modifier.fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance),
+            Modifier.fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance, flat = true),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(

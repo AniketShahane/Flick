@@ -2,6 +2,7 @@ package com.flick.sender.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -30,9 +31,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.DecodeResult
+import coil.decode.Decoder
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.request.SuccessResult
 import coil.size.Precision
 import coil.size.Scale
 import com.flick.sender.media.FilmArt
@@ -42,9 +46,13 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.ui.components.videoImageLoader
 import com.flick.sender.ui.theme.LocalFlickColors
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 
 val LocalFilmPosters = staticCompositionLocalOf { true }
@@ -64,7 +72,8 @@ fun MediaItem.rememberFilmArt(): FilmArt? {
     val art by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
         // Re-read on a new query: produceState keeps the previous value across a key change.
         value = query?.let { FilmPosters.cached(context, it) }
-        if (query != null && value == null) value = FilmPosters.art(context, query)
+        if (query == null) return@produceState
+        FilmPosters.retries.collect { if (value == null) value = FilmPosters.art(context, query) }
     }
     return art?.takeIf { enabled }
 }
@@ -533,9 +542,7 @@ fun warmFilmPoster(context: Context, imageLoader: ImageLoader, posterPath: Strin
     imageLoader.enqueue(
         ImageRequest.Builder(appContext)
             .data(heroUrl)
-            .size(WarmPosterWidthPx, WarmPosterHeightPx)
-            .precision(Precision.INEXACT)
-            .memoryCachePolicy(CachePolicy.DISABLED)
+            .diskOnly()
             .build(),
     )
 }
@@ -560,7 +567,11 @@ private const val PlaceholderPosterHeightPx = 171
  * Looks up art for every title in [items] and puts the images a tile draws into Coil's disk
  * cache, so a film added since the last visit already has its art when it is first scrolled
  * to — and still has it offline. Titles already known cost nothing: the lookup answers from
- * its own cache and Coil from its disk.
+ * its own cache, and an image this process has already put on disk is not asked for again.
+ *
+ * A few at a time, and inside the caller's job: every resume reloads the library, and a whole
+ * library enqueued at once is hundreds of fetches queued on the disk cache's one lock — which it
+ * holds for its journal writes — ahead of the grid's own, and left running by a cancel.
  */
 suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
     if (!FilmPosters.available) return
@@ -569,20 +580,53 @@ suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
     val queries = withContext(Dispatchers.Default) {
         items.mapNotNull { FilmPosterPolicy.queryFor(VideoNames.parse(it.name)) }.distinctBy { it.cacheKey }
     }
-    for (query in queries) {
-        val art = FilmPosters.art(appContext, query) ?: continue
-        listOfNotNull(
-            art.backdrop?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.BACKDROP_WIDTH) },
-            art.logo?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.LOGO_WIDTH) },
-            art.poster?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.TILE_WIDTH) },
-        ).forEach { url ->
-            // Disk only: the memory cache belongs to what is on screen.
-            loader.enqueue(
-                ImageRequest.Builder(appContext)
-                    .data(url)
-                    .memoryCachePolicy(CachePolicy.DISABLED)
-                    .build(),
-            )
+    val gate = Semaphore(PrefetchParallelism)
+    // Two films can share an image, and a url in flight is not yet in [PrefetchedArt].
+    val seen = HashSet<String>()
+    coroutineScope {
+        for (query in queries) {
+            val art = FilmPosters.art(appContext, query) ?: continue
+            listOfNotNull(
+                art.backdrop?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.BACKDROP_WIDTH) },
+                art.logo?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.LOGO_WIDTH) },
+                art.poster?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.TILE_WIDTH) },
+            ).filterNot { it in PrefetchedArt || !seen.add(it) }.forEach { url ->
+                gate.acquire()
+                launch {
+                    try {
+                        // Disk only: the memory cache belongs to what is on screen.
+                        val result = loader.execute(
+                            ImageRequest.Builder(appContext)
+                                .data(url)
+                                .diskOnly()
+                                .build(),
+                        )
+                        if (result is SuccessResult) PrefetchedArt.add(url)
+                    } finally {
+                        gate.release()
+                    }
+                }
+            }
         }
     }
+}
+
+/** Urls this process has already put on disk; one evicted since is fetched by its tile instead. */
+private val PrefetchedArt: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+private const val PrefetchParallelism = 2
+
+/**
+ * Fetches onto disk and stops there. A request with its memory cache off still DECODES, and a
+ * prefetch of the whole library is three full-size decodes per film queued ahead of the ones the
+ * grid is waiting for. The no-op decode runs where the fetch finished rather than queueing on the
+ * grid's two decode threads behind real decodes, holding its disk snapshot open while it waits.
+ */
+private fun ImageRequest.Builder.diskOnly(): ImageRequest.Builder = this
+    .memoryCachePolicy(CachePolicy.DISABLED)
+    .decoderFactory(DiskOnlyDecoder)
+    .decoderDispatcher(Dispatchers.Unconfined)
+
+private val DiskOnlyDecoder = Decoder.Factory { _, _, _ ->
+    Decoder { DecodeResult(drawable = ColorDrawable(), isSampled = false) }
 }

@@ -123,9 +123,17 @@ one; back has no delays at all.
   follow the card, so they are gated by the travel as well as their own track: going home they
   are gone by 15% of the way instead of fading in place over the library.
 - **Layering.** The page's ground, backdrop, scrim and glow sit under the card; the card is drawn
-  in the shared-element overlay, so it also passes over the chrome while it travels. Going back,
-  the library is placed beneath the page it is leaving (as is the connecting screen at a send, §2), and every arriving route otherwise takes
-  a higher layer, so a flip reversed mid-way keeps the page on top while it fades.
+  in the shared-element overlay, so it also passes over the chrome while it travels. Library and
+  detail are one entry to the route switch (`LibraryStack` in `FlickApp.kt`): the page is always
+  drawn over a library that stays composed (and the connecting screen arrives beneath the page it
+  leaves at a send, §2), so a flip reversed mid-way keeps the page on top
+  while it fades, and closing the page only redraws the grid. The grid is drawn through an empty
+  clip while the page is settled over it (left undrawn, its render nodes would drop their
+  display lists and all be re-recorded in the close's first frame), hidden from TalkBack and focus, and takes no touches. Each end
+  of the flip's bounds is switched off while it rests, so every leg matches from where the tile
+  and the seat are now, not where the last leg left them. A stack left with its page up (for
+  the cast, or the Connect tab) arrives back without a flip: once its exit is over its page is
+  closed unseen, and only one asked back while that exit still runs is replaced by a new entry.
 - **Chrome.** The nav and dock wait below the window while the card comes back and are released
   when 12% of the travel is left, so their rise overlaps the card's last settle (at most 560 ms
   if no card is flying).
@@ -133,9 +141,9 @@ one; back has no delays at all.
   the file, asked for at the size the tile drew it so it is the tile's own decode in memory; the
   copy cached under the plain URL stands in if it is not. The art's ground is the tile's surface,
   never black. Back: the pad's poster with its hairline, over the small poster (w342) at 228 ×
-  342 px, which the tap puts in memory. While a tile is on screen its small poster is kept in
-  memory at 114 × 171 px, and stands in for both until they land, so the back is never an empty
-  ground. At the tap the full-size poster is fetched to disk only, and the seat decodes it at
+  342 px, which the tap puts in memory. While a tile is on screen its small poster is in memory
+  (at 114 × 171 px for a backdrop tile, at the tile's own size for a poster tile), and stands in
+  for both until they land, so the back is never an empty ground. At the tap the full-size poster is fetched to disk only, and the seat decodes it at
   its own size. No warm is unsized, so none evicts the grid the card lands back on.
 - **The seat is measured.** The page's first frame sizes the seat from the blocks it measured
   last time (identity, pad chrome and notice) rather than from an estimate, so the card flies to
