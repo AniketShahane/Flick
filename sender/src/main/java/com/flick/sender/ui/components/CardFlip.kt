@@ -39,6 +39,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
@@ -190,6 +191,14 @@ internal fun flipLanded(move: Float, flip: Float): Boolean =
 internal fun flipFaceHome(offset: Offset, size: IntSize, slot: IntSize): Boolean =
     abs(offset.x) <= FaceHomeWithinPx && abs(offset.y) <= FaceHomeWithinPx && size == slot
 
+/**
+ * Whether the card the seat draws is the tile face's size. In the overlay the card is drawn at the
+ * shared bounds' current position (the tile's end drives it coming home), but at the size the
+ * seat's OWN bounds animation measured it to; the two animations run apart, so the tile can be
+ * home while the card is still a pixel or two short of it at its bottom and right edges.
+ */
+internal fun flipSeatFitsFace(seat: IntSize?, face: IntSize?): Boolean = seat != null && seat == face
+
 private const val FaceHomeWithinPx = 0.5f
 
 /** Whether every track of a pose is at rest at one end — a leg starting here starts fresh. */
@@ -201,30 +210,36 @@ internal fun flipStaggerSteps(tracks: List<FlipTrack>): List<Int> =
     tracks.map { it.delayMs }.filter { it > 0 }.distinct().sorted()
 
 /**
- * The travel's spring for the seat's end of the bounds on the leg its transition is heading
- * into. Each end measures and places itself from its OWN bounds animation, on its own end's
- * spring, so the seat — the card that is drawn — must be on the same spring the tile's end and
- * the travel track are on, or it lands somewhere the hand-back is not.
+ * The travel's spring for the seat's end of the bounds when its transition heads for [target].
+ * Each end measures and places itself from its OWN bounds animation, on its own end's spring, so
+ * both ends must pick the same spring for the same leg, or the card that is drawn (the seat's)
+ * lands somewhere the copy that takes it back (the tile's) is not.
  */
 internal fun seatBoundsTrack(target: EnterExitState): FlipTrack =
     if (target == EnterExitState.Visible) CardFlipMotion.MoveOpen else CardFlipMotion.MoveBack
 
-/** The tile's end only ever drives on the way back; on the way out it is hidden. */
-internal val TileBoundsTrack: FlipTrack get() = CardFlipMotion.MoveBack
+/** The same choice from the tile's side, whose page is coming back when it heads for Visible. */
+internal fun tileBoundsTrack(target: EnterExitState): FlipTrack =
+    if (target == EnterExitState.Visible) CardFlipMotion.MoveBack else CardFlipMotion.MoveOpen
 
-// Read once per leg, when its bounds animation starts: a flight turned round keeps the spring
-// its leg started with. A data class, because the shared bounds hold the transform as state and
-// a new instance on every recomposition would be a write.
+// Read once per shared-transition activation, not per leg: the bounds keep the first spec they
+// were given until no shared transition is running. So a Back pressed before the open is idle
+// keeps both ends on the open spring; what matters is that both ends made the same choice.
+// Data classes, because the shared bounds hold the transform as state and a new instance on
+// every recomposition would be a write.
 @OptIn(ExperimentalSharedTransitionApi::class)
 private data class SeatBounds(val transition: Transition<EnterExitState>) : BoundsTransform {
     override fun createAnimationSpec(initialBounds: Rect, targetBounds: Rect): FiniteAnimationSpec<Rect> =
-        seatBoundsTrack(transition.targetState).let { spring(it.dampingRatio, it.stiffness, Rect.VisibilityThreshold) }
+        seatBoundsTrack(transition.targetState).boundsSpring()
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)
-private val TileBounds = BoundsTransform { _, _ ->
-    spring(TileBoundsTrack.dampingRatio, TileBoundsTrack.stiffness, Rect.VisibilityThreshold)
+private data class TileBounds(val transition: Transition<EnterExitState>) : BoundsTransform {
+    override fun createAnimationSpec(initialBounds: Rect, targetBounds: Rect): FiniteAnimationSpec<Rect> =
+        tileBoundsTrack(transition.targetState).boundsSpring()
 }
+
+private fun FlipTrack.boundsSpring(): SpringSpec<Rect> = spring(dampingRatio, stiffness, Rect.VisibilityThreshold)
 
 /**
  * One end of the flip's bounds. No fades: the tile's copy is hidden by the caller and the
@@ -245,7 +260,7 @@ internal fun Modifier.cardFlipBounds(
         animatedVisibilityScope = animatedScope,
         enter = EnterTransition.None,
         exit = ExitTransition.None,
-        boundsTransform = if (seat) SeatBounds(animatedScope.transition) else TileBounds,
+        boundsTransform = if (seat) SeatBounds(animatedScope.transition) else TileBounds(animatedScope.transition),
         resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
         renderInOverlayDuringTransition = renderInOverlay,
     )
@@ -301,6 +316,10 @@ internal class CardFlipHandoff {
     private var tileFace: IntSize = IntSize.Zero
     private var tileMarks by mutableStateOf<TileMarks?>(null)
     private var homeFace by mutableStateOf<String?>(null)
+    // Plain: written at placement, and only the verdict they make is read anywhere.
+    private var faceAtRest = false
+    private var faceSize: IntSize? = null
+    private var seatSize: IntSize? = null
 
     /** The seat flying [key]'s card, if one is registered. Snapshot state: read it in a layer. */
     fun flightFor(key: String): SeatFlight? = flight?.takeIf { it.key == key }
@@ -310,10 +329,21 @@ internal class CardFlipHandoff {
 
     fun register(seat: SeatFlight) {
         flight = seat
+        forgetPlacements()
     }
 
     fun unregister(seat: SeatFlight) {
-        if (flight === seat) flight = null
+        if (flight === seat) {
+            flight = null
+            forgetPlacements()
+        }
+    }
+
+    private fun forgetPlacements() {
+        faceAtRest = false
+        faceSize = null
+        seatSize = null
+        homeFace = null
     }
 
     /** Written at the tap, before the route changes, so the page's first composition has it. */
@@ -331,13 +361,34 @@ internal class CardFlipHandoff {
     /** The armed tile's marks, for the card's front. Snapshot state. */
     fun marksFor(key: String): TileMarks? = tileMarks?.takeIf { tileKey == key }
 
-    /** Written from the flying card's tile at every placement of its face ([flipFaceHome]). */
-    fun reportFace(key: String, home: Boolean) {
+    /**
+     * Written from the flying card's tile at every placement of its face: whether it is at rest
+     * in its slot ([flipFaceHome]), and at what size.
+     */
+    fun reportFace(key: String, home: Boolean, size: IntSize) {
         if (flight?.key != key) return
-        homeFace = if (home) key else null
+        faceAtRest = home
+        faceSize = size
+        settle(key)
     }
 
-    /** Whether [key]'s tile face is at rest in its slot. Snapshot state. */
+    /** Written from the seat at every placement of the card it draws, coming home. */
+    fun reportSeat(key: String, size: IntSize) {
+        if (flight?.key != key) return
+        seatSize = size
+        settle(key)
+    }
+
+    // Whichever end is placed last in a frame decides; an end that has stopped moving is not
+    // placed again, and its last report still stands.
+    private fun settle(key: String) {
+        homeFace = if (faceAtRest && flipSeatFitsFace(seatSize, faceSize)) key else null
+    }
+
+    /**
+     * Whether [key]'s tile face is at rest in its slot and the seat's card is drawn at its very
+     * size, so the copy that takes over shows the pixels the card did. Snapshot state.
+     */
     fun faceHome(key: String): Boolean = homeFace == key
 
     fun tileFaceFor(key: String): IntSize? =
@@ -573,7 +624,8 @@ internal fun FlipCard(
     val tracks = seat.tracks
     val handoff = LocalCardFlipHandoff.current
     val flight = remember(seat.key, tracks, seat.animatedScope, handoff) {
-        SeatFlight(seat.key, tracks, seat.animatedScope.transition) { handoff.faceHome(seat.key) }
+        val key = seat.key
+        SeatFlight(key, tracks, seat.animatedScope.transition) { handoff.faceHome(key) }
     }
     DisposableEffect(handoff, flight) {
         handoff.register(flight)
@@ -593,6 +645,10 @@ internal fun FlipCard(
     Box(
         modifier
             .cardFlipBounds(seat.sharedScope, seat.animatedScope, state, seat = true)
+            .onPlaced { card ->
+                if (!flight.backLeg || handoff.current() !== flight) return@onPlaced
+                handoff.reportSeat(flight.key, card.size)
+            }
             .graphicsLayer {
                 val flying = inFlight()
                 val move = if (flying) tracks.move.value else 1f

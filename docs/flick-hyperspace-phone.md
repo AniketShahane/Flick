@@ -111,11 +111,16 @@ one; back has no delays at all.
   the tile's size rather than settling a few degrees on top of it. It also waits for the tile's
   face to be placed at rest in its slot (within half a pixel, at the slot's size): the travel
   track and the bounds are separate animations and the bounds start a frame or two later. Each
-  end of a shared bounds measures and places itself from its own bounds animation, so the seat's
-  end — the card that is drawn — takes the travel spring of the leg it starts (open 0.86 / 260,
-  back 1 / 520), the same one the tile's end and the travel track are on; a seat left on the open
-  spring for the way back overshot the tile by a few pixels and snapped back at the hand-off. A
-  flight turned round mid-way keeps the bounds spring its leg started with. On that frame the seat stops drawing and the
+  end of a shared bounds measures itself from its own bounds animation: in the overlay the card
+  is drawn where the shared bounds currently are (driven by the tile's end coming home), but at
+  the size the seat's end measured it to. So the hand-back also waits until the seat's card is
+  the tile face's exact size; otherwise its bottom and right edges, and the marks pinned to them,
+  stepped a pixel or two at the hand-off. Both ends pick their spring by the same rule (open
+  0.86 / 260 on the way to the page, back 1 / 520 on the way home), and the bounds read it once
+  per shared-transition activation, not per leg: a Back pressed before the open has settled, or
+  any flight turned round mid-way, keeps both ends on the spring the activation started with, so
+  they still follow one path. A seat left on the open spring while the tile's end took the back
+  one overshot the tile by a few pixels and snapped back at the hand-off. On that frame the seat stops drawing and the
   tile's own copy shows; neither waits for the route transition to end, which runs as long as
   the slowest page track. The seat is a card in flight only while a shared transition is
   active; otherwise it is the seated poster, fading with the page.

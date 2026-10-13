@@ -770,10 +770,14 @@ fun VideoTile(
                             renderInOverlay = !landed(),
                         )
                         .onPlaced { face ->
+                            // Before any coordinates are touched: reading them here makes every
+                            // tile's placement depend on them, and the grid re-place on each scroll.
+                            if (handoff.flightFor(flipKey) == null) return@onPlaced
                             val slotCoords = face.parentLayoutCoordinates ?: return@onPlaced
                             handoff.reportFace(
                                 flipKey,
                                 flipFaceHome(face.positionInParent(), face.size, slotCoords.size),
+                                face.size,
                             )
                         }
                         .hideWhileFlipping(flipScopes.first, flipState, landed)

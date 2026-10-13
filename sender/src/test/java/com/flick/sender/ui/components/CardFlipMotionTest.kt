@@ -123,16 +123,27 @@ class CardFlipMotionTest {
     }
 
     @Test fun theCardThatIsDrawnTravelsOnTheSameSpringAsTheEndThatTakesItBack() {
+        val hidden = listOf(EnterExitState.PostExit, EnterExitState.PreEnter)
+        // Opening: the page heads for Visible while the grid leaves.
         assertEquals(CardFlipMotion.MoveOpen, seatBoundsTrack(EnterExitState.Visible))
-        for (leaving in listOf(EnterExitState.PostExit, EnterExitState.PreEnter)) {
+        for (leaving in hidden) assertEquals(CardFlipMotion.MoveOpen, tileBoundsTrack(leaving))
+        // Back: the page leaves while the grid heads for Visible.
+        for (leaving in hidden) {
             val seat = seatBoundsTrack(leaving)
-            assertEquals(TileBoundsTrack.dampingRatio, seat.dampingRatio, 0f)
-            assertEquals(TileBoundsTrack.stiffness, seat.stiffness, 0f)
+            assertEquals(tileBoundsTrack(EnterExitState.Visible), seat)
             // And the travel track the landing is judged on.
-            assertEquals(CardFlipMotion.MoveBack.dampingRatio, seat.dampingRatio, 0f)
-            assertEquals(CardFlipMotion.MoveBack.stiffness, seat.stiffness, 0f)
+            assertEquals(CardFlipMotion.MoveBack, seat)
             assertEquals(1f, seat.dampingRatio, 0f)
         }
+    }
+
+    @Test fun theCardIsHandedBackOnlyAtTheFacesOwnSize() {
+        val face = IntSize(412, 232)
+        assertTrue(flipSeatFitsFace(IntSize(412, 232), face))
+        assertFalse(flipSeatFitsFace(IntSize(411, 232), face))
+        assertFalse(flipSeatFitsFace(IntSize(412, 230), face))
+        assertFalse(flipSeatFitsFace(null, face))
+        assertFalse(flipSeatFitsFace(face, null))
     }
 
     @Test fun theFaceIsHomeOnlyWithinHalfAPixelAtTheSlotsOwnSize() {
