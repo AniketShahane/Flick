@@ -586,6 +586,7 @@ fun VideoTile(
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
     cardFlip: Boolean = false,
+    placed: () -> Boolean = { true },
 ) {
     val colors = LocalFlickColors.current
     val context = LocalContext.current
@@ -619,9 +620,12 @@ fun VideoTile(
     } else {
         null
     }
+    val currentPlaced by rememberUpdatedState(placed)
     val flipState = flipScopes?.let { (shared, animated) ->
         val tileTransition = animated.transition
-        val config = remember(tileTransition) { FlipEndConfig(tileTransition, EnterExitState.PostExit) }
+        val config = remember(tileTransition) {
+            FlipEndConfig(tileTransition, EnterExitState.PostExit) { currentPlaced() }
+        }
         with(shared) { rememberSharedContentState(cardFlipKey(item.id), config) }
     }
     val handoff = LocalCardFlipHandoff.current

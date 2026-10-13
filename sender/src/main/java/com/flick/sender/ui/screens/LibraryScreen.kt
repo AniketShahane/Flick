@@ -280,17 +280,24 @@ internal fun LibraryScreen(
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
+    // The shell rebuilds these on every route change; the grid's content captures them, and a
+    // new instance there is a new item provider and every composed row run again.
+    val currentActive by rememberUpdatedState(active)
+    val currentHidden by rememberUpdatedState(hidden)
+    val stableActive = remember { { currentActive() } }
+    val stableHidden = remember { { currentHidden() } }
     // The scope and its source rows arrive together; search is applied locally below so
     // changing a query never asks MediaStore to walk the library again.
     // Held while the stack is hidden: a reload would compose tiles that start art lookups and
     // still extraction from the storage a cast is being served from, for a grid nobody sees.
-    val library by controller.library.collectAsStateUnless(hidden)
+    // Held together, so the empty-state latch never sees one read's rows with another's flags.
+    val library by controller.library.collectAsStateUnless(stableHidden)
     val folderScope = library.scope
     val scoped = library.scoped
     val sortOrder by controller.librarySort.collectAsState()
-    val loading by controller.libraryLoading.collectAsState()
-    val mediaAccess by controller.mediaAccess.collectAsState()
-    val libraryComplete by controller.libraryComplete.collectAsState()
+    val loading by controller.libraryLoading.collectAsStateUnless(stableHidden)
+    val mediaAccess by controller.mediaAccess.collectAsStateUnless(stableHidden)
+    val libraryComplete by controller.libraryComplete.collectAsStateUnless(stableHidden)
     val connectedTv by controller.connectedTv.collectAsState()
     val castingItem by controller.castingItem.collectAsState()
     val showSupportInvitation by controller.showSupportInvitation.collectAsState()
@@ -310,8 +317,8 @@ internal fun LibraryScreen(
     // State, not a value: the 2 s telemetry poll must stop at the pill that shows it
     // rather than rebuilding the whole grid.
     // Held while the detail page is up over the grid: the page polls the same link itself.
-    val signal = rememberSignalState(polling = active)
-    val wifiLinkUp = rememberWifiLinkUp(signal, polling = active)
+    val signal = rememberSignalState(polling = stableActive)
+    val wifiLinkUp = rememberWifiLinkUp(signal, polling = stableActive)
     val on24GHz by remember(signal) { derivedStateOf { signal.value.on24GHz } }
     val compactTiles = isCompactHeight(LocalConfiguration.current.screenHeightDp)
     val mediaAction = MediaLibraryActionPolicy.forAccess(mediaAccess)
@@ -326,7 +333,6 @@ internal fun LibraryScreen(
 
     var choosingFolder by remember { mutableStateOf(false) }
     // Hidden, the sheet would keep the shell's chrome away and a Back for itself on the stack's return.
-    val currentHidden by rememberUpdatedState(hidden)
     LaunchedEffect(Unit) {
         snapshotFlow { currentHidden() }.collect { gone -> if (gone) choosingFolder = false }
     }
@@ -371,7 +377,7 @@ internal fun LibraryScreen(
             showSupportInvitation = supportInvitationVisible,
             onOpenSupport = onOpenSupport,
             onDismissSupportInvitation = controller::dismissSupportInvitation,
-            hidden = hidden,
+            hidden = stableHidden,
         )
         return
     }
@@ -437,7 +443,7 @@ internal fun LibraryScreen(
     // handler living there would hand Back to the shell, which leaves the library, while
     // search is still open and still filtering what is on screen. Not while the screen is
     // not the route: the grid stays composed under the detail page, whose Back this would take.
-    SearchBackHandler(enabled = { active() && uiState.searchOpen }, onBack = closeSearch)
+    SearchBackHandler(enabled = { stableActive() && uiState.searchOpen }, onBack = closeSearch)
 
     // The pull's own claim on the indicator, which is not the same claim as `loading`:
     // the library also reloads on a permission grant and on every return to this screen,
@@ -526,7 +532,7 @@ internal fun LibraryScreen(
                         castingItem = castingItem,
                         signal = signal,
                         wifiLinkUp = wifiLinkUp,
-                        hidden = hidden,
+                        hidden = stableHidden,
                     )
                 }
                 if (supportInvitationVisible) {
@@ -558,7 +564,7 @@ internal fun LibraryScreen(
                         onQueryChange = { uiState.searchQuery = it },
                         onFocusHandled = { uiState.searchFocusPending = false },
                         onCloseSearch = closeSearch,
-                        active = active,
+                        active = stableActive,
                     )
                 }
                 if (on24GHz) {
@@ -638,6 +644,8 @@ internal fun LibraryScreen(
                         sharedScope = sharedScope,
                         animatedScope = animatedScope,
                         cardFlip = cardFlip,
+                        // The cache window keeps rows composed past the viewport.
+                        placed = { uiState.grid.layoutInfo.visibleItemsInfo.any { it.key == item.id } },
                         modifier = Modifier
                             .animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
@@ -652,7 +660,7 @@ internal fun LibraryScreen(
         ArtPipelineWarmup(
             ground = colors.canvas,
             ready = {
-                active() && settled() && animatedScope?.transition?.restsVisible() != false &&
+                stableActive() && settled() && animatedScope?.transition?.restsVisible() != false &&
                     !uiState.grid.isScrollInProgress
             },
         )
@@ -1256,8 +1264,9 @@ private fun LibraryControls(
         // however wide the window is and however long the folder name beside them runs.
         LibrarySortChip(
             order = sortOrder,
+            enabled = !searchOpen,
             // Its menu is a window of its own, which would stay over a route that replaced the grid.
-            enabled = !searchOpen && active(),
+            active = active,
             onChoose = onChooseSort,
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -1623,6 +1632,7 @@ private fun LibraryTile(
     sharedScope: SharedTransitionScope? = null,
     animatedScope: AnimatedVisibilityScope? = null,
     cardFlip: Boolean = false,
+    placed: () -> Boolean = { true },
 ) {
     val context = LocalContext.current
     // This tile's own share of the checkpoint map, and the reason the map itself is
@@ -1663,20 +1673,35 @@ private fun LibraryTile(
         sharedScope = sharedScope,
         animatedScope = animatedScope,
         cardFlip = cardFlip,
+        placed = placed,
     )
 }
 
-/** [this] as State, which keeps the last value it took while [paused]. */
+/**
+ * [this] as State, which keeps the value it last showed while [paused] and is not collected
+ * then. Resuming reads the flow's current value in the same composition that un-pauses, not a
+ * frame later when collection restarts.
+ */
 @Composable
 private fun <T> StateFlow<T>.collectAsStateUnless(paused: () -> Boolean): State<T> {
-    val state = remember(this) { mutableStateOf(value) }
+    val ticks = remember(this) { mutableStateOf(value) }
     val currentPaused by rememberUpdatedState(paused)
     LaunchedEffect(this) {
         snapshotFlow { currentPaused() }.collectLatest { held ->
-            if (!held) this@collectAsStateUnless.collect { state.value = it }
+            if (!held) this@collectAsStateUnless.collect { ticks.value = it }
         }
     }
-    return state
+    return remember(this) {
+        var last = value
+        derivedStateOf {
+            if (currentPaused()) {
+                last
+            } else {
+                ticks.value
+                value.also { last = it }
+            }
+        }
+    }
 }
 
 /** Settled on the visible side: no page over the tiles, and none opening or closing. */

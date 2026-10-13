@@ -241,9 +241,12 @@ internal fun Modifier.cardFlipBounds(
 internal class FlipEndConfig(
     private val transition: Transition<EnterExitState>,
     private val restingIn: EnterExitState,
+    private val placed: () -> Boolean = { true },
 ) : SharedTransitionScope.SharedContentConfig {
+    // [placed] is false for an end kept composed off screen, whose bounds are the last it was
+    // placed at: matching them would fly the card to where it no longer is.
     override val SharedTransitionScope.SharedContentState.isEnabled: Boolean
-        get() = transition.currentState != restingIn || transition.targetState != restingIn
+        get() = (transition.currentState != restingIn || transition.targetState != restingIn) && placed()
 
     override val shouldKeepEnabledForOngoingAnimation: Boolean
         get() = false
