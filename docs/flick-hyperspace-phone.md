@@ -120,8 +120,9 @@ one; back has no delays at all.
   in the shared-element overlay, so it also passes over the chrome while it travels. Library and
   detail are one entry to the route switch (`LibraryStack` in `FlickApp.kt`): the page is always
   drawn over a library that stays composed, so a flip reversed mid-way keeps the page on top
-  while it fades, and closing the page only redraws the grid. The grid is skipped at draw while
-  the page is settled over it, hidden from TalkBack and focus, and takes no touches. Each end
+  while it fades, and closing the page only redraws the grid. The grid is drawn through an empty
+  clip while the page is settled over it (left undrawn, its render nodes would drop their
+  display lists and all be re-recorded in the close's first frame), hidden from TalkBack and focus, and takes no touches. Each end
   of the flip's bounds is switched off while it rests, so every leg matches from where the tile
   and the seat are now, not where the last leg left them. A stack left with its page up (for
   the cast, or the Connect tab) is a new entry if it comes back, and arrives without a flip.

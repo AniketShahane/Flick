@@ -64,6 +64,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -907,7 +908,7 @@ private fun stackAwareDestination(state: Route, top: StackTop): ShellDestination
 
 /**
  * The library with the detail page over it. The grid stays composed — painters, measured text
- * and scroll position — while the page is up, and is skipped at draw once the page is settled
+ * and scroll position — while the page is up, and draws nothing once the page is settled
  * over it. Its tiles get a visibility scope that runs opposite to the page's, so the card flip
  * between the two ends still has an exiting and an entering side.
  *
@@ -953,10 +954,14 @@ private fun LibraryStack(
                 .focusGroup()
                 .then(if (reduceMotion) Modifier.graphicsLayer { alpha = gridAlpha.value } else Modifier)
                 // The page is opaque once it has settled; until then the grid shows through it.
+                // Under the settled page the grid is drawn through a clip that admits nothing
+                // rather than left out: a node the frame stops drawing is dropped from the render
+                // tree with its display list, and every tile's would be recorded and synced again
+                // in the close's first frame.
                 .drawWithContent {
                     val settled = stack.currentState == stack.targetState && stack.targetState != null &&
                         !sharedScope.isTransitionActive
-                    if (!settled) drawContent()
+                    if (settled) clipRect(0f, 0f, 0f, 0f) { this@drawWithContent.drawContent() } else drawContent()
                 },
         ) {
             library(tileScope)
