@@ -255,6 +255,14 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   every request for a key asks the same box, so a still smaller than that box on both axes (a
   portrait or low-resolution film, a provider thumbnail under the hero's box) is a memory hit
   rather than a fresh search each time it is asked for.
+- **A one-colour frame is never a still.** A phone's decoder can fail on a stream without
+  throwing and hand back a zeroed frame, which reads as flat green (seen on a 10-bit HEVC
+  WEBRip whose MediaStore thumbnail was a single #005F01). `FrameStats.uniform` (luma spread
+  under 2) marks it; neither the provider thumbnail nor a search candidate that is uniform is
+  kept even as a last resort. When that is all the file gives, `VideoStills.still` answers
+  `Still.NoPicture`, the fetcher fails the request rather than falling through to Coil's
+  `VideoFrameDecoder` (the same decoder, the same green), and the seat's ground shows. The
+  verdict is remembered, re-reading only the provider thumbnail on later binds.
 - **The library is never rebuilt by another route.** The stack is composed beside the route
   switch (`LibraryHosts` in `FlickApp.kt`), recorded into a graphics layer and drawn only by its
   entry in the switch, so it takes that entry's transitions unchanged. With another route up it
