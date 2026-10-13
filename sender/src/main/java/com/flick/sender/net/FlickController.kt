@@ -81,6 +81,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -825,6 +826,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         wifiAssociations.start()
         CastTransportState.attach(transportCommands)
         scope.launch { control.frames.collect(::onFrame) }
+        scope.launch { FilmPosters.retries.drop(1).collect { warmFilmArt(_library.value.items) } }
         scope.launch { session.haptics.collect { haptics.play(it) } }
         // The offset the viewer stopped on, and none of the ones the blade or the walk
         // passed through getting there. The recorder decides whether it is worth a write;

@@ -72,7 +72,8 @@ fun MediaItem.rememberFilmArt(): FilmArt? {
     val art by produceState(initialValue = query?.let { FilmPosters.cached(context, it) }, query) {
         // Re-read on a new query: produceState keeps the previous value across a key change.
         value = query?.let { FilmPosters.cached(context, it) }
-        if (query != null && value == null) value = FilmPosters.art(context, query)
+        if (query == null) return@produceState
+        FilmPosters.retries.collect { if (value == null) value = FilmPosters.art(context, query) }
     }
     return art?.takeIf { enabled }
 }
@@ -580,6 +581,8 @@ suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
         items.mapNotNull { FilmPosterPolicy.queryFor(VideoNames.parse(it.name)) }.distinctBy { it.cacheKey }
     }
     val gate = Semaphore(PrefetchParallelism)
+    // Two films can share an image, and a url in flight is not yet in [PrefetchedArt].
+    val seen = HashSet<String>()
     coroutineScope {
         for (query in queries) {
             val art = FilmPosters.art(appContext, query) ?: continue
@@ -587,7 +590,7 @@ suspend fun prefetchFilmArt(context: Context, items: List<MediaItem>) {
                 art.backdrop?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.BACKDROP_WIDTH) },
                 art.logo?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.LOGO_WIDTH) },
                 art.poster?.let { FilmPosterPolicy.imageUrl(it, FilmPosterPolicy.TILE_WIDTH) },
-            ).filterNot { it in PrefetchedArt }.forEach { url ->
+            ).filterNot { it in PrefetchedArt || !seen.add(it) }.forEach { url ->
                 gate.acquire()
                 launch {
                     try {
