@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.sin
@@ -36,6 +37,10 @@ import kotlin.math.sin
  *
  * [vanishingFraction] is the vanishing point's height as a fraction of the field, so the
  * field converges where the screen put its poster.
+ *
+ * [surge] is the light-speed jump's progress, 0 at the jump and 1 once the field is back at
+ * its cruising loop: it pushes the field [Hyperspace.SurgeLoops] extra loops ahead and
+ * stretches the streaks while it runs. Read in the draw phase, like [intensity].
  */
 @Composable
 internal fun HyperspaceField(
@@ -43,6 +48,7 @@ internal fun HyperspaceField(
     intensity: () -> Float,
     modifier: Modifier = Modifier,
     vanishingFraction: Float = Hyperspace.VanishingY,
+    surge: () -> Float = { 1f },
 ) {
     val clock: State<Float>? = if (loop) {
         rememberInfiniteTransition(label = "hyperspace").animateFloat(
@@ -80,9 +86,13 @@ internal fun HyperspaceField(
             val ringPaint = Paint().apply { style = PaintingStyle.Stroke }
             onDrawBehind {
                 drawRect(wash)
-                val t = clock?.value ?: return@onDrawBehind
+                val run = surge().coerceIn(0f, 1f)
+                // An offset rather than a faster clock: the phases below take the fraction,
+                // so the field is continuous through the surge and through every wrap.
+                val t = (clock?.value ?: return@onDrawBehind) + run * Hyperspace.SurgeLoops
                 val strength = intensity().coerceIn(0f, 1f)
                 if (strength <= 0f) return@onDrawBehind
+                val length = streakLength * (1f + Hyperspace.SurgeStretch * (1f - run))
                 for (index in 0 until Hyperspace.RingCount) {
                     drawRing(
                         paint = ringPaint,
@@ -103,7 +113,7 @@ internal fun HyperspaceField(
                     val dx = cos(angle)
                     val dy = sin(angle)
                     val head = streakStart + (reach - streakStart) * phase * phase
-                    val tail = (head - streakLength * phase).coerceAtLeast(streakStart)
+                    val tail = (head - length * phase).coerceAtLeast(streakStart)
                     drawLine(
                         color = streakColor(index),
                         start = Offset(centre.x + dx * tail, centre.y + dy * tail),
@@ -192,24 +202,85 @@ private fun streakColor(index: Int): Color = when {
 private fun fract(value: Float): Float = value - floor(value)
 
 /**
+ * The light-speed jump, measured in ms from the connecting screen's first frame — the
+ * moment the poster was let go on the detail page, which is streaking off the top of the
+ * window above this one as it fades.
+ */
+internal object LightSpeed {
+    /** The field's strength: dark while the streak is still on screen, then in fast. */
+    fun field(ms: Float): Float =
+        ((ms - Hyperspace.JumpFieldDelayMs) / Hyperspace.JumpFieldInMs).coerceIn(0f, 1f)
+
+    /**
+     * The surge's progress: the integral of a speed that starts at its peak at the flash
+     * and decays exponentially back to the cruising loop, normalised to end at exactly 1.
+     */
+    fun surge(ms: Float): Float {
+        val x = ((ms - Hyperspace.JumpFlashAtMs) / Hyperspace.SurgeMs).coerceIn(0f, 1f)
+        val k = Hyperspace.SurgeDecay
+        return ((1f - exp(-k * x)) / (1f - exp(-k))).coerceIn(0f, 1f)
+    }
+
+    /** The flash's opacity: a linear rise to its peak, then out on the landing's fade curve. */
+    fun flash(ms: Float): Float {
+        val since = ms - Hyperspace.JumpFlashAtMs
+        return when {
+            since <= 0f -> 0f
+            since < Hyperspace.FlashRiseMs -> Hyperspace.FlashPeak * since / Hyperspace.FlashRiseMs
+            else -> {
+                val fall = ((since - Hyperspace.FlashRiseMs) / Hyperspace.FlashFallMs).coerceIn(0f, 1f)
+                Hyperspace.FlashPeak * (1f - Hyperspace.FlashFallEasing.transform(fall))
+            }
+        }
+    }
+
+    /** The copy's arrival, 0 to 1, once the flash has mostly cleared. */
+    fun copy(ms: Float): Float {
+        val p = ((ms - Hyperspace.JumpCopyDelayMs) / Hyperspace.JumpCopyInMs).coerceIn(0f, 1f)
+        return Hyperspace.CopyEasing.transform(p)
+    }
+}
+
+/**
  * Every number in docs/flick-hyperspace-phone.md; change either and change both.
  */
 internal object Hyperspace {
     /** One loop of the field: every ring and streak returns to its starting pose. */
     const val LoopMs = 1600
 
-    /** The poster holds at its seat this long before the jump, so it reads as the film. */
-    const val WarpHoldMs = 280L
+    /** The whole jump; past this every [LightSpeed] track is at rest. */
+    const val JumpMs = 1600
 
-    /** The poster shooting into the vanishing point. */
-    const val WarpMs = 640
-    const val WarpEndScale = 0.02f
+    /** The field comes in as the streak leaves the window. */
+    const val JumpFieldDelayMs = 120f
+    const val JumpFieldInMs = 100f
 
-    /** The last part of the warp in which the poster fades, so it never parks as a speck. */
-    const val WarpFadeFraction = 0.15f
+    /** The flash: up to [FlashPeak] in [FlashRiseMs], out over [FlashFallMs]. */
+    const val JumpFlashAtMs = 180f
+    const val FlashRiseMs = 60f
+    const val FlashFallMs = 350f
+    const val FlashPeak = 0.75f
+    val FlashFallEasing: Easing = CubicBezierEasing(0.4f, 0f, 1f, 1f)
+    /** The flash's radius as a share of the window's height, centred on its top edge. */
+    const val FlashReach = 1f
+    val FlashCore = Color(0xFFEBF2FF)
+    val FlashEdge = Color(0x666FA0FF)
 
-    /** Accelerating all the way in: a cubic ease-in. */
-    val WarpEasing: Easing = CubicBezierEasing(0.32f, 0f, 0.67f, 0f)
+    /**
+     * The surge: [SurgeLoops] extra loops over [SurgeMs], on a speed decaying at [SurgeDecay]
+     * — about 4.7× the cruising speed at the flash, back to 1× by the end.
+     */
+    const val SurgeMs = 1400f
+    const val SurgeLoops = 1f
+    const val SurgeDecay = 3.1f
+    /** Extra streak length at the surge's peak, as a share of [StreakLengthDp]. */
+    const val SurgeStretch = 1.6f
+
+    /** "On its way" fades up once the flash has mostly gone. */
+    const val JumpCopyDelayMs = 450f
+    const val JumpCopyInMs = 350f
+    const val CopyRiseDp = 12f
+    val CopyEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
     /** Height of the vanishing point, as a fraction of the window, where the window has room. */
     const val VanishingY = 0.38f

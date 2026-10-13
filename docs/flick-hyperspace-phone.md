@@ -1,7 +1,7 @@
 # Hyperspace — the phone side of a cast
 
-Three beats: throw the poster (detail page), ride the warp (connecting), land (flash into
-the remote). The poster reaches the page by turning over out of the library tile (§4). These
+Three beats: throw the poster (detail page), jump to light speed and ride the warp
+(connecting), land (flash into the remote). The poster reaches the page by turning over out of the library tile (§4). These
 numbers and the constants in code are one thing: change either, change both.
 
 Code: `ui/components/FlickPad.kt` (`FlickPadMotion`), `ui/components/FlickPadPolicy.kt`,
@@ -32,7 +32,7 @@ splits: identity and card in a scrolling left column, the pad centred on the rig
 | Claim | the page scrolls when it overflows, so the pad takes a drag only once it crosses touch slop with the page unable to scroll further down (`!canScrollForward`), and not a downward one the page could scroll back; anything else is left unconsumed and scrolls the page |
 | Arm | finger ≥ 80 dp up from where it went down (touch slop included) → "Let go to send" + `GestureThresholdActivate` haptic |
 | Send | armed, or ≥ 20 dp up and ≥ 1000 dp/s upward at release |
-| Send motion | `GestureEnd` haptic and `flickToTv` at release; then, decoratively, poster up 640 dp in 250 ms, Release curve (0.12, 0.62, 0.24, 1); fades on (0.4, 0, 1, 1) |
+| Send motion | `GestureEnd` haptic and `flickToTv` at release; then, decoratively, the light-speed streak: over 200 ms on one ease-in cubic (0.32, 0, 0.67, 0) the poster stretches to 0.12 × its width and 3.2 × its height, burns toward `#EAF1FF` (0.9 over the art, inside the card's clip) and leaves 900 dp up; its sideways offset and tilt are let go linearly over the same 200 ms; cut over the last 50 ms. The glow under it stretches with it into a beam |
 | Not sent | springs back on the scheme's default spatial spring — also when the gesture is cut off mid-drag (the pad disabled, or the page taking the drag) |
 | Still composed 700 ms after a send | poster returns to its seat, 220 ms fade |
 | Disabled | `!progressReady \|\| castStart.isCommitting()` |
@@ -49,18 +49,24 @@ available. A link advisory also keeps its "Cast anyway" action.
 | Wash | radial from vanishing point: `#1F3AA8` → `#0B1640` at 45% → `#04070F`; radius 0.75 × the longer side |
 | Vanishing point | centre x, 38% of the window height where there is room; the field converges on it wherever it sits |
 | Copy | starts at `min(0.38·H + gap, H − 78 dp pill band − nav bar − 212 dp × max(fontScale, 1))`, never closer than gap + 24 dp to the top; the vanishing point is `copy top − gap`, so on a short window (landscape, split screen) the whole scene lifts and Cancel stays above the fold. Gap 72 dp roomy, 40 dp compact |
-| Roomy | H ≥ 488 dp × max(fontScale, 1): half the poster (78) + 72 gap + 212 copy + 78 pill band + 48 nav bar |
-| Warp | poster (its own 104 × 156 card, corner 8% of the width, same hairline — smaller than the pad's, because the roomy budget below is half of it) holds 280 ms, then scale 1 → 0.02 over 640 ms, ease-in cubic (0.32, 0, 0.67, 0); fades over the last 15% |
-| Loop | one 1600 ms linear clock, read in the draw phase of one canvas; ramps in with the warp |
+| Roomy | H ≥ 488 dp × max(fontScale, 1): 78 dp kept above the vanishing point (where the warp poster used to sit; the landing still grows out of it) + 72 gap + 212 copy + 78 pill band + 48 nav bar |
+| Arrival | the screen is placed **under** the detail page and shown at once (no enter transition); the page fades off it over 220 ms, ease-in cubic, no scale (`LaunchFadeMs`), so the poster's streak is seen whole. There is no second poster here: the thrown one is the jump |
+| Jump | one 1600 ms linear clock from the screen's first frame (`LightSpeed`, read in the draw phase only). Field: dark until 120 ms, in over 100 ms. Flash at 180 ms: radial from the top centre, `#EBF2FF` → `#6FA0FF` at 0.4, radius 1 × the window height, over everything; 0 → 0.75 in 60 ms (linear), → 0 in 350 ms (0.4, 0, 1, 1). Surge from 180 ms over 1400 ms: the field runs 1 extra loop ahead on a speed decaying as e^(−3.1·x) (≈ 4.7× at the flash, 1× at the end), streaks up to 2.6 × as long at its peak. Title and route line fade up 12 dp from 450 ms over 350 ms (0.2, 0, 0, 1) |
+| Loop | one 1600 ms linear clock, read in the draw phase of one canvas; the surge is an offset on it, so every phase stays continuous |
 | Rings | 4 phone-shaped (height 2.05 × width, corner 0.16 × width), staggered ¼ period; size ∝ phase²; reach 1.3 × the window; stroke 1.5 → 3 dp; `rgba(111,160,255,.55)`, ring 2 is amber `#FFB61E` at 0.8 |
 | Streaks | 12 radial, 30° apart ± fixed jitter; speed 1× or 2× the clock; 2 dp, born 18 dp out, up to 72 dp long; white / `#9FC0FF` / amber |
 | Fade | every ring and streak: in over its first 12%, linear out to 0 at end of life (seamless wrap) |
 | Copy text | "On its way" (Bricolage 26 sp, white); "film · TV name" (`#A8B8DC`); stage line, slow-link card, Cancel, status pill unchanged |
-| Reduce motion | static wash and copy only: no poster, no loop. A paused window stops the loop too |
-| Frame rate | the panel's peak through the hold and the warp; 30 Hz for the wait after it (`loopFrameRate`). The landing is under the shell's peak vote for the shared transition |
+| Reduce motion | static wash and copy only: no streak, no flash, no loop; the route does not animate. A paused window stops the loop too |
+| Restored mid-handshake | the jump is not made again (`warped` is saved): field, copy and loop at rest, no flash |
+| Frame rate | the panel's peak through the jump; 30 Hz for the wait after it (`loopFrameRate`). The landing is under the shell's peak vote for the shared transition |
 
 The shared `CastPosterKey` seat is now a 32 × 18 dp empty box at the vanishing point, so the
 remote's poster grows out of the warp when the first frame lands.
+
+When the TV has not been heard from recently, a liveness ping runs before the route changes,
+so the streak can leave a detail page that stays up a moment longer; the jump then starts when
+the connecting screen arrives.
 
 ## 3. Landing (Connecting → NowPlaying only)
 

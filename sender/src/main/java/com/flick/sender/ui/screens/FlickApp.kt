@@ -464,14 +464,13 @@ fun FlickApp(
                                             EnterTransition.None togetherWith ExitTransition.None
                                         }
 
+                                    // The jump to light speed. The connecting screen is already
+                                    // under the page, mid-jump, and the page fades off it while its
+                                    // poster streaks out of the top; nothing scales, because the
+                                    // streak and the field's surge are the movement.
                                     RouteMotion.LAUNCH ->
-                                        (
-                                            fadeIn(motionScheme.defaultEffectsSpec()) +
-                                                scaleIn(motionScheme.defaultSpatialSpec(), initialScale = LaunchNear)
-                                            ) togetherWith (
-                                            fadeOut(motionScheme.fastEffectsSpec()) +
-                                                scaleOut(motionScheme.defaultSpatialSpec(), targetScale = LaunchFar)
-                                            )
+                                        EnterTransition.None togetherWith
+                                            fadeOut(tween(LaunchFadeMs, easing = LaunchFadeEasing))
 
                                     RouteMotion.RETURN ->
                                         (
@@ -507,8 +506,10 @@ fun FlickApp(
                             }
                             transform.apply {
                                 targetContentZIndex = routeLayers.next(
-                                    below = !reduceMotion && motion == RouteMotion.FLIP &&
-                                        to == ShellDestination.LIBRARY,
+                                    below = !reduceMotion && (
+                                        (motion == RouteMotion.FLIP && to == ShellDestination.LIBRARY) ||
+                                            motion == RouteMotion.LAUNCH
+                                        ),
                                 )
                             }
                         },
@@ -776,10 +777,16 @@ private class RouteLayers {
 /** The seven arms of the route table. Every pair resolves to exactly one of them. */
 private enum class RouteMotion { FLIP, HERO, CONTAINER, LAUNCH, RETURN, LATERAL, QUIET }
 
-// The launch is the one transition that moves toward the TV rather than sideways: the
-// surface being left recedes, the surface arriving overshoots past the viewer.
+// Leaving a cast inverts the launch's old zoom: the surface being left overshoots past the
+// viewer, the surface arriving comes up from behind.
 private const val LaunchNear = 1.06f
 private const val LaunchFar = 0.92f
+
+// The detail page fading off the connecting screen at a send: a little longer than the
+// poster's 200 ms streak, so the streak is seen whole, and accelerating, so the page holds
+// while the streak starts and then gets out of the way of the flash.
+private const val LaunchFadeMs = 220
+private val LaunchFadeEasing = CubicBezierEasing(0.32f, 0f, 0.67f, 0f)
 
 /**
  * The longest the bottom stack waits below the window edge for the card flying back into the

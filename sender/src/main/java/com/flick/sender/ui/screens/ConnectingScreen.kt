@@ -9,13 +9,13 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -45,11 +45,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -58,14 +58,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.lerp
-import coil.compose.AsyncImage
 import com.flick.sender.R
-import com.flick.sender.model.MediaItem
 import com.flick.sender.net.CastStartState
 import com.flick.sender.net.FlickController
 import com.flick.sender.net.LinkVerdict
-import com.flick.sender.ui.FilmPosterBackdrop
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.components.AdvisoryCard
 import com.flick.sender.ui.components.AdvisoryTone
@@ -73,33 +69,28 @@ import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.FlickSubtleButton
 import com.flick.sender.ui.components.Hyperspace
 import com.flick.sender.ui.components.HyperspaceField
+import com.flick.sender.ui.components.LightSpeed
 import com.flick.sender.ui.components.StatusKind
 import com.flick.sender.ui.components.StatusPill
 import com.flick.sender.ui.components.flickSharedFrame
-import com.flick.sender.ui.components.rememberVideoFrameRequest
-import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.motion.loopFrameRate
-import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.theme.CinemaInkDim
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.LocalFlickColors
-import com.flick.sender.ui.theme.PosterHairline
-import com.flick.sender.ui.theme.PosterShadow
-import com.flick.sender.ui.theme.posterCardShape
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
 import com.flick.sender.ui.theme.rememberIsResumed
 import com.flick.sender.ui.theme.rememberReduceMotion
-import kotlinx.coroutines.delay
 
 private enum class StepState { DONE, ACTIVE, PENDING }
 
 /**
- * S5 — connecting, as hyperspace. The film's poster shoots into the vanishing point and the
- * field keeps moving for as long as the handshake does; one honest line names the stage.
+ * S5 — connecting, as hyperspace. The screen opens mid-jump: the poster the detail page threw
+ * streaks off the top as that page fades over this one, a flash breaks, and the field surges
+ * and then keeps cruising for as long as the handshake does; one honest line names the stage.
  */
 @Composable
 fun ConnectingScreen(
@@ -194,24 +185,24 @@ fun ConnectingScreen(
     val filmName = film?.displayName()
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
     val routeLine = filmName?.let { stringResource(R.string.connecting_route, it, tvName) } ?: tvName
-    // The warp throws the portrait poster the detail page threw, never a backdrop.
-    val posterPath = film?.rememberFilmArt()?.poster
 
     FlickCinematicTheme {
         val colors = LocalFlickColors.current
         val motionScheme = MaterialTheme.motionScheme
         val reduceMotion = rememberReduceMotion()
         val resumed = rememberIsResumed()
-        // Saved so a process restored mid-handshake does not throw the poster a second time;
+        // Saved so a process restored mid-handshake does not make the jump a second time;
         // rotation never gets here, since the activity handles that change itself.
         var warped by rememberSaveable { mutableStateOf(false) }
-        val warp = remember { Animatable(if (warped || reduceMotion) 1f else 0f) }
+        // The jump's own clock in ms, read in the draw phase only, so no track of it ever
+        // recomposes the screen.
+        val jumpMs = Hyperspace.JumpMs.toFloat()
+        val jump = remember { Animatable(if (warped || reduceMotion) jumpMs else 0f) }
         LaunchedEffect(Unit) {
             if (!warped && !reduceMotion) {
-                delay(Hyperspace.WarpHoldMs)
-                warp.animateTo(1f, tween(Hyperspace.WarpMs, easing = Hyperspace.WarpEasing))
+                jump.animateTo(jumpMs, tween(Hyperspace.JumpMs, easing = LinearEasing))
             } else {
-                warp.snapTo(1f)
+                jump.snapTo(jumpMs)
             }
             warped = true
         }
@@ -228,11 +219,12 @@ fun ConnectingScreen(
             val vanishingY = copyTop - copyGap
             val vanishingFraction = if (maxHeight.value > 0f) vanishingY / maxHeight else Hyperspace.VanishingY
 
-            // The peak only for the throw into the warp; the wait after it is a slow loop, and
-            // the landing is under the shell's own vote for the shared transition.
+            // The peak only for the jump; the wait after it is a slow loop, and the landing is
+            // under the shell's own vote for the shared transition.
             HyperspaceField(
                 loop = !reduceMotion && resumed,
-                intensity = { warp.value },
+                intensity = { LightSpeed.field(jump.value) },
+                surge = { LightSpeed.surge(jump.value) },
                 vanishingFraction = vanishingFraction,
                 modifier = Modifier.fillMaxSize().loopFrameRate(!reduceMotion && resumed && !warped),
             )
@@ -251,17 +243,6 @@ fun ConnectingScreen(
                     )
                     .size(width = LandingSeatWidth, height = LandingSeatHeight),
             )
-
-            if (!warped && !reduceMotion && film != null) {
-                WarpPoster(
-                    item = film,
-                    posterPath = posterPath,
-                    progress = { warp.value },
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .offset(y = vanishingY - WarpPosterHeight / 2),
-                )
-            }
 
             // The status pill owns the foot of the window; the copy scrolls rather than
             // pushing Cancel under it. The slow-link card costs this column another ~170 dp,
@@ -286,6 +267,11 @@ fun ConnectingScreen(
                     verticalArrangement = Arrangement.spacedBy(if (roomy) 18.dp else 10.dp),
                 ) {
                     Column(
+                        modifier = Modifier.graphicsLayer {
+                            val p = LightSpeed.copy(jump.value)
+                            alpha = p
+                            translationY = Hyperspace.CopyRiseDp.dp.toPx() * (1f - p)
+                        },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
@@ -356,6 +342,24 @@ fun ConnectingScreen(
             ) {
                 StatusPill(stringResource(R.string.connecting_status), StatusKind.CONNECTING)
             }
+
+            if (!reduceMotion) {
+                // Over everything, the pill included: the light floods the whole window.
+                Box(
+                    Modifier.fillMaxSize().drawWithCache {
+                        val glare = Brush.radialGradient(
+                            0f to Hyperspace.FlashCore,
+                            1f to Hyperspace.FlashEdge,
+                            center = Offset(size.width / 2f, 0f),
+                            radius = size.height * Hyperspace.FlashReach,
+                        )
+                        onDrawBehind {
+                            val a = LightSpeed.flash(jump.value)
+                            if (a > 0f) drawRect(glare, alpha = a)
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -401,57 +405,10 @@ private fun StartingLinkCard(
     )
 }
 
-/**
- * The film's poster at its seat, then gone into the vanishing point. Decorative: the line
- * under the scene already names the film.
- */
-@Composable
-private fun WarpPoster(
-    item: MediaItem,
-    posterPath: String?,
-    progress: () -> Float,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LocalFlickColors.current
-    val imageLoader = rememberVideoImageLoader()
-    val shape = posterCardShape(WarpPosterWidth)
-    Box(
-        modifier
-            .size(width = WarpPosterWidth, height = WarpPosterHeight)
-            .graphicsLayer {
-                val p = progress()
-                val scale = lerp(1f, Hyperspace.WarpEndScale, p)
-                scaleX = scale
-                scaleY = scale
-                // Gone a beat before it reaches the point, so it never parks as a speck.
-                alpha = ((1f - p) / Hyperspace.WarpFadeFraction).coerceIn(0f, 1f)
-            }
-            .shadow(20.dp, shape, clip = false, ambientColor = PosterShadow, spotColor = PosterShadow)
-            .clip(shape)
-            .background(colors.surfaceRaisedAlt)
-            .border(1.dp, PosterHairline, shape),
-    ) {
-        if (posterPath != null) {
-            FilmPosterBackdrop(posterPath = posterPath, imageLoader = imageLoader, modifier = Modifier.fillMaxSize())
-        } else {
-            val request = rememberVideoFrameRequest(item.uri, item.durationMs)
-            if (request != null) {
-                AsyncImage(
-                    model = request,
-                    contentDescription = null,
-                    imageLoader = imageLoader,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-    }
-}
-
-// Smaller than the detail page's hero card on purpose: the roomy budget below is measured
-// against half of this height, and the card shrinks into the warp from the moment it shows.
-private val WarpPosterWidth = 104.dp
-private val WarpPosterHeight = 156.dp
+// Room kept above the vanishing point in the roomy budget: half the poster the warp used to
+// throw from there. The remote's poster still grows out of the point on the landing, so the
+// scene keeps that room rather than moving the copy up under it.
+private const val SceneAboveVanishingDp = 78f
 
 // A 16:9 speck at the vanishing point. Only its bounds matter: the remote's poster is what
 // is drawn across the flight, so this seat never shows anything of its own.
@@ -473,11 +430,11 @@ private const val MinVanishingDp = 24f
 // Allowance for a three-button navigation bar under the pill band.
 private const val NavAllowanceDp = 48f
 
-// Half the warp poster above the vanishing point, the full gap, the copy, the pill band and
+// The room above the vanishing point, the full gap, the copy, the pill band and
 // a navigation bar, at scale 1. Below this the column would start clipping its own terminal
 // control at full spacing.
 private val RoomyColumnHeightDp =
-    WarpPosterHeight.value / 2f + CopyGapRoomy.value + CopyBudgetDp + StatusPillBand.value + NavAllowanceDp
+    SceneAboveVanishingDp + CopyGapRoomy.value + CopyBudgetDp + StatusPillBand.value + NavAllowanceDp
 
 /**
  * Where the copy starts, in dp from the top: just under the vanishing point at its

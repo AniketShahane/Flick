@@ -40,6 +40,34 @@ class HyperspaceTest {
     }
 
     @Test
+    fun theSurgeRunsFromTheFlashToRest() {
+        assertEquals(0f, LightSpeed.surge(0f), EPS)
+        assertEquals(0f, LightSpeed.surge(Hyperspace.JumpFlashAtMs), EPS)
+        assertEquals(1f, LightSpeed.surge(Hyperspace.JumpFlashAtMs + Hyperspace.SurgeMs), EPS)
+        assertEquals(1f, LightSpeed.surge(Hyperspace.JumpMs.toFloat()), EPS)
+        // Fastest at the start: more than half the extra distance in the first quarter.
+        assertTrue(LightSpeed.surge(Hyperspace.JumpFlashAtMs + Hyperspace.SurgeMs / 4f) > 0.5f)
+    }
+
+    @Test
+    fun theFlashPeaksAndIsGoneBeforeTheJumpEnds() {
+        assertEquals(0f, LightSpeed.flash(0f), EPS)
+        assertEquals(0f, LightSpeed.flash(Hyperspace.JumpFlashAtMs), EPS)
+        assertEquals(Hyperspace.FlashPeak, LightSpeed.flash(Hyperspace.JumpFlashAtMs + Hyperspace.FlashRiseMs), EPS)
+        assertEquals(0f, LightSpeed.flash(Hyperspace.JumpMs.toFloat()), EPS)
+    }
+
+    @Test
+    fun everyJumpTrackIsAtRestWhenTheJumpEnds() {
+        val end = Hyperspace.JumpMs.toFloat()
+        assertEquals(1f, LightSpeed.field(end), EPS)
+        assertEquals(1f, LightSpeed.copy(end), EPS)
+        assertTrue(Hyperspace.JumpFlashAtMs + Hyperspace.SurgeMs <= end)
+        assertTrue(Hyperspace.JumpCopyDelayMs + Hyperspace.JumpCopyInMs <= end)
+        assertTrue(Hyperspace.JumpFlashAtMs + Hyperspace.FlashRiseMs + Hyperspace.FlashFallMs <= end)
+    }
+
+    @Test
     fun theAmberRingIsOneOfTheRings() {
         assertTrue(Hyperspace.AmberRing in 0 until Hyperspace.RingCount)
     }
