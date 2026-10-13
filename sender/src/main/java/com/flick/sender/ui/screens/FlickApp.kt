@@ -55,6 +55,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -198,18 +199,22 @@ fun FlickApp(
     // shell is the only composition both of them are inside.
     val navMetrics = remember { NavMetrics() }
     val navHazeState = rememberHazeState()
-    // Same reason, one level up: a stack left with its page up is disposed, and the one that
-    // replaces it comes back seated where the grid was left.
+    // Same reason, one level up: a stack left with its page up and asked back before its exit
+    // is over is replaced, and the one that replaces it comes back seated where the grid was left.
     val libraryUi = rememberLibraryUiState()
     // Library and Detail are one entry to the route switch (see [LibraryStack]): the page is
     // drawn over a grid that stays composed, so closing it only has to draw the grid again.
     // Plain, for [ShellHistory]'s reason; written before the switch reads it below.
     val stackTop = remember { StackTop(Route.Library) }
     if (route == Route.Library || route is Route.Detail) stackTop.route = route
-    // A stack left with its page up is a new entry if it comes back, even mid-exit: the
-    // entry still leaving keeps its page, and the one arriving starts settled where it is.
+    val libraryHosts = remember { LibraryHosts() }
+    // A stack left with its page up that comes back mid-exit is a new entry: the entry still
+    // leaving keeps its page, and the one arriving starts settled where it is. Read without
+    // observing, so an entry coming or going does not recompose the shell.
     val stackGeneration = remember { StackGeneration() }
-    val generation = remember(route) { stackGeneration.after(route) }
+    val generation = remember(route) {
+        stackGeneration.after(route) { stack -> Snapshot.withoutReadObservation { stack in libraryHosts.placed } }
+    }
     val baseRoute = if (route == Route.Library || route is Route.Detail) {
         RouteEntry(Route.Library, generation)
     } else {
@@ -217,9 +222,8 @@ fun FlickApp(
     }
     // The stack is composed outside the route switch, whose entry only draws it (see
     // [LibraryHosts]), so another route coming up over it no longer rebuilds it on return.
-    val libraryHosts = remember { LibraryHosts() }
     if (baseRoute.route == Route.Library) libraryHosts.entered = generation
-    val keptStack = libraryHosts.entered.takeIf { it == generation }
+    val keptStack = libraryHosts.entered.takeIf { it >= 0 }
     // Shared by the two ends of the card flip and read here: the card coming back down is what
     // releases the chrome below.
     val cardFlipHandoff = remember { CardFlipHandoff() }
@@ -453,14 +457,16 @@ fun FlickApp(
                         .animatingFrameRate(sharedScope.isTransitionActive)
                         .background(colors.surface),
                 ) {
-                    AnimatedContent(
+                    // Hoisted so the stack can tell when its entry is still sliding or scaling in:
+                    // it is laid out at rest, so a touch then would land off the tile drawn under it.
+                    val routeTransition = updateTransition(baseRoute, label = "route")
+                    routeTransition.AnimatedContent(
                         modifier = Modifier
                             .fillMaxSize()
                             // One source for the one small navigation effect. Keeping this at
                             // the route boundary lets both themes show the real content behind
                             // the pill without adding blur nodes to the scrolling children.
                             .hazeSource(navHazeState),
-                        targetState = baseRoute,
                         transitionSpec = {
                             val from = stackAwareDestination(initialState.route, stackTop)
                             val to = stackAwareDestination(targetState.route, stackTop)
@@ -540,7 +546,6 @@ fun FlickApp(
                             }
                             transform.apply { targetContentZIndex = routeLayers.next() }
                         },
-                        label = "route",
                     ) { entry ->
                         val r = entry.route
                         Box(
@@ -615,9 +620,17 @@ fun FlickApp(
                     LibraryHostLayer(libraryHosts, keptStack) { stack, placed ->
                         // Read here, not off [stackTop] alone, so this stack recomposes when the
                         // page opens or closes over it. A stack that is not the route keeps the
-                        // page it left with.
+                        // page it left with for as long as its entry is drawing it.
                         val live = baseRoute == RouteEntry(Route.Library, stack)
                         val entryTop = remember { StackTop(stackTop.route) }
+                        val revival = remember { StackRevival(live) }
+                        // Left with its page up and out of the switch (or back in it in the same
+                        // frame): the page is closed unseen, so no unpaired flip plays on return.
+                        if (entryTop.route is Route.Detail && !placed && !revival.wasLive) {
+                            entryTop.route = Route.Library
+                            revival.epoch++
+                        }
+                        revival.wasLive = live
                         if (live) entryTop.route = stackTop.route
                         // One grid at a time: every grid shares the one scroll state. A stack
                         // already replaced by a newer one is leaving under its page, so its grid goes.
@@ -631,7 +644,8 @@ fun FlickApp(
                         ) {
                             LibraryStack(
                                 top = entryTop.route,
-                                interactive = live && route == Route.Library,
+                                epoch = revival.epoch,
+                                interactive = live && route == Route.Library && routeTransition.settled,
                                 sharedScope = sharedScope,
                                 reduceMotion = reduceMotion,
                                 library = { tileScope ->
@@ -651,6 +665,8 @@ fun FlickApp(
                                             // frame the page opens.
                                             cardFlip = !reduceMotion,
                                             active = { live && route == Route.Library },
+                                            hidden = { !live && stack !in libraryHosts.placed },
+                                            settled = { routeTransition.settled && !sharedScope.isTransitionActive },
                                         )
                                     }
                                 },
@@ -857,18 +873,33 @@ private class StackTop(var route: Route)
 /** The route switch's key: the stack's entry is [Route.Library] in its [generation]. */
 private data class RouteEntry(val route: Route, val generation: Int)
 
-/** Counts the times the route left the stack with a page up. Plain, for [ShellHistory]'s reason. */
+/**
+ * Counts the times the route came back to a stack it left with a page up while that stack's entry
+ * was still [leaving]. Plain, for [ShellHistory]'s reason.
+ */
 private class StackGeneration {
     private var last: Route? = null
     private var count = 0
+    private var leftWithPage = false
 
-    fun after(route: Route): Int {
+    fun after(route: Route, leaving: (stack: Int) -> Boolean): Int {
         val inStack = route == Route.Library || route is Route.Detail
-        if (last is Route.Detail && !inStack) count++
+        if (last is Route.Detail && !inStack) leftWithPage = true
+        if (inStack && leftWithPage) {
+            leftWithPage = false
+            if (leaving(count)) count++
+        }
         last = route
         return count
     }
 }
+
+/** Whether a stack was the route at its last composition, and how often its page was closed unseen. */
+private class StackRevival(var wasLive: Boolean, var epoch: Int = 0)
+
+/** Neither moving nor about to: the target has been reached and nothing is running. */
+private val Transition<*>.settled: Boolean
+    get() = currentState == targetState && !isRunning
 
 /** A route as the pair table sees it: the stack's entry stands for whichever page is on top. */
 private fun stackAwareDestination(state: Route, top: StackTop): ShellDestination =
@@ -889,6 +920,7 @@ private fun stackAwareDestination(state: Route, top: StackTop): ShellDestination
 @Composable
 private fun LibraryStack(
     top: Route,
+    epoch: Int,
     interactive: Boolean,
     sharedScope: SharedTransitionScope,
     reduceMotion: Boolean,
@@ -897,7 +929,8 @@ private fun LibraryStack(
 ) {
     val motionScheme = MaterialTheme.motionScheme
     val page = (top as? Route.Detail)?.item
-    val stack = updateTransition(page, label = "library-stack")
+    // A new [epoch] starts the stack on [top] with nothing to animate from.
+    val stack = key(epoch) { updateTransition(page, label = "library-stack") }
     val tileTransition = stack.createChildTransition(label = "library") { shown ->
         if (shown != null) EnterExitState.PostExit else EnterExitState.Visible
     }
@@ -937,20 +970,22 @@ private fun LibraryStack(
                 )
             }
         }
-        stack.AnimatedContent(
-            modifier = Modifier.fillMaxSize(),
-            transitionSpec = {
-                if (reduceMotion) {
-                    fadeIn(motionScheme.fastEffectsSpec()) togetherWith fadeOut(motionScheme.fastEffectsSpec())
-                } else {
-                    // The card carries the movement and the page fades up around it on its own
-                    // tracks, so this does nothing but hold the page for them.
-                    EnterTransition.None togetherWith ExitTransition.None
+        key(epoch) {
+            stack.AnimatedContent(
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    if (reduceMotion) {
+                        fadeIn(motionScheme.fastEffectsSpec()) togetherWith fadeOut(motionScheme.fastEffectsSpec())
+                    } else {
+                        // The card carries the movement and the page fades up around it on its own
+                        // tracks, so this does nothing but hold the page for them.
+                        EnterTransition.None togetherWith ExitTransition.None
+                    }
+                },
+            ) { item ->
+                Box(Modifier.fillMaxSize()) {
+                    if (item != null) detail(item, this@AnimatedContent)
                 }
-            },
-        ) { item ->
-            Box(Modifier.fillMaxSize()) {
-                if (item != null) detail(item, this@AnimatedContent)
             }
         }
     }
@@ -964,9 +999,10 @@ private class StackVisibilityScope(
 /**
  * The library stacks composed beside the route switch. Each is recorded into its own layer and
  * drawn only by its entry in the switch, so it takes that entry's fades, slides and layering
- * exactly, and outlives it: the current stack stays composed under every other route until it is
- * left with a page up ([entered] then no longer names the current generation). An older stack is
- * composed for as long as its entry is [placed], which is the length of its exit.
+ * exactly, and outlives it: the current stack stays composed under every other route, and one left
+ * with a page up has the page closed once its entry is gone. Only a stack asked back while it is
+ * still leaving with its page up is replaced ([entered] then names the newer generation); the older
+ * one is composed for as long as its entry is [placed], which is the length of its exit.
  */
 private class LibraryHosts {
     /** The generation the stack last was the route in; plain for [ShellHistory]'s reason. */
@@ -1012,6 +1048,10 @@ private fun LibraryHost(
     // A search field focused here would keep the keyboard up over the route that replaced it.
     LaunchedEffect(live) { if (!live && focus.held) focusManager.clearFocus() }
     val lifecycle = rememberHeldLifecycle(held = !shown)
+    // A sheet raised in a stack that is no longer the route must neither hold the chrome out of
+    // the way nor take Back from the route that replaced it.
+    val routeSheets = LocalSheetDepth.current
+    val ownSheets = remember { mutableIntStateOf(0) }
     Box(
         Modifier
             .fillMaxSize()
@@ -1022,7 +1062,12 @@ private fun LibraryHost(
             .focusGroup()
             .drawWithContent { if (shown) layer.record { this@drawWithContent.drawContent() } },
     ) {
-        CompositionLocalProvider(LocalLifecycleOwner provides lifecycle, content = content)
+        CompositionLocalProvider(
+            LocalLifecycleOwner provides lifecycle,
+            LocalSheetDepth provides if (live) routeSheets else ownSheets,
+            LocalSheetBackEnabled provides live,
+            content = content,
+        )
     }
 }
 

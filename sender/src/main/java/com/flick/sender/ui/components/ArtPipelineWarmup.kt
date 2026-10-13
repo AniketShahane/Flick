@@ -9,9 +9,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -26,7 +26,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
 
 /**
  * Puts each kind of bitmap draw the library makes on the GPU once, for one frame, a few seconds
@@ -38,23 +38,24 @@ import kotlinx.coroutines.flow.first
  * target, inside the frame that needs it. The nav's glass is an offscreen layer that every row
  * passes under at a third of its size, so otherwise the first tile of a kind not yet seen there
  * stalls a fling for the compile. Every sample is [ground] drawn over [ground], so it shows
- * nothing; [ready] holds the frame back while the grid is moving.
+ * nothing; the frame waits for [ready] to have held for [WarmupDelayMs], so it never lands in a
+ * transition or a fling.
  */
 @Composable
 internal fun ArtPipelineWarmup(ground: Color, ready: () -> Boolean, modifier: Modifier = Modifier) {
     if (ArtPipelineWarmth.done) return
+    val currentReady by rememberUpdatedState(ready)
     var drawing by remember { mutableStateOf(false) }
+    var drawn by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        delay(WarmupDelayMs)
-        snapshotFlow { ready() }.first { it }
-        drawing = true
-        // The first frame draws the samples; by the second that frame has gone to the GPU.
-        withFrameNanos { }
-        withFrameNanos { }
-        ArtPipelineWarmth.done = true
-        drawing = false
+        snapshotFlow { currentReady() }.collectLatest { settled ->
+            drawing = false
+            if (!settled) return@collectLatest
+            delay(WarmupDelayMs)
+            drawing = true
+        }
     }
-    if (!drawing) return
+    if (!drawing || drawn) return
     val samples = remember(ground) { warmupSamples(ground) }
     val side = with(LocalDensity.current) { SamplePx.toDp() }
     Box(modifier.size(side)) {
@@ -63,7 +64,13 @@ internal fun ArtPipelineWarmup(ground: Color, ready: () -> Boolean, modifier: Mo
             Modifier
                 .matchParentSize()
                 .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
-        ) { drawSamples(samples) }
+        ) {
+            drawSamples(samples)
+            // Spent only by a frame that actually drew the samples, which is then on its way to
+            // the GPU; the next composition takes them away.
+            ArtPipelineWarmth.done = true
+            drawn = true
+        }
     }
 }
 

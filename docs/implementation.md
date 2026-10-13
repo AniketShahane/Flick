@@ -252,9 +252,16 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
   switch (`LibraryHosts` in `FlickApp.kt`), recorded into a graphics layer and drawn only by its
   entry in the switch, so it takes that entry's transitions unchanged. With another route up it
   is not drawn, sits under the switch for touches, is cleared from semantics and focus, and its
-  lifecycle is held at STARTED so its loops stop. It is disposed only when left with its page up.
-- **Bitmap pipelines are warmed.** Once per process, a second and a half after the library
-  first settles, `ArtPipelineWarmup` draws for one frame a few ground-coloured pixels of each
+  lifecycle is held at STARTED so its loops stop. Once it is not the route its sort menu closes
+  and its sheets neither evict the nav and dock nor take Back; hidden, its folder sheet closes
+  and it stops taking library reloads and the 10 Hz playback clock, so no new art or still loads
+  start under a cast. Its grid
+  takes no touch until the route switch has settled on it. Left with its page up (a cast from
+  Detail), the page is closed unseen once the entry is gone, so the remote returns to the same
+  grid with no flip; only a return while that entry is still leaving builds a new stack.
+- **Bitmap pipelines are warmed.** Once per process, once the library has stayed settled (no
+  route, flip or shared transition, no page, no scroll) for a second and a half,
+  `ArtPipelineWarmup` draws for one frame a few ground-coloured pixels of each
   bitmap draw the grid makes (software and hardware, opaque and translucent, full and modulated
   alpha, on and off the pixel grid), straight and inside an offscreen layer. Otherwise the GPU
   compiled each pipeline mid-fling the first time a new kind of tile passed under the glass.

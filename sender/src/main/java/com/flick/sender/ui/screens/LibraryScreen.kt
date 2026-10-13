@@ -4,12 +4,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Transition
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -174,6 +176,7 @@ import com.flick.sender.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -260,13 +263,17 @@ internal fun LibraryScreen(
     animatedScope: AnimatedVisibilityScope? = null,
     cardFlip: Boolean = false,
     active: () -> Boolean = { true },
+    hidden: () -> Boolean = { false },
+    settled: () -> Boolean = { true },
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
     // The scope and its source rows arrive together; search is applied locally below so
     // changing a query never asks MediaStore to walk the library again.
-    val library by controller.library.collectAsState()
+    // Held while the stack is hidden: a reload would compose tiles that start art lookups and
+    // still extraction from the storage a cast is being served from, for a grid nobody sees.
+    val library by controller.library.collectAsStateUnless(hidden)
     val folderScope = library.scope
     val scoped = library.scoped
     val sortOrder by controller.librarySort.collectAsState()
@@ -307,6 +314,11 @@ internal fun LibraryScreen(
     )
 
     var choosingFolder by remember { mutableStateOf(false) }
+    // Hidden, the sheet would keep the shell's chrome away and a Back for itself on the stack's return.
+    val currentHidden by rememberUpdatedState(hidden)
+    LaunchedEffect(Unit) {
+        snapshotFlow { currentHidden() }.collect { gone -> if (gone) choosingFolder = false }
+    }
 
     // The entrance plays once, on the first paint after MediaStore resolves. The window
     // closes it so scrolling back to the top cannot replay it on tiles the lazy grid
@@ -502,6 +514,7 @@ internal fun LibraryScreen(
                         castingItem = castingItem,
                         signal = signal,
                         wifiLinkUp = wifiLinkUp,
+                        hidden = hidden,
                     )
                 }
                 if (supportInvitationVisible) {
@@ -533,6 +546,7 @@ internal fun LibraryScreen(
                         onQueryChange = { uiState.searchQuery = it },
                         onFocusHandled = { uiState.searchFocusPending = false },
                         onCloseSearch = closeSearch,
+                        active = active,
                     )
                 }
                 if (on24GHz) {
@@ -625,7 +639,10 @@ internal fun LibraryScreen(
         }
         ArtPipelineWarmup(
             ground = colors.canvas,
-            ready = { active() && !uiState.grid.isScrollInProgress },
+            ready = {
+                active() && settled() && animatedScope?.transition?.restsVisible() != false &&
+                    !uiState.grid.isScrollInProgress
+            },
         )
         if (choosingFolder) {
             LibraryFolderSheet(
@@ -870,6 +887,7 @@ private fun LinkPill(
     castingItem: MediaItem?,
     signal: State<SignalInfo>,
     wifiLinkUp: State<Boolean>,
+    hidden: () -> Boolean,
 ) {
     val colors = LocalFlickColors.current
     val motionScheme = MaterialTheme.motionScheme
@@ -885,7 +903,7 @@ private fun LinkPill(
     // Kept as State so the 10 Hz session clock stops at this pill instead of
     // invalidating the grid behind it; only the phase itself reaches composition.
     val phase = if (state == LinkPillState.CASTING) {
-        val playback = controller.playback.collectAsState()
+        val playback = controller.playback.collectAsStateUnless(hidden)
         val derived = remember(playback) { derivedStateOf { playback.value.phase } }
         derived.value
     } else {
@@ -1124,6 +1142,7 @@ private fun LibraryControls(
     onQueryChange: (String) -> Unit,
     onFocusHandled: () -> Unit,
     onCloseSearch: () -> Unit,
+    active: () -> Boolean,
 ) {
     val colors = LocalFlickColors.current
     val reduceMotion = rememberReduceMotion()
@@ -1225,7 +1244,8 @@ private fun LibraryControls(
         // however wide the window is and however long the folder name beside them runs.
         LibrarySortChip(
             order = sortOrder,
-            enabled = !searchOpen,
+            // Its menu is a window of its own, which would stay over a route that replaced the grid.
+            enabled = !searchOpen && active(),
             onChoose = onChooseSort,
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -1633,6 +1653,23 @@ private fun LibraryTile(
         cardFlip = cardFlip,
     )
 }
+
+/** [this] as State, which keeps the last value it took while [paused]. */
+@Composable
+private fun <T> StateFlow<T>.collectAsStateUnless(paused: () -> Boolean): State<T> {
+    val state = remember(this) { mutableStateOf(value) }
+    val currentPaused by rememberUpdatedState(paused)
+    LaunchedEffect(this) {
+        snapshotFlow { currentPaused() }.collectLatest { held ->
+            if (!held) this@collectAsStateUnless.collect { state.value = it }
+        }
+    }
+    return state
+}
+
+/** Settled on the visible side: no page over the tiles, and none opening or closing. */
+private fun Transition<EnterExitState>.restsVisible(): Boolean =
+    currentState == EnterExitState.Visible && targetState == EnterExitState.Visible
 
 /** Its own scope, so the route changing under the grid recomposes only this. */
 @Composable
