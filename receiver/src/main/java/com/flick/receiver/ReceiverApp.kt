@@ -76,6 +76,7 @@ import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.flick.receiver.net.ControlPortStore
 import com.flick.receiver.net.ControlServer
+import com.flick.receiver.net.DirectLinkReset
 import com.flick.receiver.net.LanAddress
 import com.flick.receiver.net.LanBindingMonitor
 import com.flick.receiver.net.LanBlipPolicy
@@ -422,7 +423,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             foreground = summoner,
         )
     }
-    val server = remember { ControlServer(pairing, session, { playbackFlow.value }) }
+    val server = remember {
+        ControlServer(pairing, session, { playbackFlow.value }) { peer, trigger, stillQuiet ->
+            DirectLinkReset.release(context, peer, trigger, stillQuiet)
+        }
+    }
     val portStore = remember { ControlPortStore(context) }
     val activity = LocalActivity.current
     val summonArmed by summoner.armed.collectAsState()
