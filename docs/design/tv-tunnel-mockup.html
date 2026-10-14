@@ -1,0 +1,920 @@
+<title>TV Cast Moment</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a dark screening room. Four TV frames on a grid, each with the phone's timeline under it. */
+:root {
+  --bg: #04070F;
+  --panel: #0A1122;
+  --line: rgba(150, 190, 255, .16);
+  --fg: #F2F6FF;
+  --dim: #A9BCE6;
+  --faint: #7E90BE;
+  --blue: #1240E8;
+  --blue-on-dark: #4A78FF;
+  --spark: #FFB61E;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 40px 64px; display: grid; gap: 28px; }
+header { display: grid; gap: 10px; max-width: 70ch; }
+h1 { font: 700 clamp(30px, 4.4vw, 46px)/1.05 var(--display); letter-spacing: -.01em; margin: 0; text-wrap: balance; }
+.lede { color: var(--dim); margin: 0; }
+.rules { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
+.rules li { border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--dim); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; color: var(--faint); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.seg button, .play {
+  font: 500 13px var(--body); color: var(--dim); background: transparent; border: 0;
+  padding: 7px 14px; cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--blue); color: #fff; }
+.play { border: 1px solid var(--line); border-radius: 999px; }
+button:focus-visible { outline: 2px solid var(--spark); outline-offset: 2px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+@media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.opt { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.opt.pick { border-color: rgba(255, 182, 30, .55); }
+.screen { width: 100%; max-width: 100%; aspect-ratio: 16 / 9; display: block; border-radius: 6px; background: #000; }
+.strip { width: 100%; height: 44px; display: block; }
+.head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.head h2 { font: 700 21px/1.2 var(--display); margin: 0; }
+.letter { font: 700 13px var(--display); color: var(--faint); }
+.badge { font: 600 11px var(--body); letter-spacing: .08em; text-transform: uppercase; color: #1a1100; background: var(--spark); border-radius: 4px; padding: 2px 7px; }
+.opt p { margin: 0; color: var(--dim); max-width: 62ch; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 0; }
+.facts dt { color: var(--faint); }
+.facts dd { margin: 0; color: var(--fg); }
+.section { font: 700 15px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 8px 0 -10px; }
+.tag { font: 500 12px var(--body); color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; }
+footer { color: var(--faint); font-size: 13px; max-width: 70ch; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>The moment your film lands on the TV</h1>
+    <p class="lede">Five new takes on Arrival, plus the original and the earlier directions. Each preview plays one whole cast: the room at rest, your swipe, the wait while the TV connects, and the first frame. The strip under each one shows what your phone is doing at that same moment.</p>
+    <ul class="rules">
+      <li>Starts the instant the TV hears the cast</li>
+      <li>Phone flash and TV reveal land together</li>
+      <li>No made-up waits</li>
+    </ul>
+  </header>
+
+  <div class="controls">
+    <span id="waitLabel">Connection takes</span>
+    <div class="seg" role="group" aria-labelledby="waitLabel">
+      <button id="waitShort" type="button" aria-pressed="true" data-wait="900">Quick, 1 s</button>
+      <button id="waitLong" type="button" aria-pressed="false" data-wait="3600">Slow, 4 s</button>
+    </div>
+    <button id="playToggle" class="play" type="button">Pause</button>
+  </div>
+
+  <h2 class="section">The Arrival family</h2>
+  <div class="grid">
+    <article class="opt">
+      <canvas class="screen" data-opt="arrival" aria-label="Preview of B, Arrival"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B</span><h2>Arrival</h2><span class="tag">The one you liked</span></div>
+      <p>The phone's hyperspace carries on onto the TV, flying outward toward you. It uses the same rings, streaks and blue wash. On the first frame both screens flash white together.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>White flash, in step with the phone</dd><dt>TV cost</dt><dd>Medium. About 16 moving strokes a frame</dd></dl>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="dropout" aria-label="Preview of B1, Drop Out"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B1</span><h2>Drop Out</h2></div>
+      <p>The TV sits deep in the warp, with the stars stretched into long streaks. On the first frame it drops out of hyperspace: the streaks snap back into stars, slow down and fade away, and the film settles in behind them.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>Braking out of the warp, no flash</dd><dt>TV cost</dt><dd>Medium. 24 streaks while waiting</dd></dl>
+    </article>
+
+    <article class="opt pick">
+      <canvas class="screen" data-opt="tunnel" aria-label="Preview of B2, Tunnel"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B2</span><h2>Tunnel</h2><span class="badge">Your pick</span></div>
+      <p>TV-shaped rings rush past you, forming a tunnel with a glowing window at its far end. On the first frame the real film starts playing in that window as it draws nearer. A beat later it flies down the tunnel to fill the screen, as if it travelled all the way from your phone.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>The film itself arrives, already playing</dd><dt>TV cost</dt><dd>Medium. 7 rings, one clipped film</dd></dl>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="ride" aria-label="Preview of B3, Card Ride"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B3</span><h2>Card Ride</h2></div>
+      <p>The blue Flick card rides the warp toward you from deep in the field, growing as it comes. On the first frame it speeds up, fills the screen and turns into the film as the streaks whip past the edges.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>The card becomes the film</dd><dt>TV cost</dt><dd>Medium. The current card, plus the warp</dd></dl>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="shockwave" aria-label="Preview of B4, Shockwave"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B4</span><h2>Shockwave</h2></div>
+      <p>The warp runs in reverse. Streaks pour into the centre and build a bright amber-and-blue core while the TV connects. On the first frame the core bursts, and a ring of light races out to the corners with the film behind it.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>An expanding ring wipes the film in</dd><dt>TV cost</dt><dd>Medium. One clip and a glow</dd></dl>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="vortex" aria-label="Preview of B5, Vortex"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">B5</span><h2>Vortex</h2></div>
+      <p>The warp twists into a slow spiral, like water circling a drain. On the first frame the spiral spins up, then flashes white with the phone and opens onto the film.</p>
+      <dl class="facts"><dt>Reveal</dt><dd>Spin-up, then the shared flash</dd><dt>TV cost</dt><dd>Medium. Same strokes as Arrival</dd></dl>
+    </article>
+  </div>
+
+  <h2 class="section">Earlier directions</h2>
+  <div class="grid">
+    <article class="opt">
+      <canvas class="screen" data-opt="catch" aria-label="Preview of option A, Catch"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">A</span><h2>Catch</h2></div>
+      <p>The poster your phone throws off the top of its screen drops in from the top of the TV, lands as the blue Flick card, and opens into the film.</p>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="portal" aria-label="Preview of option C, Portal"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">C</span><h2>Portal</h2></div>
+      <p>An amber ring draws itself in the dark, then swings open past the edges with the film already playing inside it.</p>
+    </article>
+
+    <article class="opt">
+      <canvas class="screen" data-opt="curtain" aria-label="Preview of option D, Projector"></canvas>
+      <canvas class="strip" aria-hidden="true"></canvas>
+      <div class="head"><span class="letter">D</span><h2>Projector</h2></div>
+      <p>A single line of light under the film's name opens up and down like cinema masking.</p>
+    </article>
+  </div>
+
+  <footer>Previews are drawn in your browser at the TV's layout size (a 960 × 540 dp screen). The film here is a stand-in picture; on the TV it is your film's real first frame. Device and film names are examples.</footer>
+</div>
+
+<script>
+(() => {
+  const DEVICE = "Galaxy S25 Ultra";
+  const FILM = "Dune: Part Two";
+  const YEAR = "2024";
+  const C = {
+    bg: "#04070F", blue: "#1240E8", blueHi: "#4A78FF", spark: "#FFB61E",
+    fg: "#F2F6FF", dim: "#A9BCE6", faint: "#7E90BE"
+  };
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const outCubic = t => 1 - Math.pow(1 - t, 3);
+  const inCubic = t => t * t * t;
+  const inOut = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const TAU = Math.PI * 2;
+
+  let wait = 900;
+  let playing = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let clock = 0, last = performance.now();
+
+  // One cast. Times in ms from the start of the loop.
+  function plan() {
+    const release = 1000;            // your finger leaves the poster
+    const t0 = release + 150;        // the TV hears the cast
+    const t1 = t0 + 500 + wait;      // first frame: phone flashes, TV reveals
+    const filmEnd = t1 + 2600;
+    return { release, t0, t1, filmEnd, loop: filmEnd + 700 };
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function mark(c, cx, cy, size, alpha) {
+    c.save();
+    c.globalAlpha *= alpha;
+    c.fillStyle = "#fff";
+    c.strokeStyle = "#fff";
+    c.lineJoin = "round";
+    c.lineWidth = size * .14;
+    const s = size / 64;
+    c.beginPath();
+    c.moveTo(cx + (28 - 37.3) * s, cy + (15 - 32) * s);
+    c.lineTo(cx + (56 - 37.3) * s, cy);
+    c.lineTo(cx + (28 - 37.3) * s, cy + (49 - 32) * s);
+    c.closePath();
+    c.fill();
+    c.stroke();
+    c.restore();
+  }
+
+  function flickCard(c, cx, cy, w, h, u, alpha, glow) {
+    c.save();
+    c.globalAlpha = alpha;
+    if (glow > 0) {
+      const g = c.createRadialGradient(cx, cy, 0, cx, cy, w * .95);
+      g.addColorStop(0, `rgba(18,64,232,${.55 * glow})`);
+      g.addColorStop(1, "rgba(18,64,232,0)");
+      c.fillStyle = g;
+      c.fillRect(cx - w * 1.5, cy - w, w * 3, w * 2);
+    }
+    c.fillStyle = C.blue;
+    roundRect(c, cx - w / 2, cy - h / 2, w, h, 16 * u);
+    c.fill();
+    mark(c, cx, cy, 47 * u * (w / (160 * u)), 1);
+    c.restore();
+  }
+
+  function room(c, w, h, u) {
+    c.fillStyle = C.bg;
+    c.fillRect(0, 0, w, h);
+    const g = c.createRadialGradient(w * .3, h * .2, 0, w * .3, h * .2, w * .8);
+    g.addColorStop(0, "rgba(31,58,168,.45)");
+    g.addColorStop(1, "rgba(4,7,15,0)");
+    c.fillStyle = g;
+    c.fillRect(0, 0, w, h);
+    flickCard(c, w / 2, h * .42, 70 * u, 46 * u, u * .45, 1, 0);
+    c.fillStyle = C.fg;
+    c.textAlign = "center";
+    c.font = `600 ${22 * u}px Bricolage Grotesque, system-ui, sans-serif`;
+    c.fillText("Ready to flick", w / 2, h * .42 + 60 * u);
+    c.fillStyle = C.faint;
+    c.font = `${13 * u}px Instrument Sans, system-ui, sans-serif`;
+    c.fillText("Swipe a film up on your phone", w / 2, h * .42 + 84 * u);
+  }
+
+  function film(c, w, h, t) {
+    const sky = c.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#2a1640");
+    sky.addColorStop(.45, "#c8643a");
+    sky.addColorStop(.62, "#f2b36a");
+    sky.addColorStop(1, "#3a1d14");
+    c.fillStyle = sky;
+    c.fillRect(0, 0, w, h);
+    const sunY = h * .55 + Math.sin(t / 2400) * h * .01;
+    const sg = c.createRadialGradient(w * .62, sunY, 0, w * .62, sunY, h * .35);
+    sg.addColorStop(0, "rgba(255,240,200,1)");
+    sg.addColorStop(.18, "rgba(255,214,150,.9)");
+    sg.addColorStop(1, "rgba(255,180,90,0)");
+    c.fillStyle = sg;
+    c.fillRect(0, 0, w, h);
+    const drift = (t / 90) % w;
+    c.fillStyle = "#4a2416";
+    c.beginPath();
+    c.moveTo(0, h);
+    for (let x = 0; x <= w; x += w / 24) {
+      c.lineTo(x, h * .7 + Math.sin((x + drift) / w * 9) * h * .03 + Math.sin((x + drift) / w * 23) * h * .01);
+    }
+    c.lineTo(w, h);
+    c.fill();
+    c.fillStyle = "#24100a";
+    c.beginPath();
+    c.moveTo(0, h);
+    for (let x = 0; x <= w; x += w / 24) {
+      c.lineTo(x, h * .82 + Math.sin((x - drift * 1.6) / w * 6) * h * .035);
+    }
+    c.lineTo(w, h);
+    c.fill();
+  }
+
+  function veil(c, w, h, a) {
+    if (a <= 0) return;
+    c.fillStyle = `rgba(2,4,10,${a})`;
+    c.fillRect(0, 0, w, h);
+  }
+
+  function white(c, w, h, a) {
+    if (a <= 0) return;
+    c.fillStyle = `rgba(255,255,255,${a})`;
+    c.fillRect(0, 0, w, h);
+  }
+
+  function caption(c, w, y, u, a) {
+    if (a <= 0) return;
+    c.save();
+    c.globalAlpha = a;
+    c.textAlign = "center";
+    c.fillStyle = C.fg;
+    c.font = `600 ${22 * u}px Bricolage Grotesque, system-ui, sans-serif`;
+    c.fillText(`${DEVICE} is flicking ${FILM} (${YEAR})`, w / 2, y);
+    c.fillStyle = C.dim;
+    c.font = `${15 * u}px Instrument Sans, system-ui, sans-serif`;
+    c.fillText("Starting playback on this TV", w / 2, y + 26 * u);
+    c.restore();
+  }
+
+  // The room fades back in at the end of the loop.
+  function outro(c, w, h, u, t, P) {
+    const a = clamp((t - P.filmEnd) / 500);
+    if (a <= 0) return;
+    c.save();
+    c.globalAlpha = a;
+    room(c, w, h, u);
+    c.restore();
+  }
+
+  // White flash the length of the phone's landing flash: up 120 ms, down 330 ms.
+  function phoneFlash(s) {
+    if (s < 0) return 0;
+    if (s < 120) return .85 * s / 120;
+    return .85 * (1 - clamp((s - 120) / 330, 0, 1) ** .6);
+  }
+
+  function wash(c, w, h, vy, a) {
+    c.save();
+    c.globalAlpha *= a;
+    const g = c.createRadialGradient(w / 2, vy, 0, w / 2, vy, w * .75);
+    g.addColorStop(0, "#1F3AA8");
+    g.addColorStop(.45, "#0B1640");
+    g.addColorStop(1, "#04070F");
+    c.fillStyle = g;
+    c.fillRect(0, 0, w, h);
+    c.restore();
+  }
+
+  function streakField(c, w, h, u, vy, phase, o = {}) {
+    const n = o.n || 12;
+    c.lineCap = "round";
+    c.lineWidth = (o.width || 2) * u;
+    for (let i = 0; i < n; i++) {
+      const sp = i % 3 === 0 ? 2 : 1;
+      let q = ((phase * sp + i * .37) % 1 + 1) % 1;
+      if (o.inward) q = 1 - q;
+      const ang = i * TAU / n + Math.sin(i * 7.3) * .2 + (o.spin || 0) + (o.twist || 0) * q;
+      const r0 = 18 * u + q * q * w * .7;
+      const len = Math.max(.5 * u, (20 + 52 * q) * u * (o.len ?? 1));
+      const fa = (q < .12 ? q / .12 : 1 - (q - .12) / .88) * (o.alpha ?? 1);
+      if (fa <= 0) continue;
+      c.strokeStyle = i % 4 === 1 ? `rgba(255,182,30,${fa})` : i % 2 ? `rgba(159,192,255,${fa})` : `rgba(255,255,255,${fa})`;
+      const r1 = o.inward ? Math.max(0, r0 - len) : r0 + len;
+      const ang1 = ang + (o.twist ? (o.twist * len / (w * .7)) * (o.inward ? -1 : 1) : 0);
+      c.beginPath();
+      c.moveTo(w / 2 + Math.cos(ang) * r0, vy + Math.sin(ang) * r0 * .7);
+      c.lineTo(w / 2 + Math.cos(ang1) * r1, vy + Math.sin(ang1) * r1 * .7);
+      c.stroke();
+    }
+  }
+
+  function ringField(c, w, h, u, vy, phase, o = {}) {
+    const n = o.n || 4;
+    for (let i = 0; i < n; i++) {
+      const q = ((phase * .55 + i / n) % 1 + 1) % 1;
+      const sc = q * q * 1.3;
+      const rw = w * sc, rh = rw * 9 / 16;
+      const fa = (q < .12 ? q / .12 : 1 - (q - .12) / .88) * (o.alpha ?? 1);
+      c.strokeStyle = i === 1 ? `rgba(255,182,30,${.8 * fa})` : `rgba(111,160,255,${.55 * fa})`;
+      c.lineWidth = lerp(1.5, 3, q) * u;
+      c.save();
+      c.translate(w / 2, vy);
+      if (o.rot) c.rotate(o.rot * (1 - q * .5));
+      roundRect(c, -rw / 2, -rh / 2, rw, rh, rw * .04);
+      c.stroke();
+      c.restore();
+    }
+  }
+
+  const OPTIONS = {
+    catch(c, w, h, u, t, P) {
+      const cw = 160 * u, ch = 106 * u, cx = w / 2, cy = h * .43;
+      if (t < P.t1 + 380) {
+        room(c, w, h, u);
+        veil(c, w, h, .94 * outCubic(clamp((t - P.t0) / 320)));
+      }
+      const fall = 440;
+      const s = t - P.t0;
+      if (s >= 0 && s < fall) {
+        const p = outCubic(s / fall);
+        const y = lerp(-h * .35, cy, p);
+        const sw = lerp(8 * u, cw * .7, inCubic(p));
+        const sh = lerp(h * .55, ch, p);
+        const g = c.createLinearGradient(0, y - sh / 2, 0, y + sh / 2);
+        g.addColorStop(0, "rgba(255,255,255,0)");
+        g.addColorStop(.7, "rgba(210,225,255,.9)");
+        g.addColorStop(1, "#ffffff");
+        c.fillStyle = g;
+        roundRect(c, cx - sw / 2, y - sh / 2, sw, sh, sw / 2);
+        c.fill();
+      } else if (s >= fall && t < P.t1) {
+        const l = s - fall;
+        const k = Math.exp(-l / 140);
+        const sq = .14 * k * Math.cos(l / 38);
+        const breathe = 1 + .018 * Math.sin(l / 1700 * TAU);
+        // A landing flash: the streak's white leaves the card over its first 220 ms.
+        const hot = clamp(1 - l / 220);
+        const rr = cw * .55 + l * .45 * u;
+        const ra = clamp(1 - l / 650);
+        if (ra > 0) {
+          c.strokeStyle = `rgba(255,182,30,${.7 * ra})`;
+          c.lineWidth = 3 * u;
+          c.beginPath();
+          c.ellipse(cx, cy, rr * 1.35, rr * .9, 0, 0, TAU);
+          c.stroke();
+        }
+        flickCard(c, cx, cy, cw * breathe * (1 + sq), ch * breathe * (1 - sq), u, 1, .75 + .25 * Math.sin(l / 1700 * TAU));
+        if (hot > 0) {
+          c.save();
+          c.globalAlpha = hot * .9;
+          c.fillStyle = "#fff";
+          roundRect(c, cx - cw / 2, cy - ch / 2, cw, ch, 16 * u);
+          c.fill();
+          c.restore();
+        }
+        caption(c, w, cy + ch / 2 + 50 * u, u, clamp((l - 120) / 300));
+      } else if (t >= P.t1) {
+        const e = t - P.t1;
+        const p = inOut(clamp(e / 380));
+        if (e >= 380) film(c, w, h, t);
+        if (e < 380) {
+          const ww = lerp(cw, w, p), hh = lerp(ch, h, p), yy = lerp(cy, h / 2, p);
+          c.fillStyle = `rgb(${Math.round(lerp(18, 255, p))},${Math.round(lerp(64, 255, p))},${Math.round(lerp(232, 255, p))})`;
+          roundRect(c, cx - ww / 2, yy - hh / 2, ww, hh, lerp(16 * u, 0, p));
+          c.fill();
+          caption(c, w, cy + ch / 2 + 50 * u, u, 1 - clamp(e / 160));
+        } else {
+          white(c, w, h, 1 - outCubic(clamp((e - 380) / 420)));
+        }
+        outro(c, w, h, u, t, P);
+      }
+    },
+
+    arrival(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .42;
+      if (t >= P.t1 + 120) {
+        film(c, w, h, t);
+      } else {
+        room(c, w, h, u);
+        if (s >= 0) {
+          const a = outCubic(clamp(s / 360));
+          c.save();
+          c.globalAlpha = a;
+          const g = c.createRadialGradient(w / 2, vy, 0, w / 2, vy, w * .75);
+          g.addColorStop(0, "#1F3AA8");
+          g.addColorStop(.45, "#0B1640");
+          g.addColorStop(1, "#04070F");
+          c.fillStyle = g;
+          c.fillRect(0, 0, w, h);
+          // Speed: a surge as the cast arrives, cruising while it waits, a jump at the first frame.
+          const surge = 1 + 4 * Math.exp(-s / 260);
+          const jump = t > P.t1 - 260 ? 1 + 6 * clamp((t - (P.t1 - 260)) / 260) ** 2 : 1;
+          const phase = (s * surge * jump) / 1600;
+          for (let i = 0; i < 4; i++) {
+            const q = ((phase * .55 + i / 4) % 1 + 1) % 1;
+            const sc = q * q * 1.3;
+            const rw = w * sc, rh = rw * 9 / 16;
+            const fa = q < .12 ? q / .12 : 1 - (q - .12) / .88;
+            c.strokeStyle = i === 1 ? `rgba(255,182,30,${.8 * fa})` : `rgba(111,160,255,${.55 * fa})`;
+            c.lineWidth = lerp(1.5, 3, q) * u;
+            roundRect(c, w / 2 - rw / 2, vy - rh / 2, rw, rh, rw * .04);
+            c.stroke();
+          }
+          for (let i = 0; i < 12; i++) {
+            const ang = i * TAU / 12 + Math.sin(i * 7.3) * .2;
+            const sp = i % 3 === 0 ? 2 : 1;
+            const q = ((phase * sp + i * .37) % 1 + 1) % 1;
+            const r0 = 18 * u + q * q * w * .7;
+            const len = (20 + 52 * q) * u * Math.min(jump, 4);
+            const fa = q < .12 ? q / .12 : 1 - (q - .12) / .88;
+            c.strokeStyle = i % 4 === 1 ? `rgba(255,182,30,${fa})` : i % 2 ? `rgba(159,192,255,${fa})` : `rgba(255,255,255,${fa})`;
+            c.lineWidth = 2 * u;
+            c.beginPath();
+            c.moveTo(w / 2 + Math.cos(ang) * r0, vy + Math.sin(ang) * r0 * .7);
+            c.lineTo(w / 2 + Math.cos(ang) * (r0 + len), vy + Math.sin(ang) * (r0 + len) * .7);
+            c.stroke();
+          }
+          flickCard(c, w / 2, vy, 64 * u, 42 * u, u * .4, outCubic(clamp((s - 200) / 300)), .6);
+          c.restore();
+          caption(c, w, h * .74, u, clamp((s - 260) / 320));
+        }
+      }
+      if (t >= P.t1) white(c, w, h, phoneFlash(t - P.t1));
+      if (t >= P.t1) outro(c, w, h, u, t, P);
+    },
+
+    portal(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const cx = w / 2, cy = h * .45;
+      const r0 = 74 * u;
+      room(c, w, h, u);
+      if (s < 0) return;
+      veil(c, w, h, .95 * outCubic(clamp(s / 340)));
+      const draw = outCubic(clamp((s - 160) / 520));
+      const breathe = t < P.t1 ? 1 + .03 * Math.sin((s / 1800) * TAU) : 1;
+      let r = r0 * breathe;
+      let open = 0;
+      if (t >= P.t1) {
+        open = inOut(clamp((t - P.t1) / 640));
+        r = lerp(r0, Math.hypot(w, h) * .62, open);
+      }
+      if (t >= P.t1) {
+        c.save();
+        c.beginPath();
+        c.arc(cx, cy, r, 0, TAU);
+        c.clip();
+        film(c, w, h, t);
+        veil(c, w, h, .55 * (1 - open));
+        c.restore();
+      } else {
+        const g = c.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0, "rgba(18,64,232,.35)");
+        g.addColorStop(1, "rgba(18,64,232,0)");
+        c.fillStyle = g;
+        c.fillRect(cx - r, cy - r, r * 2, r * 2);
+        mark(c, cx + 3 * u, cy, 40 * u, outCubic(clamp((s - 420) / 300)));
+      }
+      const ringA = 1 - clamp(open * 1.4);
+      if (ringA > 0) {
+        c.strokeStyle = `rgba(255,182,30,${ringA})`;
+        c.lineWidth = lerp(3.5, 1, open) * u;
+        c.shadowColor = "rgba(255,182,30,.8)";
+        c.shadowBlur = 14 * u;
+        c.beginPath();
+        c.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + TAU * draw);
+        c.stroke();
+        c.shadowBlur = 0;
+        if (draw >= 1 && t < P.t1) {
+          const a = (s / 1300) * TAU;
+          c.fillStyle = "#FFD87A";
+          c.beginPath();
+          c.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 4.5 * u, 0, TAU);
+          c.fill();
+        }
+      }
+      caption(c, w, cy + r0 + 58 * u, u, clamp((s - 300) / 320) * (1 - clamp((t - P.t1) / 200)));
+      if (t >= P.t1) outro(c, w, h, u, t, P);
+    },
+
+    dropout(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .42;
+      room(c, w, h, u);
+      if (s < 0) return;
+      const e = t >= P.t1 ? clamp((t - P.t1) / 750) : 0;
+      const ee = outCubic(e);
+      if (e > 0) {
+        c.save();
+        c.globalAlpha = inOut(clamp((t - P.t1 - 80) / 620));
+        const z = lerp(1.08, 1, ee);
+        c.translate(w / 2, vy);
+        c.scale(z, z);
+        c.translate(-w / 2, -vy);
+        film(c, w, h, t);
+        c.restore();
+      }
+      const field = outCubic(clamp(s / 360)) * (1 - inOut(clamp((t - P.t1 - 150) / 600)));
+      if (field > 0) {
+        c.save();
+        c.globalAlpha = field;
+        if (e < 1) wash(c, w, h, vy, 1 - ee);
+        // Deep in the warp the streaks are long; dropping out shrinks them to points.
+        const stretch = (2.4 + 2.5 * Math.exp(-s / 300)) * (1 - ee) + .02;
+        const tw = t >= P.t1 ? P.t1 - P.t0 + 400 * (1 - Math.exp(-(t - P.t1) / 160)) : s;
+        streakField(c, w, h, u, vy, tw / 1600, { n: 24, len: stretch, width: 2 });
+        c.restore();
+      }
+      if (t < P.t1 + 200) {
+        const a = outCubic(clamp((s - 200) / 300)) * (1 - clamp((t - P.t1) / 200));
+        flickCard(c, w / 2, vy, 64 * u, 42 * u, u * .4, a, .6);
+        caption(c, w, h * .74, u, clamp((s - 260) / 320) * (1 - clamp((t - P.t1) / 200)));
+      }
+      outro(c, w, h, u, t, P);
+    },
+
+    tunnel(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .42;
+      room(c, w, h, u);
+      if (s < 0) return;
+      const fa = outCubic(clamp(s / 360));
+      // The film plays in the window for a beat, then flies out to fill the screen.
+      const HOLD = 900, FLY = 560;
+      const e = t >= P.t1 ? clamp((t - P.t1 - HOLD) / FLY) : 0;
+      const surge = 1 + 3 * Math.exp(-s / 280);
+      const tw = t >= P.t1 ? (P.t1 - P.t0) + (t - P.t1) * (1 + 6 * e) : s * surge;
+      c.save();
+      c.globalAlpha = fa * (1 - clamp((e - .7) / .3));
+      wash(c, w, h, vy, 1);
+      ringField(c, w, h, u, vy, tw / 1700, { n: 7, alpha: 1 - e * .5 });
+      streakField(c, w, h, u, vy, tw / 1600, { n: 10, len: 1 + 2 * e, alpha: .8 });
+      c.restore();
+      // The window at the end of the tunnel.
+      const pw0 = 44 * u * (1 + .05 * Math.sin(s / 900 * TAU));
+      if (t < P.t1) {
+        const a = fa * outCubic(clamp((s - 250) / 400));
+        const g = c.createRadialGradient(w / 2, vy, 0, w / 2, vy, pw0 * 2.2);
+        g.addColorStop(0, `rgba(220,232,255,${.9 * a})`);
+        g.addColorStop(.35, `rgba(111,160,255,${.45 * a})`);
+        g.addColorStop(1, "rgba(18,64,232,0)");
+        c.fillStyle = g;
+        c.fillRect(w / 2 - pw0 * 3, vy - pw0 * 3, pw0 * 6, pw0 * 6);
+        c.save();
+        c.globalAlpha = a;
+        c.fillStyle = "#EAF0FF";
+        roundRect(c, w / 2 - pw0 / 2, vy - pw0 * 9 / 32, pw0, pw0 * 9 / 16, 3 * u);
+        c.fill();
+        c.restore();
+        caption(c, w, h * .74, u, clamp((s - 300) / 320));
+      } else {
+        const d = t - P.t1;
+        // The window draws nearer while the film plays in it.
+        const near = outCubic(clamp(d / 500));
+        const pw = lerp(pw0, 120 * u, near);
+        const p = inCubic(e);
+        const fw = lerp(pw, w, p), fh = fw * 9 / 16;
+        const fy = lerp(vy, h / 2, p);
+        const ga = 1 - p;
+        if (ga > 0) {
+          const g = c.createRadialGradient(w / 2, fy, 0, w / 2, fy, fw * 1.1);
+          g.addColorStop(0, `rgba(220,232,255,${.5 * ga})`);
+          g.addColorStop(.5, `rgba(111,160,255,${.25 * ga})`);
+          g.addColorStop(1, "rgba(18,64,232,0)");
+          c.fillStyle = g;
+          c.fillRect(0, 0, w, h);
+        }
+        c.save();
+        roundRect(c, w / 2 - fw / 2, fy - fh / 2, fw, fh, lerp(3 * u, 0, p));
+        c.clip();
+        c.fillStyle = "#EAF0FF";
+        c.fillRect(0, 0, w, h);
+        c.globalAlpha = outCubic(clamp(d / 220));
+        c.translate(w / 2 - fw / 2, fy - fh / 2);
+        c.scale(fw / w, fh / h);
+        film(c, w, h, t);
+        c.restore();
+        if (p < 1) {
+          c.strokeStyle = `rgba(234,240,255,${.6 * (1 - p)})`;
+          c.lineWidth = 1.5 * u;
+          roundRect(c, w / 2 - fw / 2, fy - fh / 2, fw, fh, lerp(3 * u, 0, p));
+          c.stroke();
+        }
+        caption(c, w, h * .74, u, 1 - clamp(d / 300));
+      }
+      outro(c, w, h, u, t, P);
+    },
+
+    ride(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .42;
+      room(c, w, h, u);
+      if (s < 0) return;
+      const fa = outCubic(clamp(s / 360));
+      const e = t >= P.t1 ? clamp((t - P.t1) / 480) : 0;
+      const tw = t >= P.t1 ? (P.t1 - P.t0) + (t - P.t1) * (1 + 5 * e) : s * (1 + 3 * Math.exp(-s / 280));
+      c.save();
+      c.globalAlpha = fa * (1 - clamp((e - .75) / .25));
+      wash(c, w, h, vy, 1);
+      ringField(c, w, h, u, vy, tw / 1600, { n: 4, alpha: .8 });
+      streakField(c, w, h, u, vy, tw / 1600, { n: 14, len: 1 + 3 * e });
+      c.restore();
+      // The card approaches without ever quite arriving, so any wait reads as travel.
+      const approach = 1 - Math.exp(-Math.max(0, s - 150) / 1400);
+      const base = lerp(.12, .9, approach);
+      const bob = Math.sin(s / 1600 * TAU) * 4 * u * (1 - e);
+      if (t < P.t1) {
+        flickCard(c, w / 2, vy + bob, 160 * u * base, 106 * u * base, u * base, fa, .8);
+        caption(c, w, h * .76, u, clamp((s - 500) / 320));
+      } else {
+        const p = inCubic(e);
+        const cw = lerp(160 * u * base, w * 1.02, p), ch = lerp(106 * u * base, h * 1.02, p);
+        const cy = lerp(vy, h / 2, p);
+        const turn = clamp((e - .35) / .65);
+        c.save();
+        roundRect(c, w / 2 - cw / 2, cy - ch / 2, cw, ch, lerp(16 * u * base, 0, p));
+        c.clip();
+        c.fillStyle = C.blue;
+        c.fillRect(0, 0, w, h);
+        mark(c, w / 2, cy, 47 * u * cw / (160 * u), 1 - clamp(e * 2.5));
+        if (turn > 0) {
+          c.globalAlpha = turn;
+          film(c, w, h, t);
+        }
+        c.restore();
+        if (e >= 1) film(c, w, h, t);
+        caption(c, w, h * .76, u, 1 - clamp((t - P.t1) / 160));
+      }
+      outro(c, w, h, u, t, P);
+    },
+
+    shockwave(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .45;
+      room(c, w, h, u);
+      if (s < 0) return;
+      const fa = outCubic(clamp(s / 360));
+      c.save();
+      c.globalAlpha = fa;
+      wash(c, w, h, vy, 1);
+      const tw = t >= P.t1 ? P.t1 - P.t0 : s;
+      streakField(c, w, h, u, vy, tw / 1400, { n: 16, inward: true, alpha: t >= P.t1 ? 0 : 1 });
+      c.restore();
+      // The core gathers while the TV waits, so a longer wait builds a bigger burst.
+      const gather = 1 - Math.exp(-Math.max(0, s - 200) / 1500);
+      const coreR = (16 + 34 * gather) * u * (1 + .06 * Math.sin(s / 700 * TAU));
+      const e = t >= P.t1 ? clamp((t - P.t1) / 640) : 0;
+      if (e > 0) {
+        const R = lerp(coreR, Math.hypot(w, h) * .62, outCubic(e));
+        c.save();
+        c.beginPath();
+        c.arc(w / 2, vy, R, 0, TAU);
+        c.clip();
+        film(c, w, h, t);
+        c.restore();
+        const ra = 1 - clamp((e - .6) / .4);
+        c.strokeStyle = `rgba(255,236,190,${ra})`;
+        c.lineWidth = lerp(10, 2, e) * u;
+        c.shadowColor = "rgba(255,182,30,.95)";
+        c.shadowBlur = 26 * u;
+        c.beginPath();
+        c.arc(w / 2, vy, R, 0, TAU);
+        c.stroke();
+        c.shadowBlur = 0;
+        white(c, w, h, .5 * (1 - clamp(e * 4)));
+      }
+      if (t < P.t1 + 120) {
+        const pop = t >= P.t1 ? 1 + 1.5 * clamp((t - P.t1) / 120) : 1;
+        const a = fa * (1 - clamp((t - P.t1) / 120));
+        const g = c.createRadialGradient(w / 2, vy, 0, w / 2, vy, coreR * 2.4 * pop);
+        g.addColorStop(0, `rgba(255,255,255,${a})`);
+        g.addColorStop(.25, `rgba(255,216,122,${.9 * a})`);
+        g.addColorStop(.6, `rgba(74,120,255,${.5 * a})`);
+        g.addColorStop(1, "rgba(18,64,232,0)");
+        c.fillStyle = g;
+        c.fillRect(0, 0, w, h);
+        caption(c, w, h * .76, u, clamp((s - 300) / 320) * (1 - clamp((t - P.t1) / 160)));
+      }
+      outro(c, w, h, u, t, P);
+    },
+
+    vortex(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const vy = h * .42;
+      if (t >= P.t1 + 120) {
+        film(c, w, h, t);
+      } else {
+        room(c, w, h, u);
+        if (s >= 0) {
+          const fa = outCubic(clamp(s / 360));
+          const spinUp = t >= P.t1 - 300 ? clamp((t - (P.t1 - 300)) / 420) ** 2 : 0;
+          const spin = s / 4200 * TAU + spinUp * 3.2;
+          c.save();
+          c.globalAlpha = fa;
+          wash(c, w, h, vy, 1);
+          ringField(c, w, h, u, vy, s / 1800, { n: 4, rot: spin * .35, alpha: .9 });
+          streakField(c, w, h, u, vy, s / 1500, { n: 18, spin, twist: 2.4, len: 1 + 2 * spinUp });
+          flickCard(c, w / 2, vy, 64 * u, 42 * u, u * .4, outCubic(clamp((s - 200) / 300)), .6);
+          c.restore();
+          caption(c, w, h * .74, u, clamp((s - 260) / 320));
+        }
+      }
+      if (t >= P.t1) white(c, w, h, phoneFlash(t - P.t1));
+      if (t >= P.t1) outro(c, w, h, u, t, P);
+    },
+
+    curtain(c, w, h, u, t, P) {
+      const s = t - P.t0;
+      const cy = h * .52;
+      room(c, w, h, u);
+      if (s < 0) return;
+      veil(c, w, h, outCubic(clamp(s / 380)));
+      const grow = inOut(clamp((s - 220) / 560));
+      const lw = w * .86 * grow;
+      let band = 0;
+      if (t >= P.t1) band = inOut(clamp((t - P.t1) / 700));
+      const bh = lerp(2 * u, h * 1.04, band);
+      const bw = lerp(lw, w, band);
+      if (t >= P.t1) {
+        c.save();
+        c.beginPath();
+        c.rect(w / 2 - bw / 2, cy - bh / 2, bw, bh);
+        c.clip();
+        film(c, w, h, t);
+        c.restore();
+      }
+      if (lw > 0 && band < 1) {
+        const glowA = 1 - band;
+        const edges = band > 0 ? [cy - bh / 2, cy + bh / 2] : [cy];
+        for (const y of edges) {
+          const g = c.createLinearGradient(w / 2 - bw / 2, 0, w / 2 + bw / 2, 0);
+          g.addColorStop(0, "rgba(255,255,255,0)");
+          g.addColorStop(.15, `rgba(230,238,255,${.95 * glowA})`);
+          g.addColorStop(.85, `rgba(230,238,255,${.95 * glowA})`);
+          g.addColorStop(1, "rgba(255,255,255,0)");
+          c.fillStyle = g;
+          c.shadowColor = "rgba(150,190,255,.9)";
+          c.shadowBlur = 18 * u;
+          c.fillRect(w / 2 - bw / 2, y - 1 * u, bw, 2 * u);
+          c.shadowBlur = 0;
+        }
+        if (t < P.t1 && grow >= 1) {
+          const q = ((s - 780) / 1500) % 1;
+          const gx = w / 2 - lw / 2 + lw * q;
+          const gg = c.createRadialGradient(gx, cy, 0, gx, cy, 60 * u);
+          gg.addColorStop(0, "rgba(255,216,122,.95)");
+          gg.addColorStop(1, "rgba(255,182,30,0)");
+          c.fillStyle = gg;
+          c.fillRect(gx - 60 * u, cy - 20 * u, 120 * u, 40 * u);
+        }
+      }
+      const ta = clamp((s - 420) / 400) * (1 - clamp((t - P.t1) / 220));
+      if (ta > 0) {
+        c.save();
+        c.globalAlpha = ta;
+        c.textAlign = "center";
+        c.fillStyle = C.fg;
+        c.font = `700 ${40 * u}px Bricolage Grotesque, system-ui, sans-serif`;
+        c.fillText(FILM, w / 2, cy - 34 * u);
+        c.fillStyle = C.dim;
+        c.font = `${15 * u}px Instrument Sans, system-ui, sans-serif`;
+        c.fillText(`From ${DEVICE}`, w / 2, cy + 40 * u);
+        c.restore();
+      }
+      if (t >= P.t1) outro(c, w, h, u, t, P);
+    }
+  };
+
+  // The phone at the same moment: your swipe, the warp, the landing flash.
+  function strip(c, w, h, t, P) {
+    c.clearRect(0, 0, w, h);
+    const d = window.devicePixelRatio || 1;
+    const x = ms => 8 * d + (w - 16 * d) * ms / P.loop;
+    const y = h * .38;
+    c.fillStyle = "rgba(150,190,255,.16)";
+    c.fillRect(x(0), y - 1 * d, x(P.loop) - x(0), 2 * d);
+    c.fillStyle = "rgba(31,58,168,.85)";
+    c.fillRect(x(P.release), y - 4 * d, x(P.t1) - x(P.release), 8 * d);
+    c.fillStyle = "rgba(255,255,255,.9)";
+    c.fillRect(x(P.t1) - 2 * d, y - 8 * d, 4 * d, 16 * d);
+    c.fillStyle = C.spark;
+    c.beginPath();
+    c.arc(x(P.release), y, 5 * d, 0, TAU);
+    c.fill();
+    c.font = `${11 * d}px Instrument Sans, system-ui, sans-serif`;
+    c.fillStyle = C.faint;
+    c.textAlign = "left";
+    c.fillText("Phone: you let go", x(P.release) - 4 * d, h - 4 * d);
+    c.textAlign = "center";
+    c.fillText("warp", (x(P.release) + x(P.t1)) / 2 + 30 * d, h - 4 * d);
+    c.textAlign = "left";
+    c.fillStyle = C.fg;
+    c.fillText("flash + first frame", x(P.t1) + 6 * d, h - 4 * d);
+    c.fillStyle = C.spark;
+    c.fillRect(x(t) - 1 * d, 2 * d, 2 * d, h * .62);
+  }
+
+  const items = [...document.querySelectorAll(".opt")].map(el => ({
+    screen: el.querySelector(".screen"),
+    strip: el.querySelector(".strip"),
+    draw: OPTIONS[el.querySelector(".screen").dataset.opt]
+  }));
+
+  function fit(cv) {
+    const d = window.devicePixelRatio || 1;
+    const r = cv.getBoundingClientRect();
+    const W = Math.max(1, Math.round(r.width * d)), H = Math.max(1, Math.round(r.height * d));
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    return cv.getContext("2d");
+  }
+
+  function frame(now) {
+    const dt = Math.min(64, now - last);
+    last = now;
+    if (playing) clock += dt;
+    const P = plan();
+    const t = clock % P.loop;
+    for (const it of items) {
+      const c = fit(it.screen);
+      const w = it.screen.width, h = it.screen.height;
+      const u = h / 540;
+      c.save();
+      it.draw(c, w, h, u, t, P);
+      c.restore();
+      strip(fit(it.strip), it.strip.width, it.strip.height, t, P);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  if (!playing) {
+    clock = plan().t0 + 900;
+  }
+  document.getElementById("playToggle").textContent = playing ? "Pause" : "Play";
+  document.getElementById("playToggle").addEventListener("click", e => {
+    playing = !playing;
+    e.currentTarget.textContent = playing ? "Pause" : "Play";
+  });
+  for (const b of document.querySelectorAll(".seg button")) {
+    b.addEventListener("click", () => {
+      wait = +b.dataset.wait;
+      clock = 0;
+      for (const o of document.querySelectorAll(".seg button")) o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
