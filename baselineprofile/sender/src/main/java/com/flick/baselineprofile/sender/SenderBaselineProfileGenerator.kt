@@ -45,6 +45,8 @@ class SenderBaselineProfileGenerator {
             device.pressHome()
             startActivityAndWait()
             awaitAppWindow()
+            // With no TV paired the app opens on Devices, where none of the journeys below exist.
+            if (tapLabelled("Library")) device.waitForIdle()
 
             scrollLibraryGrid()
             openFilmDetail()
@@ -100,16 +102,31 @@ private fun MacrobenchmarkScope.scrollLibraryGrid() {
 
 /** Tiles carry the film's own name as their description, so match on shape, not on text. */
 private fun MacrobenchmarkScope.openFilmDetail() {
-    val tile = device.findObjects(By.pkg(packageName).clickable(true))
-        .maxByOrNull { it.describedArea() }
-        ?.takeIf { it.describedArea() > 0 }
-        ?: return
-    runCatching { tile.click() }
-    device.wait(Until.hasObject(By.pkg(packageName).depth(0)), WAIT_MS)
-    device.waitForIdle()
-    device.pressBack()
-    device.waitForIdle()
+    // Several round trips: the card flip, the page's entrance and the hand-back each run
+    // different code on the way in and out, and a second pass reaches the warm-cache paths.
+    // Found again each pass: the grid recomposes on the way back and drops the old node.
+    repeat(FLIP_ROUND_TRIPS) {
+        // Only a film tile carries a running time; the largest clickable can be a banner instead.
+        val tile = device.findObjects(By.pkg(packageName).clickable(true).hasDescendant(By.text(RUNTIME)))
+            .maxByOrNull { it.describedArea() }
+            ?.takeIf { it.describedArea() > 0 }
+            ?: return
+        runCatching { tile.click() }
+        device.wait(Until.hasObject(By.pkg(packageName).depth(0)), WAIT_MS)
+        device.waitForIdle()
+        Thread.sleep(FLIP_SETTLE_MS)
+        device.pressBack()
+        device.waitForIdle()
+        Thread.sleep(FLIP_SETTLE_MS)
+    }
 }
+
+private val RUNTIME = java.util.regex.Pattern.compile("""\d+(:\d\d)+""")
+
+private const val FLIP_ROUND_TRIPS = 3
+
+/** Longer than either leg of the flip, so each pass records a whole open and a whole return. */
+private const val FLIP_SETTLE_MS = 1_200L
 
 private fun MacrobenchmarkScope.openNowPlayingRemote() {
     tapLabelled("Remote", "Now playing", "Flicked from")
@@ -145,10 +162,14 @@ private fun MacrobenchmarkScope.visitDevicesAndSettings() {
  */
 private fun MacrobenchmarkScope.tapLabelled(vararg labels: String): Boolean {
     val needles = labels.map { it.lowercase() }
-    val target = device.findObjects(By.pkg(packageName).clickable(true)).firstOrNull { node ->
+    fun List<UiObject2>.labelled() = firstOrNull { node ->
         val haystack = node.labelText()
         needles.any { haystack.contains(it) }
-    } ?: return false
+    }
+    // A nav tab's label is a child of its clickable node; clicking the label lands on the tab.
+    val target = device.findObjects(By.pkg(packageName).clickable(true)).labelled()
+        ?: device.findObjects(By.pkg(packageName)).labelled()
+        ?: return false
     return runCatching { target.click() }.isSuccess
 }
 

@@ -83,6 +83,24 @@ class FrameQualityTest {
         assertEquals(80, stats.spread)
     }
 
+    @Test fun aFailedDecodesFlatGreenIsNoPictureAtAll() {
+        // The provider thumbnail a phone's decoder handed back for one film: a single
+        // #005F01 edge to edge, bright enough to clear the brightness floor.
+        val green = frameStats(IntArray(SAMPLES) { lumaOf(0xFF005F01.toInt()) })
+        assertTrue(green.blank)
+        assertTrue(green.uniform)
+    }
+
+    @Test fun aDarkSceneWithTheFaintestDetailIsStillAPicture() {
+        // Blank, so the search keeps looking, but kept as its last resort if nothing better
+        // turns up: a film that is dark throughout still gets its own frame.
+        val dim = frameStats(alternating(8, 12))
+        assertTrue(dim.blank)
+        assertFalse(dim.uniform)
+        assertTrue(frameStats(flat(0)).uniform)
+        assertTrue(frameStats(alternating(100, 102)).uniform)
+    }
+
     private fun flat(value: Int) = IntArray(SAMPLES) { value }
 
     private fun alternating(low: Int, high: Int) = IntArray(SAMPLES) { if (it % 2 == 0) low else high }

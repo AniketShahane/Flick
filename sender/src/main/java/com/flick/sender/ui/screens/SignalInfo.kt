@@ -5,8 +5,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -18,6 +21,7 @@ import com.flick.sender.WifiLinkInfo
 import com.flick.sender.ui.Format
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /**
@@ -85,14 +89,19 @@ fun wifiBandLabel(band: WifiBand?): String = when (band) {
  * the result as [State] rather than a value. Nothing here is read at composition scope,
  * so the poll invalidates only the leaves that actually read `.value` — screens that
  * unwrap it at their own scope rebuild their whole tree on every tick.
+ *
+ * The poll holds while [polling] is false, for a surface that stays composed under another
+ * one running a poll of its own.
  */
 @Composable
-fun rememberSignalState(): State<SignalInfo> {
+fun rememberSignalState(polling: () -> Boolean = { true }): State<SignalInfo> {
     val context = LocalContext.current
     val stats = TransferTelemetry.stats.collectAsState()
     val wifi = remember { mutableStateOf<WifiLinkInfo?>(null) }
+    val currentPolling by rememberUpdatedState(polling)
     LaunchedEffect(Unit) {
         while (true) {
+            snapshotFlow { currentPolling() }.first { it }
             // NOT the measurement — CastServerService owns a 1 Hz sampler for that, and it
             // is the only fold alive while nothing is composed. This one is what brings the
             // reading back DOWN: nothing resets the telemetry when a session ends, so with

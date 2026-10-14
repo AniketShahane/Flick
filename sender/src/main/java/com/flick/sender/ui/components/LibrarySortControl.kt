@@ -22,7 +22,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +47,7 @@ import com.flick.sender.ui.theme.PillShape
 import com.flick.sender.ui.theme.flickRipple
 import com.flick.sender.ui.theme.pressScale
 import com.flick.sender.ui.theme.rememberFlickTouchHaptics
+import kotlinx.coroutines.flow.first
 
 /**
  * The width the library row has to keep clear for the sort control. Fixed rather than
@@ -81,6 +84,7 @@ fun LibrarySortChip(
     enabled: Boolean,
     onChoose: (LibrarySort) -> Unit,
     modifier: Modifier = Modifier,
+    active: () -> Boolean = { true },
 ) {
     val colors = LocalFlickColors.current
     val haptics = rememberFlickTouchHaptics()
@@ -99,8 +103,17 @@ fun LibrarySortChip(
     // search field arriving underneath it. Reading it here closes the window in the same
     // composition; the effect then clears the latch, so a control that becomes tappable
     // again does not spring its menu back open unasked.
-    val menuOpen = open && enabled
+    //
+    // [active] is read only while the menu is up, so a route change never recomposes a closed chip.
+    val menuOpen = open && enabled && active()
     LaunchedEffect(enabled) { if (!enabled) open = false }
+    val currentActive by rememberUpdatedState(active)
+    LaunchedEffect(open) {
+        if (open) {
+            snapshotFlow { currentActive() }.first { !it }
+            open = false
+        }
+    }
 
     Box(modifier) {
         Row(

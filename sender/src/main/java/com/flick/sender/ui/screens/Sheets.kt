@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -130,8 +131,14 @@ private val SheetFlingVelocity = 500.dp
  *
  * The default is a detached counter, so a sheet composed outside the shell — a preview,
  * a test — still increments something real and simply moves no chrome.
+ *
+ * Not static: a library stack that stops being the route swaps its sheets onto a detached
+ * counter, and a static local would recompose the whole grid under them to do it.
  */
-internal val LocalSheetDepth = staticCompositionLocalOf<MutableIntState> { mutableIntStateOf(0) }
+internal val LocalSheetDepth = compositionLocalOf<MutableIntState> { mutableIntStateOf(0) }
+
+/** False for sheets in a surface that is not the route, whose Back belongs to the route that is. */
+internal val LocalSheetBackEnabled = compositionLocalOf { true }
 
 /**
  * Runs the enclosing sheet's exit, and its dismissal at the end of it.
@@ -265,7 +272,7 @@ fun BottomSheet(
     // dismiss or cancel the in-flight UI rather than closing the Activity underneath it.
     // Still owned while the sheet is leaving, too — a second press during the exit belongs
     // to the sheet that is still on screen, not to the route behind it.
-    BackHandler(onBack = leave)
+    BackHandler(enabled = LocalSheetBackEnabled.current, onBack = leave)
     // The finger's own channel into the sheet: drags on the heading, the footer and the
     // margins, none of which any scrolling region ever sees.
     val dragState = rememberDraggableState { delta -> motion.dragBy(delta, scope) }

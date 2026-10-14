@@ -206,13 +206,14 @@ The verified phone runs an adaptive panel with a 120 Hz peak, and its platform "
 category resolves to 90 Hz there, so motion asks for the rate itself. `ui/motion/FrameRate.kt`
 reads the peak from the display's modes at the current resolution, and `animatingFrameRate(active)`
 votes it with `Modifier.preferredFrameRate` only while something moves: the route
-`AnimatedContent` while its transition runs, the shell while any shared element is in flight
-(the window takes the highest vote, so this covers the overlay), the dock's morph, the
-connecting warp's hold and throw, the flick pad's poster from the finger going down until it is
+`AnimatedContent` and the library ⇄ detail stack while their transitions run, the shell while
+any shared element is in flight (the window takes the highest vote, so this covers the
+overlay), the dock's morph, the
+connecting screen's light-speed jump, the flick pad's poster from the finger going down until it is
 back at rest (and through a throw), and the card flip. Always-running slow loops vote 30 Hz
 (`ambientFrameRate`): the remote's ambient glow, the pad's chevron ripple, the dock's progress
-hairline, and the connecting field once the warp is over (`loopFrameRate`, one vote that is the
-peak during the warp and 30 Hz for the wait). The platform resolves to the highest vote in the
+hairline, and the connecting field once the jump is over (`loopFrameRate`, one vote that is the
+peak during the jump and 30 Hz for the wait). The platform resolves to the highest vote in the
 window, so a low vote only lowers the rate while nothing else is moving.
 
 GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded:
@@ -229,11 +230,56 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
 - **Gradients are built once per size** (`drawWithCache`), not per frame: the pad poster's glow
   and the warp's rings, which share one stroke paint.
 - **No warm is unsized.** The image loader's memory cache is shared with the grid and capped
-  (16 MB, 8 MB on low-RAM phones). The card flip's small poster (w342) is warmed into memory at
+  (a quarter of the heap up to 48 MB, 8 MB on low-RAM phones): enough for a screen of tiles
+  and the detail page over them, so neither evicts the other. Decodes run two at a time; the
+  soft blur runs one at a time on a dispatcher of its own, so it never queues behind them. The card flip's small poster (w342) is warmed into memory at
   114 × 171 px while its tile is on screen and at 228 × 342 px at the tap; the full-size poster
   is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's
   front asks for its art at the size the tile drew it, so it is the tile's own decode. An unsized warm decodes at the display's
   size and evicted the very tiles the card lands back on, which then re-showed their ground.
+  Only a backdrop tile warms the small poster: a poster tile already holds it under the same
+  key at its own size, and a smaller warm racing that decode left the tile's copy too small to
+  reuse.
+- **A prefetch never decodes.** Library-wide art prefetch and the tap's full-size poster warm
+  go to disk through a no-op decoder (`diskOnly()` in `ui/FilmPosterArt.kt`); with the memory
+  cache merely turned off Coil still decoded every one, three full-size decodes per film queued
+  ahead of the grid's. The no-op decode runs on the fetch's own thread, not the grid's two decode
+  threads. The library-wide prefetch runs two requests at a time inside its own job (every resume
+  reloads the library, and enqueueing it whole put hundreds of fetches on the disk cache's single
+  lock, which it holds through journal writes, and outlived a cancel), and skips any url this
+  process has already put on disk.
+- **The grid keeps rows around it.** Its state takes a `LazyLayoutCacheWindow`: half a screen
+  ahead is composed early, so its art is decoded before the row shows, and a screen behind stays
+  composed and measured, so a fling back places rows instead of composing them.
+- **A video still is cached as final.** `VideoStillFetcher` reports its stills as not sampled:
+  every request for a key asks the same box, so a still smaller than that box on both axes (a
+  portrait or low-resolution film, a provider thumbnail under the hero's box) is a memory hit
+  rather than a fresh search each time it is asked for.
+- **A one-colour frame is never a still.** A phone's decoder can fail on a stream without
+  throwing and hand back a zeroed frame, which reads as flat green (seen on a 10-bit HEVC
+  WEBRip whose MediaStore thumbnail was a single #005F01). `FrameStats.uniform` (luma spread
+  under 2) marks it; neither the provider thumbnail nor a search candidate that is uniform is
+  kept even as a last resort. When that is all the file gives, `VideoStills.still` answers
+  `Still.NoPicture`, the fetcher fails the request rather than falling through to Coil's
+  `VideoFrameDecoder` (the same decoder, the same green), and the seat's ground shows. The
+  verdict is remembered, re-reading only the provider thumbnail on later binds.
+- **The library is never rebuilt by another route.** The stack is composed beside the route
+  switch (`LibraryHosts` in `FlickApp.kt`), recorded into a graphics layer and drawn only by its
+  entry in the switch, so it takes that entry's transitions unchanged. With another route up it
+  is not drawn, sits under the switch for touches, is cleared from semantics and focus, and its
+  lifecycle is held at STARTED so its loops stop. Once it is not the route its sort menu closes
+  and its sheets neither evict the nav and dock nor take Back; hidden, its folder sheet closes
+  and it stops taking library reloads and the 10 Hz playback clock, so no new art or still loads
+  start under a cast. Its grid
+  takes no touch until the route switch has settled on it. Left with its page up (a cast from
+  Detail), the page is closed unseen once the entry is gone, so the remote returns to the same
+  grid with no flip; only a return while that entry is still leaving builds a new stack.
+- **Bitmap pipelines are warmed.** Once per process, once the library has stayed settled (no
+  route, flip or shared transition, no page, no scroll) for a second and a half,
+  `ArtPipelineWarmup` draws for one frame a few ground-coloured pixels of each
+  bitmap draw the grid makes (software and hardware, opaque and translucent, full and modulated
+  alpha, on and off the pixel grid), straight and inside an offscreen layer. Otherwise the GPU
+  compiled each pipeline mid-fling the first time a new kind of tile passed under the glass.
 - **The dock's glass is one number.** While the dock grows into the remote, `p` is how far the
   card has grown (0 at the bar, 1 once the corner has resolved): the card's travel, animated on
   the dock's own enter/exit transition on the morph's spring and mapped by `dockGrowthAt`

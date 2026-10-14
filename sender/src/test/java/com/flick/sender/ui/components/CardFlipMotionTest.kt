@@ -1,5 +1,10 @@
 package com.flick.sender.ui.components
 
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.TargetBasedAnimation
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntSize
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -117,5 +122,62 @@ class CardFlipMotionTest {
         assertEquals(0, CardFlipMotion.MoveOpen.delayMs)
         // No-bounce home: an underdamped spring would carry the card past the tile.
         for (track in CardFlipMotion.BackTracks) assertEquals(1f, track.dampingRatio, 0f)
+    }
+
+    @Test fun theCardThatIsDrawnTravelsOnTheSameSpringAsTheEndThatTakesItBack() {
+        val hidden = listOf(EnterExitState.PostExit, EnterExitState.PreEnter)
+        // Opening: the page heads for Visible while the grid leaves.
+        assertEquals(CardFlipMotion.MoveOpen, seatBoundsTrack(EnterExitState.Visible))
+        for (leaving in hidden) assertEquals(CardFlipMotion.MoveOpen, tileBoundsTrack(leaving))
+        // Back: the page leaves while the grid heads for Visible.
+        for (leaving in hidden) {
+            val seat = seatBoundsTrack(leaving)
+            assertEquals(tileBoundsTrack(EnterExitState.Visible), seat)
+            // And the travel track the landing is judged on.
+            assertEquals(CardFlipMotion.MoveBack, seat)
+            assertEquals(1f, seat.dampingRatio, 0f)
+        }
+    }
+
+    @Test fun theCardIsHandedBackOnlyAtTheFacesOwnSize() {
+        val face = IntSize(412, 232)
+        assertTrue(flipSeatFitsFace(IntSize(412, 232), face))
+        assertFalse(flipSeatFitsFace(IntSize(411, 232), face))
+        assertFalse(flipSeatFitsFace(IntSize(412, 230), face))
+        assertFalse(flipSeatFitsFace(null, face))
+        assertFalse(flipSeatFitsFace(face, null))
+    }
+
+    @Test fun theFaceIsHomeOnlyWithinHalfAPixelAtTheSlotsOwnSize() {
+        val slot = IntSize(412, 232)
+        assertTrue(flipFaceHome(Offset.Zero, slot, slot))
+        assertTrue(flipFaceHome(Offset(0.5f, -0.5f), slot, slot))
+        assertFalse(flipFaceHome(Offset(0f, 1f), slot, slot))
+        assertFalse(flipFaceHome(Offset(-1f, 0f), slot, slot))
+        assertFalse(flipFaceHome(Offset.Zero, IntSize(413, 232), slot))
+        assertFalse(flipFaceHome(Offset.Zero, IntSize(412, 236), slot))
+    }
+
+    @Test fun theTileTakesTheCardOverOnlyOnceItHasComposedLanded() {
+        assertEquals("a", flipHandedOff(null, "a", landed = true))
+        assertEquals(null, flipHandedOff(null, "a", landed = false))
+        assertEquals(null, flipHandedOff("a", "a", landed = false))
+        // Another tile's composition never takes over or clears the one that holds the card.
+        assertEquals("a", flipHandedOff("a", "b", landed = false))
+    }
+
+    private fun FlipTrack.legMs(): Long =
+        TargetBasedAnimation(springSpec(), Float.VectorConverter, 1f, 0f).durationNanos / 1_000_000
+
+    @Test fun theBackLegOutlastsTheTravelSoTheBoundsArriveOnTheirOwn() {
+        val move = CardFlipMotion.MoveBack.legMs()
+        val longest = CardFlipMotion.BackTracks.maxOf { it.legMs() }
+        assertEquals(CardFlipMotion.SettleBack.legMs(), longest)
+        // The bounds start a frame or two after the travel and need a few more to close their
+        // last pixels: at least six frames at 120 Hz.
+        assertTrue("move=$move settle=$longest", longest - move >= 50)
+        // Open, it ends inside the page's own tail.
+        val open = CardFlipMotion.OpenTracks.maxOf { it.delayMs + it.legMs() }
+        assertTrue(CardFlipMotion.SettleBack.legMs() < open)
     }
 }
