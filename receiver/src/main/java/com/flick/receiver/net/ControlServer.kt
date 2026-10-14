@@ -891,6 +891,7 @@ class ControlServer(
                     if (active?.token !== connection.token || active?.generation != connection.generation) return reject("ownership")
                     ownership.adoptCast(connection.token, connection.generation, cast).also {
                         if (it == ControlOwnership.CastAdoption.NEW) pairing.closeSurface()
+                        if (it != ControlOwnership.CastAdoption.STALE_LEASE) DirectLinkReset.castStarted()
                     }
                 }
                 val reload = when (adoption) {
