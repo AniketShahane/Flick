@@ -159,6 +159,7 @@ import com.flick.receiver.ui.theme.idleAmbientBackground
 import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.LocalWindowEntrance
 import com.flick.receiver.util.RefreshRateHelper
 import com.flick.receiver.util.ScreenWakeHelper
 import com.flick.receiver.util.keepScreenOnWhilePresenting
@@ -1365,6 +1366,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // the redesigned screen chrome at both 1080p and 4K.
         val safeArea = rememberTvSafeAreaPadding()
         val reducedMotion = LocalReducedMotion.current
+        val windowEntrance = LocalWindowEntrance.current
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1795,6 +1797,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
 
             HouseLights(
                 stage = houseStageFor(stage),
+                awaitOnScreen = { windowEntrance?.awaitShown() },
                 // The last Active frame's dim: beginLoad has already cleared the seek
                 // by the time the new cast's first stage composes.
                 filmDimNow = { filmDimReading.drawn },
@@ -2039,19 +2042,13 @@ private fun PlayerSurface(
                     useController = false
                     setKeepContentOnPlayerReset(true)
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    // Unrelated to the turn, and defaults to false: media3's
-                    // workaround for an API 34 platform bug that leaves a
-                    // `SurfaceView` inside a Compose `AndroidView` drawing
-                    // stretched or cropped video (androidx/media#2811). This app
-                    // is exactly that shape and the verified TV is exactly that
-                    // API level. Set on both surfaces because media3 gates it
-                    // itself, twice over: the sync group is constructed only when
-                    // SDK_INT is exactly 34, and `onSurfaceSizeChanged` acts only when the
-                    // video surface `is SurfaceView`. So it is inert on the
-                    // turned player and on every other API level, and a
-                    // detached view is handled too — the posted register
-                    // returns early when `getRootSurfaceControl()` is null.
-                    setEnableComposeSurfaceSyncWorkaround(true)
+                    // media3's API 34 Compose workaround (androidx/media#1237, #2811)
+                    // stays off, its default: on every surface resize it holds the
+                    // whole window in a SurfaceSyncGroup until PlayerView next draws.
+                    // On the Google TV Streamer that hold ran into the platform's
+                    // 1000 ms timeout at the film's second videoSize, freezing the
+                    // window through the Flick card's expansion.
+                    setEnableComposeSurfaceSyncWorkaround(false)
                     // FILL is what keeps a turn off the captions. `exo_subtitles`
                     // is a child of the same `exo_content_frame` as the video
                     // surface, so sizing that frame to the turned picture's aspect

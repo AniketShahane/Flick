@@ -43,9 +43,10 @@ class HouseLightsPlanTest {
         assertEquals(HouseStage.Fault, houseStageFor(MediaStage.Error("cast", CastFailureCode.UNKNOWN, 1L)))
     }
 
-    @Test fun firstCompositionLaunchesTheRoomAndSnapsEverythingElse() {
+    @Test fun firstCompositionLaunchesTheRoomFliesTheCardAndSnapsTheRest() {
         assertMove(HouseMoveKind.Launch, 0f, 1f, HouseGate.None, move(null, HouseStage.Room))
-        for (to in listOf(HouseStage.Fault, HouseStage.Handshake, HouseStage.Film)) {
+        assertMove(HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None, move(null, HouseStage.Handshake))
+        for (to in listOf(HouseStage.Fault, HouseStage.Film)) {
             val (p, d) = houseRest(to)
             assertMove(HouseMoveKind.Snap, p, d, HouseGate.None, move(null, to))
         }
