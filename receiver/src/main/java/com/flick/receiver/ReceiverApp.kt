@@ -430,7 +430,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
     val server = remember {
         ControlServer(pairing, session, { playbackFlow.value }) { peer, trigger, stillQuiet ->
-            DirectLinkReset.release(context, peer, trigger, stillQuiet)
+            DirectLinkReset.watch(context, peer, trigger, stillQuiet)
         }
     }
     val portStore = remember { ControlPortStore(context) }

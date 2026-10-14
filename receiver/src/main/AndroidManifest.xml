@@ -8,7 +8,7 @@
          overlay. Frequency/linkSpeed/RSSI need no location permission (SSID/BSSID
          would, and are never read). -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- Tear down a stuck Wi-Fi direct (TDLS) link to a phone once its cast ends;
+    <!-- Tear down a Wi-Fi direct (TDLS) link this TV is left holding to a phone;
          see DirectLinkReset. A normal permission. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
