@@ -5,27 +5,9 @@
     <aapt:attr name="android:drawable">
         <vector android:name="tunnel" android:width="960dp" android:height="540dp"
             android:viewportWidth="960" android:viewportHeight="540" android:alpha="0">
-        <path android:name="wash" android:pathData="M0,0 h960 v540 h-960 z">
-            <aapt:attr name="android:fillColor">
-                <gradient android:type="radial" android:centerX="480" android:centerY="226.8" android:gradientRadius="720">
-                    <item android:offset="0" android:color="@color/tunnel_wash_core" />
-                    <item android:offset="0.45" android:color="@color/tunnel_wash_mid" />
-                    <item android:offset="1" android:color="@color/tunnel_wash_edge" />
-                </gradient>
-            </aapt:attr>
-        </path>
-        <group android:pivotX="480" android:pivotY="226.8" android:scaleY="0.5625">
-            <group android:name="breath" android:pivotX="480" android:pivotY="226.8">
-                <path android:name="glow" android:pathData="M163.2,226.8 a316.8,316.8 0 1 0 633.6,0 a316.8,316.8 0 1 0 -633.6,0 z">
-                    <aapt:attr name="android:fillColor">
-                        <gradient android:type="radial" android:centerX="480" android:centerY="226.8" android:gradientRadius="316.8">
-                            <item android:offset="0" android:color="@color/tunnel_glow_core" />
-                            <item android:offset="0.5" android:color="@color/tunnel_glow_mid" />
-                            <item android:offset="1" android:color="@color/tunnel_glow_edge" />
-                        </gradient>
-                    </aapt:attr>
-                </path>
-            </group>
+        <group android:name="breath" android:pivotX="480" android:pivotY="226.8">
+            <path android:pathData="M347.52,140.8 h264.96 a16.52,16.52 0 0 1 16.52,16.52 v138.96 a16.52,16.52 0 0 1 -16.52,16.52 h-264.96 a16.52,16.52 0 0 1 -16.52,-16.52 v-138.96 a16.52,16.52 0 0 1 16.52,-16.52 z" android:strokeColor="@color/tunnel_ring" android:strokeAlpha="0.22" android:strokeWidth="6" />
+            <path android:pathData="M347.52,133.8 h264.96 a23.52,23.52 0 0 1 23.52,23.52 v138.96 a23.52,23.52 0 0 1 -23.52,23.52 h-264.96 a23.52,23.52 0 0 1 -23.52,-23.52 v-138.96 a23.52,23.52 0 0 1 23.52,-23.52 z" android:strokeColor="@color/tunnel_ring" android:strokeAlpha="0.08" android:strokeWidth="10" />
         </group>
         <group android:name="ring0" android:pivotX="480" android:pivotY="226.8" android:scaleX="1" android:scaleY="1">
             <path android:name="ring0path" android:pathData="M347.52,145.8 h264.96 a11.52,11.52 0 0 1 11.52,11.52 v138.96 a11.52,11.52 0 0 1 -11.52,11.52 h-264.96 a11.52,11.52 0 0 1 -11.52,-11.52 v-138.96 a11.52,11.52 0 0 1 11.52,-11.52 z"

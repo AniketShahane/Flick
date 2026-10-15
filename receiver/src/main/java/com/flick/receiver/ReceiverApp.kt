@@ -1740,8 +1740,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                             // The house lights are still staging the film: it plays in the
                             // tunnel's window, and nothing of this screen but the film may
                             // draw over the tunnel around it.
-                            chromeVisible = chromeVisible && pictureSettled,
-                            staged = !pictureSettled,
+                            chromeVisible = chromeVisible && pictureSettled && !filmPose.staged,
+                            staged = filmPose.staged,
                             quality = if (showQuality) qualityInfo(snapshot) else null,
                             remoteSeekDeltaMs = remoteSeekDeltaMs,
                             remoteSeekSpeedLevel = remoteSeekSpeedLevel,
@@ -1795,7 +1795,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         // focusables and hide their amber ring; while chrome is up the
                         // Stream metrics panel is the read (spec §5.5).
                         AnimatedVisibility(
-                            visible = metricsEnabled && !chromeVisible,
+                            visible = metricsEnabled && !chromeVisible && !filmPose.staged,
                             enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
                             // The pills slide in from above the frame and cover only the plate's top rows,
                             // so the HUD leaves into bare film like any other overlay (FILM_EXIT_MS). The

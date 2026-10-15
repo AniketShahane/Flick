@@ -320,8 +320,24 @@ class HouseLightsPlanTest {
         assertEquals(r, numbers[3], 0.01f)
         assertEquals(wh - 2 * r, numbers[10], 0.01f)
         // Its fade over the room is the span the curtain and onLightsDown wait out.
+        assertFadesIn(doc)
+        // No gradient is redrawn every frame: the wash and glow live in the static drawable.
+        assertEquals(0, doc.getElementsByTagName("gradient").length)
+    }
+
+    @Test fun theTunnelsWashIsStaticAndFadesInWithTheLoop() {
+        val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(WASH_XML)
+        assertEquals(2, doc.getElementsByTagName("gradient").length)
+        // Its only animation is the fade, which leaves its rasterised bitmap alone.
+        assertEquals(1, doc.getElementsByTagName("target").length)
+        assertFadesIn(doc)
+    }
+
+    private fun assertFadesIn(doc: org.w3c.dom.Document) {
+        val vector = doc.getElementsByTagName("vector").item(0) as Element
         val fade = doc.getElementsByTagName("target").let { targets ->
-            (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == "tunnel" }
+            (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == vector.android("name") }
         }.getElementsByTagName("objectAnimator").item(0) as Element
         assertEquals(FlickMotion.TUNNEL_FADE_IN_MS, fade.android("duration").toLong())
         assertEquals("alpha", fade.android("propertyName"))
@@ -401,6 +417,7 @@ class HouseLightsPlanTest {
         const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
         const val STAGE_DP_WIDTH = 960f
         val TUNNEL_XML = File("src/main/res/drawable/tunnel_loop.xml")
+        val WASH_XML = File("src/main/res/drawable/tunnel_wash.xml")
         val TUNNEL_COLOURS = File("src/main/res/values/colors_tunnel.xml")
     }
 }

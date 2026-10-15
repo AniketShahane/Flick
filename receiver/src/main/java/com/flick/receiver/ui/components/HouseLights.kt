@@ -14,7 +14,6 @@ import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -38,6 +37,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.RoundRect
@@ -145,6 +145,13 @@ internal const val TUNNEL_WINDOW_LIFT = TUNNEL_VANISH_Y - 0.5f
  * uploaded every frame, and at full 1080p that is 8 MB a frame on the TV's GPU.
  */
 private const val TUNNEL_RASTER_SCALE = 0.5f
+
+/**
+ * The wash and glow under the loop (`tunnel_wash.xml`) are smooth gradients and never
+ * change after their fade, which is the drawable's root alpha and so leaves its bitmap
+ * alone: they are rasterised once, at a quarter of the screen's pixels.
+ */
+private const val TUNNEL_WASH_RASTER_SCALE = 0.25f
 
 /**
  * The bezel the film carries in the window. It hides the surface's square corners
@@ -344,6 +351,10 @@ class FilmDimReading {
  */
 class FilmPose {
     private var view: View? = null
+
+    /** True while the film is anywhere but whole and shown: the house lights are staging it. */
+    var staged by mutableStateOf(false)
+        private set
     private val relayout = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> apply(v) }
 
     var scale: Float = 1f
@@ -370,6 +381,8 @@ class FilmPose {
         this.scale = scale
         this.lift = lift
         this.shown = shown
+        val nowStaged = scale != 1f || lift != 0f || !shown
+        if (staged != nowStaged) staged = nowStaged
         view?.let(::apply)
     }
 
@@ -395,16 +408,19 @@ class FilmPose {
  * the display list, and the vector drawable sizes its bitmap from that.
  */
 private class TunnelBackdropView(context: Context) : ViewGroup(context) {
+    private val wash = context.getDrawable(R.drawable.tunnel_wash) as AnimatedVectorDrawable
     private val loop = context.getDrawable(R.drawable.tunnel_loop) as AnimatedVectorDrawable
-    private val image = ImageView(context).apply {
-        scaleType = ImageView.ScaleType.FIT_XY
-        setImageDrawable(loop)
-        pivotX = 0f
-        pivotY = 0f
+    private val layers = listOf(wash to TUNNEL_WASH_RASTER_SCALE, loop to TUNNEL_RASTER_SCALE).map { (drawable, scale) ->
+        ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            setImageDrawable(drawable)
+            pivotX = 0f
+            pivotY = 0f
+        } to scale
     }
 
     init {
-        addView(image)
+        layers.forEach { (image, _) -> addView(image) }
         visibility = INVISIBLE
         isFocusable = false
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -414,28 +430,32 @@ private class TunnelBackdropView(context: Context) : ViewGroup(context) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(w, h)
-        image.measure(
-            MeasureSpec.makeMeasureSpec(ceil(w * TUNNEL_RASTER_SCALE).toInt(), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(ceil(h * TUNNEL_RASTER_SCALE).toInt(), MeasureSpec.EXACTLY),
-        )
-    }
-
-    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
-        image.layout(0, 0, image.measuredWidth, image.measuredHeight)
-        if (image.measuredWidth > 0 && image.measuredHeight > 0) {
-            image.scaleX = (r - l).toFloat() / image.measuredWidth
-            image.scaleY = (b - t).toFloat() / image.measuredHeight
+        for ((image, scale) in layers) {
+            image.measure(
+                MeasureSpec.makeMeasureSpec(ceil(w * scale).toInt(), MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(ceil(h * scale).toInt(), MeasureSpec.EXACTLY),
+            )
         }
     }
 
-    override fun hasOverlappingRendering(): Boolean = false
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        for ((image, _) in layers) {
+            image.layout(0, 0, image.measuredWidth, image.measuredHeight)
+            if (image.measuredWidth > 0 && image.measuredHeight > 0) {
+                image.scaleX = (r - l).toFloat() / image.measuredWidth
+                image.scaleY = (b - t).toFloat() / image.measuredHeight
+            }
+        }
+    }
 
     fun start() {
         visibility = VISIBLE
+        wash.start()
         loop.start()
     }
 
     fun stop() {
+        wash.reset()
         loop.reset()
         visibility = INVISIBLE
     }
@@ -644,6 +664,21 @@ internal fun HouseLights(
             }
         }
 
+        // A seam that cut the last show short (in its hold, dwell, expansion or exit) leaves the
+        // loop running; a new handshake takes it on whole, with its copy back.
+        suspend fun resumeTunnel() {
+            FlickLog.i("stage", "tunnel resume expand=${tunnel.expand.value} presence=${tunnel.presence.value}")
+            tunnel.presence.snapTo(1f)
+            tunnel.flash.snapTo(0f)
+            tunnel.cover.snapTo(0f)
+            if (tunnel.running) {
+                tunnel.captionIn?.cancel()
+                tunnel.captionIn = tunnelScope.launch {
+                    tunnel.caption.animateTo(1f, tween(FlickMotion.TUNNEL_CAPTION_IN_MS, easing = FlickMotion.ChromeFade))
+                }
+            }
+        }
+
         // Returns once the tunnel is opaque over whatever it rose over. The curtain, if
         // it was drawing anything, gives way to it over the same span.
         suspend fun awaitTunnelIn() {
@@ -805,6 +840,11 @@ internal fun HouseLights(
                 // Seeded closed at full density: nothing lit is left to cover.
                 val dark = covered()
                 if (dark) lightsDownNow()
+                if (tunnel.up) {
+                    resumeTunnel()
+                    tunnel.expand.snapTo(0f)
+                    tunnel.rim.snapTo(0f)
+                }
                 startTunnel()
                 awaitTunnelIn()
                 if (!dark) lightsDownNow()
@@ -855,12 +895,13 @@ internal fun HouseLights(
                 // The glowing window is drawn over the film first, so the film's view can
                 // be shown under it in the same frame and the glow then gives way.
                 tunnel.cover.snapTo(1f)
+                // The bezel too: the film's square corners stand outside the window's rounded ones.
+                tunnel.rim.snapTo(1f)
                 filmPose.at(0f, shown = true)
                 tunnel.captionIn?.cancel()
                 FlickLog.i("stage", "tunnel film shown sinceSeamMs=${now() - edge}")
                 pictureUpNow()
                 launch { tunnel.cover.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
-                launch { tunnel.rim.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
                 launch { tunnel.caption.animateTo(0f, tween(FlickMotion.TUNNEL_CAPTION_OUT_MS, easing = FlickMotion.ChromeFade)) }
                 val keyed = withTimeoutOrNull(FlickMotion.TUNNEL_DWELL_MS) { keyPresses.first() } != null
                 FlickLog.i("stage", "tunnel dwell end reason=${if (keyed) "key" else "time"} sinceSeamMs=${now() - edge}")
@@ -871,7 +912,12 @@ internal fun HouseLights(
             HouseMoveKind.VeilIn -> {
                 // The paused film still fills the screen: it is drawn back down into the
                 // window while the tunnel rises behind it, and the window then glows over it.
-                tunnel.expand.snapTo(1f)
+                // From wherever the film's view is: a re-cast during the last show's dwell or
+                // expansion finds it part way there, and it must never grow on the way back.
+                if (tunnel.up) resumeTunnel()
+                tunnel.expand.snapTo(
+                    ((filmPose.scale - TUNNEL_WINDOW_FRACTION) / (1f - TUNNEL_WINDOW_FRACTION)).coerceIn(0f, 1f),
+                )
                 startTunnel()
                 tunnel.entrance?.join()
                 coroutineScope {
@@ -1100,11 +1146,14 @@ private fun TunnelOverlay(tunnel: Tunnel, headline: String, live: Boolean) {
             )
         }
 
+        // Alpha on the draw, not the layer: a full-screen layer alpha would render offscreen.
         Spacer(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer { alpha = tunnel.flash.value }
-                .background(FlickColor.TunnelFlash),
+                .drawBehind {
+                    val f = tunnel.flash.value
+                    if (f > 0f) drawRect(FlickColor.TunnelFlash, alpha = f)
+                },
         )
     }
 }

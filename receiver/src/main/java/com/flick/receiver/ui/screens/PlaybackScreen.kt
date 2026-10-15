@@ -293,7 +293,8 @@ internal fun primaryTransportLive(phase: PlaybackPhase, onReplay: (() -> Unit)?)
  *
  * [staged] is true while the house lights still show the film in the handshake
  * tunnel's window: the screen then draws the film alone, with no canvas or dim of its
- * own, because the tunnel around the window is drawn beneath this screen.
+ * own and none of its overlays, because the tunnel around the window is drawn beneath
+ * this screen. The dim eases in once it clears.
  */
 @Composable
 fun PlaybackScreen(
@@ -431,7 +432,8 @@ fun PlaybackScreen(
         // Dim while paused / seeking / buffering — the frame stays visible.
         // Ended goes deepest and is the one state where that is not a compromise:
         // the film is over, so the last frame is a still, not the content.
-        val dimCause = playbackDimCause(phase, seeking)
+        // None while staged, so the dim eases in once the film has the screen.
+        val dimCause = if (staged) DimCause.None else playbackDimCause(phase, seeking)
         val dimMemory = remember { DimMemory(dimCause) }
         val reducedMotion = LocalReducedMotion.current
         // The three layers over the film — one dim and two scrims — are composed
@@ -454,7 +456,7 @@ fun PlaybackScreen(
             Modifier
                 .fillMaxSize()
                 .drawBehind {
-                    val shade = if (staged) 0f else dim.value
+                    val shade = dim.value
                     dimReading?.drawn = shade
                     if (shade > 0.01f) drawRect(FlickColor.CanvasPlayback, alpha = shade)
                 },
@@ -503,7 +505,7 @@ fun PlaybackScreen(
         // T7 buffering. The last plate shown is what fades out, so a STALLED plate
         // never reads TOPPING UP on its way off the film.
         FlickPresence(
-            value = diagnostics.bufferingPlate.takeIf { phase == PlaybackPhase.Buffering },
+            value = diagnostics.bufferingPlate.takeIf { phase == PlaybackPhase.Buffering && !staged },
             overFilm = true,
             modifier = Modifier.align(Alignment.Center),
             label = "bufferingPlate",
@@ -539,7 +541,7 @@ fun PlaybackScreen(
         // lifetime: a held seek must keep the accumulated delta on screen for as
         // long as the key is down, so visibility stays owned by the gesture.
         AnimatedVisibility(
-            visible = remoteSeekVisible && remoteSeekDeltaMs != null,
+            visible = remoteSeekVisible && remoteSeekDeltaMs != null && !staged,
             enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.tvBurstFadeIn())),
             exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.tvBurstExit())),
             modifier = Modifier.matchParentSize(),

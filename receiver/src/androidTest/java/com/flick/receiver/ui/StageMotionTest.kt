@@ -363,6 +363,67 @@ class StageMotionTest {
         assertTrue("settled ${since(key)} ms after the key", since(key) <= FlickMotion.TUNNEL_EXPAND_MS + 80)
     }
 
+    /** A re-cast landing while the last film still dwells in the window. */
+    @Test
+    fun aReCastDuringTheDwellDrawsTheFilmBackWithoutGrowingIt() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch()
+        settleHandshake()
+        cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(500)
+        val seam = cut(HouseStage.Handshake)
+        var captionSeenAt: Long? = null
+        while (since(seam) < 1_000) {
+            frame()
+            val t = since(seam)
+            val px = shot("aReCastDuringTheDwellDrawsTheFilmBackWithoutGrowingIt", seam)
+            assertTrue("the film grew toward the screen at $t ms: ${filmScale()}", filmScale() <= TUNNEL_WINDOW_FRACTION + 0.0001f)
+            if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
+        }
+        assertTrue("the headline never came back", captionSeenAt != null)
+        assertTrue("the old film still shows in the window", !filmShown())
+        val px = shot()
+        assertTrue("the tunnel is not around the window", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+    }
+
+    /** Stop then loadMedia while the last film's window is still taking the screen. */
+    @Test
+    fun aStopAndReCastMidExpansionStartsTheTunnelWhole() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch()
+        settleHandshake()
+        cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(FlickMotion.TUNNEL_DWELL_MS + 300)
+        assertTrue("not mid-expansion", filmScale() > TUNNEL_WINDOW_FRACTION && filmScale() < 1f)
+        cut(HouseStage.Room)
+        advance(100)
+        val seam = cut(HouseStage.Handshake)
+        var captionSeenAt: Long? = null
+        while (since(seam) < 900) {
+            frame()
+            val t = since(seam)
+            val px = shot("aStopAndReCastMidExpansionStartsTheTunnelWhole", seam)
+            if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
+            if (t > 40) {
+                assertTrue("the film's view showed in the new handshake at $t ms", !filmShown())
+                assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+            }
+        }
+        assertTrue("the headline never came back", captionSeenAt != null)
+        val px = shot()
+        // The tunnel back at full strength and scale, and no flash left over it.
+        assertTrue("the tunnel did not come back over the corner: ${px.luma(0.05f, 0.05f)}", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the tunnel was not left up for the handshake", tunnelExists())
+    }
+
     @Test
     fun revealWaitsForTheModeSwitch() {
         rate = 23.976f
