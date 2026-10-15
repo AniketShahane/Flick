@@ -290,6 +290,10 @@ internal fun primaryTransportLive(phase: PlaybackPhase, onReplay: (() -> Unit)?)
  * still READS as finished — the chip, the eyebrow and a deeper dim all say so —
  * but the primary key is not offered, because the resume behind it cannot restart
  * a finished player; see [primaryTransportLive].
+ *
+ * [staged] is true while the house lights still show the film in the handshake
+ * tunnel's window: the screen then draws the film alone, with no canvas or dim of its
+ * own, because the tunnel around the window is drawn beneath this screen.
  */
 @Composable
 fun PlaybackScreen(
@@ -342,6 +346,7 @@ fun PlaybackScreen(
     onEndSession: (() -> Unit)? = null,
     onReplay: (() -> Unit)? = null,
     dimReading: com.flick.receiver.ui.components.FilmDimReading? = null,
+    staged: Boolean = false,
     videoContent: @Composable () -> Unit,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
@@ -420,7 +425,7 @@ fun PlaybackScreen(
         else -> subtitlesCardFocus
     }
 
-    Box(modifier = modifier.fillMaxSize().background(FlickColor.CanvasPlayback)) {
+    Box(modifier = modifier.fillMaxSize().then(if (staged) Modifier else Modifier.background(FlickColor.CanvasPlayback))) {
         videoContent()
 
         // Dim while paused / seeking / buffering — the frame stays visible.
@@ -449,7 +454,7 @@ fun PlaybackScreen(
             Modifier
                 .fillMaxSize()
                 .drawBehind {
-                    val shade = dim.value
+                    val shade = if (staged) 0f else dim.value
                     dimReading?.drawn = shade
                     if (shade > 0.01f) drawRect(FlickColor.CanvasPlayback, alpha = shade)
                 },

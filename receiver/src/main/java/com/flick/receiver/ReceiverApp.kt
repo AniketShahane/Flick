@@ -118,6 +118,7 @@ import com.flick.receiver.session.SessionController
 import com.flick.receiver.summon.ForegroundSummoner
 import com.flick.receiver.summon.SummonPolicy
 import com.flick.receiver.ui.components.FilmDimReading
+import com.flick.receiver.ui.components.FilmPose
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
@@ -470,6 +471,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // lives outside composition.
     val subtitleSizePreference = remember { SubtitleSizePreference() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
+    val filmPose = remember { FilmPose() }
     // Movable content preserves the same AndroidView/Surface across the opaque
     // preparing overlay and the visible playback chrome.
     val playerSurface = remember(controller) {
@@ -477,6 +479,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             PlayerSurface(
                 controller = controller,
                 subtitleSizePreference = subtitleSizePreference,
+                filmPose = filmPose,
                 onViewAvailable = { playerView = it },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -1106,9 +1109,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // has replaced the transport, so a countdown firing underneath it would take
     // away the bar the viewer expects to come back to.
     //
-    // Re-armed once more when the picture comes up, so a countdown begun under the
-    // veil or the resync blank does not take the chrome away as the film appears.
-    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel, chromeVisible, pictureUpEpoch) {
+    // Re-armed once more when the picture comes up and again when it settles, so a
+    // countdown begun in the tunnel or the resync blank does not take the chrome away
+    // as the film lands.
+    LaunchedEffect(session.chromePoke, frame.phase, session.seeking, openPanel, chromeVisible, pictureUpEpoch, pictureSettled) {
         if (!chromeVisible) return@LaunchedEffect
         val resting = frame.phase == PlaybackPhase.Playing || frame.phase == PlaybackPhase.Paused
         if (!resting || session.seeking || openPanel != PlaybackPanel.None) return@LaunchedEffect
@@ -1365,102 +1369,13 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // The room is lit; only a film brings the house dark. Under the
-                // standby and fault faces this is what a cross-fade passes through.
-                .background(if (stage is MediaStage.Active) FlickColor.Canvas else FlickRoom.Canvas)
+                // The room is lit; a cast brings the house dark. Under the standby and
+                // fault faces this is what a cross-fade passes through, and under a
+                // summoned handshake what the tunnel rises out of.
+                .background(if (stage is MediaStage.None || stage is MediaStage.Error) FlickRoom.Canvas else FlickColor.Canvas)
                 .focusRequester(rootFocus)
                 .focusable(enabled = rootFocusCatcherEnabled(stage, chromeVisible)),
         ) {
-            when (stage) {
-                is MediaStage.Active -> if (surfaceMode == PlayerSurfaceMode.VisiblePlayback) {
-                    PlaybackScreen(
-                        playing = frame.playing,
-                        phase = frame.phase,
-                        positionMs = frame.posMs,
-                        durationMs = frame.durationMs,
-                        bufferedMs = frame.bufferedMs,
-                        targetMs = session.seekTargetMs,
-                        seeking = session.seeking,
-                        volume = frame.volume,
-                        title = session.title,
-                        deviceLabel = castDeviceLabel,
-                        hdr = snapshot.hdrType,
-                        chromeVisible = chromeVisible,
-                        quality = if (showQuality) qualityInfo(snapshot) else null,
-                        remoteSeekDeltaMs = remoteSeekDeltaMs,
-                        remoteSeekSpeedLevel = remoteSeekSpeedLevel,
-                        remoteSeekHeld = remoteSeekHeld,
-                        remoteSeekVisible = remoteSeekVisible,
-                        onBack10 = { session.onSkip(-10_000L) },
-                        onPlayPause = { if (frame.playing) session.onPause() else session.onPlay() },
-                        onForward10 = { session.onSkip(10_000L) },
-                        // Passing this is what lets the Ended state offer "Watch again" at
-                        // all: without it the screen deliberately leaves the primary key
-                        // inert rather than relabelling a control that would resume nothing.
-                        onReplay = { session.onSeek(0L); session.onPlay() },
-                        onSetVolume = { session.onSetVolume(it) },
-                        playFocusRequester = playFocus,
-                        diagnostics = snapshot,
-                        throughput = throughput,
-                        subtitleTracks = subtitleTracks,
-                        subtitleSize = subtitleSize,
-                        // Owned by the controller rather than mirrored here: it
-                        // is the thing that knows what the decoder was given, and
-                        // it resets the choice with every new film.
-                        videoRotation = controller.videoRotation,
-                        autoVideoRotationDegrees = controller.autoVideoRotationDegrees,
-                        turnNote = controller.turnNote,
-                        orientationHint = controller.orientationHint
-                            .takeIf { hintPhase == OrientationHintPhase.Showing },
-                        silentAudioMimeType = controller.silentAudioMimeType
-                            .takeIf { silentAudioPhase == SilentAudioNoticePhase.Showing },
-                        bandNotice = bandNotice.takeIf { bandNoticeShowing },
-                        reconnectingTo = reconnectingTo,
-                        openPanel = openPanel,
-                        onOpenPanel = { openPanel = it },
-                        onScrubFocusChanged = { scrubFocused = it },
-                        onSelectSubtitleTrack = { id ->
-                            controller.selectSubtitleTrack(id)
-                            // Media3 confirms the selection asynchronously; show the
-                            // command immediately and let the 2 Hz re-read above
-                            // reconcile it against what the player actually did.
-                            subtitleTracks = subtitleTracks.map { it.copy(isSelected = id != null && it.id == id) }
-                        },
-                        onSelectSubtitleSize = { subtitleSizeOrdinal = it.ordinal },
-                        onSelectVideoRotation = { controller.setVideoRotation(it) },
-                        // Same terminal path as Back on the playback surface.
-                        onEndSession = { if (!server.stopLocalCast()) session.backToStandby() },
-                        dimReading = filmDimReading,
-                    ) { playerSurface() }
-                    // The dev HUD may only paint over bare film. The chrome now owns
-                    // the top-left corner (source pill above the focusable END
-                    // SESSION pill) and its side panels claim the full height above
-                    // the transport, so with chrome up this plate would cover
-                    // focusables and hide their amber ring; while chrome is up the
-                    // Stream metrics panel is the read (spec §5.5).
-                    AnimatedVisibility(
-                        visible = metricsEnabled && !chromeVisible,
-                        enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
-                        // The pills slide in from above the frame and cover only the plate's top rows,
-                        // so the HUD leaves into bare film like any other overlay (FILM_EXIT_MS). The
-                        // brief overlap mirrors the hide, where this plate's fade-in already crosses the
-                        // pills' exit.
-                        exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.filmExit())),
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(safeArea),
-                    ) {
-                        MetricsOverlay(snapshot = snapshot)
-                    }
-                }
-
-                is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) {
-                    ConnectingScreen { playerSurface() }
-                }
-
-                else -> Unit
-            }
-
             // The still faces: standby, and the fault card. They live outside
             // `when (stage)` so the face a cast arrives over is retained — frozen,
             // unfocusable and silent — under the closing house lights until they
@@ -1799,7 +1714,6 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 offstage = offstage,
                 freshRate = revealRate,
                 pinnedRate = pinnedRate,
-                turnedFilm = controller.surfaceTurn.onTexture,
                 deviceLabel = castDeviceLabel,
                 title = session.title,
                 cadence = cadence,
@@ -1807,7 +1721,102 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 onLightsDown = onLightsDown,
                 onPictureUp = onPictureUp,
                 onPictureSettled = onPictureSettled,
-            )
+                filmPose = filmPose,
+            ) {
+                when (stage) {
+                    is MediaStage.Active -> if (surfaceMode == PlayerSurfaceMode.VisiblePlayback) {
+                        PlaybackScreen(
+                            playing = frame.playing,
+                            phase = frame.phase,
+                            positionMs = frame.posMs,
+                            durationMs = frame.durationMs,
+                            bufferedMs = frame.bufferedMs,
+                            targetMs = session.seekTargetMs,
+                            seeking = session.seeking,
+                            volume = frame.volume,
+                            title = session.title,
+                            deviceLabel = castDeviceLabel,
+                            hdr = snapshot.hdrType,
+                            // The house lights are still staging the film: it plays in the
+                            // tunnel's window, and nothing of this screen but the film may
+                            // draw over the tunnel around it.
+                            chromeVisible = chromeVisible && pictureSettled,
+                            staged = !pictureSettled,
+                            quality = if (showQuality) qualityInfo(snapshot) else null,
+                            remoteSeekDeltaMs = remoteSeekDeltaMs,
+                            remoteSeekSpeedLevel = remoteSeekSpeedLevel,
+                            remoteSeekHeld = remoteSeekHeld,
+                            remoteSeekVisible = remoteSeekVisible,
+                            onBack10 = { session.onSkip(-10_000L) },
+                            onPlayPause = { if (frame.playing) session.onPause() else session.onPlay() },
+                            onForward10 = { session.onSkip(10_000L) },
+                            // Passing this is what lets the Ended state offer "Watch again" at
+                            // all: without it the screen deliberately leaves the primary key
+                            // inert rather than relabelling a control that would resume nothing.
+                            onReplay = { session.onSeek(0L); session.onPlay() },
+                            onSetVolume = { session.onSetVolume(it) },
+                            playFocusRequester = playFocus,
+                            diagnostics = snapshot,
+                            throughput = throughput,
+                            subtitleTracks = subtitleTracks,
+                            subtitleSize = subtitleSize,
+                            // Owned by the controller rather than mirrored here: it
+                            // is the thing that knows what the decoder was given, and
+                            // it resets the choice with every new film.
+                            videoRotation = controller.videoRotation,
+                            autoVideoRotationDegrees = controller.autoVideoRotationDegrees,
+                            turnNote = controller.turnNote,
+                            orientationHint = controller.orientationHint
+                                .takeIf { hintPhase == OrientationHintPhase.Showing },
+                            silentAudioMimeType = controller.silentAudioMimeType
+                                .takeIf { silentAudioPhase == SilentAudioNoticePhase.Showing },
+                            bandNotice = bandNotice.takeIf { bandNoticeShowing },
+                            reconnectingTo = reconnectingTo,
+                            openPanel = openPanel,
+                            onOpenPanel = { openPanel = it },
+                            onScrubFocusChanged = { scrubFocused = it },
+                            onSelectSubtitleTrack = { id ->
+                                controller.selectSubtitleTrack(id)
+                                // Media3 confirms the selection asynchronously; show the
+                                // command immediately and let the 2 Hz re-read above
+                                // reconcile it against what the player actually did.
+                                subtitleTracks = subtitleTracks.map { it.copy(isSelected = id != null && it.id == id) }
+                            },
+                            onSelectSubtitleSize = { subtitleSizeOrdinal = it.ordinal },
+                            onSelectVideoRotation = { controller.setVideoRotation(it) },
+                            // Same terminal path as Back on the playback surface.
+                            onEndSession = { if (!server.stopLocalCast()) session.backToStandby() },
+                            dimReading = filmDimReading,
+                        ) { playerSurface() }
+                        // The dev HUD may only paint over bare film. The chrome now owns
+                        // the top-left corner (source pill above the focusable END
+                        // SESSION pill) and its side panels claim the full height above
+                        // the transport, so with chrome up this plate would cover
+                        // focusables and hide their amber ring; while chrome is up the
+                        // Stream metrics panel is the read (spec §5.5).
+                        AnimatedVisibility(
+                            visible = metricsEnabled && !chromeVisible,
+                            enter = fadeIn(FlickMotion.orSnap(reducedMotion, FlickMotion.chromeFadeIn())),
+                            // The pills slide in from above the frame and cover only the plate's top rows,
+                            // so the HUD leaves into bare film like any other overlay (FILM_EXIT_MS). The
+                            // brief overlap mirrors the hide, where this plate's fade-in already crosses the
+                            // pills' exit.
+                            exit = fadeOut(FlickMotion.orSnap(reducedMotion, FlickMotion.filmExit())),
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(safeArea),
+                        ) {
+                            MetricsOverlay(snapshot = snapshot)
+                        }
+                    }
+
+                    is MediaStage.Checking, is MediaStage.Preparing -> if (surfaceMode == PlayerSurfaceMode.CoveredConnecting) {
+                        ConnectingScreen { playerSurface() }
+                    }
+
+                    else -> Unit
+                }
+            }
 
             // Gated on the stage, and composed outside the router only because it may
             // cover any standby surface. A cast arriving under it used to leave a
@@ -1976,9 +1985,9 @@ private fun standbyTransform(
 }
 
 /**
- * The handshake's film slot: the still-covered player surface, alone. Its veil and
- * card are drawn by [HouseLights] above the whole stage, so nothing here ever
- * becomes an ancestor of the surface.
+ * The handshake's film slot: the player surface, alone. [HouseLights] draws the tunnel
+ * under it and the window's cover over it, and poses its view in the window, so nothing
+ * here ever becomes an ancestor of the surface.
  */
 @Composable
 private fun ConnectingScreen(videoContent: @Composable () -> Unit) {
@@ -2009,6 +2018,7 @@ private class SubtitleSizePreference {
 private fun PlayerSurface(
     controller: PlayerController,
     subtitleSizePreference: SubtitleSizePreference,
+    filmPose: FilmPose,
     onViewAvailable: (PlayerView) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -2042,7 +2052,7 @@ private fun PlayerSurface(
                     // whole window in a SurfaceSyncGroup until PlayerView next draws.
                     // On the Google TV Streamer that hold ran into the platform's
                     // 1000 ms timeout at the film's second videoSize, freezing the
-                    // window through the Flick card's expansion.
+                    // window through the handshake's reveal.
                     setEnableComposeSurfaceSyncWorkaround(false)
                     // FILL is what keeps a turn off the captions. `exo_subtitles`
                     // is a child of the same `exo_content_frame` as the video
@@ -2067,6 +2077,7 @@ private fun PlayerSurface(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
                     turnedSurface.attach(this)
+                    filmPose.attach(this)
                 }.also(onViewAvailable)
             },
             // controller.player is Compose state — the view rebinds whenever the
@@ -2077,6 +2088,7 @@ private fun PlayerSurface(
             },
             onRelease = { view ->
                 binding.markStale(view)
+                filmPose.detach(view)
                 turnedSurface.detach()
             },
         )

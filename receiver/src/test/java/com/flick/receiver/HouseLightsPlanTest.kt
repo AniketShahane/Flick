@@ -1,7 +1,6 @@
 package com.flick.receiver
 
-import androidx.compose.animation.core.TargetBasedAnimation
-import androidx.compose.animation.core.VectorConverter
+import androidx.compose.ui.graphics.toArgb
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.receiverErrorFace
@@ -9,28 +8,39 @@ import com.flick.receiver.session.ReceiverFaultDetail
 import com.flick.receiver.ui.components.APERTURE_ALPHAS
 import com.flick.receiver.ui.components.APERTURE_CORE
 import com.flick.receiver.ui.components.APERTURE_POSITIONS
-import com.flick.receiver.ui.components.CARD_ENTER_APERTURE
 import com.flick.receiver.ui.components.HouseGate
 import com.flick.receiver.ui.components.HouseMove
 import com.flick.receiver.ui.components.HouseMoveKind
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RESYNC_GRACE_MS
+import com.flick.receiver.ui.components.REVEAL_SETTLE_FALLBACK_MS
 import com.flick.receiver.ui.components.RateSample
 import com.flick.receiver.ui.components.STAGE_HOLD_CAP_MS
+import com.flick.receiver.ui.components.TUNNEL_RIM_RADIUS
+import com.flick.receiver.ui.components.TUNNEL_RIM_WIDTH
+import com.flick.receiver.ui.components.TUNNEL_VANISH_Y
+import com.flick.receiver.ui.components.TUNNEL_WINDOW_CORNER
+import com.flick.receiver.ui.components.TUNNEL_WINDOW_FRACTION
+import com.flick.receiver.ui.components.TUNNEL_WINDOW_LIFT
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.components.apertureRampAlpha
 import com.flick.receiver.ui.components.apertureScale
-import com.flick.receiver.ui.components.cardHoldLeftMs
-import com.flick.receiver.ui.components.cardShownSinceMs
 import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
 import com.flick.receiver.ui.components.houseStageFor
+import com.flick.receiver.ui.components.tunnelFade
+import com.flick.receiver.ui.components.tunnelHoldLeftMs
+import com.flick.receiver.ui.components.tunnelShownSinceMs
+import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.w3c.dom.Element
+import java.io.File
+import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.sqrt
 
 class HouseLightsPlanTest {
@@ -43,7 +53,7 @@ class HouseLightsPlanTest {
         assertEquals(HouseStage.Fault, houseStageFor(MediaStage.Error("cast", CastFailureCode.UNKNOWN, 1L)))
     }
 
-    @Test fun firstCompositionLaunchesTheRoomFliesTheCardAndSnapsTheRest() {
+    @Test fun firstCompositionLaunchesTheRoomRunsTheTunnelAndSnapsTheRest() {
         assertMove(HouseMoveKind.Launch, 0f, 1f, HouseGate.None, move(null, HouseStage.Room))
         assertMove(HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None, move(null, HouseStage.Handshake))
         for (to in listOf(HouseStage.Fault, HouseStage.Film)) {
@@ -219,14 +229,6 @@ class HouseLightsPlanTest {
         }
     }
 
-    @Test fun theCardEntersIntoTheLastOfTheLight() {
-        val closing = TargetBasedAnimation(FlickMotion.lightsDown<Float>(), Float.VectorConverter, 1f, 0f)
-        val enterMs = (0..FlickMotion.LIGHTS_DOWN_MS).first {
-            closing.getValueFromNanos(it * NANOS_PER_MS) <= CARD_ENTER_APERTURE
-        }
-        assertTrue("card enters at $enterMs ms", enterMs in 400..480)
-    }
-
     @Test fun onlyStandbyAndErrorHaveAShellFace() {
         assertEquals(ShellFace.Standby, shellFaceFor(MediaStage.None))
         assertEquals(
@@ -248,46 +250,129 @@ class HouseLightsPlanTest {
         assertEquals("not a cadence", 0f, freshRevealRate("b", RateSample("b", Float.NaN)), 0f)
     }
 
-    @Test fun aStopBetweenTwoFilmsLeavesTheHandshakeDarkForTheFlight() {
+    @Test fun aStopBetweenTwoFilmsStillRunsTheTunnel() {
         // The phone re-casts as stop then loadMedia: Film -> Room -> Handshake.
         assertMove(HouseMoveKind.LightsUpRoom, 0f, 1f, HouseGate.Rest, move(HouseStage.Film, HouseStage.Room))
-        // The Room's lights are still held or barely open, so the card's cue is already met.
+        // The Room's lights are still held or barely open: the tunnel rises over the dark.
         assertMove(HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None, move(HouseStage.Room, HouseStage.Handshake, 0f, 1f))
-        val opening = move(HouseStage.Room, HouseStage.Handshake, 0.05f, 1f)
-        assertEquals(HouseMoveKind.LightsDown, opening.kind)
-        assertTrue("seeded past the card's cue", opening.seedAperture <= CARD_ENTER_APERTURE)
+        assertEquals(HouseMoveKind.LightsDown, move(HouseStage.Room, HouseStage.Handshake, 0.05f, 1f).kind)
     }
 
-    @Test fun aReCastCuesTheCardEarlyInTheVeil() {
-        assertTrue(FlickMotion.CARD_AFTER_DIM_FRACTION in 0.15f..0.35f)
+    @Test fun aHandshakeLeftAfterTheTunnelRoseClosesFromFullDark() {
+        // The tunnel leaves the curtain empty and closed (0, 0), not a lit pool.
+        assertMove(HouseMoveKind.LightsUpRoom, 0f, 1f, HouseGate.Rest, move(HouseStage.Handshake, HouseStage.Room, 0f, 0f))
+        assertMove(HouseMoveKind.LightsUpFault, 0f, 1f, HouseGate.Rest, move(HouseStage.Handshake, HouseStage.Fault, 0f, 0f))
+        // Nothing drawn over the film's cut into the window.
+        assertMove(HouseMoveKind.PictureUp, 1f, 1f, HouseGate.Reveal, move(HouseStage.Handshake, HouseStage.Film, 0f, 0f))
     }
 
-    @Test fun theCardsLeastTimeCoversItsWholeFlight() {
-        val flight = maxOf(
-            FlickMotion.FLICK_CARD_ARRIVE_MS.toLong(),
-            FlickMotion.SPEED_BARS_LAG_MS + FlickMotion.SPEED_BARS_MS,
+    @Test fun theTunnelsLeastTimeCoversItsFadeAndTheCapCanStillEndIt() {
+        assertTrue(FlickMotion.TUNNEL_MIN_SHOWN_MS >= FlickMotion.TUNNEL_FADE_IN_MS + FlickMotion.TUNNEL_CAPTION_DELAY_MS + FlickMotion.TUNNEL_CAPTION_IN_MS)
+        assertTrue("the stage hold's cap must still be able to end it", FlickMotion.TUNNEL_MIN_SHOWN_MS < STAGE_HOLD_CAP_MS)
+    }
+
+    @Test fun theSettleFallbackOutlastsTheWholeShow() {
+        val show = STAGE_HOLD_CAP_MS + FlickMotion.TUNNEL_FILM_IN_MS + FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS
+        assertTrue("fallback $REVEAL_SETTLE_FALLBACK_MS ms inside a $show ms show", REVEAL_SETTLE_FALLBACK_MS > show)
+    }
+
+    @Test fun theExpansionsPartsEndInsideIt() {
+        assertTrue(FlickMotion.TUNNEL_FLASH_MS < FlickMotion.TUNNEL_EXPAND_MS)
+        assertTrue(FlickMotion.TUNNEL_RIM_OUT_MS < FlickMotion.TUNNEL_EXPAND_MS)
+        assertTrue(FlickMotion.TUNNEL_CAPTION_OUT_MS < FlickMotion.TUNNEL_DWELL_MS)
+        assertEquals(1f, tunnelFade(0f), 0f)
+        assertEquals(1f, tunnelFade(FlickMotion.TUNNEL_FADE_FROM), 0f)
+        assertEquals(0.5f, tunnelFade((1f + FlickMotion.TUNNEL_FADE_FROM) / 2f), 0.0001f)
+        assertEquals(0f, tunnelFade(1f), 0f)
+    }
+
+    @Test fun theBezelCoversTheSurfacesSquareCorners() {
+        // The surface's corner sits √2 · (R − w) from the bezel's outer arc's centre.
+        val w = TUNNEL_RIM_WIDTH.value
+        val r = TUNNEL_RIM_RADIUS.value
+        assertTrue(sqrt(2f) * (r - w) <= r)
+        // And the bezel is never sharper than the window it frames, at the 960 dp stage.
+        assertTrue(r >= TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * STAGE_DP_WIDTH)
+    }
+
+    @Test fun theWindowIsCentredOnTheVanishingPoint() {
+        assertEquals(TUNNEL_VANISH_Y - 0.5f, TUNNEL_WINDOW_LIFT, 0f)
+    }
+
+    @Test fun theTunnelDrawableIsTheGeometryHouseLightsPoses() {
+        val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(TUNNEL_XML)
+        val vector = doc.getElementsByTagName("vector").item(0) as Element
+        val vw = vector.android("viewportWidth").toFloat()
+        val vh = vector.android("viewportHeight").toFloat()
+        assertEquals("the stage is 16:9", 16f / 9f, vw / vh, 0.0001f)
+        val window = doc.byName("path", "window")
+        val ww = TUNNEL_WINDOW_FRACTION * vw
+        val wh = TUNNEL_WINDOW_FRACTION * vh
+        val r = TUNNEL_WINDOW_CORNER * ww
+        val x0 = vw / 2f - ww / 2f
+        val y0 = TUNNEL_VANISH_Y * vh - wh / 2f
+        val numbers = Regex("-?[0-9.]+").findAll(window.android("pathData")).map { it.value.toFloat() }.toList()
+        // M x0+r,y0 h(w-2r) a r,r 0 0 1 r,r v(h-2r) ...
+        assertEquals(x0 + r, numbers[0], 0.01f)
+        assertEquals(y0, numbers[1], 0.01f)
+        assertEquals(ww - 2 * r, numbers[2], 0.01f)
+        assertEquals(r, numbers[3], 0.01f)
+        assertEquals(wh - 2 * r, numbers[10], 0.01f)
+        // Its fade over the room is the span the curtain and onLightsDown wait out.
+        val fade = doc.getElementsByTagName("target").let { targets ->
+            (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == "tunnel" }
+        }.getElementsByTagName("objectAnimator").item(0) as Element
+        assertEquals(FlickMotion.TUNNEL_FADE_IN_MS, fade.android("duration").toLong())
+        assertEquals("alpha", fade.android("propertyName"))
+        assertEquals("0", vector.android("alpha"))
+    }
+
+    @Test fun theTunnelsPaletteMatchesItsTokens() {
+        val colours = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(TUNNEL_COLOURS)
+            .getElementsByTagName("color").let { list ->
+                (0 until list.length).associate { i ->
+                    val e = list.item(i) as Element
+                    e.getAttribute("name") to e.textContent.trim().removePrefix("#").toLong(16).toInt()
+                }
+            }
+        val tokens = mapOf(
+            "tunnel_wash_core" to FlickColor.TunnelWashCore,
+            "tunnel_wash_mid" to FlickColor.TunnelWashMid,
+            "tunnel_wash_edge" to FlickColor.TunnelWashEdge,
+            "tunnel_glow_core" to FlickColor.TunnelGlowCore,
+            "tunnel_glow_mid" to FlickColor.TunnelGlowMid,
+            "tunnel_glow_edge" to FlickColor.TunnelGlowEdge,
+            "tunnel_ring" to FlickColor.TunnelRing,
+            "tunnel_amber" to FlickColor.TunnelAmber,
+            "tunnel_streak_white" to FlickColor.TunnelStreakWhite,
+            "tunnel_streak_blue" to FlickColor.TunnelStreakBlue,
+            "tunnel_streak_amber" to FlickColor.TunnelAmber,
+            "tunnel_window" to FlickColor.TunnelWindow,
         )
-        assertTrue(FlickMotion.FLICK_CARD_MIN_SHOWN_MS >= flight)
-        assertTrue("the stage hold's cap must still be able to end it", FlickMotion.FLICK_CARD_MIN_SHOWN_MS < STAGE_HOLD_CAP_MS)
+        assertEquals(tokens.keys, colours.keys)
+        for ((name, token) in tokens) {
+            assertEquals("$name drifted from its token", token.toArgb(), colours.getValue(name))
+        }
     }
 
-    @Test fun aCardOwesItsLeastTimeFromTheStartOfItsFlight() {
-        val min = FlickMotion.FLICK_CARD_MIN_SHOWN_MS
-        assertEquals("seated without a flight", 0L, cardHoldLeftMs(enteredAtMs = null, nowMs = 5_000L))
-        assertEquals(min, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_000L))
-        assertEquals(min - 400L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_400L))
-        assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 5_000L + min))
-        assertEquals(0L, cardHoldLeftMs(enteredAtMs = 5_000L, nowMs = 9_000L))
+    @Test fun aTunnelOwesItsLeastTimeFromItsFirstFrame() {
+        val min = FlickMotion.TUNNEL_MIN_SHOWN_MS
+        assertEquals("not yet drawn", 0L, tunnelHoldLeftMs(startedAtMs = null, nowMs = 5_000L))
+        assertEquals(min, tunnelHoldLeftMs(startedAtMs = 5_000L, nowMs = 5_000L))
+        assertEquals(min - 400L, tunnelHoldLeftMs(startedAtMs = 5_000L, nowMs = 5_400L))
+        assertEquals(0L, tunnelHoldLeftMs(startedAtMs = 5_000L, nowMs = 5_000L + min))
+        assertEquals(0L, tunnelHoldLeftMs(startedAtMs = 5_000L, nowMs = 9_000L))
     }
 
-    @Test fun aModeSwitchRestartsTheCardsTimeFromItsSettle() {
-        assertNull("seated without a flight", cardShownSinceMs(enteredAtMs = null, lastChangeAtMs = 5_000L))
-        assertEquals("no switch seen", 5_000L, cardShownSinceMs(enteredAtMs = 5_000L, lastChangeAtMs = null))
-        assertEquals("a switch settled before the card entered", 5_000L, cardShownSinceMs(5_000L, 4_000L))
-        assertEquals("a switch still resyncing as the card entered", 4_800L + RESYNC_GRACE_MS, cardShownSinceMs(5_000L, 4_800L))
-        assertEquals("a switch mid-flight", 5_600L + RESYNC_GRACE_MS, cardShownSinceMs(5_000L, 5_600L))
-        val since = cardShownSinceMs(5_000L, 5_600L)
-        assertEquals(FlickMotion.FLICK_CARD_MIN_SHOWN_MS, cardHoldLeftMs(since, 5_600L + RESYNC_GRACE_MS))
+    @Test fun aModeSwitchRestartsTheTunnelsTimeFromItsSettle() {
+        assertNull("not yet drawn", tunnelShownSinceMs(startedAtMs = null, lastChangeAtMs = 5_000L))
+        assertEquals("no switch seen", 5_000L, tunnelShownSinceMs(startedAtMs = 5_000L, lastChangeAtMs = null))
+        assertEquals("a switch settled before the tunnel started", 5_000L, tunnelShownSinceMs(5_000L, 4_000L))
+        assertEquals("a switch still resyncing as it started", 4_800L + RESYNC_GRACE_MS, tunnelShownSinceMs(5_000L, 4_800L))
+        assertEquals("a switch mid-show", 5_600L + RESYNC_GRACE_MS, tunnelShownSinceMs(5_000L, 5_600L))
+        val since = tunnelShownSinceMs(5_000L, 5_600L)
+        assertEquals(FlickMotion.TUNNEL_MIN_SHOWN_MS, tunnelHoldLeftMs(since, 5_600L + RESYNC_GRACE_MS))
     }
 
     private fun move(
@@ -305,7 +390,17 @@ class HouseLightsPlanTest {
         assertEquals("gate of $actual", gate, actual.gate)
     }
 
+    private fun Element.android(attr: String): String = getAttributeNS(ANDROID_NS, attr)
+
+    private fun org.w3c.dom.Document.byName(tag: String, name: String): Element {
+        val list = getElementsByTagName(tag)
+        return (0 until list.length).map { list.item(it) as Element }.first { it.android("name") == name }
+    }
+
     private companion object {
-        const val NANOS_PER_MS = 1_000_000L
+        const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
+        const val STAGE_DP_WIDTH = 960f
+        val TUNNEL_XML = File("src/main/res/drawable/tunnel_loop.xml")
+        val TUNNEL_COLOURS = File("src/main/res/values/colors_tunnel.xml")
     }
 }

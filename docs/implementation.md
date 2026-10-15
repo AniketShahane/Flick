@@ -785,25 +785,32 @@ Panel capability is recorded, never enforced. `DisplayCapabilityPolicy` compares
 
 Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefreshRate(presentingVideo, contentFrameRate)` is the single decision: while the player surface is actually presenting a film and the decoder reports a real cadence, that cadence is applied to both `WindowManager.LayoutParams.preferredRefreshRate` and `Surface.setFrameRate` (`FIXED_SOURCE`, `CHANGE_FRAME_RATE_ALWAYS`), which is what removes 3:2 judder on 23.976/24/25 fps material. In every other state — pairing, idle, settings, an error, and any frame rate that is 0/NaN/infinite — both hints are released by re-applying the platform's `0` sentinel, and the release also runs when the receiver composable leaves composition. Two states neither pin nor release at once. One is the moment a presenting film drops to `None`: the phone's re-cast sends `stop` as its own step before `loadMedia`, so `refreshRateHintDelayMs(filmJustStopped = true)` defers that release by the same 2-second settle, and a re-cast never blanks the panel between films (a real stop releases 2 s late). The other is the **handshake**: a cast arriving over a running film — the next episode — passes through Checking/Preparing while the old film is still decoding under the connecting cover, so `refreshRateHintDelayMs` defers a release by a 2-second settle there. A subtitle change no longer reaches that settle at all: an in-place reload never leaves `Active`, so the hint is simply never released, which is the correct answer for a re-prepare of the very same film. Probe plus prepare on a LAN file lands far inside it, and the ordinary re-cast therefore costs zero mode switches instead of a release and an immediate re-pin at the same cadence — two visible HDMI resyncs for a hint that never changed. It is a settle rather than a hold because the adoption deadline is 18 seconds and a stalled handshake may not keep the panel pinned to a finished film. The pin itself still lands at the first frame and can blank the panel while the Flick card is up; the stage waits that switch out, the card's least time restarts from its settle (see [Stage motion](#stage-motion-house-lights-and-the-resync-wait)), and the film is held at its first frame meanwhile, so the switch costs no film. The previous one-way apply was guarded by `if (fps > 0)`, so when playback ended and the reported frame rate fell to 0 the branch was skipped and the film's hint survived it: the TV was measured sitting on the **pairing** screen with `preferredRefreshRate=24.000002` and a 41.67 ms vsync period, rendering every spring, fade and focus lift in the whole Compose UI in 24 discrete steps a second, for the rest of the process. The rate is deliberately **not** released for interactive chrome over a running film: a display-mode switch on the verified hardware costs a visible resync, and two of them per chrome reveal is worse than chrome animating at the film's own cadence.
 
-### Stage motion: house lights and the resync wait
+### Stage motion: house lights, the tunnel and the resync wait
 
 Every stage seam — launch, a cast arriving, the first frame, a cast ending, a fault — is
-drawn as the light of a projection room, by overlays above a film surface that never moves.
+drawn as the light of a projection room. The handshake itself is the **tunnel**: the room
+falls into a blue hyperspace tunnel with a glowing window at its far end, the film starts
+playing inside that window, and the window then flies down the tunnel to fill the screen.
 `ReceiverApp`'s root box stacks, bottom to top:
 
-1. `when (stage)`, which keeps only the two video branches: `Active` → `PlaybackScreen { playerSurface() }`
-   plus the metrics overlay, and `Checking`/`Preparing` → `ConnectingScreen { playerSurface() }`,
-   now a bare `Box` around the surface. Both `playerSurface()` call sites are unchanged, and
-   nothing animated is an ancestor of either.
-2. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
+1. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
    crossfades, no travel), composed only while a live or retained face exists — never during
-   playback.
-3. `HouseLights` (`ui/components/HouseLights.kt`): a draw-only curtain plus the handshake's Flick card and copy.
-4. The rename dialog, in its own window. A cast arriving removes it from composition outright,
-   so its own drawn exit never runs, and Act I is seeded fully open and draws nothing dark for
-   about its first 150 ms, so the lights-down does not hide the cut either. The dialog window
-   therefore keeps a platform exit animation (`Animation.Flick.RenameDialog`: no enter, a 150 ms
-   alpha-only `decelerate_quad` fade out); under reduced motion it has none.
+   playback. It sits under everything else so the tunnel can rise over a retained face.
+2. `HouseLights` (`ui/components/HouseLights.kt`), which owns its own layers, bottom to top:
+   the tunnel's loop (an `AndroidView`); the stage router, passed in as `HouseLights`' `film`
+   slot — `Active` → `PlaybackScreen { playerSurface() }` plus the metrics overlay,
+   `Checking`/`Preparing` → `ConnectingScreen { playerSurface() }`, a bare `Box` around the
+   surface; the draw-only curtain; and the tunnel's overlay (the window's cover, the film's
+   bezel, the copy and the flash). The order is the point: the player's `SurfaceView` punches
+   its hole at its transformed rect, so what is drawn before it (the tunnel) shows around the
+   window and what is drawn after it (the overlay) covers the film.
+3. The rename dialog, in its own window. A cast arriving removes it from composition outright,
+   so its own drawn exit never runs. The dialog window therefore keeps a platform exit
+   animation (`Animation.Flick.RenameDialog`: no enter, a 150 ms alpha-only `decelerate_quad`
+   fade out); under reduced motion it has none.
+
+The root box's background is the lit room only at `None` and `Error`; from the handshake on it
+is `FlickColor.Canvas`, the dark a summoned tunnel rises out of.
 
 **The curtain** is two numbers per move: aperture `p` (1 = open, nothing drawn; 0 = closed)
 and density `d`, the alpha of `FlickColor.Canvas`. With `d ≤ 0.004` or `p ≥ 0.999` nothing is
@@ -819,63 +826,103 @@ restarting:
 | Seam | Move | What is seen |
 | --- | --- | --- |
 | first composition at Room | Launch | seeded closed (identical to the window background), opens from the centre on `pictureUp()` 640 ms |
-| Room/Fault → Handshake | LightsDown (Act I) | the outgoing face is retained, frozen and non-interactive; `p` 1 → 0 on `lightsDown()` 560 ms, dark closing from the edges to the centre; the card enters into the last light at `p ≤ CARD_ENTER_APERTURE` 0.12 (~425 ms), rising from 300 dp below its seat (see *The Flick card* below); at `p = 0` `onLightsDown` drops the retained face and `d` snaps to the 82 % veil under full dark. From a fault still dissolving, the move seeds at the outgoing `(p, d)` and `d` rises to 1 on the same `lightsDown()` curve (alongside `p → 0` if a pool is open); with the aperture already closed the card waits for `d ≥ 0.88`, and `onLightsDown` still fires only at `d = 1` |
-| Handshake → Film | PictureUp (Act II) | the copy exits at once on `crossDissolve()` while the card holds its seat, still (a card whose flight is still running keeps flying; one that never entered flies in now, without its copy); a still-closing Act I finishes on `fastStateEffects`; the resync wait and the card's least time on screen, in parallel; then the card takes the screen and fades into the film (~870 ms), and 120 ms (`REVEAL_VEIL_LAG_MS`) after the release `d` → 0 on `filmReveal()` 720 ms underneath it |
-| Film → Handshake | VeilIn (re-cast) | seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, so a paused, seeking or ended frame — or one whose dim was still easing — never brightens; `d` → 82 % on `filmReveal()`; the card flies in — the same arrival and speed bars as Act I — once 25 % of that travel has landed (`CARD_AFTER_DIM_FRACTION`, ~250 ms); a card still expanding from the last cast leaves first on `fastStateEffects` |
-| Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the resync wait; `p` 0 → 1 on `pictureUp()`. From Handshake it seeds from the live aperture, so a cancel on Act I's first frame starts at `p` ≈ 1 and draws nothing |
-| Handshake/Film → Fault | LightsUpFault | same seeding and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault. A fault that lands while Act I is still closing keeps the aperture where it reached (`p` held, `d` = 1) and dissolves `d` uniformly from there; one that lands at rest or over a film seeds closed |
+| Room/Fault → Handshake | LightsDown | the outgoing face is retained, frozen and non-interactive, under the tunnel; the tunnel fades in over it (`TUNNEL_FADE_IN_MS` 360, on the RenderThread), and a curtain still drawing anything (a launch not yet open, a fault still dissolving, or an offstage seam's opaque Canvas) gives way to it over the same span; then `onLightsDown` drops the retained face and the curtain rests empty and closed `(0, 0)`. A seam seeded closed and fully dense (offstage, or a first composition into the handshake) calls `onLightsDown` at once |
+| Handshake → Film | PictureUp | the resync wait and the tunnel's least time on screen, in parallel; then the film appears in the window and plays; the window flies to the screen after the dwell (see *The tunnel* below) |
+| Film → Handshake | VeilIn (re-cast) | the paused film is drawn back down into the window over `tunnelShrink()` 600 ms while the tunnel rises behind it and the curtain, seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, clears to nothing over the same span; the window's glow then covers the old film (`TUNNEL_FILM_IN_MS` 240) and the film's view is hidden under it |
+| Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the tunnel's overlay leaves on `filmExit()` over it and the show is retired; the resync wait; `p` 0 → 1 on `pictureUp()`. From a handshake still rising it seeds from the live aperture, so a cancel in its first frames starts at `p` ≈ 1 and draws nothing |
+| Handshake/Film → Fault | LightsUpFault | same seeding, exit and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault |
 | Room ↔ Fault | Rest | none; the shell crossfades |
 
-**The Flick card.** The handshake is a `Primary` card 160 × 106 dp, 16 dp radius, carrying the
-mark's white play triangle and a soft blue glow, seated at the top of a 560 dp column over the
-copy (headline and "Press Back to cancel", with no glass panel: the 82 % veil holds both). It is
-drawn by `FlickCardLayer`, one full-screen `Spacer` on its own `graphicsLayer()`, whose
-`onDrawBehind` reads every animatable, so nothing about it recomposes; all of its constants are in
-`FlickMotion` (motion) and `HouseLights.kt` (geometry).
+**The tunnel.** All of its constants are in `FlickMotion` (motion) and `HouseLights.kt`
+(geometry). The stage is the 960 × 540 dp screen with the vanishing point at
+`TUNNEL_VANISH_Y` 0.42 of its height; the window is `TUNNEL_WINDOW_FRACTION` 0.3 of the stage
+on each axis (288 × 162 dp), centred across it on the vanishing point, with a corner of
+`TUNNEL_WINDOW_CORNER` 4 % of its width.
+
+*What runs where.* The main thread blocks for hundreds of milliseconds (release) to seconds
+(debug) at stage seams — inflating `PlayerView` at `Checking`, composing the whole
+`PlaybackScreen` at `Active` — and anything it ticks freezes there. `ViewPropertyAnimator`
+does **not** escape that: on API 36 it has no RenderThread backend at all (no `mRTBackend`
+field in `framework.jar`), so it is a main-thread `ValueAnimator`. The one public animation
+that runs on the RenderThread is an `AnimatedVectorDrawable` drawn on a hardware canvas, so:
+
+- **The loop** is `drawable/tunnel_loop.xml`, generated by `receiver/tools/gen_tunnel_avd.py`
+  (edit the generator, not the XML). The radial wash (`TunnelWashCore` #1F3AA8 → `TunnelWashMid`
+  #0B1640 at 0.45 → Canvas at 0.75 of the stage width); a breathing glow 2.2 × the window
+  (`TunnelGlow*`, scale 1 ↔ 1.05 over 900 ms each way); seven 16:9 rounded-rect rings growing as
+  `1 + 4.2 q²` over a 3.1 s life, alpha rising over the first 12 % of `q` and falling linearly
+  to 0, on-screen stroke 1.5 → 3 dp, one ring amber; ten streaks squashed `y × 0.7` around the
+  vanishing point, travelling with `q²`, 20 → 72 dp long, white / #9FC0FF / amber; and the pale
+  window itself (`TunnelWindow` #EAF0FF). Each ring and streak loops on its own period with its
+  phase baked into its keyframes, wrapping where its alpha is 0, so the tunnel is full from its
+  first frame. Its root alpha fades 0 → 1 over `TUNNEL_FADE_IN_MS` 360 when it starts. The
+  palette lives twice — `colors_tunnel.xml` for the drawable, `FlickColor.Tunnel*` for Compose —
+  and `HouseLightsPlanTest` holds them, and the window's geometry and fade, equal.
+- It is drawn by `TunnelBackdropView` at **half resolution** and scaled up by the child view's
+  own `scaleX/Y` (`TUNNEL_RASTER_SCALE`): a vector drawable animating on the RenderThread is
+  re-rasterised into a bitmap and uploaded every frame, and the drawable sizes that bitmap from
+  the recorded canvas matrix, which a view property is not part of.
+- **Everything else** — the film appearing, the dwell, the expansion, the tunnel rushing past,
+  the flash and the copy — is main-thread motion on Compose's clock, started only once the
+  seam's own composition has landed (the first frame waits two frames after `Active`). Compose
+  animatables write the film view's transform directly and drive `graphicsLayer` properties, so
+  nothing recomposes while they run, and the stage tests can drive all of it on a paused clock.
+
+*The film in the window is a transform, never a resize.* `FilmPose` scales the `PlayerView`
+(still laid out full screen) by 0.3 about its centre and lifts it to the vanishing point. A view
+transform leaves the `SurfaceView`'s buffer alone, so there is no `onSurfaceSizeChanged`, no
+`SurfaceSyncGroup` hold and no decoder reconfigure, and the `SurfaceView` follows its
+ancestors' transform (verified on the API 36 emulator: a scaled, translated parent puts the
+surface's pixels exactly in the window rect). Hidden is alpha 0 — `INVISIBLE`/`GONE` would
+destroy the surface; alpha 0 leaves it intact and simply punches no hole. The pose is set while
+the seam composes, before any effect, so a `PlayerView` created by that same composition is in
+the window and hidden from its first draw (`PlayerSurface` attaches it in its factory). The
+surface's square corners are covered by the film's bezel, a 4 dp `TunnelWindow` ring whose 12 dp
+outer radius stays within (2 + √2) × its width, which is what covering a square corner takes.
 
 | Phase | Motion |
 | --- | --- |
-| arrival (Act I) | one keyframed progress over `flickCardArrive()` 720 ms: 300 dp below the seat, 12°, 0.5 scale → 10 dp above, −3°, 1.03 at 460 ms (emphasized decelerate) → seated, −2°, 1 (`CrossDissolve`). 300 ms in, three `Spark` speed bars (6 / 7 / 6 × 64 / 88 / 64 dp, the mark's 0.45 / 0.75 / 0.45 weights) flash in under the card and dissolve downward over `speedBars()` 500 ms |
-| waiting | a bob of ±3 dp and ±0.5° on one sine, 2 400 ms a cycle, from the moment the card is seated until the first frame; it replaces `FlickLoader` here |
-| picture up | after the resync wait and the card's least time on screen: to the screen's centre and full size over `flickCardExpand()` 600 ms, `cubic-bezier(.3,0,.05,1)`, corner 16 → 3 dp, tilt → 0, glow and bars gone with it; the mark fades over the first 150 ms; 550 ms after release the card fades over `flickCardFade()` 320 ms |
-| cancel, fault, lights up, Rest | card and copy leave together on the existing exit (`fastStateEffects`) from whatever pose they reached; every exit retires the card to its start |
-| re-cast (VeilIn) | the Act I arrival and speed bars over the veil, alpha on `crossDissolve()`, then the bob |
+| cue (`Checking` composed) | once the window is on screen (`awaitOnScreen`, `WindowEntrance`), the loop starts and its first drawn frame is stamped; the copy (headline + `connecting_detail`, 560 dp wide, 28 dp under the window) fades in 300 ms later over 400 ms |
+| waiting | the loop runs on the RenderThread for as long as the TV takes; the film's view sits in the window, hidden |
+| first frame (`Active`) | the resync wait and the tunnel's least time on screen (`TUNNEL_MIN_SHOWN_MS` 1 100 from its first frame), in parallel |
+| film in | the glowing cover is put over the window, the film's view shown under it and `onPictureUp` releases the held film, so it **plays** in the window, with sound; the cover fades to it and the bezel in over `TUNNEL_FILM_IN_MS` 240, the copy out over 400 |
+| dwell | `TUNNEL_DWELL_MS` 1 200 with the film playing in the flowing tunnel; any key ends it |
+| expansion | `tunnelExpand()` 700 ms, `cubic-bezier(.55,0,.15,1)`: the film's view scales 0.3 → 1 and settles at the centre; the tunnel rushes past (scale 1 → 2.6 about the vanishing point) and fades over the last 30 %; a white flash snaps to 0.35 and decays over the first third; the bezel leaves in 180 ms. Then the show is retired and `onPictureSettled` runs |
+| cancel, fault, lights up, Rest | the overlay leaves on `filmExit()` and the show is retired under the curtain |
+| re-cast (VeilIn) | the old film drawn back into the window (above), then waiting as from the cue |
 
-The expansion waits for the resync hold, as the veil does, because a mode switch's blank would
-swallow it whole. **The flight belongs to the card, not to the seam.** The arrival and its bars
-run in `HouseLights`' own `rememberCoroutineScope()`, tracked as `HouseCard.flight` with the time
-it began (`enteredAtMs`), so a first frame landing mid-flight cannot cut it short; only an exit,
-a retire or a reduced-motion seat cancels it. PictureUp neither re-aims the card nor restarts its
-bars while that flight runs, and a card that never entered (Active beat its cue) flies in there
-rather than being skipped. The release then waits, alongside the resync hold, for the flight to
-finish and for `FLICK_CARD_MIN_SHOWN_MS` 1 100 from its start (`cardHoldLeftMs`), bounded by
-the same `STAGE_HOLD_CAP_MS` from the seam and ended by any key: a re-cast's handshake lands in
-about a second, and without the floor the card would be on screen for a few hundred
-milliseconds. The start is the flight's first **drawn** frame (`withFrameMillis`), not the cue,
-because the main thread can be held between the two by the previous player's synchronous
-release. The least time counts only while the panel is showing: a display-mode change that
-lands after the card entered, or whose `RESYNC_GRACE_MS` was still running when it did, restarts
-it from that change's settle (`cardShownSinceMs`), and the wait re-reads it on every change.
-The pin made at the first frame is the usual case, so a hold that already had its time and
-then saw the reveal wait out a switch checks again before the release, unless a key ended that
-wait. All of it stays inside `STAGE_HOLD_CAP_MS` from the seam. A seated card from a
-reduced-motion seat owes nothing. A card caught mid-exit by the first frame springs to its seat
-(`panelSpatial()`) during the hold and expands from there.
+**The show belongs to the tunnel, not to the seam.** Starting the loop and stamping its first
+frame run in `HouseLights`' own `rememberCoroutineScope()` (`Tunnel.entrance`), so a first frame
+landing while the tunnel is still waiting for the window joins it instead of restarting it, and a
+first frame that beat the cue starts it there. The least time counts from the first **drawn**
+frame (`withFrameMillis`), not the cue, because the main thread can be held between the two by
+the previous player's synchronous release; and it counts only while the panel is showing: a
+display-mode change that lands after the tunnel started, or whose `RESYNC_GRACE_MS` was still
+running when it did, restarts it from that change's settle (`tunnelShownSinceMs`), and the wait
+re-reads it on every change. The pin made at the first frame is the usual case, so a hold that
+already had its time and then saw the reveal wait out a switch checks again before the film
+appears, unless a key ended that wait. All of it stays inside `STAGE_HOLD_CAP_MS` from the seam,
+and any key ends it. A re-cast whose first frame lands while the old film is still being drawn
+back finishes that leg (240 ms) and covers the window before waiting, so the new film's held
+first frame is never shown before its time. While the house lights are staging the film,
+`PlaybackScreen(staged = true)` draws the film alone — no canvas, no dim — and `ReceiverApp`
+keeps its chrome down until the picture settles, because the tunnel around the window is drawn
+beneath the whole playback screen.
 
-**No film is spent under the card.** The hold would otherwise cost the opening second or two of
+**No film is spent before the window.** The hold would otherwise cost the opening second or two of
 the film: `playStartup` used to prepare with `playWhenReady = true`, so the audio played and
-the film's clock ran behind the veil while the card had its time. It now prepares **paused**.
+the film's clock ran unseen while the tunnel had its time. It now prepares **paused**.
 The first frame still renders and still fires `onRenderedFirstFrame` — the renderer of the
 playing period is enabled with `mayRenderStartOfStream`, which releases that frame before the
 renderer starts, exactly as a paused seek shows its frame — so `loadReady`, `startupMs`, the
 Active stage and the phone's own animation all happen at the same moment as before. The film
 sits at its decoded first frame, at exactly the requested start position (a resume included),
 and keeps filling its buffer. `HouseLights`' `onPictureUp` calls `PlayerController.onPictureUp`,
-which starts it; every path into Film calls it, including the reduced-motion, offstage and
+which starts it as it appears in the window; every path into Film calls it, including the reduced-motion, offstage and
 lit-to-Film snaps. `PictureHold` is the state: while held, the viewer's play, pause and toggle
 (the remote, the phone's `play`/`pause`, and a media button reaching the `MediaSession`, which
 is caught in `onPlayWhenReadyChanged`) are recorded rather than applied, so a pause pressed
-during the card is honoured at release. A steady-state recovery or a frozen-picture re-prepare
+during the tunnel is honoured at release. A steady-state recovery or a frozen-picture re-prepare
 inside the hold keeps the film at its frame (`gate`), and an audio-sink rebuild, a rotation
 re-prepare, a subtitle drop or an in-place subtitle reload carries the player's own paused state
 across, so each of them stays held too. `readPlaybackState` reports a held, READY film by that intent — `playing` and phase
@@ -891,46 +938,47 @@ it. `reloadInPlace` outside the hold is untouched and never pauses. The log carr
 
 The phone re-casts as `stop` then `loadMedia`, so a re-cast usually reaches the TV as
 Film → Room → Handshake within a few hundred milliseconds. Film → Room seeds closed and fully
-dense, so the Room → Handshake that follows starts already past the card's cue and the card
-flies at once. The refresh-rate release at that `None` is deferred by the same 2-second settle
-as a handshake (`refreshRateHintDelayMs(filmJustStopped = true)`), so the flight is not thrown
-into an HDMI resync at the stop and a second one when the next film re-pins; the settle runs on
-into the handshake. A stop with nothing behind it releases 2 s late. The startup itself is
-unchanged: the previous player is still released synchronously in `playStartup`, before the new
-one prepares, because the hardware Dolby Vision decoder is not known to allow a second instance
-and the rotation reset after it needs the old playback thread joined; `[main] playStartup` logs
-what that costs.
+dense, so the tunnel rises over the dark at once. The refresh-rate release at that `None` is
+deferred by the same 2-second settle as a handshake (`refreshRateHintDelayMs(filmJustStopped = true)`),
+so the tunnel is not thrown into an HDMI resync at the stop and a second one when the next film
+re-pins; the settle runs on into the handshake. A stop with nothing behind it releases 2 s late.
+The startup itself is unchanged: the previous player is still released synchronously in
+`playStartup`, before the new one prepares, because the hardware Dolby Vision decoder is not
+known to allow a second instance and the rotation reset after it needs the old playback thread
+joined; `[main] playStartup` logs what that costs.
 
-The card logs its life alongside the hold line, all under `[stage]` (`move` once per seam):
+The tunnel logs its life alongside the hold line, all under `[stage]` (`move` once per seam):
 
 ```
-[stage] move from=Film to=Handshake kind=VeilIn
-[stage] card enter rising=true flies=true sinceSeamMs=262
-[stage] card seated sinceSeamMs=1070
-[stage] card pictureUp held=true flying=false shownMs=840
-[stage] card hold reason=shown waitedMs=262
+[stage] move from=Room to=Handshake kind=LightsDown
+[stage] tunnel start sinceSeamMs=18
+[stage] move from=Handshake to=Film kind=PictureUp
+[stage] tunnel pictureUp up=true running=true shownMs=840
+[stage] hold kind=Reveal rateWaitMs=0 waitedMs=0 reason=NoSwitch requestedHz=60.0 physicalHz=60.0 restHz=60.0
+[stage] tunnel hold reason=shown waitedMs=262
+[stage] tunnel film shown sinceSeamMs=268
 [player] pictureHold release reason=pictureUp play=true heldMs=290
-[stage] card expand start flying=false sinceSeamMs=268
-[stage] card expand done tookMs=606
-[display] pin hz=0.0 delayMs=2000
-[main] playStartup tookMs=41 releaseMs=33 replaced=true
+[stage] tunnel dwell end reason=time sinceSeamMs=1470
+[stage] tunnel expand start sinceSeamMs=1470
+[stage] tunnel expand done tookMs=702
 ```
 
-`card skip reason=expandOff` marks a PictureUp that let the card leave with its copy, and
-`card exit` any other exit. `card hold` ends `shown`, `key` or `cap`. `HouseLights(expandAtPictureUp =
-false)` makes the card leave with its copy instead; only `StageMotionTest` uses it, to read the
-veil's lift that the expanded card would cover.
+`tunnel waited for window waitedMs=…` marks a summoned cast that waited out the open animation;
+`tunnel film withdrawn` the end of a re-cast's leg back into the window; `tunnel dismiss
+covered=…` any other exit. `tunnel hold` ends `shown`, `key` or `cap`; `tunnel dwell end`
+`time` or `key`. `HouseLights(leastShownMs = 0)` drops the least time; only `StageMotionTest`
+uses it, to judge the resync hold on its own.
 
 The aperture is drawn only with no film visible, and lights-up opens it only after the resync
 hold, so it normally runs at the rest rate. It can still run at the film's cadence, or into the
 switch's blank, when a key, `STAGE_HOLD_CAP_MS` or an unseen switch (`NoChangeSeen`) ends that
-hold first. Launch is never held and runs at whatever rate the panel is in. Over a film the veil is always a uniform
-alpha on `filmReveal()`, whose steepest CrossDissolve step is 1.724 × 41.67 / 720 = 10.0 % of its
-span per 24 Hz frame: a soft edge sweeping 230–400 px per film frame judders and bands. Under
-reduced motion every move is a snap to `houseRest(stage)` — the Flick card simply present and
-seated for Handshake (no rise, bars, bob or expansion) and gone otherwise — and the callbacks the destination
-needs fire at once — `onLightsDown` for Handshake; `onLightsDown`, `onPictureUp` and
-`onPictureSettled` for Film; none for Room or Fault — exactly the old cut.
+hold first. Launch is never held and runs at whatever rate the panel is in. The film's dwell and
+expansion run after the switch to the film's cadence, so a 24p film's window takes the screen at
+24 Hz, as the old handshake card's expansion did; only the loop before the first frame runs at the rest rate.
+Under reduced motion there is no tunnel: every move is a snap to `houseRest(stage)` — for
+Handshake the 82 % veil over the film's view, full screen, with the copy shown — and the
+callbacks the destination needs fire at once — `onLightsDown` for Handshake; `onLightsDown`,
+`onPictureUp` and `onPictureSettled` for Film; none for Room or Fault — exactly the old cut.
 
 **The resync wait.** Pinning the film's cadence can make the panel blank for an HDMI mode
 switch; revealing into that blank throws the lift away. `rememberDisplayCadence(window)` is a
@@ -965,7 +1013,7 @@ because that is when the pin is written — for a change that has not been seen 
 past `STAGE_HOLD_CAP_MS` 2 500 from the seam, which includes the rate wait. Any remote key ends it at once (the key
 is still dispatched as normal). Only pixels and the film's clock wait: the stage, the first
 frame, `loadReady`, the 18 s deadline and every key are untouched, and the film itself is held
-paused at its first frame until the release (see above), so nothing of it plays under the veil. A re-cast can switch twice — release the old pin
+paused at its first frame until the release (see above), so nothing of it plays unseen. A re-cast can switch twice — release the old pin
 at the seam, re-pin once the rate lands — so a hold that ends `Settled` checks again
 (`switchStillOwed`): while the panel still cannot show the film's rate and the pin would blank,
 `awaitOwedSwitch` waits once more, up to `SWITCH_EXPECT_WINDOW_MS` for a newer switch and then
@@ -986,17 +1034,18 @@ them is short.
 **Accepted cuts**, named so nobody fixes them by touching the surface. At cast end and on a
 fault the film cuts to Canvas on the first frame, because the surface is dropped with the
 stage; the curtain then holds the room dark through the wait and lights it. At a re-cast over a
-running film the old chrome and scrims dispose on the first frame while the veil fades in from
-the outgoing dim.
+running film the old chrome and scrims dispose on the first frame while the curtain carries the
+outgoing dim.
 
 **The picture settles before the chrome speaks.** `onPictureUp` bumps `pictureUpEpoch`, which
 re-arms the 4-second auto-hide so the chrome's countdown starts as the picture appears rather
-than while it was still veiled. `onPictureSettled` marks the cast's picture settled (with a
-`REVEAL_SETTLE_FALLBACK_MS` 4 000 fallback), and only then does the quality flourish run and
+than while it was still in the tunnel, and settling re-arms it once more. `onPictureSettled`
+marks the cast's picture settled (with a `REVEAL_SETTLE_FALLBACK_MS` 6 000 fallback, past the
+stage hold's cap, the dwell and the expansion), and only then does the quality flourish run and
 the silent-audio notice, band notice and orientation hint become eligible (`filmVisible`).
 
-**The retained face.** During Act I the outgoing Idle, Pair, Settings or Error face stays
-composed under the closing curtain so the room darkens around it instead of vanishing. It is
+**The retained face.** While the tunnel rises the outgoing Idle, Pair, Settings or Error face
+stays composed under it so the room falls into the tunnel instead of vanishing. It is
 provided `LocalShellRetained = true`: its loops freeze in place, it issues no focus request,
 and its host has `canFocus = false` and cleared semantics. The host's `canFocus` stops at the
 first focus group beneath it: a `LazyColumn` or any scroll container is one, so rows inside it
@@ -1013,7 +1062,7 @@ uses this clear-only form, and `FlickTvRow` and `FlickTvIconButton` inherit it; 
 bypasses them must do it itself (see
 `SettingsScreenFocusTest.settings_rows_let_go_of_focus_once_a_cast_stage_takes_the_shell` and
 `StandbyExitFocusTest`).
-`onLightsDown` releases the retained face at full dark,
+`onLightsDown` releases the retained face once the tunnel is opaque over it,
 with `RETAINED_SHELL_LIMIT_MS` 1 500 as a safety net, so a pairing code on screen at the seam
 is exposed for at most that long, dimming, and is never interactive. A return to standby always
 composes a fresh face.
@@ -1023,8 +1072,8 @@ first composition after `ON_START`) is offstage: nothing is on screen to carry a
 frames are paused, so a transition started then would freeze at its first frame. The shell
 retains no face and rebuilds without a transition, keyed so a crossfade begun while stopped is
 thrown away. A cast planned offstage — a summoned one — opens dark: the curtain is seeded closed
-and fully dense, `onLightsDown` fires at once, and the handshake card rises in while the veil
-eases to 82 %.
+and fully dense, `onLightsDown` fires at once, and once the window is on screen the tunnel rises
+as the curtain clears.
 
 **The heard ring.** When `seeking` falls on the scrub bar, one amber ring radiates from the
 playhead — born at 11 dp at alpha 0, about 13 dp and lit by 158 ms, gone by 720 ms on
@@ -1053,9 +1102,9 @@ Media3 **text** subtitles retain their viewport-derived/user-scaled baseline min
 
 Android TV remote input is routed first at `Activity.dispatchKeyEvent`, independent of Compose focus. During Active playback with no side panel open, DPAD left/right are a **playback gesture in exactly two states** — the chrome is hidden, or the scrub bar itself holds focus — and are ordinary Compose focus navigation everywhere else. That is the corrected model: while horizontal keys were captured unconditionally, a transport row laid out horizontally could only be walked with up and down, which is what the product owner rejected on the device. A tap seeks exactly ten seconds; a held key emits every fourth repeat and progresses through capped 10/20/30-second pulses (1×/2×/3×). While playback gestures are enabled, the Activity consumes the full gesture through key-up, and the captured gesture outranks both chrome visibility and scrub focus, so a chrome auto-hide or a focus move landing mid-hold cannot split one physical press into two meanings. It outranks the other DPAD keys too: while a gesture is held, a second direction — a thumb rocking the ring — is swallowed rather than allowed to take the capture, because the held key's key-up would then match nothing and the gesture would never end. The burst state is derived from the capture rather than credited to whichever key released one, so no path can leave it frozen over the film; and because only the holder's own key-up releases it during playback, a capture that outlives its release (a window-focus loss swallows the key-up) is cleared by pressing that same direction again rather than by a different one. Dedicated media keys are excluded from all of this and keep falling through. A burst on the seeked half of the frame shows the gesture's accumulated signed delta and acceleration, holds for 700 ms after release, then fades and clears; it is shown only for a **blind** seek, because with the chrome up the scrub bar is already drawing the target, the ghost and both timecodes. A blind seek deliberately does **not** summon the chrome — quick-seek without bringing up UI is the TV-player convention, and revealing it would make the second tap of a double-tap a focus move rather than another ten seconds. With chrome hidden, DPAD center/Enter toggles play-pause once per press and up/down reveal the chrome; with chrome visible those non-horizontal keys fall through to the transport focus graph. An open side panel hands the whole DPAD to Compose: the receiver reports `playbackActive = false` to the policy, which clears any stale playback capture and passes the event through unconsumed. There is no longer a volume-engagement latch at the Activity boundary — volume reads left/right through its own key handler while it holds focus, and horizontal keys can only bypass Compose when the scrub bar holds focus, so the two can no longer claim the same key. Dedicated play, pause, play-pause, rewind, and fast-forward buttons are never consumed by the Activity policy: Android delivers them to a Media3 `MediaSession`, whose ten-second seek increments match the on-screen transport. Media Stop and unsupported Next/Previous are consumed/rejected by the session callback because raw `Player.stop()` or playlist navigation would bypass cast ownership and terminal-state bookkeeping. The platform session switches to a replacement ExoPlayer before the prior instance is released, is released before decoder teardown or terminal cast stop, and is rebound before any later playback. Outside Active playback custom DPAD keys fall through to normal Compose/system navigation.
 
-The player surface deliberately leaves media3's API 34 Compose workaround **off** (`PlayerView.setEnableComposeSurfaceSyncWorkaround(false)`, the media3 default; [androidx/media#1237](https://github.com/androidx/media/issues/1237), [#2811](https://github.com/androidx/media/issues/2811)). On every video-surface resize the workaround wraps the whole window's root surface in a `SurfaceSyncGroup` that only `PlayerView.dispatchDraw` releases. On the Google TV Streamer (API 34) the film's second `videoSize`, which lands just after picture-up, left that group waiting out the platform's 1000 ms timeout (`SurfaceSyncGroup: Failed to receive transaction ready in 1000ms`). The whole window froze for that second, and the Flick card's expansion played inside it, so the viewer saw the card snap to the film. If a stretched or cropped picture ever shows on API 34, that is the bug the workaround targets; fix it without holding the window.
+The player surface deliberately leaves media3's API 34 Compose workaround **off** (`PlayerView.setEnableComposeSurfaceSyncWorkaround(false)`, the media3 default; [androidx/media#1237](https://github.com/androidx/media/issues/1237), [#2811](https://github.com/androidx/media/issues/2811)). On every video-surface resize the workaround wraps the whole window's root surface in a `SurfaceSyncGroup` that only `PlayerView.dispatchDraw` releases. On the Google TV Streamer (API 34) the film's second `videoSize`, which lands just after picture-up, left that group waiting out the platform's 1000 ms timeout (`SurfaceSyncGroup: Failed to receive transaction ready in 1000ms`). The whole window froze for that second, and the handshake's expansion played inside it, so the viewer saw it snap to the film. If a stretched or cropped picture ever shows on API 34, that is the bug the workaround targets; fix it without holding the window.
 
-The Flick card's flight waits for the window to be on screen (`WindowEntrance`, fed by `MainActivity.onStart` and `onEnterAnimationComplete`, with a 1 s fallback after ON_START). A cast that summons Flick from the background otherwise flew the whole 720 ms rise under the system's open animation, where nobody could see it.
+The tunnel waits for the window to be on screen (`WindowEntrance`, fed by `MainActivity.onStart` and `onEnterAnimationComplete`, with a 1 s fallback after ON_START). A cast that summons Flick from the background otherwise ran its whole entrance under the system's open animation, where nobody could see it.
 
 ### Picture orientation
 

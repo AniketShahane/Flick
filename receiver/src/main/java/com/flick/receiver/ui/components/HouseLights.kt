@@ -1,27 +1,33 @@
 package com.flick.receiver.ui.components
 
+import android.content.Context
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
+import android.graphics.drawable.AnimatedVectorDrawable
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,22 +40,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.session.MediaStage
@@ -71,10 +78,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.math.PI
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /** The room the TV is in, as the house lights see it. Checking and Preparing are one stage. */
 internal enum class HouseStage { Room, Fault, Handshake, Film }
@@ -109,35 +115,84 @@ internal const val APERTURE_S_OPEN = 4.2f
 internal const val APERTURE_CORE = 0.35f
 
 /**
- * The handshake card enters once the aperture has closed this far. The last light
- * pool holds the lit mark and the clock; any earlier and the card and its copy land
- * on them while they are still legible.
+ * The handshake's cover where no tunnel runs (reduced motion). The state-overlay plate's
+ * contrast figures in Color.kt assume this same density, so it stays tied to
+ * [FlickColor.ScrimVeil].
  */
-internal const val CARD_ENTER_APERTURE = 0.12f
-
-/** The handshake veil. The state-overlay plate's contrast figures in Color.kt assume this same density, so it stays tied to [FlickColor.ScrimVeil]. */
 internal val VEIL_DENSITY: Float = FlickColor.ScrimVeil.alpha
 
 internal fun apertureScale(p: Float): Float = p.coerceIn(0f, 1f) * APERTURE_S_OPEN
 
 /**
- * How much longer a card that began its flight at [enteredAtMs] must stay before it may
- * take the screen. A card seated without a flight (null) owes nothing.
+ * The tunnel's window, as a fraction of the stage on each axis. The film's view is
+ * scaled by exactly this, so the window and the film inside it are one rectangle.
+ * `drawable/tunnel_loop.xml` is generated from the same three numbers.
  */
-internal fun cardHoldLeftMs(enteredAtMs: Long?, nowMs: Long): Long =
-    if (enteredAtMs == null) 0L else (enteredAtMs + FlickMotion.FLICK_CARD_MIN_SHOWN_MS - nowMs).coerceAtLeast(0L)
+internal const val TUNNEL_WINDOW_FRACTION = 0.3f
+
+/** The vanishing point, which the window is centred on, as a fraction of the stage's height. */
+internal const val TUNNEL_VANISH_Y = 0.42f
+
+/** The window's corner radius as a fraction of its width. */
+internal const val TUNNEL_WINDOW_CORNER = 0.04f
+
+/** The film view's vertical offset in the window, as a fraction of its height. */
+internal const val TUNNEL_WINDOW_LIFT = TUNNEL_VANISH_Y - 0.5f
 
 /**
- * When a card that began its flight at [enteredAtMs] was first really on screen: a display
- * mode change at [lastChangeAtMs] blanks the panel until its resync grace has run, so a
- * change landing after the card entered, or just before, restarts the card's time from
- * the settle. Null for a card seated without a flight, which owes nothing.
+ * The tunnel is rasterised at this share of the screen's pixels and scaled up by its
+ * view. A vector drawable animating on the RenderThread is redrawn into a bitmap and
+ * uploaded every frame, and at full 1080p that is 8 MB a frame on the TV's GPU.
  */
-internal fun cardShownSinceMs(enteredAtMs: Long?, lastChangeAtMs: Long?): Long? {
-    if (enteredAtMs == null) return null
-    val settledAt = lastChangeAtMs?.plus(RESYNC_GRACE_MS) ?: return enteredAtMs
-    return max(enteredAtMs, settledAt)
+private const val TUNNEL_RASTER_SCALE = 0.5f
+
+/**
+ * The bezel the film carries in the window. It hides the surface's square corners
+ * outside the window's rounded ones, so its outer radius must stay at most
+ * (2 + √2) times its width: [TUNNEL_RIM_RADIUS] ≤ 13.6 dp for a 4 dp rim.
+ */
+internal val TUNNEL_RIM_WIDTH = 4.dp
+internal val TUNNEL_RIM_RADIUS = 12.dp
+
+/**
+ * The handshake copy's width under the window. Set by the headline it carries: at
+ * 380 dp "<device> is flicking <film> (year)" wrapped and left the year alone on the
+ * second line. 560 dp holds a film name and year of roughly thirty characters on one
+ * line; longer ones wrap inside the name instead.
+ */
+internal val TUNNEL_CAPTION_WIDTH = 560.dp
+
+/** The copy's gap under the window. */
+private val TUNNEL_CAPTION_GAP = 28.dp
+
+/** Test tag on the tunnel's overlay: the window cover, the bezel, the copy and the flash. */
+internal const val TUNNEL_TAG = "house-tunnel"
+
+/**
+ * How much longer a tunnel first drawn at [startedAtMs] must stay before the film may
+ * appear in its window. A tunnel not yet drawn (null) owes nothing.
+ */
+internal fun tunnelHoldLeftMs(
+    startedAtMs: Long?,
+    nowMs: Long,
+    leastShownMs: Long = FlickMotion.TUNNEL_MIN_SHOWN_MS,
+): Long = if (startedAtMs == null) 0L else (startedAtMs + leastShownMs - nowMs).coerceAtLeast(0L)
+
+/**
+ * When a tunnel first drawn at [startedAtMs] was really on screen: a display mode
+ * change at [lastChangeAtMs] blanks the panel until its resync grace has run, so a
+ * change landing after the tunnel started, or just before, restarts its time from the
+ * settle. Null for a tunnel not yet drawn, which owes nothing.
+ */
+internal fun tunnelShownSinceMs(startedAtMs: Long?, lastChangeAtMs: Long?): Long? {
+    if (startedAtMs == null) return null
+    val settledAt = lastChangeAtMs?.plus(RESYNC_GRACE_MS) ?: return startedAtMs
+    return max(startedAtMs, settledAt)
 }
+
+/** The tunnel's opacity at expansion progress [e]: whole until [FlickMotion.TUNNEL_FADE_FROM], then gone by the end. */
+internal fun tunnelFade(e: Float): Float =
+    1f - ((e - FlickMotion.TUNNEL_FADE_FROM) / (1f - FlickMotion.TUNNEL_FADE_FROM)).coerceIn(0f, 1f)
 
 /** Stops across the aperture's ramp: enough that the piecewise-linear curve shows no knees of its own. */
 private const val APERTURE_RAMP_STEPS = 8
@@ -162,76 +217,21 @@ internal val APERTURE_ALPHAS: FloatArray = FloatArray(APERTURE_POSITIONS.size) {
     if (i == 0) 0f else apertureRampAlpha((i - 1f) / APERTURE_RAMP_STEPS)
 }
 
-/** The longest a retained face may outlive its stage if the curtain never reports it dark. */
+/** The longest a retained face may outlive its stage if the house lights never report it dark. */
 internal const val RETAINED_SHELL_LIMIT_MS = 1_500L
 
-/** The longest a film waits for the curtain to report the picture fully up. */
-internal const val REVEAL_SETTLE_FALLBACK_MS = 4_000L
-
 /**
- * The handshake column's width (receiver-expressive-spec.md §5.2). Set by the headline
- * it carries: at 380 dp "<device> is flicking <film> (year)" wrapped and left the year
- * alone on the second line. 560 dp holds a film name and year of roughly thirty
- * characters on one line; longer ones wrap inside the name instead.
+ * The longest a film waits for the house lights to report the picture fully up: the
+ * stage hold's cap, the film's time in the window and the expansion, with room to spare.
  */
-internal val HANDSHAKE_CARD_WIDTH = 560.dp
-
-/** The Flick card at rest (receiver-expressive-spec.md §5.2). */
-internal val FLICK_CARD_WIDTH = 160.dp
-internal val FLICK_CARD_HEIGHT = 106.dp
-private val FLICK_CARD_RADIUS = 16.dp
-
-/** The corner the card keeps once it has taken the screen. */
-private val FLICK_CARD_EXPANDED_RADIUS = 3.dp
-
-/** The glow's vertical reach from the card's centre; it is [FLICK_CARD_GLOW_ASPECT] times wider. */
-private val FLICK_CARD_GLOW_RADIUS = 76.dp
-private const val FLICK_CARD_GLOW_ASPECT = 1.5f
-private const val FLICK_CARD_GLOW_ALPHA = 0.55f
-
-/** One unit of the brand mark's 64-unit grid, which puts a ~47 dp play mark on the card. */
-private val FLICK_MARK_UNIT = 1.1.dp
-
-/** The mark's triangle is centred on its centroid, not its bounds, so it sits optically centred. */
-private const val MARK_CENTROID_X = 112f / 3f
-private const val MARK_CENTROID_Y = 32f
-
-/** The mark's streak weights, 0.45 / 0.75 / 0.45, stood upright under the card. */
-private val SPEED_BAR_WIDTHS = listOf(6.dp, 7.dp, 6.dp)
-private val SPEED_BAR_HEIGHTS = listOf(64.dp, 88.dp, 64.dp)
-private val SPEED_BAR_PITCH = 15.dp
-private val SPEED_BAR_GAP = 10.dp
-private val SPEED_BAR_DRIFT = 24.dp
-
-/** The share of the bars' run spent flashing in; the rest dissolves them downward. */
-private const val SPEED_BAR_FLASH = 0.15f
-
-/** [HouseCard.arrive] at the overshoot pose and seated. */
-private const val ARRIVE_OVERSHOOT = 1f
-private const val ARRIVE_SEATED = 2f
-
-private val TWO_PI = (2.0 * PI).toFloat()
-
-/** The speed bars' alpha across their run [b], 0 → 1. */
-internal fun speedBarAlpha(b: Float): Float = when {
-    b <= 0f || b >= 1f -> 0f
-    b < SPEED_BAR_FLASH -> b / SPEED_BAR_FLASH
-    else -> (1f - b) / (1f - SPEED_BAR_FLASH)
-}
-
-/**
- * The degrade switch for a turned film, which is composited into the app's window
- * rather than presented on a layer of its own. Flip to true only if the turned-film
- * framestats check fails.
- */
-private const val SNAP_REVEAL_ON_TURNED_FILM = false
+internal const val REVEAL_SETTLE_FALLBACK_MS = 6_000L
 
 /** A curtain with this little density, or this much aperture, draws nothing. */
 private const val EMPTY_DENSITY = 0.004f
 private const val OPEN_APERTURE = 0.999f
 private const val CLOSED_APERTURE = 0.001f
 
-/** Where each stage's curtain rests: (aperture, density). */
+/** Where each stage's curtain rests: (aperture, density). The handshake's is its cover without a tunnel. */
 internal fun houseRest(stage: HouseStage): Pair<Float, Float> = when (stage) {
     HouseStage.Room -> 1f to 1f
     HouseStage.Fault -> 0f to 0f
@@ -261,10 +261,10 @@ internal fun houseMove(
     }
     if (reducedMotion) return snap()
     // Nothing composed while the viewer was elsewhere is on screen to carry on from.
-    // Closed and fully dense is opaque Canvas, the same black as the covered surface.
+    // Closed and fully dense is opaque Canvas, the same dark the tunnel rises out of.
     // A first composition into a handshake is the same case: an Activity created for
     // a cast (one the system destroyed in the background, then summoned) has nothing
-    // on screen yet either, and its card must still fly.
+    // on screen yet either, and its tunnel must still run.
     if (offstage || (from == null && to == HouseStage.Handshake)) {
         return if (to == HouseStage.Handshake) HouseMove(to, HouseMoveKind.LightsDown, 0f, 1f, HouseGate.None) else snap()
     }
@@ -272,9 +272,9 @@ internal fun houseMove(
         return if (to == HouseStage.Room) HouseMove(to, HouseMoveKind.Launch, 0f, 1f, HouseGate.None) else snap()
     }
     val lit = from == HouseStage.Room || from == HouseStage.Fault
-    // Act I still closing (or not yet started): the lit pool is on screen, so a move
-    // off the handshake carries it on from where it is. Raw values, not pN, because
-    // pN = 1 also stands for an empty curtain, over which the film's cut is accepted.
+    // The lit pool is on screen, so a move off the handshake carries it on from where
+    // it is. Raw values, not pN, because pN = 1 also stands for an empty curtain, over
+    // which the film's cut is accepted.
     val poolLit = prevAperture > CLOSED_APERTURE && prevDensity > EMPTY_DENSITY
     val poolSeed = if (poolLit) prevAperture.coerceAtMost(1f) else 0f
     return when {
@@ -306,7 +306,7 @@ internal fun houseMove(
 }
 
 /**
- * False while a shell face is retained under the curtain or on its way out. Each
+ * False while a shell face is retained under the house lights or on its way out. Each
  * control reads it where it takes focus: a scroll container is a focus boundary, so
  * a `canFocus = false` set on the face's root never reaches the rows inside one.
  */
@@ -332,6 +332,179 @@ class FilmDimReading {
     var drawn: Float = 0f
 }
 
+/**
+ * Where the film's view sits while the house lights stage it: a view transform, never
+ * a resize. Scaling a view leaves its surface's buffer alone, so the decoder is never
+ * reconfigured and no SurfaceSyncGroup holds the window; the SurfaceView follows its
+ * ancestors' transform and punches its hole at the transformed rect, so what is drawn
+ * before it shows around the window and what is drawn after it covers the film.
+ *
+ * Hidden is alpha 0, never INVISIBLE or GONE, which would destroy the surface. A view
+ * attached mid-pose takes the pose before its first draw.
+ */
+class FilmPose {
+    private var view: View? = null
+    private val relayout = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> apply(v) }
+
+    var scale: Float = 1f
+        private set
+    var lift: Float = 0f
+        private set
+    var shown: Boolean = true
+        private set
+
+    fun attach(v: View) {
+        view?.removeOnLayoutChangeListener(relayout)
+        view = v
+        v.addOnLayoutChangeListener(relayout)
+        apply(v)
+    }
+
+    fun detach(v: View) {
+        if (view !== v) return
+        v.removeOnLayoutChangeListener(relayout)
+        view = null
+    }
+
+    fun set(scale: Float = this.scale, lift: Float = this.lift, shown: Boolean = this.shown) {
+        this.scale = scale
+        this.lift = lift
+        this.shown = shown
+        view?.let(::apply)
+    }
+
+    /** In the tunnel's window at expansion progress [e]: 0 is the window, 1 the whole screen. */
+    fun at(e: Float, shown: Boolean = this.shown) =
+        set(lerp(TUNNEL_WINDOW_FRACTION, 1f, e), lerp(TUNNEL_WINDOW_LIFT, 0f, e), shown)
+
+    fun full() = set(1f, 0f, true)
+
+    private fun apply(v: View) {
+        v.pivotX = v.width / 2f
+        v.pivotY = v.height / 2f
+        v.scaleX = scale
+        v.scaleY = scale
+        v.translationY = lift * v.height
+        v.alpha = if (shown) 1f else 0f
+    }
+}
+
+/**
+ * The tunnel's loop, half resolution and scaled up (see [TUNNEL_RASTER_SCALE]). The
+ * scale must be the child view's own property: a canvas scale would be recorded into
+ * the display list, and the vector drawable sizes its bitmap from that.
+ */
+private class TunnelBackdropView(context: Context) : ViewGroup(context) {
+    private val loop = context.getDrawable(R.drawable.tunnel_loop) as AnimatedVectorDrawable
+    private val image = ImageView(context).apply {
+        scaleType = ImageView.ScaleType.FIT_XY
+        setImageDrawable(loop)
+        pivotX = 0f
+        pivotY = 0f
+    }
+
+    init {
+        addView(image)
+        visibility = INVISIBLE
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        val h = MeasureSpec.getSize(heightMeasureSpec)
+        setMeasuredDimension(w, h)
+        image.measure(
+            MeasureSpec.makeMeasureSpec(ceil(w * TUNNEL_RASTER_SCALE).toInt(), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(ceil(h * TUNNEL_RASTER_SCALE).toInt(), MeasureSpec.EXACTLY),
+        )
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        image.layout(0, 0, image.measuredWidth, image.measuredHeight)
+        if (image.measuredWidth > 0 && image.measuredHeight > 0) {
+            image.scaleX = (r - l).toFloat() / image.measuredWidth
+            image.scaleY = (b - t).toFloat() / image.measuredHeight
+        }
+    }
+
+    override fun hasOverlappingRendering(): Boolean = false
+
+    fun start() {
+        visibility = VISIBLE
+        loop.start()
+    }
+
+    fun stop() {
+        loop.reset()
+        visibility = INVISIBLE
+    }
+}
+
+/**
+ * The tunnel's state. Outlives every curtain, so a show interrupted by a seam carries on
+ * from where it is. [expand] is the window's progress to the whole screen; [cover] the
+ * glowing window over the film, [rim] the film's bezel, [caption] the copy, [flash] the
+ * white as the window takes the screen, and [presence] the whole show, for a seam that
+ * dismisses it with nothing covering it.
+ */
+private class Tunnel {
+    private var host: TunnelBackdropView? = null
+    var running = false
+        private set
+
+    /** Starting the loop and stamping its first drawn frame. */
+    var entrance: Job? = null
+    var captionIn: Job? = null
+
+    /** The loop's first drawn frame; null while it is not running. */
+    var startedAtMs: Long? = null
+
+    /** Composes the overlay; true from the cue until the show is retired. */
+    var up by mutableStateOf(false)
+
+    val expand = Animatable(0f)
+    val cover = Animatable(0f)
+    val rim = Animatable(0f)
+    val caption = Animatable(0f)
+    val flash = Animatable(0f)
+    val presence = Animatable(1f)
+
+    fun attach(view: TunnelBackdropView) {
+        host = view
+        if (running) view.start()
+    }
+
+    fun detach(view: TunnelBackdropView) {
+        if (host !== view) return
+        view.stop()
+        host = null
+    }
+
+    fun start() {
+        running = true
+        up = true
+        host?.start()
+    }
+
+    suspend fun retire() {
+        entrance?.cancel()
+        entrance = null
+        captionIn?.cancel()
+        captionIn = null
+        host?.stop()
+        running = false
+        startedAtMs = null
+        up = false
+        expand.snapTo(0f)
+        cover.snapTo(0f)
+        rim.snapTo(0f)
+        caption.snapTo(0f)
+        flash.snapTo(0f)
+        presence.snapTo(1f)
+    }
+}
+
 private class HouseCurtain(
     val from: HouseStage?,
     val move: HouseMove,
@@ -344,98 +517,24 @@ private class HouseMemory {
     var lastCurtain: HouseCurtain? = null
 }
 
-/**
- * Outlives every curtain, so an interrupted entrance or exit continues from where it is.
- * [alpha] is the whole card's; [copy], [rise] and [sink] move only the text, which
- * leaves at the first frame while the Flick card stays to take the screen.
- */
-private class HouseCard {
-    val alpha = Animatable(0f)
-    val rise = Animatable(1f)
-    val sink = Animatable(0f)
-    val copy = Animatable(1f)
-
-    /** 0 below the screen, [ARRIVE_OVERSHOOT] at the overshoot pose, [ARRIVE_SEATED] seated. */
-    val arrive = Animatable(0f)
-
-    /** The speed bars' run; 1 is spent. */
-    val bars = Animatable(1f)
-
-    /**
-     * The arrival and its speed bars. Run in the composition's scope rather than a
-     * seam's, so the first frame landing mid-flight does not cut it short.
-     */
-    var flight: Job? = null
-
-    /** When the current flight began; null for a card seated without one, or gone. */
-    var enteredAtMs: Long? = null
-
-    val flying: Boolean get() = flight?.isActive == true
-
-    /** The bob's phase in cycles. Only its fraction is drawn, so a resumed bob carries on from it. */
-    val bob = Animatable(0f)
-    val expand = Animatable(0f)
-    val mark = Animatable(1f)
-
-    /** The expanded card's fade into the film. */
-    val cover = Animatable(1f)
-    var held by mutableStateOf(false)
-    var settledIn by mutableStateOf(false)
-
-    /** Written in layout and read only in draw, so a resize repositions the card without recomposing. */
-    var columnHeight by mutableIntStateOf(0)
-
-    suspend fun seat() {
-        land()
-        alpha.snapTo(1f)
-        rise.snapTo(0f)
-        sink.snapTo(0f)
-        copy.snapTo(1f)
-        arrive.snapTo(ARRIVE_SEATED)
-        bars.snapTo(1f)
-        bob.snapTo(0f)
-        expand.snapTo(0f)
-        mark.snapTo(1f)
-        cover.snapTo(1f)
-        held = true
-        settledIn = true
-    }
-
-    fun land() {
-        flight?.cancel()
-        flight = null
-        enteredAtMs = null
-    }
-
-    suspend fun retire() {
-        land()
-        held = false
-        settledIn = false
-        alpha.snapTo(0f)
-        rise.snapTo(1f)
-        sink.snapTo(0f)
-        copy.snapTo(1f)
-        arrive.snapTo(0f)
-        bars.snapTo(1f)
-        expand.snapTo(0f)
-        mark.snapTo(1f)
-        cover.snapTo(1f)
-    }
-}
-
-/** The headline an exiting card keeps showing once the session has moved on. */
+/** The headline an exiting tunnel keeps showing once the session has moved on. */
 private class HeadlineLatch {
     var last: String? = null
 }
 
 /**
- * The room's light: a draw-only curtain over every stage seam, and the handshake card.
+ * The room's light: a draw-only curtain over every stage seam, and the handshake's tunnel.
  *
- * [onLightsDown] runs once the retained standby or error face is under full dark and
- * may leave composition. [onPictureUp] runs when the resync wait opens and the Flick
- * card has had its least time on screen, and the veil is about to lift; the film is held at
- * its first frame until then, so every path into Film must call it.
- * [onPictureSettled] when the lift has finished.
+ * [film] is the stage's own content. It is composed between the tunnel and its overlay,
+ * because the film's surface must punch through the tunnel at the window while the
+ * window's cover, the bezel, the copy and the flash draw over the film. [filmPose] is the
+ * film view's transform, shared with whoever creates that view.
+ *
+ * [onLightsDown] runs once the retained standby or error face is covered and may leave
+ * composition. [onPictureUp] runs when the film appears in the tunnel's window: the
+ * resync wait has opened and the tunnel has had its least time on screen. The film is
+ * held at its first frame until then, so every path into Film must call it.
+ * [onPictureSettled] runs once the window has taken the screen.
  *
  * [freshRate] is read only inside the reveal's hold, so a caller can hand over a
  * reader of state that changes while the film plays without recomposing this.
@@ -445,22 +544,21 @@ private class HeadlineLatch {
  * [offstage] is true for compositions made while the app was stopped: a seam planned
  * then starts from nothing on screen.
  *
- * [expandAtPictureUp] false lets the Flick card leave with its copy at the first frame
- * instead of taking the screen once the resync wait ends. The stage tests use it to read
- * the veil's lift, which the expanded card covers.
+ * [awaitOnScreen] returns once the window is really on screen; the tunnel waits for it,
+ * so a cast that summons the app from the background runs after the system's open
+ * animation rather than under it.
  *
- * [awaitOnScreen] returns once the window is really on screen; the card's flight waits
- * for it, so a cast that summons the app from the background flies the card after the
- * system's open animation rather than under it.
+ * [leastShownMs] is the tunnel's least time on screen before the film may appear in it;
+ * the stage tests lower it to judge the resync hold on its own.
  */
 @Composable
 internal fun HouseLights(
     stage: HouseStage,
-    turnedFilm: Boolean,
     deviceLabel: String?,
     title: String?,
     cadence: DisplayCadenceSource,
     keyPresses: Flow<Unit>,
+    filmPose: FilmPose,
     onLightsDown: () -> Unit,
     onPictureUp: () -> Unit,
     onPictureSettled: () -> Unit,
@@ -468,17 +566,18 @@ internal fun HouseLights(
     filmDim: Float = 0f,
     filmDimNow: () -> Float = { filmDim },
     offstage: Boolean = false,
-    expandAtPictureUp: Boolean = true,
     requestedRefreshRate: Float = 0f,
     freshRate: () -> Float = { requestedRefreshRate },
     pinnedRate: () -> Float = { requestedRefreshRate },
     now: () -> Long = SystemClock::uptimeMillis,
     awaitOnScreen: suspend () -> Unit = {},
+    leastShownMs: Long = FlickMotion.TUNNEL_MIN_SHOWN_MS,
+    film: @Composable BoxScope.() -> Unit = {},
 ) {
     val reduced = LocalReducedMotion.current
     val memory = remember { HouseMemory() }
-    val card = remember { HouseCard() }
-    val cardScope = rememberCoroutineScope()
+    val tunnel = remember { Tunnel() }
+    val tunnelScope = rememberCoroutineScope()
 
     val curtain = remember(stage) {
         val prev = memory.lastCurtain
@@ -486,6 +585,14 @@ internal fun HouseLights(
         val pd = prev?.let { Snapshot.withoutReadObservation { it.density.value } } ?: 1f
         val fd = Snapshot.withoutReadObservation { filmDimNow() }
         val move = houseMove(memory.lastStage, stage, pp, pd, fd, reduced, offstage)
+        // Here rather than in an effect: a film view this same composition creates is
+        // drawn before any effect runs, and it must be in the window, hidden, from its
+        // first frame.
+        when (move.kind) {
+            HouseMoveKind.LightsDown -> filmPose.at(0f, shown = false)
+            HouseMoveKind.PictureUp, HouseMoveKind.VeilIn -> Unit
+            else -> filmPose.full()
+        }
         HouseCurtain(memory.lastStage, move, Animatable(move.seedAperture), Animatable(move.seedDensity))
     }
     SideEffect {
@@ -495,108 +602,87 @@ internal fun HouseLights(
 
     val freshRateNow by rememberUpdatedState(freshRate)
     val pinnedRateNow by rememberUpdatedState(pinnedRate)
-    val latestTurnedFilm by rememberUpdatedState(turnedFilm)
-    val expandNow by rememberUpdatedState(expandAtPictureUp)
     val lightsDownNow by rememberUpdatedState(onLightsDown)
     val pictureUpNow by rememberUpdatedState(onPictureUp)
     val pictureSettledNow by rememberUpdatedState(onPictureSettled)
     val awaitOnScreenNow by rememberUpdatedState(awaitOnScreen)
-    val stateSpec by rememberUpdatedState(FlickMotion.stateEffects<Float>())
-    val fastSpec by rememberUpdatedState(FlickMotion.fastStateEffects<Float>())
-    val panelSpec by rememberUpdatedState(FlickMotion.panelSpatial<Float>())
-    val focusSpec by rememberUpdatedState(FlickMotion.focusSpatial<Float>())
+
+    DisposableEffect(Unit) {
+        onDispose { filmPose.full() }
+    }
 
     LaunchedEffect(curtain, reduced) {
         val move = curtain.move
         val aperture = curtain.aperture
         val density = curtain.density
         val edge = now()
-        // At the edge, before Act I closes, so a tick landing during the close cannot rewrite it.
+        // At the edge, before anything else runs, so a tick landing later cannot rewrite it.
         val releasedAtSeam = pinnedRateNow() <= 0f
         fun <T> spec(s: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> = FlickMotion.orSnap(reduced, s)
+        fun covered(): Boolean = aperture.value <= CLOSED_APERTURE && density.value >= 1f - EMPTY_DENSITY
 
-        fun startFlight() {
-            card.flight?.cancel()
-            card.enteredAtMs = null
-            card.flight = cardScope.launch {
-                // The keyframes pin their start, so a flight only ever runs from 0.
-                card.arrive.snapTo(0f)
+        // Joined, not restarted, by a seam that lands while it is still waiting for the window.
+        fun startTunnel() {
+            if (tunnel.running || tunnel.entrance?.isActive == true) return
+            tunnel.up = true
+            tunnel.entrance = tunnelScope.launch {
                 val waitStart = now()
                 awaitOnScreenNow()
                 val waitedMs = now() - waitStart
-                if (waitedMs > 0L) FlickLog.i("stage", "card flight waited for window waitedMs=$waitedMs")
-                // The card's time starts on the flight's first drawn frame: the main thread
-                // can be held between the cue and that frame (the previous player's release
-                // runs there), and time spent before it was never on screen.
-                launch {
-                    withFrameMillis { }
-                    card.enteredAtMs = now()
-                }
-                launch { card.arrive.animateTo(ARRIVE_SEATED, spec(FlickMotion.flickCardArrive())) }
-                launch {
-                    delay(FlickMotion.SPEED_BARS_LAG_MS)
-                    card.bars.snapTo(0f)
-                    card.bars.animateTo(1f, spec(FlickMotion.speedBars()))
+                if (waitedMs > 0L) FlickLog.i("stage", "tunnel waited for window waitedMs=$waitedMs")
+                tunnel.start()
+                FlickLog.i("stage", "tunnel start sinceSeamMs=${now() - edge}")
+                // The tunnel's time starts on its first drawn frame: the main thread can
+                // be held between the cue and that frame, and time spent before it was
+                // never on screen.
+                withFrameMillis { }
+                tunnel.startedAtMs = now()
+                tunnel.captionIn = tunnelScope.launch {
+                    delay(FlickMotion.TUNNEL_CAPTION_DELAY_MS)
+                    tunnel.caption.animateTo(1f, tween(FlickMotion.TUNNEL_CAPTION_IN_MS, easing = FlickMotion.ChromeFade))
                 }
             }
         }
 
-        // Rising, the Flick card flies up from below the screen into the last light,
-        // or over a film into the veil; otherwise it fades in already seated.
-        suspend fun enterCard(alphaSpec: FiniteAnimationSpec<Float>, rising: Boolean) {
-            card.held = true
-            card.settledIn = false
-            val flies = rising && card.arrive.value <= 0f
-            FlickLog.i("stage", "card enter rising=$rising flies=$flies sinceSeamMs=${now() - edge}")
-            if (flies) startFlight()
-            coroutineScope {
-                launch { card.alpha.animateTo(1f, spec(alphaSpec)) }
-                launch { card.copy.animateTo(1f, spec(alphaSpec)) }
-                launch { card.rise.animateTo(0f, spec(panelSpec)) }
-                launch { card.sink.animateTo(0f, spec(panelSpec)) }
-                when {
-                    flies -> Unit
-                    !rising -> card.arrive.snapTo(ARRIVE_SEATED)
-                    // Caught mid-exit: the keyframes pin their start, so settle from here.
-                    else -> launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
-                }
+        // Returns once the tunnel is opaque over whatever it rose over. The curtain, if
+        // it was drawing anything, gives way to it over the same span.
+        suspend fun awaitTunnelIn() {
+            tunnel.entrance?.join()
+            val started = tunnel.startedAtMs ?: now()
+            val left = (started + FlickMotion.TUNNEL_FADE_IN_MS - now()).coerceAtLeast(0L)
+            if (density.value > EMPTY_DENSITY && aperture.value < OPEN_APERTURE && left > 0L) {
+                density.animateTo(0f, tween(left.toInt(), easing = FlickMotion.CrossDissolve))
+            } else if (left > 0L) {
+                delay(left)
             }
-            card.flight?.join()
-            card.settledIn = true
-            FlickLog.i("stage", "card seated sinceSeamMs=${now() - edge}")
+            // Empty, and not a lit pool: an exit from here closes from full dark.
+            aperture.snapTo(0f)
+            density.snapTo(0f)
         }
 
-        suspend fun exitCard(alphaSpec: FiniteAnimationSpec<Float>) {
-            if (!card.held) return
-            FlickLog.i("stage", "card exit flying=${card.flying} sinceSeamMs=${now() - edge}")
-            card.settledIn = false
-            card.land()
-            coroutineScope {
-                launch { card.alpha.animateTo(0f, spec(alphaSpec)) }
-                launch { card.sink.animateTo(1f, spec(focusSpec)) }
-            }
-            card.retire()
+        // The overlay draws over the curtain, so even a covered tunnel leaves on a fade.
+        suspend fun dismissTunnel() {
+            if (!tunnel.up) return
+            FlickLog.i("stage", "tunnel dismiss covered=${covered()} sinceSeamMs=${now() - edge}")
+            tunnel.presence.animateTo(0f, spec(FlickMotion.filmExit()))
+            tunnel.retire()
+            filmPose.full()
         }
 
-        // An expansion cut off by the next seam would otherwise hold the screen until
-        // its card re-entered.
-        suspend fun clearExpanded() {
-            if (card.held && card.expand.value > 0f) exitCard(fastSpec)
-        }
-
-        suspend fun expandCard() {
+        suspend fun expandTunnel() {
             val start = now()
-            FlickLog.i("stage", "card expand start flying=${card.flying} sinceSeamMs=${start - edge}")
+            FlickLog.i("stage", "tunnel expand start sinceSeamMs=${start - edge}")
             coroutineScope {
-                launch { card.mark.animateTo(0f, spec(FlickMotion.flickCardMarkFade())) }
-                launch { card.expand.animateTo(1f, spec(FlickMotion.flickCardExpand())) }
                 launch {
-                    delay(FlickMotion.FLICK_CARD_FADE_DELAY_MS)
-                    card.cover.animateTo(0f, spec(FlickMotion.flickCardFade()))
+                    tunnel.flash.snapTo(FlickMotion.TUNNEL_FLASH_PEAK)
+                    tunnel.flash.animateTo(0f, FlickMotion.tunnelFlash())
                 }
+                launch { tunnel.rim.animateTo(0f, tween(FlickMotion.TUNNEL_RIM_OUT_MS, easing = LinearEasing)) }
+                tunnel.expand.animateTo(1f, FlickMotion.tunnelExpand()) { filmPose.at(value) }
             }
-            card.retire()
-            FlickLog.i("stage", "card expand done tookMs=${now() - start}")
+            filmPose.full()
+            tunnel.retire()
+            FlickLog.i("stage", "tunnel expand done tookMs=${now() - start}")
         }
 
         fun recentChange(): Boolean {
@@ -628,17 +714,18 @@ internal fun HouseLights(
 
         fun capLeft(): Long = (STAGE_HOLD_CAP_MS - (now() - edge)).coerceAtLeast(0L)
 
-        // Ends at the flight's end plus the card's least time on screen, a key, or the cap.
-        // The least time counts only while the panel shows: a mode change restarts it
-        // from that change's settle.
-        suspend fun awaitCardShown(): String {
+        // Ends at the tunnel's least time on screen, a key, or the cap. The least time
+        // counts only while the panel shows: a mode change restarts it from that
+        // change's settle.
+        suspend fun awaitTunnelShown(): String {
             val start = now()
             val ended = withTimeoutOrNull(capLeft()) {
                 merge(
                     flow {
-                        card.flight?.join()
+                        tunnel.entrance?.join()
                         while (true) {
-                            val left = cardHoldLeftMs(cardShownSinceMs(card.enteredAtMs, cadence.lastChangeAtMs), now())
+                            val since = tunnelShownSinceMs(tunnel.startedAtMs, cadence.lastChangeAtMs)
+                            val left = tunnelHoldLeftMs(since, now(), leastShownMs)
                             if (left <= 0L) break
                             withTimeoutOrNull(left) { cadence.changes.first() }
                         }
@@ -647,7 +734,7 @@ internal fun HouseLights(
                     keyPresses.map { "key" },
                 ).first()
             } ?: "cap"
-            FlickLog.i("stage", "card hold reason=$ended waitedMs=${now() - start}")
+            FlickLog.i("stage", "tunnel hold reason=$ended waitedMs=${now() - start}")
             return ended
         }
 
@@ -700,7 +787,9 @@ internal fun HouseLights(
             val (p, d) = houseRest(move.to)
             aperture.snapTo(p)
             density.snapTo(d)
-            if (move.to == HouseStage.Handshake) card.seat() else card.retire()
+            tunnel.retire()
+            filmPose.full()
+            if (move.to == HouseStage.Handshake) tunnel.caption.snapTo(1f)
             if (move.to != HouseStage.Room && move.to != HouseStage.Fault) lightsDownNow()
             if (move.to == HouseStage.Film) {
                 pictureUpNow()
@@ -713,122 +802,108 @@ internal fun HouseLights(
             HouseMoveKind.Launch -> aperture.animateTo(1f, spec(FlickMotion.pictureUp()))
 
             HouseMoveKind.LightsDown -> {
-                // Seeded closed at full density: nothing lit is left to close over.
-                val alreadyDark = aperture.value <= CLOSED_APERTURE && density.value >= 1f - EMPTY_DENSITY
-                if (alreadyDark) lightsDownNow()
-                val clearing = launch { clearExpanded() }
-                launch {
-                    if (aperture.value > CLOSED_APERTURE) {
-                        snapshotFlow { aperture.value <= CARD_ENTER_APERTURE }.first { it }
-                    } else {
-                        // A fault still dissolving: the retained face must be mostly dark
-                        // before the card lands on it.
-                        snapshotFlow { density.value >= 1f - CARD_ENTER_APERTURE }.first { it }
-                    }
-                    clearing.join()
-                    enterCard(stateSpec, rising = true)
-                }
-                if (alreadyDark) {
-                    density.animateTo(VEIL_DENSITY, spec(FlickMotion.crossDissolve()))
-                    return@LaunchedEffect
-                }
-                if (aperture.value > CLOSED_APERTURE) {
-                    // Same curve for both, so the face outside the pool is as dark as
-                    // the pool is closed when the card enters.
-                    coroutineScope {
-                        if (density.value < 1f) launch { density.animateTo(1f, spec(FlickMotion.lightsDown())) }
-                        aperture.animateTo(0f, spec(FlickMotion.lightsDown()))
-                    }
-                } else {
-                    density.animateTo(1f, spec(FlickMotion.lightsDown()))
-                }
-                lightsDownNow()
-                density.snapTo(VEIL_DENSITY)
+                // Seeded closed at full density: nothing lit is left to cover.
+                val dark = covered()
+                if (dark) lightsDownNow()
+                startTunnel()
+                awaitTunnelIn()
+                if (!dark) lightsDownNow()
             }
 
             HouseMoveKind.PictureUp -> {
-                val expanding = expandNow
                 FlickLog.i(
                     "stage",
-                    "card pictureUp held=${card.held} flying=${card.flying} " +
-                        "shownMs=${card.enteredAtMs?.let { now() - it }}",
+                    "tunnel pictureUp up=${tunnel.up} running=${tunnel.running} " +
+                        "shownMs=${tunnel.startedAtMs?.let { now() - it }}",
                 )
-                if (expanding) {
-                    // The copy leaves at once; the card holds its seat through the resync
-                    // wait, so its expansion is never thrown into a mode switch's blank.
-                    card.settledIn = false
-                    if (card.held) {
-                        launch { card.copy.animateTo(0f, spec(FlickMotion.crossDissolve())) }
-                    } else {
-                        // The first frame beat the card's cue: it flies in without its copy.
-                        card.held = true
-                        card.copy.snapTo(0f)
-                        FlickLog.i("stage", "card enter rising=true flies=true sinceSeamMs=${now() - edge}")
-                        startFlight()
-                    }
-                    launch { card.sink.animateTo(1f, spec(focusSpec)) }
-                    launch { card.alpha.animateTo(1f, spec(stateSpec)) }
-                    // A flight in progress keeps its own arrival and bars.
-                    if (!card.flying) {
-                        launch { card.bars.animateTo(1f, spec(FlickMotion.speedBars())) }
-                        if (card.arrive.value < ARRIVE_SEATED) {
-                            launch { card.arrive.animateTo(ARRIVE_SEATED, spec(panelSpec)) }
+                // The first frame beat the tunnel's cue: it still runs, and still owes its time.
+                startTunnel()
+                // This seam's composition (the film's whole playback screen) lands in its
+                // first frames; the window opens on a main thread that has finished it.
+                val composed = launch {
+                    withFrameMillis { }
+                    withFrameMillis { }
+                }
+                launch {
+                    awaitTunnelIn()
+                    lightsDownNow()
+                }
+                // A re-cast whose first frame landed while the old film was still being
+                // drawn back into the window finishes that leg first, and covers it: the
+                // new film's held first frame is not shown before its time.
+                val windowed = launch {
+                    if (tunnel.expand.value > 0f) {
+                        tunnel.expand.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) {
+                            filmPose.at(value)
                         }
                     }
-                } else {
-                    FlickLog.i("stage", "card skip reason=expandOff held=${card.held}")
-                    launch { exitCard(FlickMotion.crossDissolve()) }
+                    if (filmPose.shown) {
+                        tunnel.cover.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
+                        filmPose.at(0f, shown = false)
+                    }
                 }
-                var cardHold: String? = null
-                val cardShown = if (expanding) launch { cardHold = awaitCardShown() } else null
-                if (aperture.value > CLOSED_APERTURE) aperture.animateTo(0f, spec(fastSpec))
-                // Also when Act I had already closed: releasing a face that is already
-                // gone is a no-op, and a face still retained would cover the film.
-                lightsDownNow()
+                var tunnelHold: String? = null
+                val shown = launch { tunnelHold = awaitTunnelShown() }
                 val revealHold = holdForReveal()
-                cardShown?.join()
-                // A switch reported after the card's time ran out, while the reveal still
+                shown.join()
+                // A switch reported after the tunnel's time ran out, while the reveal still
                 // waited, blanked part of that time.
-                if (cardHold == "shown" && revealHold != HoldReason.KeyPressed) awaitCardShown()
+                if (tunnelHold == "shown" && revealHold != HoldReason.KeyPressed) awaitTunnelShown()
+                composed.join()
+                windowed.join()
+
+                // The glowing window is drawn over the film first, so the film's view can
+                // be shown under it in the same frame and the glow then gives way.
+                tunnel.cover.snapTo(1f)
+                filmPose.at(0f, shown = true)
+                tunnel.captionIn?.cancel()
+                FlickLog.i("stage", "tunnel film shown sinceSeamMs=${now() - edge}")
                 pictureUpNow()
-                if (expanding) launch { expandCard() }
-                delay(FlickMotion.REVEAL_VEIL_LAG_MS)
-                val lift: FiniteAnimationSpec<Float> = if (latestTurnedFilm && SNAP_REVEAL_ON_TURNED_FILM) {
-                    FlickMotion.orSnap(true, FlickMotion.filmReveal())
-                } else {
-                    spec(FlickMotion.filmReveal())
-                }
-                density.animateTo(0f, lift)
+                launch { tunnel.cover.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
+                launch { tunnel.rim.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
+                launch { tunnel.caption.animateTo(0f, tween(FlickMotion.TUNNEL_CAPTION_OUT_MS, easing = FlickMotion.ChromeFade)) }
+                val keyed = withTimeoutOrNull(FlickMotion.TUNNEL_DWELL_MS) { keyPresses.first() } != null
+                FlickLog.i("stage", "tunnel dwell end reason=${if (keyed) "key" else "time"} sinceSeamMs=${now() - edge}")
+                expandTunnel()
                 pictureSettledNow()
             }
 
             HouseMoveKind.VeilIn -> {
-                val clearing = launch { clearExpanded() }
-                launch {
-                    val seed = density.value
-                    val threshold = seed + (VEIL_DENSITY - seed) * FlickMotion.CARD_AFTER_DIM_FRACTION
-                    snapshotFlow { density.value >= threshold }.first { it }
-                    clearing.join()
-                    enterCard(FlickMotion.crossDissolve(), rising = true)
+                // The paused film still fills the screen: it is drawn back down into the
+                // window while the tunnel rises behind it, and the window then glows over it.
+                tunnel.expand.snapTo(1f)
+                startTunnel()
+                tunnel.entrance?.join()
+                coroutineScope {
+                    launch { density.animateTo(0f, tween(FlickMotion.TUNNEL_SHRINK_MS, easing = FlickMotion.CrossDissolve)) }
+                    launch {
+                        delay((FlickMotion.TUNNEL_SHRINK_MS - FlickMotion.TUNNEL_FILM_IN_MS).toLong())
+                        tunnel.rim.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
+                    }
+                    tunnel.expand.animateTo(0f, FlickMotion.tunnelShrink()) { filmPose.at(value) }
                 }
-                density.animateTo(VEIL_DENSITY, spec(FlickMotion.filmReveal()))
+                tunnel.cover.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
+                filmPose.at(0f, shown = false)
+                tunnel.cover.snapTo(0f)
+                FlickLog.i("stage", "tunnel film withdrawn sinceSeamMs=${now() - edge}")
+                aperture.snapTo(0f)
+                tunnel.rim.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
             }
 
             HouseMoveKind.LightsUpRoom -> {
-                launch { exitCard(fastSpec) }
+                launch { dismissTunnel() }
                 hold(restPending())
                 aperture.animateTo(1f, spec(FlickMotion.pictureUp()))
             }
 
             HouseMoveKind.LightsUpFault -> {
-                launch { exitCard(fastSpec) }
+                launch { dismissTunnel() }
                 hold(restPending())
                 density.animateTo(0f, spec(FlickMotion.crossDissolve()))
             }
 
             HouseMoveKind.Rest -> {
-                // A card interrupted mid-exit on the way here would otherwise stay up.
-                launch { exitCard(fastSpec) }
+                launch { dismissTunnel() }
                 val p = aperture.value
                 val d = density.value
                 if (p in CLOSED_APERTURE..OPEN_APERTURE && d > EMPTY_DENSITY) {
@@ -842,15 +917,28 @@ internal fun HouseLights(
         }
     }
 
-    // Liveness, not progress: the handshake sits in one stage for as long as the TV
-    // takes to answer, so a card holding still would read as a hang. It stops at the
-    // first frame, so no loop runs while the film decodes.
-    val bobbing = !reduced && stage == HouseStage.Handshake && card.settledIn
-    LaunchedEffect(bobbing) {
-        if (bobbing) card.bob.animateTo(card.bob.value + 1f, FlickMotion.flickCardBob())
-    }
-
     Box(modifier.fillMaxSize()) {
+        // Below the film, whose surface punches through it at the window.
+        AndroidView(
+            modifier = Modifier
+                .fillMaxSize()
+                .clearAndSetSemantics { }
+                .graphicsLayer {
+                    val e = tunnel.expand.value
+                    val rush = lerp(1f, FlickMotion.TUNNEL_RUSH_SCALE, e)
+                    scaleX = rush
+                    scaleY = rush
+                    transformOrigin = TransformOrigin(0.5f, TUNNEL_VANISH_Y)
+                    alpha = tunnel.presence.value * tunnelFade(e)
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                },
+            factory = { context -> TunnelBackdropView(context).also(tunnel::attach) },
+            onRelease = { tunnel.detach(it) },
+        )
+
+        Box(Modifier.fillMaxSize(), content = film)
+
+        // Under the overlay: a tunnel leaving over a closed curtain takes its copy with it.
         Spacer(
             Modifier
                 .fillMaxSize()
@@ -918,194 +1006,105 @@ internal fun HouseLights(
         val headline = if (stage == HouseStage.Handshake) liveHeadline else latch.last ?: liveHeadline
         SideEffect { if (stage == HouseStage.Handshake) latch.last = liveHeadline }
 
-        if (stage == HouseStage.Handshake || card.held) {
-            val live = stage == HouseStage.Handshake
-            Box(
-                Modifier.fillMaxSize().testTag("house-card"),
-                contentAlignment = Alignment.Center,
-            ) {
-                // No panel behind the copy: the 82 % veil alone holds OnSurface at about
-                // 13:1 and OnSurfaceDim at about 6:1 even over a white frame.
-                Column(
-                    modifier = Modifier
-                        .width(HANDSHAKE_CARD_WIDTH)
-                        .onSizeChanged { card.columnHeight = it.height }
-                        .then(if (live) Modifier else Modifier.clearAndSetSemantics { }),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    // The Flick card's seat. The card is drawn by the layer below, because
-                    // it travels from off screen and ends covering all of it.
-                    Spacer(Modifier.size(FLICK_CARD_WIDTH, FLICK_CARD_HEIGHT))
-                    Spacer(Modifier.height(FlickSpace.Lg))
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(
-                                if (card.settledIn && live) {
-                                    Modifier
-                                } else {
-                                    Modifier.graphicsLayer {
-                                        alpha = card.alpha.value * card.copy.value
-                                        translationY = (card.rise.value + 0.5f * card.sink.value) *
-                                            FlickMotion.TvRiseCard.toPx()
-                                        val sc = lerp(1f, 0.97f, card.rise.value)
-                                        scaleX = sc
-                                        scaleY = sc
-                                        compositingStrategy = CompositingStrategy.ModulateAlpha
-                                    }
-                                },
-                            ),
-                        verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        FlickSwap(
-                            target = headline,
-                            resize = true,
-                            contentAlignment = Alignment.Center,
-                            label = "handshakeHeadline",
-                        ) {
-                            Text(
-                                text = it,
-                                style = FlickType.display(sizeSp = 22),
-                                color = FlickColor.OnSurface,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                        Text(
-                            text = stringResource(R.string.connecting_detail),
-                            style = FlickType.body(sizeSp = 16),
-                            color = FlickColor.OnSurfaceDim,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-                FlickCardLayer(card)
-            }
+        if (stage == HouseStage.Handshake || tunnel.up) {
+            TunnelOverlay(tunnel, headline, live = stage == HouseStage.Handshake)
         }
     }
 }
 
 /**
- * The Flick card, its glow, its play mark and the speed bars, drawn from [card]'s
- * animatables in the draw phase on a layer of their own, so the bob repaints this
- * layer alone and recomposes nothing. Every alpha is per draw op: no offscreen layer,
- * even when the card covers the screen.
+ * Everything of the tunnel that draws over the film: the window's cover and the film's
+ * bezel, posed exactly as the film's view is, the copy under the window, and the flash.
+ * Each moves on its layer's properties, so nothing here recomposes while it animates.
  */
 @Composable
-private fun FlickCardLayer(card: HouseCard) {
-    Spacer(
+private fun TunnelOverlay(tunnel: Tunnel, headline: String, live: Boolean) {
+    Box(
         Modifier
             .fillMaxSize()
-            .graphicsLayer()
-            .drawWithCache {
-                val cardW = FLICK_CARD_WIDTH.toPx()
-                val cardH = FLICK_CARD_HEIGHT.toPx()
-                val radius = FLICK_CARD_RADIUS.toPx()
-                val expandedRadius = FLICK_CARD_EXPANDED_RADIUS.toPx()
-                val riseFrom = FlickMotion.FlickCardRiseFrom.toPx()
-                val overshoot = -FlickMotion.FlickCardOvershoot.toPx()
-                val bobReach = FlickMotion.FlickCardBob.toPx()
-                val glowRadius = FLICK_CARD_GLOW_RADIUS.toPx()
-                val glow = Brush.radialGradient(
-                    colors = listOf(
-                        FlickColor.Primary.copy(alpha = FLICK_CARD_GLOW_ALPHA),
-                        FlickColor.Primary.copy(alpha = 0f),
-                    ),
-                    center = Offset.Zero,
-                    radius = glowRadius,
-                )
-                val unit = FLICK_MARK_UNIT.toPx()
-                val mark = android.graphics.Path().apply {
-                    moveTo((28f - MARK_CENTROID_X) * unit, (15f - MARK_CENTROID_Y) * unit)
-                    lineTo((56f - MARK_CENTROID_X) * unit, (32f - MARK_CENTROID_Y) * unit)
-                    lineTo((28f - MARK_CENTROID_X) * unit, (49f - MARK_CENTROID_Y) * unit)
-                    close()
+            .testTag(TUNNEL_TAG)
+            .graphicsLayer { alpha = tunnel.presence.value },
+    ) {
+        Spacer(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    val e = tunnel.expand.value
+                    val s = lerp(TUNNEL_WINDOW_FRACTION, 1f, e)
+                    scaleX = s
+                    scaleY = s
+                    translationY = lerp(TUNNEL_WINDOW_LIFT, 0f, e) * size.height
                 }
-                // Fill and round-joined stroke as one geometry, as the brand mark draws
-                // them: two separate ops would double-blend along the edge while it fades.
-                val markPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.FILL_AND_STROKE
-                    strokeJoin = Paint.Join.ROUND
-                    strokeWidth = 9f * unit
-                    color = android.graphics.Color.WHITE
-                }
-                val barW = FloatArray(SPEED_BAR_WIDTHS.size) { SPEED_BAR_WIDTHS[it].toPx() }
-                val barH = FloatArray(SPEED_BAR_HEIGHTS.size) { SPEED_BAR_HEIGHTS[it].toPx() }
-                val barPitch = SPEED_BAR_PITCH.toPx()
-                val barGap = SPEED_BAR_GAP.toPx()
-                val barDrift = SPEED_BAR_DRIFT.toPx()
-                onDrawBehind {
-                    val a = card.alpha.value * card.cover.value
-                    if (a <= 0f) return@onDrawBehind
-                    val s = card.arrive.value
-                    val firstLeg = s <= ARRIVE_OVERSHOOT
-                    val t = if (firstLeg) s / ARRIVE_OVERSHOOT else (s - ARRIVE_OVERSHOOT) / (ARRIVE_SEATED - ARRIVE_OVERSHOOT)
-                    val dy = if (firstLeg) lerp(riseFrom, overshoot, t) else lerp(overshoot, 0f, t)
-                    val tilt = if (firstLeg) {
-                        lerp(FlickMotion.FLICK_CARD_TILT_FROM, FlickMotion.FLICK_CARD_TILT_OVERSHOOT, t)
-                    } else {
-                        lerp(FlickMotion.FLICK_CARD_TILT_OVERSHOOT, FlickMotion.FLICK_CARD_TILT_SEAT, t)
+                .drawWithCache {
+                    // Drawn at the screen's size and scaled down with the film, so the
+                    // window's own corner and bezel are divided by the window's scale.
+                    val w = size.width
+                    val h = size.height
+                    val corner = CornerRadius(TUNNEL_WINDOW_CORNER * w)
+                    val rimW = TUNNEL_RIM_WIDTH.toPx() / TUNNEL_WINDOW_FRACTION
+                    val rimR = CornerRadius(TUNNEL_RIM_RADIUS.toPx() / TUNNEL_WINDOW_FRACTION)
+                    val window = Path().apply { addRoundRect(RoundRect(0f, 0f, w, h, corner)) }
+                    val bezel = Path().apply {
+                        fillType = PathFillType.EvenOdd
+                        addRoundRect(RoundRect(-rimW, -rimW, w + rimW, h + rimW, rimR))
+                        addRoundRect(RoundRect(0f, 0f, w, h, corner))
                     }
-                    val sc = if (firstLeg) {
-                        lerp(FlickMotion.FLICK_CARD_SCALE_FROM, FlickMotion.FLICK_CARD_SCALE_OVERSHOOT, t)
-                    } else {
-                        lerp(FlickMotion.FLICK_CARD_SCALE_OVERSHOOT, 1f, t)
+                    onDrawBehind {
+                        val c = tunnel.cover.value
+                        if (c > 0f) drawPath(window, FlickColor.TunnelWindow, alpha = c)
+                        val r = tunnel.rim.value
+                        if (r > 0f) drawPath(bezel, FlickColor.TunnelWindow, alpha = r)
                     }
-                    val wave = sin(card.bob.value * TWO_PI)
-                    val e = card.expand.value
-                    val still = 1f - e
-                    // The seat is the top of the centred column, whose height the copy sets.
-                    val seatY = (size.height - card.columnHeight) / 2f + cardH / 2f
-                    val cx = size.width / 2f
-                    val cy = lerp(seatY + dy + wave * bobReach, size.height / 2f, e)
-                    val w = lerp(cardW * sc, size.width, e)
-                    val h = lerp(cardH * sc, size.height, e)
-                    val r = lerp(radius * sc, expandedRadius, e)
-                    val rot = lerp(tilt + wave * FlickMotion.FLICK_CARD_BOB_TILT, 0f, e)
-                    withTransform({
-                        translate(cx, cy)
-                        rotate(rot, Offset.Zero)
-                    }) {
-                        if (still > 0f) {
-                            withTransform({ scale(FLICK_CARD_GLOW_ASPECT * sc, sc, Offset.Zero) }) {
-                                drawCircle(glow, radius = glowRadius, center = Offset.Zero, alpha = a * still)
-                            }
-                        }
-                        drawRoundRect(
-                            color = FlickColor.Primary,
-                            topLeft = Offset(-w / 2f, -h / 2f),
-                            size = Size(w, h),
-                            cornerRadius = CornerRadius(r),
-                            alpha = a,
+                },
+        )
+
+        Column(
+            modifier = Modifier
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        val top = (TUNNEL_VANISH_Y + TUNNEL_WINDOW_FRACTION / 2f) * constraints.maxHeight
+                        placeable.place(
+                            (constraints.maxWidth - placeable.width) / 2,
+                            (top + TUNNEL_CAPTION_GAP.toPx()).roundToInt(),
                         )
-                        val m = a * card.mark.value
-                        if (m > 0f) {
-                            withTransform({ scale(sc, sc, Offset.Zero) }) {
-                                drawIntoCanvas { c ->
-                                    markPaint.alpha = (m * 255f).roundToInt()
-                                    c.nativeCanvas.drawPath(mark, markPaint)
-                                }
-                            }
-                        }
-                    }
-                    val barsAlpha = a * still * speedBarAlpha(card.bars.value)
-                    if (barsAlpha > 0f) {
-                        val b = card.bars.value
-                        val top = cy + h / 2f + barGap
-                        for (i in barW.indices) {
-                            // The top retracts and the foot drifts: the trail dissolves downward.
-                            val y0 = top + b * barH[i]
-                            val y1 = top + barH[i] + b * barDrift
-                            drawRoundRect(
-                                color = FlickColor.Spark,
-                                topLeft = Offset(cx + (i - 1) * barPitch - barW[i] / 2f, y0),
-                                size = Size(barW[i], y1 - y0),
-                                cornerRadius = CornerRadius(barW[i] / 2f),
-                                alpha = barsAlpha,
-                            )
-                        }
                     }
                 }
-            },
-    )
+                .width(TUNNEL_CAPTION_WIDTH)
+                .graphicsLayer {
+                    alpha = tunnel.caption.value
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                }
+                .then(if (live) Modifier else Modifier.clearAndSetSemantics { }),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            FlickSwap(
+                target = headline,
+                resize = true,
+                contentAlignment = Alignment.Center,
+                label = "handshakeHeadline",
+            ) {
+                Text(
+                    text = it,
+                    style = FlickType.display(sizeSp = 22),
+                    color = FlickColor.OnSurface,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Text(
+                text = stringResource(R.string.connecting_detail),
+                style = FlickType.body(sizeSp = 16),
+                color = FlickColor.OnSurfaceDim,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        Spacer(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = tunnel.flash.value }
+                .background(FlickColor.TunnelFlash),
+        )
+    }
 }

@@ -1,6 +1,8 @@
 package com.flick.receiver.ui
 
 import android.graphics.Bitmap
+import android.graphics.drawable.GradientDrawable
+import android.view.View
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
@@ -17,24 +19,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
-import androidx.compose.ui.layout.LayoutInfo
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.DisplayCadenceSource
-import com.flick.receiver.ui.components.FLICK_CARD_HEIGHT
-import com.flick.receiver.ui.components.HANDSHAKE_CARD_WIDTH
+import com.flick.receiver.ui.components.FilmPose
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RATE_KNOWN_WAIT_MS
 import com.flick.receiver.ui.components.RESYNC_GRACE_MS
+import com.flick.receiver.ui.components.TUNNEL_TAG
+import com.flick.receiver.ui.components.TUNNEL_VANISH_Y
+import com.flick.receiver.ui.components.TUNNEL_WINDOW_FRACTION
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickMotion
@@ -54,11 +56,16 @@ import kotlin.math.roundToInt
 /**
  * The house lights at full motion on a paused clock, read back as pixels.
  *
- * The underlay stands in for what the curtain covers: a bright amber-white ramp for
- * the standby at Room and Fault, a bright blue-white ramp for the film at Handshake
- * and Film. Both are the worst backdrop a dark curtain can be judged over. Every case
- * leaves a filmstrip behind, `<test>_<ms>.png`, because a banded edge or a late glint
- * is settled by eye; what is asserted is ordering, monotonicity and step size.
+ * The underlay stands in for the lit room (a bright amber-white ramp), and a plain view
+ * with a bright blue-white ramp stands in for the film's view at Handshake and Film,
+ * posed by the same [FilmPose] the player's view is. Both are the worst backdrop a dark
+ * curtain can be judged over.
+ *
+ * The tunnel's loop and its fade over the room run on the RenderThread, off this clock.
+ * With the device's animator scale at 0, as the suite runs, the loop is drawn fully in
+ * and still from its first frame; what is asserted here is the main-thread choreography
+ * around it: the holds, the callbacks, the film's pose and the curtain. Every case leaves
+ * a filmstrip behind, `<test>_<ms>.png`.
  */
 class StageMotionTest {
 
@@ -94,10 +101,11 @@ class StageMotionTest {
     private var pin by mutableFloatStateOf(0f)
     private val cadence = FakeDisplayCadence()
     private val keys = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    private val pose = FilmPose()
+    private var filmView: View? = null
     private var lightsDown = 0
     private var up = 0
     private var settled = 0
-    private lateinit var density: Density
 
     @Before
     fun freezeClock() {
@@ -109,39 +117,51 @@ class StageMotionTest {
         reduced: Boolean = false,
         settle: Boolean = true,
         offstage: Boolean = false,
-        expand: Boolean = true,
+        leastShownMs: Long = FlickMotion.TUNNEL_MIN_SHOWN_MS,
     ) {
         stage = initial
         composeRule.setContent {
-            density = LocalDensity.current
             FlickTvTheme {
                 CompositionLocalProvider(LocalReducedMotion provides reduced) {
                     Box(Modifier.fillMaxSize()) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .drawBehind {
-                                    val lit = stage == HouseStage.Room || stage == HouseStage.Fault
-                                    drawRect(Brush.verticalGradient(if (lit) STANDBY else FILM))
-                                },
-                        )
+                        Box(Modifier.fillMaxSize().drawBehind { drawRect(Brush.verticalGradient(STANDBY)) })
                         HouseLights(
                             stage = stage,
                             filmDim = filmDim,
                             freshRate = { rate },
                             pinnedRate = { pin },
-                            turnedFilm = false,
                             deviceLabel = DEVICE,
                             title = TITLE,
                             cadence = cadence,
                             keyPresses = keys,
+                            filmPose = pose,
                             onLightsDown = { lightsDown++ },
                             onPictureUp = { up++ },
                             onPictureSettled = { settled++ },
                             now = { composeRule.mainClock.currentTime },
                             offstage = offstage,
-                            expandAtPictureUp = expand,
-                        )
+                            leastShownMs = leastShownMs,
+                        ) {
+                            if (stage == HouseStage.Handshake || stage == HouseStage.Film) {
+                                AndroidView(
+                                    modifier = Modifier.fillMaxSize(),
+                                    factory = { context ->
+                                        View(context).apply {
+                                            background = GradientDrawable(
+                                                GradientDrawable.Orientation.TOP_BOTTOM,
+                                                intArrayOf(FILM[0].toArgb(), FILM[1].toArgb()),
+                                            )
+                                            pose.attach(this)
+                                            filmView = this
+                                        }
+                                    },
+                                    onRelease = {
+                                        pose.detach(it)
+                                        if (filmView === it) filmView = null
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -190,8 +210,8 @@ class StageMotionTest {
     }
 
     /**
-     * Total variation along the headline's middle row. A curtain over a ramp is smooth
-     * and sums to a handful; glyphs at any visible alpha add a sharp step per stroke.
+     * Total variation along the headline's middle row. Flat ground sums to a handful;
+     * glyphs at any visible alpha add a sharp step per stroke.
      */
     private fun PixelMap.glyphEnergy(row: Rect): Float {
         val y = row.center.y.roundToInt().coerceIn(0, height - 1)
@@ -205,210 +225,174 @@ class StageMotionTest {
     private fun headlineBounds(): Rect =
         composeRule.onNodeWithText(HEADLINE).fetchSemanticsNode().boundsInRoot
 
-    private fun cardExists(): Boolean =
-        composeRule.onAllNodesWithTag(CARD_TAG).fetchSemanticsNodes().isNotEmpty()
+    private fun tunnelExists(): Boolean =
+        composeRule.onAllNodesWithTag(TUNNEL_TAG).fetchSemanticsNodes().isNotEmpty()
 
-    // Past the card's flight and its least time on screen, so a reveal waits on the display alone.
+    /** The window's centre, where the film's own centre sits while it is in the window. */
+    private fun PixelMap.window(): Float = luma(0.5f, TUNNEL_VANISH_Y)
+
+    /** The film's view as the stage last left it. */
+    private fun filmScale(): Float = composeRule.runOnIdle { filmView?.scaleX ?: Float.NaN }
+
+    private fun filmShown(): Boolean = composeRule.runOnIdle { (filmView?.alpha ?: 0f) > 0f }
+
+    // Past the tunnel's least time on screen, so a reveal waits on the display alone.
     private fun settleHandshake() {
         cut(HouseStage.Handshake)
         advance(1_600)
     }
 
+    // The whole show: the rate wait, the film's dwell in the window and the expansion.
     private fun settleFilm() {
         settleHandshake()
         cut(HouseStage.Film)
-        // rate stays 0 here, so the reveal first spends RATE_KNOWN_WAIT_MS waiting for it.
-        advance(RATE_KNOWN_WAIT_MS + 1_200)
+        advance(RATE_KNOWN_WAIT_MS + 2_600)
     }
 
     @Test
-    fun actOneClosesToTheCentre() {
+    fun theTunnelRisesOverTheRoom() {
         launch()
+        val room = shot().luma(0.05f, 0.05f)
         val seam = cut(HouseStage.Handshake)
-        var cornerDarkAt: Long? = null
-        var centreDarkAt: Long? = null
-        var cardSeenAt: Long? = null
+        var captionSeenAt: Long? = null
         var lightsDownAt: Long? = null
-        while (since(seam) < 720) {
+        while (since(seam) < 900) {
             frame()
             val t = since(seam)
-            val px = shot("actOneClosesToTheCentre", seam)
-            assertTrue("the card slot must be composed from the seam's first frame (t=$t)", cardExists())
-            if (cornerDarkAt == null && px.luma(0.05f, 0.05f) < DARK) cornerDarkAt = t
-            if (centreDarkAt == null && px.luma(0.5f, 0.45f) < DARK) centreDarkAt = t
-            if (cardSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) cardSeenAt = t
+            val px = shot("theTunnelRisesOverTheRoom", seam)
+            assertTrue("the tunnel's overlay must be composed from the seam's first frame (t=$t)", tunnelExists())
+            assertTrue("the film's view showed before its first frame (t=$t)", !filmShown())
+            if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
             if (lightsDownAt == null && lightsDown == 1) lightsDownAt = t
         }
-        assertTrue("corner went dark at $cornerDarkAt, not before the centre at $centreDarkAt",
-            cornerDarkAt != null && (centreDarkAt == null || cornerDarkAt < centreDarkAt))
-        // Two frames of dispatch sit between the seam and the tween's first frame.
-        assertTrue("onLightsDown ran at $lightsDownAt ms, not about 560", lightsDownAt != null && lightsDownAt in 540L..612L)
-        // The aperture reaches CARD_ENTER_APERTURE about 425 ms into the tween. The same
-        // dispatch frames, one more for the entrance to start, and the fade's climb past
-        // GLYPHS_VISIBLE put the first legible frame up to ~90 ms later, still before dark.
-        assertTrue("the card showed at $cardSeenAt ms, not about 425",
-            cardSeenAt != null && cardSeenAt in 385L..560L && cardSeenAt < lightsDownAt!!)
+        // Two frames of dispatch and one to stamp the tunnel's first frame sit before its fade.
+        val fade = FlickMotion.TUNNEL_FADE_IN_MS
+        assertTrue("onLightsDown ran at $lightsDownAt ms, not about $fade", lightsDownAt != null && lightsDownAt in fade..fade + 80)
         assertEquals(1, lightsDown)
+        val captionFrom = FlickMotion.TUNNEL_CAPTION_DELAY_MS
+        assertTrue("the copy showed at $captionSeenAt ms, not soon after $captionFrom",
+            captionSeenAt != null && captionSeenAt in captionFrom..captionFrom + 300)
+        val px = shot("theTunnelRisesOverTheRoom", seam)
+        assertTrue("the room still showed at the corner: $room → ${px.luma(0.05f, 0.05f)}", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertEquals("the film's view is not in the window", TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
     }
 
-    /**
-     * Below an aperture of about 0.1 the pool sits behind the card and its copy, so the
-     * last ~100 ms of Act I is judged from the filmstrip, not asserted here.
-     */
     @Test
-    fun actOneEndsWithoutAGlint() {
-        launch()
-        val seam = cut(HouseStage.Handshake)
-        frame()
-        val rimFromCentrePx = with(density) { (HANDSHAKE_CARD_WIDTH / 2 + 24.dp).toPx() }
-        // The handshake column's resting top edge (the Flick card's seat), from its
-        // layout height, which the entrance's draw-phase rise does not change. The card
-        // rises from below its seat and is still far below it until onLightsDown, so
-        // this point is never covered while it is judged.
-        val glassH = glassHeightPx()
-        var aboveCardY: Int? = null
-        var cardShowing = false
-        var lastCentre = Float.MAX_VALUE
-        var lastRim = Float.MAX_VALUE
-        var lastAbove = Float.MAX_VALUE
-        while (since(seam) < 720) {
-            frame()
-            val px = shot()
-            val aboveY = aboveCardY ?: with(density) {
-                (px.height / 2f - glassH / 2f - 16.dp.toPx()).roundToInt()
-            }.also { aboveCardY = it }
-            // Just outside the card's left edge. The 16:9 pool's sides pass it at an
-            // aperture of about 0.15, before the card enters.
-            val rim = px.lumaAt((px.width / 2f - rimFromCentrePx).roundToInt(), px.height / 2)
-            // Just above the card, in the band where the pool's last light outside the
-            // card lies until an aperture of about 0.1. A re-open to about 0.11 or more
-            // at any time before onLightsDown relights it.
-            val above = px.lumaAt(px.width / 2, aboveY)
-            cardShowing = cardShowing || px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE
-            if (!cardShowing) {
-                val centre = px.luma(0.5f, 0.45f)
-                assertTrue("centre rose from $lastCentre to $centre at ${since(seam)} ms", centre <= lastCentre + NOISE)
-                lastCentre = centre
-            }
-            // Past onLightsDown the curtain drops to the veil over what is, on a TV, the
-            // player's black shutter; this underlay's bright ramp would read as a glint.
-            if (lightsDown == 0) {
-                assertTrue("rim rose from $lastRim to $rim at ${since(seam)} ms", rim <= lastRim + NOISE)
-                if (lastRim < 0.3f) {
-                    assertTrue("rim dropped ${lastRim - rim} in one frame at ${since(seam)} ms", lastRim - rim <= 0.2f)
-                }
-                // No per-frame drop cap here: a correct close crosses this row's ramp
-                // by about 0.25 in one 16 ms harness frame.
-                assertTrue("the pool re-lit above the card, $lastAbove to $above at ${since(seam)} ms",
-                    above <= lastAbove + NOISE)
-            }
-            lastRim = rim
-            lastAbove = above
-        }
-    }
-
-    /**
-     * The handshake column's layout height, the Flick card's seat included: the
-     * outermost ancestor of the headline that is [HANDSHAKE_CARD_WIDTH] wide. Above it
-     * is the full-screen card slot.
-     */
-    private fun glassHeightPx(): Int {
-        val cardWidthPx = with(density) { HANDSHAKE_CARD_WIDTH.roundToPx() }
-        var node: LayoutInfo? = composeRule.onNodeWithText(HEADLINE).fetchSemanticsNode().layoutInfo
-        var glass: LayoutInfo? = null
-        while (node != null) {
-            if (abs(node.width - cardWidthPx) <= 1) glass = node
-            node = node.parentInfo
-        }
-        assertTrue("no $HANDSHAKE_CARD_WIDTH-wide column above the headline", glass != null)
-        return glass!!.height
-    }
-
-    /** The card leaves with its copy here: the expanded card would cover the lift being judged. */
-    @Test
-    fun revealLiftsWithoutAStep() {
+    fun theFilmPlaysInTheWindowThenTakesTheScreen() {
         rate = 60f
         cadence.physicalHz = 60f
         cadence.blank = false
-        launch(expand = false)
+        launch()
         settleHandshake()
         val seam = cut(HouseStage.Film)
-        val samples = mutableListOf<Float>()
-        while (since(seam) < 1_000) {
+        var shownAt: Long? = null
+        var settledAt: Long? = null
+        var lastScale = 0f
+        var expandFrom: Long? = null
+        while (since(seam) < 2_400) {
             frame()
             val t = since(seam)
-            samples += shot("revealLiftsWithoutAStep", seam).luma(0.5f, 0.1f)
-            if (t >= 2 * FILM_FRAME_MS) assertEquals("onPictureUp by the second film frame", 1, up)
-            if (t >= 460) assertTrue("the card outlived its exit at $t ms", !cardExists())
-            if (t >= 920) assertEquals("onPictureSettled by about 880 ms", 1, settled)
+            val px = shot("theFilmPlaysInTheWindowThenTakesTheScreen", seam)
+            if (shownAt == null && up == 1) {
+                shownAt = t
+                assertTrue("the film was not shown with the picture", filmShown())
+            }
+            val scale = filmScale()
+            assertTrue("the film shrank at $t ms: $lastScale → $scale", scale >= lastScale - 0.0001f)
+            if (expandFrom == null && scale > TUNNEL_WINDOW_FRACTION + 0.0001f) expandFrom = t
+            lastScale = scale
+            if (shownAt != null && t - shownAt in FlickMotion.TUNNEL_FILM_IN_MS + 40L until FlickMotion.TUNNEL_DWELL_MS) {
+                // In the window: the film inside, the tunnel around it.
+                assertEquals("the film is not in the window at $t ms", lumaOf(filmAt(0.5f)), px.window(), 0.05f)
+                assertTrue("the tunnel is not around the window at $t ms", px.luma(0.05f, 0.05f) < WASH_DARK)
+                assertEquals("onPictureSettled during the dwell", 0, settled)
+            }
+            if (settledAt == null && settled == 1) settledAt = t
         }
-        assertMonotoneWithinBudget(samples, rising = true)
+        assertEquals("onPictureUp exactly once", 1, up)
+        assertTrue("the film came up at $shownAt ms, not within three frames", shownAt != null && shownAt <= 3 * HARNESS_FRAME_MS.toLong() + 2)
+        val dwell = expandFrom!! - shownAt!!
+        assertTrue("the film dwelt $dwell ms in the window", dwell in FlickMotion.TUNNEL_DWELL_MS..FlickMotion.TUNNEL_DWELL_MS + 50)
+        val took = settledAt!! - expandFrom
+        assertTrue("the expansion settled after $took ms", took in FlickMotion.TUNNEL_EXPAND_MS - 40L..FlickMotion.TUNNEL_EXPAND_MS + 60L)
+        assertEquals(1f, filmScale(), 0f)
+        assertTrue("the tunnel outlived the expansion", !tunnelExists())
+        val film = shot("theFilmPlaysInTheWindowThenTakesTheScreen", seam)
+        assertEquals("the film does not fill the screen", lumaOf(filmAt(0.05f)), film.luma(0.5f, 0.05f), 0.03f)
     }
 
     @Test
-    fun pictureUpTakesTheScreenWithTheCard() {
+    fun theWindowTakesTheScreenWithAFlash() {
         rate = 60f
         cadence.physicalHz = 60f
         cadence.blank = false
         launch()
         settleHandshake()
-        // Past the arrival, so the card is seated and bobbing.
-        advance(1_000)
         val seam = cut(HouseStage.Film)
-        frame()
-        composeRule.onNodeWithText(HEADLINE).assertDoesNotExist()
-        assertTrue("the card left with its copy instead of staying to expand", cardExists())
-        // The expansion runs 600 ms from the picture coming up, and its fade starts 550 ms in.
-        advance(450)
-        val covered = shot("pictureUpTakesTheScreenWithTheCard", seam)
-        val blue = lumaOf(FlickColor.Primary)
-        for ((fx, fy) in listOf(0.05f to 0.05f, 0.5f to 0.1f, 0.95f to 0.95f)) {
-            assertEquals("the card did not cover ($fx, $fy) at ${since(seam)} ms", blue, covered.luma(fx, fy), 0.03f)
+        while (up == 0) frame()
+        advance(FlickMotion.TUNNEL_DWELL_MS - 40)
+        val before = shot("theWindowTakesTheScreenWithAFlash", seam).luma(0.05f, 0.05f)
+        var peak = before
+        while (since(seam) < FlickMotion.TUNNEL_DWELL_MS + 200) {
+            frame()
+            peak = maxOf(peak, shot("theWindowTakesTheScreenWithAFlash", seam).luma(0.05f, 0.05f))
         }
-        advance(1_000 - since(seam))
-        assertTrue("the expanded card outlived its fade", !cardExists())
-        assertEquals("onPictureSettled by about 880 ms", 1, settled)
-        val film = shot("pictureUpTakesTheScreenWithTheCard", seam)
-        val under = lumaOf(FILM[0]) + (lumaOf(FILM[1]) - lumaOf(FILM[0])) * 0.1f
-        assertEquals("the film was not uncovered", under, film.luma(0.5f, 0.1f), 0.03f)
+        assertTrue("no flash at the corner: $before → $peak", peak - before > 0.2f)
     }
 
-    /** The card leaves with its copy here: the expanded card would cover the lift being judged. */
+    @Test
+    fun aKeyEndsTheDwell() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch()
+        settleHandshake()
+        cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(300)
+        assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+        val key = composeRule.mainClock.currentTime
+        keys.tryEmit(Unit)
+        // One frame to take the key, one to start the expansion, one to move it.
+        frame()
+        frame()
+        frame()
+        assertTrue("a key must start the expansion at once", filmScale() > TUNNEL_WINDOW_FRACTION)
+        while (settled == 0 && since(key) < 1_200) frame()
+        assertTrue("settled ${since(key)} ms after the key", since(key) <= FlickMotion.TUNNEL_EXPAND_MS + 80)
+    }
+
     @Test
     fun revealWaitsForTheModeSwitch() {
         rate = 23.976f
         cadence.physicalHz = 60f
         cadence.blank = true
-        launch(expand = false)
+        launch(leastShownMs = 0L)
         settleHandshake()
-        val covered = shot().luma(0.5f, 0.1f)
-        val seam = cut(HouseStage.Film)
+        cut(HouseStage.Film)
         advance(400)
-        assertEquals(covered, shot("revealWaitsForTheModeSwitch", seam).luma(0.5f, 0.1f), NOISE)
         assertEquals(0, up)
+        assertTrue("the film showed inside the hold", !filmShown())
         cadence.physicalHz = 23.976f
         cadence.emitChange(composeRule.mainClock.currentTime)
         advance(499)
-        assertEquals(covered, shot("revealWaitsForTheModeSwitch", seam).luma(0.5f, 0.1f), NOISE)
         assertEquals("the picture came up inside the resync grace", 0, up)
+        assertTrue("the film showed inside the resync grace", !filmShown())
         frame()
         frame()
         assertEquals("the picture did not come up once the grace ran out", 1, up)
-        advance(120 + 2 * FILM_FRAME_MS)
-        assertTrue("the veil did not start lifting after the lag",
-            shot("revealWaitsForTheModeSwitch", seam).luma(0.5f, 0.1f) > covered + NOISE)
+        assertTrue("the film was not shown with the picture", filmShown())
     }
 
-    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun revealWaitsForALateRate() {
         // The film's rate reaches the stage up to one 2 Hz snapshot after Active.
         rate = 0f
         cadence.physicalHz = 60f
         cadence.blank = true
-        launch(expand = false)
+        launch(leastShownMs = 0L)
         settleHandshake()
-        val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
         advance(300)
         assertEquals(0, up)
@@ -421,8 +405,6 @@ class StageMotionTest {
         while (composeRule.mainClock.currentTime - change < 484) {
             frame()
             assertEquals("the picture came up inside the resync grace at ${since(seam)} ms", 0, up)
-            assertEquals("the veil moved at ${since(seam)} ms", covered,
-                shot("revealWaitsForALateRate", seam).luma(0.5f, 0.1f), NOISE)
         }
         advance(499 - (composeRule.mainClock.currentTime - change))
         assertEquals("the picture came up inside the resync grace", 0, up)
@@ -431,7 +413,6 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the grace ran out", 1, up)
     }
 
-    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForTheSecondSwitch() {
         // A re-cast of a 23.976 film: the panel is already pinned to it, the seam
@@ -439,9 +420,8 @@ class StageMotionTest {
         rate = 23.976f
         cadence.physicalHz = 23.976f
         cadence.blank = true
-        launch(expand = false)
+        launch(leastShownMs = 0L)
         settleHandshake()
-        val covered = shot().luma(0.5f, 0.1f)
         cadence.physicalHz = 60f
         val release = composeRule.mainClock.currentTime
         cadence.emitChange(release)
@@ -456,8 +436,6 @@ class StageMotionTest {
         while (composeRule.mainClock.currentTime - repin < 484) {
             frame()
             assertEquals("the picture came up inside the second resync grace at ${since(seam)} ms", 0, up)
-            assertEquals("the veil moved at ${since(seam)} ms", covered,
-                shot("reCastWaitsForTheSecondSwitch", seam).luma(0.5f, 0.1f), NOISE)
         }
         advance(499 - (composeRule.mainClock.currentTime - repin))
         assertEquals("the picture came up inside the second resync grace", 0, up)
@@ -466,7 +444,6 @@ class StageMotionTest {
         assertEquals("the picture did not come up once the second grace ran out", 1, up)
     }
 
-    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun reCastWaitsForAReleaseReportedAfterTheRate() {
         // A re-cast of a 23.976 film whose rate reaches the stage before the release
@@ -475,9 +452,8 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch(expand = false)
+        launch(leastShownMs = 0L)
         settleHandshake()
-        val covered = shot().luma(0.5f, 0.1f)
         val seam = cut(HouseStage.Film)
         advance(200)
         composeRule.runOnIdle { rate = 23.976f }
@@ -499,8 +475,6 @@ class StageMotionTest {
         while (composeRule.mainClock.currentTime - repin < 484) {
             frame()
             assertEquals("the picture came up inside the re-pin grace at ${since(seam)} ms", 0, up)
-            assertEquals("the veil moved at ${since(seam)} ms", covered,
-                shot("reCastWaitsForAReleaseReportedAfterTheRate", seam).luma(0.5f, 0.1f), NOISE)
         }
         advance(499 - (composeRule.mainClock.currentTime - repin))
         assertEquals("the picture came up inside the re-pin grace", 0, up)
@@ -530,7 +504,6 @@ class StageMotionTest {
         assertTrue("the picture came up at ${since(seam)} ms, not well before 800", since(seam) < 800)
     }
 
-    /** The card leaves with its copy here: a switch inside the hold restarts its least time, which would set the timing being judged. */
     @Test
     fun rateLessReCastWaitsForAPinReleasedAfterTheSeam() {
         // The seam's snapshot still holds the old film's pin; the new film reports no
@@ -540,7 +513,7 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         cadence.restHz = 60f
         cadence.blank = true
-        launch(expand = false)
+        launch(leastShownMs = 0L)
         settleHandshake()
         val seam = cut(HouseStage.Film)
         advance(200)
@@ -562,7 +535,7 @@ class StageMotionTest {
     }
 
     @Test
-    fun aCastDuringAFaultDissolveClosesWithoutAStep() {
+    fun aCastDuringAFaultDissolveHandsOverToTheTunnel() {
         launch()
         settleFilm()
         cadence.physicalHz = 24f
@@ -576,99 +549,73 @@ class StageMotionTest {
         while (d > 0.5f) {
             frame()
             assertTrue("the fault never dissolved to half (${since(fault)} ms)", since(fault) < 2_500)
-            d = shot().densityAt(lit = true, fx = 0.5f, fy = 0.1f)
+            d = shot().densityAt(fx = 0.5f, fy = 0.1f)
         }
-        assertTrue("the dissolve overshot half: $d", d > 0.35f)
         val lightsDownBefore = lightsDown
+        val half = shot().luma(0.05f, 0.05f)
         val seam = cut(HouseStage.Handshake)
-        // The seam's own frame still ticks the dissolve before the new move seeds from
-        // it, and the underlay changes ramp there, so judging starts from that frame.
-        frame()
-        var last = shot().densityAt(lit = false, fx = 0.5f, fy = 0.1f)
-        assertTrue("the move did not seed near the dissolve's density: $d → $last", last in 0.3f..0.6f)
-        var firedAfter: Float? = null
-        while (since(seam) < 1_000) {
+        var last = half
+        while (since(seam) < 700) {
             frame()
-            val px = shot("aCastDuringAFaultDissolveClosesWithoutAStep", seam)
-            val now = px.densityAt(lit = false, fx = 0.5f, fy = 0.1f)
-            if (lightsDown == lightsDownBefore) {
-                assertTrue("density fell from $last to $now at ${since(seam)} ms", now >= last - DENSITY_NOISE)
-                assertTrue("density jumped from $last to $now in one frame at ${since(seam)} ms", now - last <= 0.1f)
-                if (now < CARD_ENTER_DENSITY - DENSITY_NOISE) {
-                    assertTrue("the card showed at density $now (${since(seam)} ms)",
-                        px.glyphEnergy(headlineBounds()) <= GLYPHS_VISIBLE)
-                }
-            } else if (firedAfter == null) {
-                firedAfter = last
+            val now = shot("aCastDuringAFaultDissolveHandsOverToTheTunnel", seam).luma(0.05f, 0.05f)
+            // The half-dissolved fault never shows brighter than it was at the seam.
+            assertTrue("the fault brightened from $half to $now at ${since(seam)} ms", now <= half + NOISE)
+            if (since(seam) < FlickMotion.TUNNEL_FADE_IN_MS) {
+                assertEquals("onLightsDown before the tunnel was in", lightsDownBefore, lightsDown)
             }
             last = now
         }
         assertEquals("onLightsDown must fire exactly once", lightsDownBefore + 1, lightsDown)
-        assertTrue("onLightsDown fired at density $firedAfter, not under full dark",
-            firedAfter != null && firedAfter >= 1f - DENSITY_NOISE)
+        assertTrue("the tunnel did not cover the fault: $last", last < WASH_DARK)
     }
 
-    /**
-     * The density of a flat curtain at a point, from the underlay's luma there: the
-     * ramp is linear in y, and the curtain blends Canvas over it by its alpha.
-     */
-    private fun PixelMap.densityAt(lit: Boolean, fx: Float, fy: Float): Float {
-        val ramp = if (lit) STANDBY else FILM
-        val under = lumaOf(ramp[0]) + (lumaOf(ramp[1]) - lumaOf(ramp[0])) * fy
+    /** The density of a flat curtain over the room at a point, from the room's luma there. */
+    private fun PixelMap.densityAt(fx: Float, fy: Float): Float {
+        val under = lumaOf(STANDBY[0]) + (lumaOf(STANDBY[1]) - lumaOf(STANDBY[0])) * fy
         return (under - luma(fx, fy)) / (under - lumaOf(FlickColor.Canvas))
     }
 
     /** A re-cast arrives as stop then loadMedia, so the Room lasts only a moment. */
     @Test
-    fun aStopThenCastStillFliesTheCard() {
+    fun aStopThenCastStillRunsTheTunnel() {
         launch()
         settleFilm()
         cut(HouseStage.Room)
         advance(250)
+        val lightsDownBefore = lightsDown
         val seam = cut(HouseStage.Handshake)
-        frame()
-        val cardH = with(density) { FLICK_CARD_HEIGHT.toPx() }
-        val reach = with(density) { 120.dp.toPx() }
-        val glassH = glassHeightPx()
-        var barsSeenAt: Long? = null
-        while (since(seam) < 1_500) {
+        while (since(seam) < 700) {
             frame()
-            val px = shot("aStopThenCastStillFliesTheCard", seam)
-            val seatBottom = ((px.height - glassH) / 2f + cardH).roundToInt()
-            if (barsSeenAt == null && px.sparkInColumn(px.width / 2, seatBottom, seatBottom + reach.roundToInt())) {
-                barsSeenAt = since(seam)
-            }
+            shot("aStopThenCastStillRunsTheTunnel", seam)
         }
-        // Only a flight runs the speed bars; a card seated in place never shows them.
-        assertTrue("the speed bars never showed, so the card did not fly", barsSeenAt != null)
-        assertTrue("the card was not left up for the handshake", cardExists())
+        val px = shot()
+        assertTrue("the tunnel did not rise", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertEquals(lightsDownBefore + 1, lightsDown)
+        assertTrue("the tunnel was not left up for the handshake", tunnelExists())
     }
 
     /** An Activity created for a cast composes straight into the handshake. */
     @Test
-    fun aFirstCompositionIntoAHandshakeFliesTheCard() {
+    fun aFirstCompositionIntoAHandshakeRunsTheTunnel() {
         launch(initial = HouseStage.Handshake, settle = false)
         val start = composeRule.mainClock.currentTime
-        val cardH = with(density) { FLICK_CARD_HEIGHT.toPx() }
-        val reach = with(density) { 120.dp.toPx() }
-        val glassH = glassHeightPx()
-        var barsSeenAt: Long? = null
-        while (since(start) < 1_500) {
+        while (since(start) < 700) {
             frame()
-            val px = shot("aFirstCompositionIntoAHandshakeFliesTheCard", start)
-            val seatBottom = ((px.height - glassH) / 2f + cardH).roundToInt()
-            if (barsSeenAt == null && px.sparkInColumn(px.width / 2, seatBottom, seatBottom + reach.roundToInt())) {
-                barsSeenAt = since(start)
-            }
+            shot("aFirstCompositionIntoAHandshakeRunsTheTunnel", start)
+            assertTrue("the film's view showed before its first frame", !filmShown())
+            if (since(start) in 40L until FlickMotion.TUNNEL_FADE_IN_MS) assertEquals("onLightsDown must fire at once", 1, lightsDown)
         }
-        assertTrue("the speed bars never showed, so the card did not fly", barsSeenAt != null)
-        assertEquals("onLightsDown must fire at once", 1, lightsDown)
-        assertTrue("the card was not left up for the handshake", cardExists())
+        assertEquals(1, lightsDown)
+        val px = shot()
+        assertTrue("the tunnel did not rise", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the tunnel was not left up for the handshake", tunnelExists())
     }
 
-    /** A re-cast whose first frame lands 400 ms into the handshake, mid-flight. */
+    /** A re-cast whose first frame lands 400 ms into the handshake, while the old film is still being drawn back. */
     @Test
-    fun aQuickFirstFrameWaitsForTheCardsLeastTime() {
+    fun aQuickFirstFrameWaitsForTheTunnelsLeastTime() {
         rate = 60f
         cadence.physicalHz = 60f
         cadence.restHz = 60f
@@ -679,28 +626,30 @@ class StageMotionTest {
         val handshake = cut(HouseStage.Handshake)
         advance(400)
         cut(HouseStage.Film)
-        // The veil reaches the card's cue about 240 ms in, and the card owes 1100 ms from there.
-        while (since(handshake) < 1_300) {
+        // The tunnel starts a frame or two into the handshake and owes 1100 ms from there.
+        while (since(handshake) < FlickMotion.TUNNEL_MIN_SHOWN_MS) {
             frame()
             val t = since(handshake)
-            assertEquals("the picture came up before the card's least time at $t ms", upBefore, up)
-            assertTrue("the card left before it expanded at $t ms", cardExists())
-            val px = shot("aQuickFirstFrameWaitsForTheCardsLeastTime", handshake)
-            assertTrue("the card took the screen at $t ms", !px.isPrimaryAt(0.05f, 0.05f))
+            shot("aQuickFirstFrameWaitsForTheTunnelsLeastTime", handshake)
+            assertEquals("the picture came up before the tunnel's least time at $t ms", upBefore, up)
+            if (t > 400 + 2 * FlickMotion.TUNNEL_FILM_IN_MS + 40) {
+                assertTrue("the held first frame showed in the window at $t ms", !filmShown())
+                assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+            }
         }
         while (up == upBefore && since(handshake) < 2_000) frame()
-        assertEquals("the picture never came up once the card had its time", upBefore + 1, up)
+        assertEquals("the picture never came up once the tunnel had its time", upBefore + 1, up)
         assertTrue("the picture came up at ${since(handshake)} ms, not soon after its least time",
-            since(handshake) < 1_700)
+            since(handshake) < FlickMotion.TUNNEL_MIN_SHOWN_MS + 100)
     }
 
     /**
-     * The pin at the first frame blanks the panel 200 ms into the reveal. The card had
+     * The pin at the first frame blanks the panel 200 ms into the reveal. The tunnel had
      * long since had its time, but the blank hid it, so it owes its least time again from
-     * the switch's settle before the picture comes up.
+     * the switch's settle before the film appears in it.
      */
     @Test
-    fun aModeSwitchRestartsTheCardsLeastTime() {
+    fun aModeSwitchRestartsTheTunnelsLeastTime() {
         rate = 23.976f
         cadence.physicalHz = 60f
         cadence.blank = true
@@ -711,42 +660,29 @@ class StageMotionTest {
         cadence.physicalHz = 23.976f
         val change = composeRule.mainClock.currentTime
         cadence.emitChange(change)
-        val owed = RESYNC_GRACE_MS + FlickMotion.FLICK_CARD_MIN_SHOWN_MS
+        val owed = RESYNC_GRACE_MS + FlickMotion.TUNNEL_MIN_SHOWN_MS
         while (composeRule.mainClock.currentTime - change < owed - 20) {
             frame()
-            assertEquals("the picture came up inside the card's restarted time at ${since(seam)} ms", 0, up)
-            assertTrue("the card left before it expanded at ${since(seam)} ms", cardExists())
+            assertEquals("the picture came up inside the tunnel's restarted time at ${since(seam)} ms", 0, up)
+            assertTrue("the tunnel left before the film appeared at ${since(seam)} ms", tunnelExists())
         }
         advance(owed - (composeRule.mainClock.currentTime - change))
         frame()
         frame()
-        assertEquals("the picture did not come up once the card had its time after the switch", 1, up)
-    }
-
-    private fun PixelMap.sparkInColumn(x: Int, fromY: Int, toY: Int): Boolean {
-        for (y in fromY.coerceIn(0, height - 1)..toY.coerceIn(0, height - 1)) {
-            val c = this[x, y]
-            if (c.red - c.blue > SPARK_RED_OVER_BLUE) return true
-        }
-        return false
-    }
-
-    private fun PixelMap.isPrimaryAt(fx: Float, fy: Float): Boolean {
-        val c = this[(fx * width).roundToInt().coerceIn(0, width - 1), (fy * height).roundToInt().coerceIn(0, height - 1)]
-        return c.blue - c.red > PRIMARY_BLUE_OVER_RED
+        assertEquals("the picture did not come up once the tunnel had its time after the switch", 1, up)
     }
 
     @Test
-    fun aCastPlannedOffstageOpensDarkWithTheCard() {
+    fun aCastPlannedOffstageOpensDark() {
         launch(offstage = true)
         val seam = cut(HouseStage.Handshake)
         frame()
-        val first = shot("aCastPlannedOffstageOpensDarkWithTheCard", seam)
+        val first = shot("aCastPlannedOffstageOpensDark", seam)
         val canvas = lumaOf(FlickColor.Canvas)
         assertEquals("the corner was not opaque Canvas on the first frame", canvas, first.luma(0.05f, 0.05f), NOISE)
         assertEquals("the top was not opaque Canvas on the first frame", canvas, first.luma(0.5f, 0.1f), NOISE)
         assertEquals("onLightsDown must fire at once", 1, lightsDown)
-        assertTrue("the handshake card was not composed", cardExists())
+        assertTrue("the tunnel's overlay was not composed", tunnelExists())
     }
 
     @Test
@@ -766,21 +702,20 @@ class StageMotionTest {
     }
 
     @Test
-    fun aFaultMidActOneHoldsTheAperture() {
+    fun aFaultMidHandshakeDismissesTheTunnel() {
         launch()
         cut(HouseStage.Handshake)
         advance(250)
         frame()
-        var last = shot().luma(0.5f, 0.45f)
-        val canvas = lumaOf(FlickColor.Canvas)
-        assertTrue("the centre was already dark 250 ms into Act I", last > canvas + 0.1f)
         val seam = cut(HouseStage.Fault)
-        while (since(seam) < 700) {
+        while (since(seam) < 600) {
             frame()
-            val centre = shot("aFaultMidActOneHoldsTheAperture", seam).luma(0.5f, 0.45f)
-            assertTrue("the centre dropped from $last to $centre at ${since(seam)} ms", centre >= last - NOISE)
-            last = centre
+            shot("aFaultMidHandshakeDismissesTheTunnel", seam)
         }
+        assertTrue("the tunnel outlived the fault", !tunnelExists())
+        val px = shot()
+        val room = lumaOf(STANDBY[0]) + (lumaOf(STANDBY[1]) - lumaOf(STANDBY[0])) * 0.05f
+        assertEquals("the fault face is not uncovered", room, px.luma(0.5f, 0.05f), 0.03f)
     }
 
     @Test
@@ -800,7 +735,7 @@ class StageMotionTest {
     }
 
     @Test
-    fun reCastSeedsAtTheOutgoingDim() {
+    fun reCastDrawsTheOldFilmBackIntoTheWindow() {
         launch()
         settleFilm()
         val film = shot().luma(0.5f, 0.1f)
@@ -809,15 +744,21 @@ class StageMotionTest {
         frame()
         val seam = cut(HouseStage.Handshake)
         frame()
-        val first = shot("reCastSeedsAtTheOutgoingDim", seam).luma(0.5f, 0.1f)
-        assertEquals("the veil must start at the paused film's dim", film + (canvas - film) * 0.34f, first, 0.03f)
-        val samples = mutableListOf(first)
-        while (since(seam) < 900) {
+        val first = shot("reCastDrawsTheOldFilmBackIntoTheWindow", seam).luma(0.5f, 0.1f)
+        assertEquals("the dim must start at the paused film's", film + (canvas - film) * 0.34f, first, 0.03f)
+        var lastScale = filmScale()
+        while (since(seam) < FlickMotion.TUNNEL_SHRINK_MS + 2 * FlickMotion.TUNNEL_FILM_IN_MS + 100) {
             frame()
-            samples += shot("reCastSeedsAtTheOutgoingDim", seam).luma(0.5f, 0.1f)
+            shot("reCastDrawsTheOldFilmBackIntoTheWindow", seam)
+            val scale = filmScale()
+            assertTrue("the film grew at ${since(seam)} ms: $lastScale → $scale", scale <= lastScale + 0.0001f)
+            lastScale = scale
         }
-        assertEquals(film + (canvas - film) * VEIL_DENSITY, samples.last(), 0.03f)
-        assertMonotoneWithinBudget(samples, rising = false)
+        assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+        assertTrue("the old film still shows in the window", !filmShown())
+        val px = shot()
+        assertTrue("the tunnel did not rise around the window", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
     }
 
     @Test
@@ -883,13 +824,13 @@ class StageMotionTest {
         while (since(seam) < 700) {
             frame()
             val px = shot("faultDissolvesUniformly", seam)
-            // The outgoing card sits over the centre for its short exit; only the
-            // curtain is being judged.
-            if (cardExists()) continue
+            // The outgoing tunnel's overlay sits over the curtain for its short exit;
+            // only the curtain is being judged.
+            if (tunnelExists()) continue
             corner += px.luma(0.05f, 0.05f)
             centre += px.luma(0.5f, 0.45f)
         }
-        assertTrue("no frames after the card left", corner.size > 4)
+        assertTrue("no frames after the tunnel left", corner.size > 4)
         // The two points sit on different parts of the ramp, so each is read as its
         // progress from Canvas to its own lit value.
         val cornerLit = corner.last()
@@ -909,7 +850,7 @@ class StageMotionTest {
         cut(HouseStage.Film)
         frame()
         composeRule.onNodeWithText(HEADLINE).assertDoesNotExist()
-        assertTrue("the card must still be drawing its exit", cardExists())
+        assertTrue("the tunnel must still be drawing its exit", tunnelExists())
     }
 
     @Test
@@ -925,14 +866,16 @@ class StageMotionTest {
         cut(HouseStage.Handshake)
         oneStep()
         assertEquals(1, lightsDown)
-        assertTrue(cardExists())
+        assertTrue(tunnelExists())
         composeRule.onNodeWithText(HEADLINE).assertExists()
+        assertEquals("no tunnel window under reduced motion", 1f, filmScale(), 0f)
 
         cut(HouseStage.Film)
         oneStep()
         assertEquals("the pending switch must not hold a reduced-motion reveal", 1, up)
         assertEquals(1, settled)
-        assertTrue(!cardExists())
+        assertTrue(!tunnelExists())
+        assertTrue(filmShown())
         val film = shot().luma(0.5f, 0.1f)
 
         composeRule.runOnIdle { filmDim = 0.5f }
@@ -944,7 +887,7 @@ class StageMotionTest {
 
         cut(HouseStage.Fault)
         oneStep()
-        assertTrue(!cardExists())
+        assertTrue(!tunnelExists())
         assertTrue("a fault must not stay covered", shot().luma(0.05f, 0.05f) > 0.5f)
 
         cut(HouseStage.Room)
@@ -958,55 +901,26 @@ class StageMotionTest {
         frame()
     }
 
-    /**
-     * At most 10 % of the whole span per 24 Hz frame (the 24 Hz step budget,
-     * receiver-expressive-spec.md §6.1), and never backwards. The test clock only ticks
-     * every [HARNESS_FRAME_MS] and the curtain's alpha moves in whole 1/255 codes, so two
-     * rules apply:
-     * - no single 16 ms step exceeds that budget scaled to 16 ms, with [STEP_HEADROOM]
-     *   for timing plus two alpha codes of slack, which catches a one-frame pop that a
-     *   window would average away;
-     * - no run of [BUDGET_WINDOW] frames exceeds the budget scaled to its length, where
-     *   two codes of slack can no longer hide a curve that is too steep throughout.
-     */
-    private fun assertMonotoneWithinBudget(samples: List<Float>, rising: Boolean) {
-        val span = abs(samples.last() - samples.first())
-        assertTrue("nothing moved (span $span)", span > 0.1f)
-        val slack = 2f / 255f
-        val sign = if (rising) 1f else -1f
-        val stepCap = 0.10f * span * HARNESS_FRAME_MS / FILM_FRAME_EXACT_MS * STEP_HEADROOM + slack
-        samples.zipWithNext().forEachIndexed { i, (a, b) ->
-            assertTrue("step $i went backwards: $a → $b", sign * (b - a) >= -slack)
-            assertTrue("step $i jumped ${sign * (b - a) / span} of the span in one frame", sign * (b - a) <= stepCap)
-        }
-        assertTrue("too few samples to judge the budget", samples.size > BUDGET_WINDOW)
-        val budget = 0.10f * span * BUDGET_WINDOW * HARNESS_FRAME_MS / FILM_FRAME_EXACT_MS + slack
-        for (i in 0 until samples.size - BUDGET_WINDOW) {
-            val moved = sign * (samples[i + BUDGET_WINDOW] - samples[i])
-            assertTrue("frames $i..${i + BUDGET_WINDOW} moved ${moved / span} of the span", moved <= budget)
-        }
-    }
+    /** The film stand-in's colour [fy] of the way down it. */
+    private fun filmAt(fy: Float): Color = lerpColor(FILM[0], FILM[1], fy)
+
+    private fun lerpColor(a: Color, b: Color, t: Float) = Color(
+        red = a.red + (b.red - a.red) * t,
+        green = a.green + (b.green - a.green) * t,
+        blue = a.blue + (b.blue - a.blue) * t,
+    )
 
     private companion object {
         const val DEVICE = "Phone"
         const val TITLE = "Film"
         const val HEADLINE = "Phone is flicking Film"
-        const val CARD_TAG = "house-card"
         const val LAUNCH_SETTLED_MS = 700L
-        const val FILM_FRAME_MS = 41L
-        const val FILM_FRAME_EXACT_MS = 1_000f / 24f
         const val HARNESS_FRAME_MS = 16f
-        const val BUDGET_WINDOW = 6
-        const val STEP_HEADROOM = 1.3f
-        const val DARK = 0.08f
         const val NOISE = 2f / 255f
         const val GLYPHS_VISIBLE = 8f
-        const val CARD_ENTER_DENSITY = 0.88f
-        const val DENSITY_NOISE = 0.02f
 
-        // Spark is amber and Primary blue; no underlay under the curtain comes near either.
-        const val SPARK_RED_OVER_BLUE = 0.35f
-        const val PRIMARY_BLUE_OVER_RED = 0.5f
+        /** The tunnel's wash at the corner is near the house dark; the room and the film are far above it. */
+        const val WASH_DARK = 0.12f
 
         val STANDBY = listOf(Color.White, Color(0xFFFFB61E))
         val FILM = listOf(Color.White, Color(0xFF1240E8))

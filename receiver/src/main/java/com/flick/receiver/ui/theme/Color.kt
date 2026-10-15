@@ -257,7 +257,7 @@ object FlickColor {
     /** Top playback scrim start, `#02040A` @ 78 %. */
     val ScrimTop = Color(0xC702040A)
 
-    /** Full-bleed veil behind the handshake card, [Canvas] @ 82 %. */
+    /** Full-bleed veil over the handshake when motion is reduced and no tunnel runs, [Canvas] @ 82 %. */
     val ScrimVeil = Color(0xD104070F)
 
     /** The transport panel's 1 dp inner top hairline, `rgba(230,242,255,.75)`. */
@@ -329,6 +329,44 @@ object FlickColor {
 
     /** Bars below 50 % of the rolling peak, [Caution] @ 60 %. */
     val HistogramBarLow = Color(0x99FFA23A)
+
+    // ── The handshake tunnel ────────────────────────────────────────────────
+    // `res/values/colors_tunnel.xml` carries the same values for the tunnel's vector
+    // drawable, which cannot read these; HouseLightsPlanTest holds the two equal.
+
+    /** The wash at the vanishing point. */
+    val TunnelWashCore = Color(0xFF1F3AA8)
+
+    /** The wash at 45 % of its radius. */
+    val TunnelWashMid = Color(0xFF0B1640)
+
+    /** The wash at its rim: the house dark. */
+    val TunnelWashEdge = Canvas
+
+    /** The window's glow at its centre, [Link] @ 55 %. */
+    val TunnelGlowCore = Color(0x8C6FA0FF)
+
+    /** The glow halfway out, [Link] @ 22 %. */
+    val TunnelGlowMid = Color(0x386FA0FF)
+
+    /** The glow's edge, fully clear. */
+    val TunnelGlowEdge = Color(0x006FA0FF)
+
+    /** The rushing rings; their alpha is animated, not baked in. */
+    val TunnelRing = Link
+
+    /** The one amber ring and the amber streaks. */
+    val TunnelAmber = Spark
+
+    /** The pale streaks. */
+    val TunnelStreakBlue = Color(0xFF9FC0FF)
+    val TunnelStreakWhite = Color(0xFFFFFFFF)
+
+    /** The window at the far end of the tunnel, and the bezel the film carries in it. */
+    val TunnelWindow = Color(0xFFEAF0FF)
+
+    /** The flash as the window takes the screen. */
+    val TunnelFlash = Color(0xFFFFFFFF)
 
     // ── Gradients ───────────────────────────────────────────────────────────
 
