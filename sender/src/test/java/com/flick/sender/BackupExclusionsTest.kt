@@ -277,6 +277,10 @@ class BackupExclusionsTest {
             "flick_film_posters" to
                 "a cache of public TMDB poster paths keyed by a parsed title and year; it " +
                     "holds no API key, and a restored copy only saves another phone a lookup",
+            "flick_film_details" to
+                "a cache of public TMDB synopses and credits keyed by a parsed title and year, " +
+                    "and public OMDb scores keyed by IMDb id; it holds no API key, and a " +
+                    "restored copy only saves another phone a lookup",
             "flick_film_poster_pref" to
                 "one on/off choice for showing posters, which is about the person and travels",
         )

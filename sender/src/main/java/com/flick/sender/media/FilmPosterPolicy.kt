@@ -13,8 +13,13 @@ data class FilmPosterQuery(val title: String, val year: Int?, val show: Boolean)
         get() = "v2|${if (show) "tv" else "movie"}|${FoldedText.fold(title)}|${year ?: ""}"
 }
 
-/** The art TMDB has for one title. Any field may be missing; all missing is a miss. */
-data class FilmArt(val poster: String?, val backdrop: String?, val logo: String?) {
+/**
+ * The art TMDB has for one title. Any field may be missing; all missing is a miss. [tmdbId] is
+ * the match the art was chosen from, so the detail page asks for that very film's synopsis
+ * rather than searching again and trusting TMDB's ranking to hold still; null for an entry
+ * cached before it was recorded.
+ */
+data class FilmArt(val poster: String?, val backdrop: String?, val logo: String?, val tmdbId: Long? = null) {
     val isEmpty: Boolean get() = poster == null && backdrop == null
 }
 
@@ -135,11 +140,11 @@ object FilmPosterPolicy {
             image.isNull("iso_639_1") && image.optDouble("aspect_ratio", 0.0) >= 1.5
         }
         return when {
-            logo != null && textless != null -> FilmArt(match.poster, textless, logo)
+            logo != null && textless != null -> FilmArt(match.poster, textless, logo, match.id)
             // Textless first even without a logo: the tile crops to its own shape, and a
             // titled backdrop cropped loses the ends of its title.
-            textless != null -> FilmArt(match.poster, textless, null)
-            else -> FilmArt(match.poster, match.backdrop, null)
+            textless != null -> FilmArt(match.poster, textless, null, match.id)
+            else -> FilmArt(match.poster, match.backdrop, null, match.id)
         }
     }
 

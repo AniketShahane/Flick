@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
+import com.flick.sender.net.FilmDetailsStore
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.LocalNavMetrics
@@ -290,7 +291,7 @@ internal fun VideoNamesSection(simplified: Boolean, onSelect: (Boolean) -> Unit)
 }
 
 /**
- * The TMDB credit sits under the switch rather than on a credits page this app does not
+ * The TMDB credit (and, in a build that fetches scores, the OMDb one) sits under the switch rather than on a credits page this app does not
  * have: TMDB's terms ask for their logo and notice wherever the app names its sources, and
  * this row is the only place Flick does.
  */
@@ -300,7 +301,14 @@ internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SwitchRow(
             title = stringResource(R.string.settings_film_posters_title),
-            summary = stringResource(R.string.settings_film_posters_summary),
+            // Says so whenever this build would also send the IMDb id to OMDb.
+            summary = stringResource(
+                if (FilmDetailsStore.ratingsAvailable) {
+                    R.string.settings_film_posters_summary_scores
+                } else {
+                    R.string.settings_film_posters_summary
+                },
+            ),
             checked = enabled,
             onSelect = onSelect,
         )
@@ -313,6 +321,12 @@ internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
             Spacer(Modifier.width(10.dp))
             Text(
                 text = stringResource(R.string.settings_film_posters_notice),
+                style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceDim),
+            )
+        }
+        if (FilmDetailsStore.ratingsAvailable) {
+            Text(
+                text = stringResource(R.string.settings_film_posters_omdb_notice),
                 style = FlickText.bodyMedium.copy(fontSize = 11.sp, color = colors.onSurfaceDim),
             )
         }

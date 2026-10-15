@@ -4,6 +4,7 @@ import android.app.Application
 import com.flick.sender.media.releaseInheritedUriGrants
 import com.flick.sender.media.releaseRetiredSubtitleFolder
 import com.flick.sender.net.CastCoordinator
+import com.flick.sender.net.FilmDetailsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,5 +36,7 @@ class FlickApplication : Application() {
         // isolates its direct children only, so sharing a coroutine would let either
         // failure take the other's work down with it.
         applicationScope.launch { releaseInheritedUriGrants(applicationContext) }
+        // The detail page reads this cache on its first frame, while the card is in flight.
+        FilmDetailsStore.warm(applicationContext)
     }
 }

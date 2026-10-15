@@ -419,6 +419,7 @@ fun FilmTitleLogo(
     contentDescription: String,
     onFailed: () -> Unit,
     modifier: Modifier = Modifier,
+    alignment: Alignment = Alignment.Center,
 ) {
     val context = LocalContext.current
     val request = remember(logoPath) {
@@ -441,6 +442,7 @@ fun FilmTitleLogo(
         contentDescription = contentDescription,
         imageLoader = imageLoader,
         contentScale = ContentScale.Fit,
+        alignment = alignment,
         colorFilter = ink,
         onSuccess = { success ->
             val bitmap = (success.result.drawable as? BitmapDrawable)?.bitmap

@@ -1,5 +1,7 @@
 package com.flick.sender.ui.components
 
+import kotlin.math.abs
+
 /**
  * The poster-flick on the detail sheet, as numbers. Everything is in dp and dp/s so the
  * decision is the same on every density; docs/flick-hyperspace-phone.md is the same table
@@ -31,6 +33,21 @@ internal object FlickPadPolicy {
      */
     fun claims(sheetCanScrollForward: Boolean, sheetCanScrollBackward: Boolean, travelYDp: Float): Boolean =
         !sheetCanScrollForward && !(travelYDp > 0f && sheetCanScrollBackward)
+
+    /**
+     * A rightward drag at least this many times more sideways than vertical opens the
+     * synopsis instead of being thrown: within about 34° of horizontal.
+     */
+    const val REVEAL_DOMINANCE = 1.5f
+
+    /**
+     * Whether a drag that has just crossed touch slop, [travelXDp] and [travelYDp] from where
+     * the finger went down, is the synopsis being pulled in from the left. Decided once, at
+     * slop, and never revisited: a drag that starts as a reveal stays one, and anything else —
+     * up, down, left, or a steep diagonal — is the throw's, exactly as before.
+     */
+    fun reveals(travelXDp: Float, travelYDp: Float): Boolean =
+        travelXDp > 0f && travelXDp >= abs(travelYDp) * REVEAL_DOMINANCE
 
     /** While the finger is down only distance can be judged; velocity exists at release. */
     fun armed(upDp: Float): Boolean = upDp >= ARM_DISTANCE_DP

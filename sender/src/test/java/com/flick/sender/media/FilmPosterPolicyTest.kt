@@ -98,13 +98,13 @@ class FilmPosterPolicyTest {
                 {"file_path":"/logo.png","iso_639_1":"en","vote_average":5.0}
             ]
         }"""
-        assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png"), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png", match.id), FilmPosterPolicy.pickArt(match, images))
     }
 
     @Test fun withoutALogoTheTextlessBackdropStandsAlone() {
         val match = FilmMatch(1, "/p.jpg", "/keyart.jpg")
         val images = """{"backdrops":[{"file_path":"/plain.jpg","iso_639_1":null,"aspect_ratio":1.778}],"logos":[]}"""
-        assertEquals(FilmArt("/p.jpg", "/plain.jpg", null), FilmPosterPolicy.pickArt(match, images))
-        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null), FilmPosterPolicy.pickArt(match, null))
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", null, match.id), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null, match.id), FilmPosterPolicy.pickArt(match, null))
     }
 }

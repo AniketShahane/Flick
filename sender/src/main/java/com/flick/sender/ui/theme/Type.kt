@@ -31,6 +31,9 @@ val Bricolage: FontFamily = FontFamily(
  * and `SpanStyle` to lead an advisory, so dropping it would silently render those at Bold.
  */
 val Geist: FontFamily = FontFamily(
+    // Medium only for long reading: the synopsis is paragraphs, and SemiBold set that long
+    // turns grey and heavy on the dark page.
+    Font(R.font.geist_medium, FontWeight.Medium),
     Font(R.font.geist_semibold, FontWeight.SemiBold),
     Font(R.font.geist_bold, FontWeight.Bold),
     Font(R.font.geist_extrabold, FontWeight.ExtraBold),
@@ -163,6 +166,47 @@ object FlickText {
         fontSize = 11.5.sp,
         lineHeight = 14.sp,
         letterSpacing = 0.em,
+    )
+
+    // --- Reading: the synopsis panel, the one surface that is paragraphs ---
+
+    /** Long-form copy: a lighter weight and a generous lead, for a comfortable measure. */
+    val readingBody = TextStyle(
+        fontFamily = Geist,
+        fontWeight = FontWeight.Medium,
+        fontSize = 16.5.sp,
+        lineHeight = 27.sp,
+        letterSpacing = 0.005.em,
+    )
+
+    /**
+     * A film's tagline: the reading face set larger, as an epigraph. Upright: Geist has no
+     * italic, and a slope the renderer synthesises is a skewed roman, not a cut anyone drew.
+     */
+    val readingEpigraph = TextStyle(
+        fontFamily = Geist,
+        fontWeight = FontWeight.Medium,
+        fontSize = 19.sp,
+        lineHeight = 26.sp,
+        letterSpacing = (-0.01).em,
+    )
+
+    /** Names under an eyebrow: quieter than the overview, never smaller than body. */
+    val readingCredit = TextStyle(
+        fontFamily = Geist,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.5.sp,
+        lineHeight = 21.sp,
+        letterSpacing = 0.em,
+    )
+
+    /** A score or a running time in a chip: proportional figures, so "8.7" reads as a number. */
+    val chipFigure = TextStyle(
+        fontFamily = Geist,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.5.sp,
+        lineHeight = 15.sp,
+        letterSpacing = 0.01.em,
     )
 
     // --- Emphasized: the weight step Material's expressive components ask for ---

@@ -13,8 +13,9 @@ Code: `ui/components/FlickPad.kt` (`FlickPadMotion`), `ui/components/FlickPadPol
 
 The detail page has no send button: the pad is the only send, in every state — no TV
 connected (the flick bounces to pairing, as `flickToTv` always has), a remembered refusal,
-or a link advisory. Page order, top to bottom: back disc; title logo, meta line, chips (the
-film's identity); the pad, centred in what is left (`Arrangement.SpaceBetween` over a page at
+or a link advisory. Page order, top to bottom: back disc; title logo (else the simplified name),
+two chip rows — resolution · range · size in mono, then running time with the scores joining it,
+in proportional figures (the film's identity); the pad, centred in what is left (`Arrangement.SpaceBetween` over a page at
 least the window tall); the refusal or advisory card at the foot. Wider than tall, the page
 splits: identity and card in a scrolling left column, the pad centred on the right.
 
@@ -29,6 +30,7 @@ splits: identity and card in a scrolling left column, the pad centred on the rig
 | Idle nudge | up 12 dp: rise 280 ms, fall 420 ms, rest 2100 ms (2.8 s period); first after 1200 ms; stops for good on first touch, never under reduce motion |
 | Tap | never sends. One hint lift of 22 dp (rise 200 ms, then the default spatial spring back); none under reduce motion |
 | Follow | up 1:1; down × 0.2; sideways × 0.25; tilt 0.12°/dp, capped ±8°; held scale 1.03 |
+| Reveal lock | decided once per gesture, at the first touch-slop crossing, and never revisited: a drag with dx > 0 and dx ≥ 1.5 × \|dy\| (within ~34° of horizontal, rightward) pulls the synopsis (§1a) instead of being thrown, and is allowed while the send is not (pad disabled) once the card has landed and while not sending. Whether the throw and the reveal are available is read live at the finger going down, not used as a restart key, so neither becoming available mid-drag cuts off the drag under the finger; a send that stops being available mid-throw is checked again at release. Only offered when TMDB has an overview; otherwise a rightward drag is the throw's sideways follow and springs back, as before. Everything else — up, down, left, steep diagonals — is the throw, unchanged |
 | Claim | the page scrolls when it overflows, so the pad takes a drag only once it crosses touch slop with the page unable to scroll further down (`!canScrollForward`), and not a downward one the page could scroll back; anything else is left unconsumed and scrolls the page |
 | Arm | finger ≥ 80 dp up from where it went down (touch slop included) → "Let go to send" + `GestureThresholdActivate` haptic |
 | Send | armed, or ≥ 20 dp up and ≥ 1000 dp/s upward at release |
@@ -41,6 +43,25 @@ Accessibility: the pad is one node — `Role.Button`, described as "Cast _film_ 
 "Resume _film_ from _time_ on _TV_"), with a click action labelled "Flick to _TV_" / "Resume
 from _time_ on _TV_" that runs the same `flickToTv`; `disabled()` while the send is not
 available. A link advisory also keeps its "Cast anyway" action.
+
+## 1a. Synopsis panel (detail page)
+
+The film's synopsis, pulled in from the left over the page. Code: `ui/screens/SynopsisPanel.kt`,
+`ui/components/SynopsisReveal.kt`, `ui/components/SynopsisPolicy.kt` (`SynopsisPolicy`).
+
+| What | Value |
+|---|---|
+| Open | the poster drag (§1 reveal lock), 1:1: travel = finger dx ÷ panel width from where it went down; TalkBack: the pad's custom action "Read the synopsis" |
+| Panel | window width − 48 dp peek, capped at 520 dp; opaque ground `CinemaLeafTop` → `CinemaLeafFoot`, 1 dp `CinemaGlassEdge` hairline and a 28 dp black 45% shade on its right edge; the ground bleeds 72 dp past its left edge for the spring's overshoot |
+| Page behind | one `CinemaDeep` rect at 0.62 × travel; identity, chevrons, poster, caption and notice drift right 44 dp × travel in their own layers; the poster also recedes to 0.94 × its scale. No layout per frame |
+| Settle | the scheme's default spatial spring from the release velocity. Opening: open at ≥ 35% travel or ≥ 500 dp/s rightward (a fling never opens a panel that never moved). Closing (push left on the panel or the uncovered page): closed below 65% travel or ≥ 500 dp/s leftward. A tap on the uncovered page closes |
+| Touch | the panel and the uncovered page take touches only while the panel is open or under a finger; a panel springing home lets a throw through at once. The panel is not composed until the first reveal starts; its travel is known from the window before then |
+| Back | a `PredictiveBackHandler` registered after the shell's, enabled only while the panel is open on the detail route with no sheet up: the gesture leans the panel up to 30% home, commit closes it, cancel springs it open. With the panel away back is the shell's again (library) |
+| Lines | heading, facts, tagline, overview, credits, scores; line *i* fades in and closes a 28 dp lag from travel 0.25 + 0.05 *i* over 0.45, eased cubic-out, all whole before travel 1 |
+| Type | heading: logo (200 × 64 dp, the page's own seat and decode, left) else the film's name with no year in `displayMedium`; facts: `1999 · 2h 16m` on one line that never wraps (TMDB's year — one year, one source), then the genres spaced, not dotted, at most two lines, both mono eyebrow at 0.06 em; tagline: `readingEpigraph` (Geist Medium 19/26 sp, upright — Geist has no italic and a synthesised slope is not one — dim ink at 0.88); a 28 × 2 dp spark rule; overview: `readingBody` (Geist Medium 16.5/27 sp), measure ≤ 460 dp; credits: mono eyebrow + `readingCredit`; scores as chips. Insets and the close disc sit outside the scroll, with a 20 dp fade under the status bar once copy has scrolled into it |
+| Cue | a 3 × 34 dp white 34% tab 9 dp left of the poster, arriving on the slow effects spec once a synopsis is known; hidden while the poster is held or sending and as the panel comes; not a touch target |
+| Reduce motion | no travel or drift: the panel crossfades in place on a 180 ms tween |
+| No overview | no lock, no tab, no action, no panel |
 
 ## 2. Hyperspace (connecting screen)
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.center
 import androidx.compose.ui.graphics.Brush
@@ -56,10 +58,13 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -94,7 +99,7 @@ import kotlinx.coroutines.launch
  * as [actionDescription].
  *
  * [enabled] false means the send is not available yet (resume progress still loading) or is
- * already under way: no drag is accepted and the idle nudge stops.
+ * already under way: no throw starts (one under way is not sent) and the idle nudge stops.
  *
  * [pageScroll] is the scroll of the page the pad sits in. While that page can still
  * scroll, a swipe starting on the poster is the page's, never a send.
@@ -105,6 +110,10 @@ import kotlinx.coroutines.launch
  * [seat], when given, is the flip that carries the library tile into the poster's seat; the
  * pad's chrome then arrives on the page's tracks — [glowIn] under the card, [chevronsIn] above
  * it, [captionIn] below — and [throwReady] holds the throw until the card has landed.
+ *
+ * [reveal], when given, is the film's synopsis: a rightward, mostly sideways drag on the poster
+ * pulls it in from the left ([FlickPadPolicy.reveals]) instead of throwing, and does so even
+ * while the send is unavailable. [revealLabel] names it for TalkBack, as a custom action.
  *
  * Drawn for the dark detail page only: its ink is white whatever the palette.
  */
@@ -129,6 +138,8 @@ internal fun FlickPad(
     glowIn: () -> Float = { 1f },
     chevronsIn: () -> Float = { 1f },
     captionIn: () -> Float = { 1f },
+    reveal: SynopsisReveal? = null,
+    revealLabel: String? = null,
 ) {
     val motionScheme = MaterialTheme.motionScheme
     val reduceMotion = rememberReduceMotion()
@@ -156,9 +167,11 @@ internal fun FlickPad(
     var sending by remember { mutableStateOf(false) }
     // From the finger taking the poster until it is back at rest in its seat.
     var dragging by remember { mutableStateOf(false) }
+    // Under the panel the poster is covered; a nudge there is frames nobody sees.
+    val covered = reveal?.open == true
 
-    LaunchedEffect(touched, reduceMotion, resumed, enabled) {
-        if (touched || reduceMotion || !resumed || !enabled) {
+    LaunchedEffect(touched, reduceMotion, resumed, enabled, covered) {
+        if (touched || reduceMotion || !resumed || !enabled || covered) {
             // A nudge cut off mid-rise would otherwise leave the poster parked above its seat.
             if (reduceMotion) nudge.snapTo(0f) else nudge.animateTo(0f, tween(FlickPadMotion.NudgeFallMs))
             return@LaunchedEffect
@@ -172,11 +185,27 @@ internal fun FlickPad(
         }
     }
 
-    // Keyed on the page's scroll state too: a new state object means the predicate below
-    // would otherwise keep asking the old one.
-    val gesture = Modifier.pointerInput(enabled && !sending && throwReady, pageScroll) {
-        if (!enabled || sending || !throwReady) return@pointerInput
+    // The tab beside the poster arrives once the synopsis is known and the card has landed.
+    val tabIn = remember { Animatable(0f) }
+    val tabSpec = motionScheme.slowEffectsSpec<Float>()
+    LaunchedEffect(reveal != null) {
+        tabIn.animateTo(if (reveal != null) 1f else 0f, Motion.orSnap(reduceMotion, tabSpec))
+    }
 
+    val throwOn = enabled && !sending && throwReady
+    // The synopsis is reading, not sending: it stays reachable while the send is not.
+    val revealOn = reveal != null && !sending && throwReady
+
+    // Read live, once per gesture at the finger going down, rather than keyed: a key change
+    // restarts the detector, and the synopsis arriving mid-throw — or the send becoming
+    // available mid-reveal — must not cut off the drag under the finger.
+    val currentThrowOn by rememberUpdatedState(throwOn)
+    val currentRevealOn by rememberUpdatedState(revealOn)
+    val currentReveal by rememberUpdatedState(reveal)
+
+    // Keyed on the page's scroll state: a new state object means the predicate below would
+    // otherwise keep asking the old one.
+    val gesture = Modifier.pointerInput(pageScroll) {
         fun settle() {
             armed = false
             scope.launch {
@@ -213,13 +242,45 @@ internal fun FlickPad(
             tracker.addPointerInputChange(down)
             // A change left unconsumed here goes on to the page's scroll, which takes it and
             // cancels this wait: the poster only claims a drag the page has no use for.
+            val throwLive = currentThrowOn
+            val reveal = currentReveal?.takeIf { currentRevealOn }
+            if (!throwLive && reveal == null) return@awaitEachGesture
+            // Decided once, at the first slop crossing, and never revisited: a drag that set
+            // off up and then drifted right is not a reveal measured from where it began.
+            var revealLock: Boolean? = null
             val start = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-                val travelYDp = (change.position.y - down.position.y) / density
-                if (FlickPadPolicy.claims(pageScroll.canScrollForward, pageScroll.canScrollBackward, travelYDp)) {
+                val travel = (change.position - down.position) / density
+                val lock = revealLock ?: (reveal != null && FlickPadPolicy.reveals(travel.x, travel.y))
+                    .also { revealLock = it }
+                if (lock || (throwLive && FlickPadPolicy.claims(pageScroll.canScrollForward, pageScroll.canScrollBackward, travel.y))) {
                     change.consume()
                 }
             }
+            if (start != null && reveal != null && revealLock == true) {
+                // The finger drives the panel 1:1 from where it went down; the poster stays in
+                // its seat and only drifts with the page.
+                touched = true
+                dragging = true
+                reveal.beginDrag()
+                tracker.addPointerInputChange(start)
+                reveal.dragTo(start.position.x - down.position.x)
+                var released = false
+                try {
+                    released = drag(start.id) { change ->
+                        change.consume()
+                        tracker.addPointerInputChange(change)
+                        reveal.dragTo(change.position.x - down.position.x)
+                    }
+                } finally {
+                    // Cut off mid-drag, it settles by where it is rather than by a stale speed.
+                    val velocity = if (released) tracker.calculateVelocity().x else 0f
+                    reveal.release(velocity, density, opening = true)
+                    dragging = false
+                }
+                return@awaitEachGesture
+            }
             if (start == null) {
+                if (!throwLive) return@awaitEachGesture
                 // Released inside slop and nobody took it: a tap. It shows the throw instead
                 // of making it, because a tap on a poster is too easy to make by accident.
                 val release = currentEvent.changes.firstOrNull { it.id == down.id }
@@ -234,9 +295,12 @@ internal fun FlickPad(
                 }
                 return@awaitEachGesture
             }
+            if (!throwLive) return@awaitEachGesture
 
-            // Also reached when the key changes mid-drag, which cancels this coroutine
-            // without any release: the poster must not be left displaced or armed.
+            // Also reached when the detector is cancelled mid-drag (a new page scroll state, the
+            // pad leaving composition) without any release: the poster must not be left
+            // displaced or armed. A send that stops being available mid-drag is caught at the
+            // release instead, which checks it again.
             try {
                 touched = true
                 dragging = true
@@ -298,17 +362,29 @@ internal fun FlickPad(
         }
     }
 
+    val sendUnavailable = stringResource(R.string.a11y_flick_pad_unavailable)
     Column(
         modifier.fillMaxWidth().clearAndSetSemantics {
             contentDescription = actionDescription
             role = Role.Button
-            if (enabled) {
-                onClick(label = actionLabel) {
+            val synopsis = reveal != null && revealLabel != null
+            if (synopsis) {
+                customActions = listOf(
+                    CustomAccessibilityAction(revealLabel!!) {
+                        currentReveal?.show()
+                        true
+                    },
+                )
+            }
+            when {
+                enabled -> onClick(label = actionLabel) {
                     currentOnFlick()
                     true
                 }
-            } else {
-                disabled()
+                // A disabled node offers no actions at all, so with the synopsis to offer the
+                // unavailable send is said in words instead: still no click to make.
+                synopsis -> stateDescription = sendUnavailable
+                else -> disabled()
             }
         },
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -323,43 +399,59 @@ internal fun FlickPad(
                     width = FlickPadMotion.ChevronWidthDp.dp,
                     height = FlickPadMotion.ChevronRowDp.dp,
                 )
-                .fadeUp(chevronsIn, CardFlipMotion.RiseDistance),
+                .fadeUp(chevronsIn, CardFlipMotion.RiseDistance)
+                .synopsisDrift(reveal, reduceMotion),
         )
         Spacer(Modifier.height(chevronGap))
-        FlickPosterCard(
-            posterPath = posterPath,
-            frameRequest = frameRequest,
-            imageLoader = imageLoader,
-            width = posterWidth,
-            seat = seat,
-            glowIn = glowIn,
-            glare = { FlickPadMotion.StreakGlare * FlickPadMotion.StreakEasing.transform(streak.value) },
-            // Outside the layer, so the hit area stays at the seat while the poster moves;
-            // inside it the finger's own deltas would shrink as the poster followed them.
-            modifier = gesture
-                .animatingFrameRate(dragging || sending)
-                .graphicsLayer {
-                    val liftPx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value +
-                        FlickPadMotion.HintDp.dp.toPx() * hint.value
-                    // The streak straightens the throw as it goes: the sideways offset and the
-                    // tilt are let go while the card stretches into a line and leaves upward.
-                    val s = streak.value
-                    val e = FlickPadMotion.StreakEasing.transform(s)
-                    translationX = offsetX.value * (1f - s)
-                    translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
-                    rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density) * (1f - s)
-                    val scale = lerp(1f, FlickPadMotion.HeldScale, held.value)
-                    scaleX = scale * lerp(1f, FlickPadMotion.StreakEndScaleX, e)
-                    scaleY = scale * lerp(1f, FlickPadMotion.StreakEndScaleY, e)
-                    alpha = presence.value
-                    // An offscreen layer would clip the glow and the shadow, which paint outside
-                    // the card, for as long as the poster is fading.
-                    compositingStrategy = CompositingStrategy.ModulateAlpha
-                },
-        )
+        Box {
+            FlickPosterCard(
+                posterPath = posterPath,
+                frameRequest = frameRequest,
+                imageLoader = imageLoader,
+                width = posterWidth,
+                seat = seat,
+                glowIn = glowIn,
+                glare = { FlickPadMotion.StreakGlare * FlickPadMotion.StreakEasing.transform(streak.value) },
+                // Outside the layer, so the hit area stays at the seat while the poster moves;
+                // inside it the finger's own deltas would shrink as the poster followed them.
+                modifier = gesture
+                    .animatingFrameRate(dragging || sending)
+                    .graphicsLayer {
+                        val liftPx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value +
+                            FlickPadMotion.HintDp.dp.toPx() * hint.value
+                        // The streak straightens the throw as it goes: the sideways offset and the
+                        // tilt are let go while the card stretches into a line and leaves upward.
+                        val s = streak.value
+                        val e = FlickPadMotion.StreakEasing.transform(s)
+                        val r = if (reveal == null || reduceMotion) 0f else reveal.progress.value
+                        translationX = offsetX.value * (1f - s) + SynopsisPolicy.PAGE_DRIFT_DP.dp.toPx() * r
+                        translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
+                        rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density) * (1f - s)
+                        val scale = lerp(1f, FlickPadMotion.HeldScale, held.value) *
+                            lerp(1f, SynopsisPolicy.POSTER_RECEDE_SCALE, r.coerceIn(0f, 1f))
+                        scaleX = scale * lerp(1f, FlickPadMotion.StreakEndScaleX, e)
+                        scaleY = scale * lerp(1f, FlickPadMotion.StreakEndScaleY, e)
+                        alpha = presence.value
+                        // An offscreen layer would clip the glow and the shadow, which paint outside
+                        // the card, for as long as the poster is fading.
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                    },
+            )
+            if (reveal != null) {
+                SynopsisTab(
+                    visible = { tabIn.value * (if (dragging || sending) 0f else 1f) * (1f - reveal.progress.value * 3f).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = -SynopsisTabGap - SynopsisTabWidth)
+                        .synopsisDrift(reveal, reduceMotion),
+                )
+            }
+        }
         Spacer(Modifier.height(captionGap))
         Column(
-            Modifier.fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance, flat = true),
+            Modifier
+                .fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance, flat = true)
+                .synopsisDrift(reveal, reduceMotion),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -470,6 +562,29 @@ internal fun FlickPosterCard(
         }
     }
 }
+
+/**
+ * The synopsis's one discoverability cue: a slim tab at the poster's leading edge, like the
+ * spine of a page tucked behind it. It does nothing itself — a pull on the poster, or TalkBack's
+ * action, opens the synopsis — so it carries no touch target that could promise otherwise.
+ */
+@Composable
+private fun SynopsisTab(visible: () -> Float, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(width = SynopsisTabWidth, height = SynopsisTabHeight)) {
+        val a = visible()
+        if (a <= 0f) return@Canvas
+        drawRoundRect(
+            color = Color.White,
+            cornerRadius = CornerRadius(size.width / 2f),
+            alpha = a * SynopsisTabAlpha,
+        )
+    }
+}
+
+private val SynopsisTabWidth = 3.dp
+private val SynopsisTabHeight = 34.dp
+private val SynopsisTabGap = 9.dp
+private const val SynopsisTabAlpha = 0.34f
 
 /** [posterCardShape]'s corner as a share of the width, for a card that has to animate it. */
 private const val PosterCornerShare = 0.08f

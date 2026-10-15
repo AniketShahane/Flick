@@ -186,6 +186,16 @@
     <!-- The subtitle this film was left with, confirmed where it is put back. The value is
          the language when the memory names one and the file's own name when it does not. -->
     <string name="detail_subtitle_attached">Subtitles · %1$s</string>
+    <!-- The IMDb score chip: the source named in words, then its score out of ten. -->
+    <string name="detail_rating_imdb">IMDb %1$s</string>
+    <string name="detail_rating_percent">%1$d%%</string>
+    <!-- The synopsis panel, pulled in from the left over the detail page. -->
+    <string name="synopsis_directed_by">Directed by</string>
+    <string name="synopsis_created_by">Created by</string>
+    <string name="synopsis_starring">Starring</string>
+    <string name="synopsis_scores">Scores</string>
+    <string name="synopsis_runtime">%1$dh %2$02dm</string>
+    <string name="synopsis_runtime_short">%1$dm</string>
 
     <!-- S5 · Connecting. -->
     <string name="connecting_hyperspace_title">On its way</string>
@@ -317,7 +327,10 @@
     <!-- Says what leaves the phone, because this is the one setting that sends anything about
          the user's files off it. The notice is TMDB's required wording, verbatim. -->
     <string name="settings_film_posters_title">Film posters</string>
-    <string name="settings_film_posters_summary">Show each film\'s real poster. Only the title and year from its name are sent to TMDB — never the file.</string>
+    <string name="settings_film_posters_summary">Show each film\'s real poster and synopsis. Only the title and year from its name are sent to TMDB — never the file.</string>
+    <!-- The same, for a build that also shows scores: the IMDb id is then sent to OMDb too. -->
+    <string name="settings_film_posters_summary_scores">Show each film\'s real poster, synopsis and scores. Only the title and year from its name are sent to TMDB, and the IMDb id TMDB gives back to OMDb — never the file.</string>
+    <string name="settings_film_posters_omdb_notice">IMDb and Rotten Tomatoes scores are fetched through OMDb (omdbapi.com).</string>
     <string name="settings_film_posters_tmdb">TMDB</string>
     <string name="settings_film_posters_notice">This product uses the TMDB API but is not endorsed or certified by TMDB.</string>
     <!-- INFO, not CAUTION, and the second sentence is why: nothing about the cast changes.
@@ -360,6 +373,14 @@
     <string name="a11y_resume_video">Resume %1$s from %2$s on %3$s</string>
     <!-- The row states what is attached; the separator it is drawn with is not a word. -->
     <string name="a11y_detail_subtitle">Subtitles attached: %1$s</string>
+    <string name="a11y_detail_runtime">Running time %1$s</string>
+    <string name="a11y_rating_imdb">IMDb rating %1$s out of 10</string>
+    <string name="a11y_rating_tomatoes_fresh">Rotten Tomatoes, fresh, %1$d percent</string>
+    <string name="a11y_rating_tomatoes_rotten">Rotten Tomatoes, rotten, %1$d percent</string>
+    <string name="a11y_synopsis_open">Read the synopsis</string>
+    <string name="a11y_flick_pad_unavailable">Not ready to send yet</string>
+    <string name="a11y_synopsis_close">Close the synopsis</string>
+    <string name="a11y_synopsis_pane">Synopsis</string>
     <string name="a11y_back_to_library">Back to your videos</string>
     <string name="a11y_minimize_now_playing">Back to your videos; casting continues</string>
     <string name="a11y_restore_now_playing">Open Now Playing controls for %1$s</string>
