@@ -29,7 +29,9 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.DisplayCadenceSource
+import com.flick.receiver.ui.components.FILM_FLOWING_WAIT_MS
 import com.flick.receiver.ui.components.FilmStaging
+import com.flick.receiver.ui.components.awaitFramesFlowing
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RATE_KNOWN_WAIT_MS
@@ -106,6 +108,8 @@ class StageMotionTest {
 
     // The retained face over the film's view: up until onLightsDown, like the real shell.
     private var roomShown by mutableStateOf(true)
+    /** The film's rendered-frame count, as the player's decoder counters would report it. */
+    @Volatile private var renderedFrames = 0
     private var lightsDown = 0
     private var up = 0
     private var settled = 0
@@ -121,6 +125,7 @@ class StageMotionTest {
         settle: Boolean = true,
         offstage: Boolean = false,
         leastShownMs: Long = FlickMotion.TUNNEL_MIN_SHOWN_MS,
+        gateOnFrames: Boolean = false,
     ) {
         stage = initial
         composeRule.setContent {
@@ -162,6 +167,11 @@ class StageMotionTest {
                             now = { composeRule.mainClock.currentTime },
                             offstage = offstage,
                             leastShownMs = leastShownMs,
+                            awaitFilmFlowing = {
+                                if (gateOnFrames) {
+                                    awaitFramesFlowing({ renderedFrames }, now = { composeRule.mainClock.currentTime })
+                                }
+                            },
                         )
                     }
                 }
@@ -512,6 +522,44 @@ class StageMotionTest {
             assertEquals(View.LAYER_TYPE_NONE, child.layerType)
             assertTrue("a tunnel layer would render its alpha offscreen", !child.hasOverlappingRendering())
         }
+    }
+
+    /** The porthole opens only once the released film's frames are reaching the screen. */
+    @Test
+    fun thePaneWaitsForTheFilmsFramesToFlow() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch(gateOnFrames = true)
+        settleHandshake()
+        renderedFrames = 1
+        val seam = cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(250)
+        assertTrue("the porthole opened before the film's frames flowed", shot().windowGlows())
+        renderedFrames = 2
+        repeat(3) { frame() }
+        assertTrue("the porthole opened on one frame", shot().windowGlows())
+        renderedFrames = 3
+        repeat(3) { frame() }
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 40L)
+        assertTrue("the film did not show through once its frames flowed (${since(seam)} ms)", shot().windowShowsFilm())
+    }
+
+    /** A film that stalls at once is still shown, once the wait for its frames runs out. */
+    @Test
+    fun thePaneGivesWayToAStalledFilmAfterItsWait() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch(gateOnFrames = true)
+        settleHandshake()
+        cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(FILM_FLOWING_WAIT_MS - 60)
+        assertTrue("the porthole opened before the wait ran out", shot().windowGlows())
+        advance(60 + FlickMotion.TUNNEL_FILM_IN_MS + 80L)
+        assertTrue("the porthole never opened onto a stalled film", shot().windowShowsFilm())
     }
 
     @Test

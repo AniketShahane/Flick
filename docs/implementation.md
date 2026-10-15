@@ -864,9 +864,10 @@ that runs on the RenderThread is an `AnimatedVectorDrawable` drawn on a hardware
   2.2 × the window (`TunnelGlow*`). `tunnel_window.xml` is the porthole's pane before the film
   shows: an opaque `TunnelPortholeBase` blue lit from its centre (`TunnelPortholeLight`
   #9FC0FF), one unit larger than the porthole all round so the two antialiased edges leave no
-  seam. Each of these two animates only its fade (the drawable's root alpha, applied when its
-  cached bitmap is composited) and, for the pane, its approach, so its gradients are rasterised
-  once, at a quarter of the screen's pixels. `tunnel_loop.xml` holds what moves and nothing
+  seam; its viewport is the window's rect, and its image view is laid out there rather than
+  over the whole screen. Each of these two animates only its fade (the drawable's root alpha,
+  applied when its cached bitmap is composited), so its gradients are rasterised once: the
+  wash at a quarter of the screen's pixels, the pane at the window's size. `tunnel_loop.xml` holds what moves and nothing
   smooth: a halo of two soft outlines breathing round the window (scale 1 ↔ 1.05 over 900 ms
   each way); seven 16:9 rounded-rect rings growing as `1 + 4.2 q²` over a 3.1 s life, alpha
   rising over the first 12 % of `q` and falling linearly to 0, on-screen stroke 1.5 → 3 dp, one
@@ -877,12 +878,13 @@ that runs on the RenderThread is an `AnimatedVectorDrawable` drawn on a hardware
   frame. The palette lives twice — `colors_tunnel.xml` for the drawables, `FlickColor.Tunnel*`
   for Compose — and `HouseLightsPlanTest` holds them, the window's geometry, the fades and the
   approach equal.
-- **The approach.** The loop and the pane are each wrapped in an `approach` group that grows
-  from `TUNNEL_APPROACH_FROM` 0.55 of the window's size toward its whole as `1 − e^(−t/1.6 s)`
-  over 12 s, on the RenderThread, so the window never stalls with the main thread and never
-  stops on a long handshake. The porthole's clip follows the same curve, `tunnelApproach`, read
-  off a frame clock that runs while the show is up, so only the clip and the bezel change per
-  frame. The copy sits under the window's full size, which the approach never exceeds, and it
+- **The approach.** The window grows from `TUNNEL_APPROACH_FROM` 0.55 of its size toward its
+  whole as `1 − e^(−t/1.6 s)` (`tunnelApproach`), never stopping on a long handshake. The loop's
+  rings and halo carry it in an `approach` group on the RenderThread, over 12 s. The pane and
+  the porthole's clip follow the same curve off a frame clock that runs while the show is up:
+  the pane by its view's scale about the vanishing point (a property, so its bitmap is never
+  redrawn), the clip by one path. An animated group scale would dirty the pane's vector and
+  re-rasterise it every frame. The copy sits under the window's full size, which the approach never exceeds, and it
   has faded before the expansion takes the window past it.
 - `TunnelBackdropView` holds the three in image views scaled up by their own `scaleX/Y` (the
   loop at half resolution, `TUNNEL_RASTER_SCALE`): a vector drawable sizes its bitmap from the
@@ -895,9 +897,13 @@ that runs on the RenderThread is an `AnimatedVectorDrawable` drawn on a hardware
   three recorded ops are redrawn; the drawables' bitmaps are untouched by it.
 - **Everything else** — the pane giving way, the dwell, the expansion, the tunnel rushing past,
   the flash and the copy — is main-thread motion on Compose's clock, started only once the
-  seam's own composition has landed (the first frame waits two frames after `Active`). It moves
-  view and draw properties from the animatables' reads (`AndroidView`'s `update`, draw lambdas),
-  so nothing recomposes while it runs, and the stage tests drive all of it on a paused clock.
+  seam's own composition has landed (the first frame waits two frames after `Active`). The
+  tunnel's pose (clip, child alphas, rush, pane scale) is applied from a draw lambda just before
+  the tunnel's view is drawn, not from `AndroidView.update`, which is posted and would land a
+  frame after the bezel, flash and curtain that read the same values. Both sit on a
+  `graphicsLayer()` of their own, so a per-frame invalidation stops at that layer instead of
+  re-running every draw lambda in the tree. Nothing recomposes while it runs, and the stage
+  tests drive all of it on a paused clock.
 
 *Why a porthole.* On the Google TV Streamer a video layer at any scale but 1 leaves the
 hardware composer for the MediaTek MDP blitter (`hwcomposer: [DP] layer[N] use MDP: 1`): the
@@ -914,7 +920,7 @@ tunnel's porthole onto its centre.
 | film released | `onPictureUp` releases the held film, which **plays**, with sound, behind the pane |
 | film in | once the film has rendered two more frames (`awaitFilmFlowing`: the decoder's `renderedOutputBufferCount`, polled each frame, at most 500 ms), the pane crossfades to the film over `TUNNEL_FILM_IN_MS` 240 and the bezel comes in; the copy leaves over 400 |
 | dwell | `TUNNEL_DWELL_MS` 1 200 with the film playing in the porthole and the window still approaching; any key ends it |
-| expansion | `tunnelExpand()` 640 ms, `cubic-bezier(.5,0,.9,.6)`, laid over the approach: it leaves with no speed of its own, so the window carries on at the approach's speed, then accelerates to the screen's edges, its centre gliding from the vanishing point to the screen's and its corners squaring; the tunnel rushes past (scale 1 → 2.6 about the vanishing point) and fades over the last 30 %; a white flash snaps to 0.35 and decays over the first third; the bezel leaves in 180 ms. `TUNNEL_SETTLE_MS` 80 later the show is retired and `onPictureSettled` runs |
+| expansion | `tunnelExpand()` 640 ms, `cubic-bezier(.5,0,.85,.75)`, laid over the approach: it leaves with no speed of its own, so the window carries on at the approach's speed, then accelerates toward the screen's edges, its centre gliding from the vanishing point to the screen's and its corners squaring. Its final slope of 5/3 keeps the last frames to about 17 dp of edge travel each at 60 Hz (`HouseLightsPlanTest` bounds the last 150 ms at 25 dp a frame, and the 24 Hz equivalent), so it never jumps onto the screen's edges. The tunnel's rush (scale 1 → 2.6 about the vanishing point) and fade run on the expansion's **time**, not the porthole's eased travel, fading over its last 30 % (192 ms); a white flash snaps to 0.35 and decays over the first half; the bezel leaves in 180 ms. `TUNNEL_SETTLE_MS` 80 later the show is retired and `onPictureSettled` runs |
 | cancel, fault, lights up, Rest | the overlay leaves on `filmExit()` and the show is retired under the curtain |
 | re-cast (VeilIn) | the porthole closes in on the old film (above), then waiting as from the cue |
 

@@ -36,8 +36,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import kotlinx.coroutines.withTimeoutOrNull
-import androidx.compose.runtime.withFrameMillis
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -126,6 +124,7 @@ import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
 import com.flick.receiver.ui.components.HouseLights
+import com.flick.receiver.ui.components.awaitFramesFlowing
 import com.flick.receiver.ui.components.LocalShellRetained
 import com.flick.receiver.ui.components.RateSample
 import com.flick.receiver.ui.components.RETAINED_SHELL_LIMIT_MS
@@ -1814,7 +1813,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 onPictureUp = onPictureUp,
                 onPictureSettled = onPictureSettled,
                 filmStaging = filmStaging,
-                awaitFilmFlowing = { awaitFilmFrames(controller) },
+                awaitFilmFlowing = { awaitFramesFlowing(controller::renderedVideoFrames) },
             )
 
             // Gated on the stage, and composed outside the router only because it may
@@ -2000,26 +1999,6 @@ internal fun StageFilmLayers(
         if (mode != PlayerSurfaceMode.Hidden) surface()
         if (mode == PlayerSurfaceMode.VisiblePlayback) playback()
     }
-}
-
-/** Frames the released film must put on the screen before the porthole opens onto it. */
-private const val FILM_FLOWING_FRAMES = 2
-
-/** The longest the porthole waits for them: a film that stalls at once is shown anyway. */
-private const val FILM_FLOWING_WAIT_MS = 500L
-
-/** Returns once the film has rendered [FILM_FLOWING_FRAMES] more frames, or after [FILM_FLOWING_WAIT_MS]. */
-private suspend fun awaitFilmFrames(controller: PlayerController) {
-    val start = android.os.SystemClock.uptimeMillis()
-    val from = controller.renderedVideoFrames()
-    val flowed = withTimeoutOrNull(FILM_FLOWING_WAIT_MS) {
-        while (controller.renderedVideoFrames() - from < FILM_FLOWING_FRAMES) withFrameMillis { }
-    } != null
-    FlickLog.i(
-        "stage",
-        "film flowing frames=${controller.renderedVideoFrames() - from} " +
-            "waitedMs=${android.os.SystemClock.uptimeMillis() - start} timedOut=${!flowed}",
-    )
 }
 
 /** The video surface's life, under `[surface]`: a cast should show one creation and no destruction until it ends. */

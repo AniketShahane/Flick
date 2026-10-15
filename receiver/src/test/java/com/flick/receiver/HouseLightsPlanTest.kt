@@ -26,6 +26,8 @@ import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
 import com.flick.receiver.ui.components.houseStageFor
+import com.flick.receiver.ui.components.FILM_FLOWING_WAIT_MS
+import com.flick.receiver.ui.components.TunnelCutout
 import com.flick.receiver.ui.components.tunnelApproach
 import com.flick.receiver.ui.components.tunnelCutout
 import com.flick.receiver.ui.components.tunnelFade
@@ -41,6 +43,7 @@ import org.w3c.dom.Element
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class HouseLightsPlanTest {
@@ -272,7 +275,8 @@ class HouseLightsPlanTest {
     }
 
     @Test fun theSettleFallbackOutlastsTheWholeShow() {
-        val show = STAGE_HOLD_CAP_MS + FlickMotion.TUNNEL_FILM_IN_MS + FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS
+        val show = STAGE_HOLD_CAP_MS + FILM_FLOWING_WAIT_MS + FlickMotion.TUNNEL_FILM_IN_MS +
+            FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS + FlickMotion.TUNNEL_SETTLE_MS
         assertTrue("fallback $REVEAL_SETTLE_FALLBACK_MS ms inside a $show ms show", REVEAL_SETTLE_FALLBACK_MS > show)
     }
 
@@ -298,7 +302,7 @@ class HouseLightsPlanTest {
         assertTrue("never past the window's own size", last <= 1f)
         assertTrue("still growing after the usual handshake", tunnelApproach(3_000L) < 0.95f)
         // The drawables carry the same curve on the RenderThread.
-        for (file in listOf(TUNNEL_XML, WINDOW_XML)) {
+        for (file in listOf(TUNNEL_XML)) {
             val doc = parse(file)
             val target = doc.getElementsByTagName("target").let { targets ->
                 (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == "approach" }
@@ -341,6 +345,38 @@ class HouseLightsPlanTest {
         assertTrue("the expansion does not accelerate: $first then $lastStep", lastStep > 10 * first)
     }
 
+    @Test fun theExpansionNeverJumpsAtItsEndAt60Hz() = assertEndFramesBelow(frameMs = 1_000f / 60f, maxDp = 25f)
+
+    @Test fun theExpansionNeverJumpsAtItsEndAt24Hz() = assertEndFramesBelow(frameMs = 1_000f / 24f, maxDp = 25f * (1_000f / 24f) / 16f)
+
+    /** The porthole's widest per-frame edge move over the expansion's last 150 ms, on the 960 × 540 dp stage. */
+    private fun assertEndFramesBelow(frameMs: Float, maxDp: Float) {
+        val w = 960f
+        val h = 540f
+        val startAt = 2_500L
+        fun edges(t: Float): TunnelCutout {
+            val u = ((t - startAt) / FlickMotion.TUNNEL_EXPAND_MS).coerceIn(0f, 1f)
+            return tunnelCutout(FlickMotion.TunnelExpand.transform(u), w, h, tunnelApproach(t.toLong()))
+        }
+        val end = startAt + FlickMotion.TUNNEL_EXPAND_MS.toFloat()
+        var t = end - 150f
+        while (t < end) {
+            val next = minOf(t + frameMs, end)
+            val a = edges(t)
+            val b = edges(next)
+            val moved = maxOf(a.left - b.left, a.top - b.top, b.right - a.right, b.bottom - a.bottom)
+            assertTrue("an edge moved $moved dp in one ${frameMs.roundToInt()} ms frame at ${t - startAt} ms", moved <= maxDp)
+            t = next
+        }
+    }
+
+    @Test fun theTunnelsFadeHasRealTimeToRun() {
+        // Keyed to time, the fade gets the expansion's last 30 %, several frames even at 24 Hz.
+        val fadeMs = (1f - FlickMotion.TUNNEL_FADE_FROM) * FlickMotion.TUNNEL_EXPAND_MS
+        assertTrue("the fade has $fadeMs ms", fadeMs >= 150f)
+        assertTrue("the flash outlasts the porthole's slow start", FlickMotion.TUNNEL_FLASH_MS >= FlickMotion.TUNNEL_EXPAND_MS / 2)
+    }
+
     @Test fun thePortholeIsTheWindowAndOpensOntoTheWholeScreen() {
         val w = 1920f
         val h = 1080f
@@ -368,18 +404,22 @@ class HouseLightsPlanTest {
     @Test fun theTunnelDrawableIsTheGeometryHouseLightsPoses() {
         val doc = parse(TUNNEL_XML)
         val pane = parse(WINDOW_XML)
-        val vector = pane.getElementsByTagName("vector").item(0) as Element
-        val vw = vector.android("viewportWidth").toFloat()
-        val vh = vector.android("viewportHeight").toFloat()
-        assertEquals("the stage is 16:9", 16f / 9f, vw / vh, 0.0001f)
-        // The pane overlaps the porthole by one unit all round, so no seam shows at its edge.
+        val stage = doc.getElementsByTagName("vector").item(0) as Element
+        val sw = stage.android("viewportWidth").toFloat()
+        val sh = stage.android("viewportHeight").toFloat()
+        assertEquals("the stage is 16:9", 16f / 9f, sw / sh, 0.0001f)
+        // The pane is laid out at the window's rect, overlapping the porthole by one unit all
+        // round so no seam shows at its edge; its viewport is that rect.
         val bleed = 1f
+        val vector = pane.getElementsByTagName("vector").item(0) as Element
+        val ww = TUNNEL_WINDOW_FRACTION * sw + 2 * bleed
+        val wh = TUNNEL_WINDOW_FRACTION * sh + 2 * bleed
+        assertEquals(ww, vector.android("viewportWidth").toFloat(), 0.01f)
+        assertEquals(wh, vector.android("viewportHeight").toFloat(), 0.01f)
         val window = pane.byName("path", "window")
-        val ww = TUNNEL_WINDOW_FRACTION * vw + 2 * bleed
-        val wh = TUNNEL_WINDOW_FRACTION * vh + 2 * bleed
-        val r = TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * vw + bleed
-        val x0 = vw / 2f - ww / 2f
-        val y0 = TUNNEL_VANISH_Y * vh - wh / 2f
+        val r = TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * sw + bleed
+        val x0 = 0f
+        val y0 = 0f
         val numbers = Regex("-?[0-9.]+").findAll(window.android("pathData")).map { it.value.toFloat() }.toList()
         // M x0+r,y0 h(w-2r) a r,r 0 0 1 r,r v(h-2r) ...
         assertEquals(x0 + r, numbers[0], 0.01f)
@@ -390,8 +430,9 @@ class HouseLightsPlanTest {
         // Their fade over the room is the span the curtain and onLightsDown wait out.
         assertFadesIn(doc)
         assertFadesIn(pane)
-        // The pane's only animations are its fade and its approach.
-        assertEquals(2, pane.getElementsByTagName("target").length)
+        // The pane's only animation is its fade: its approach is its view's scale, which
+        // leaves its bitmap alone.
+        assertEquals(1, pane.getElementsByTagName("target").length)
         // No gradient is redrawn every frame: the wash and glow live in the static drawable.
         assertEquals(0, doc.getElementsByTagName("gradient").length)
     }

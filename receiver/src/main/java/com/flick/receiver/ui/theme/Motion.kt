@@ -223,14 +223,18 @@ object FlickMotion {
     const val TUNNEL_APPROACH_FROM = 0.55f
     const val TUNNEL_APPROACH_TAU_MS = 1_600f
 
-    /** The flash as the window takes the screen: [TUNNEL_FLASH_PEAK] white, gone over the expansion's first third. */
+    /** The flash as the window takes the screen: [TUNNEL_FLASH_PEAK] white, gone halfway through the expansion's time. */
     const val TUNNEL_FLASH_PEAK = 0.35f
-    const val TUNNEL_FLASH_MS = TUNNEL_EXPAND_MS / 3
+    const val TUNNEL_FLASH_MS = TUNNEL_EXPAND_MS / 2
 
     /** The bezel leaves early in the expansion; the film's square corners are no longer small enough to need it. */
     const val TUNNEL_RIM_OUT_MS = 180
 
-    /** The tunnel fades over the expansion's last 30 % while it rushes past to [TUNNEL_RUSH_SCALE]. */
+    /**
+     * The tunnel fades over the last 30 % of the expansion's time, not of the porthole's
+     * travel, while it rushes past to [TUNNEL_RUSH_SCALE]: keyed to an ease-in travel it
+     * would be squeezed into the last few frames.
+     */
     const val TUNNEL_FADE_FROM = 0.7f
     const val TUNNEL_RUSH_SCALE = 2.6f
 
@@ -239,9 +243,11 @@ object FlickMotion {
 
     /**
      * Ease-in heavy: it leaves with no speed of its own, so the window carries on at its
-     * approach's speed, and it is quickest at the end, as the cast arrives.
+     * approach's speed, and it is quickest toward the end, as the cast arrives. The end is
+     * still gentle enough (a final slope of 5 / 3) that the last frames move the edges about
+     * 17 dp each at 60 Hz rather than jumping onto the screen's edges.
      */
-    val TunnelExpand: Easing = CubicBezierEasing(0.5f, 0f, 0.9f, 0.6f)
+    val TunnelExpand: Easing = CubicBezierEasing(0.5f, 0f, 0.85f, 0.75f)
 
     /** The porthole closing in on a re-cast's old film: quick, then settling onto the window. */
     val TunnelShrink: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)

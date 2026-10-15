@@ -35,7 +35,7 @@ class StageFilmHostTest {
     private val views = mutableListOf<View>()
 
     @Test
-    fun theSurfaceIsHostedOnceFromTheHandshakeToTheFilm() {
+    fun theSurfaceIsHostedOnceFromTheHandshakeToTheFilmAndThroughAReCast() {
         composeRule.setContent {
             StageFilmLayers(
                 stage = stage,
@@ -63,7 +63,11 @@ class StageFilmHostTest {
                 Box(Modifier.fillMaxSize())
             }
         }
-        for (next in listOf(MediaStage.Checking("cast", 1L), MediaStage.Preparing("cast", 1L), MediaStage.Active("cast", 1L))) {
+        // A cast, then a re-cast straight over the playing film.
+        for (next in listOf(
+            MediaStage.Checking("cast", 1L), MediaStage.Preparing("cast", 1L), MediaStage.Active("cast", 1L),
+            MediaStage.Checking("again", 2L), MediaStage.Preparing("again", 2L), MediaStage.Active("again", 2L),
+        )) {
             composeRule.runOnIdle { stage = next }
             composeRule.waitForIdle()
             Thread.sleep(300)
