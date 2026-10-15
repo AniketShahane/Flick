@@ -16,12 +16,9 @@ import com.flick.receiver.ui.components.RESYNC_GRACE_MS
 import com.flick.receiver.ui.components.REVEAL_SETTLE_FALLBACK_MS
 import com.flick.receiver.ui.components.RateSample
 import com.flick.receiver.ui.components.STAGE_HOLD_CAP_MS
-import com.flick.receiver.ui.components.TUNNEL_RIM_RADIUS
-import com.flick.receiver.ui.components.TUNNEL_RIM_WIDTH
 import com.flick.receiver.ui.components.TUNNEL_VANISH_Y
 import com.flick.receiver.ui.components.TUNNEL_WINDOW_CORNER
 import com.flick.receiver.ui.components.TUNNEL_WINDOW_FRACTION
-import com.flick.receiver.ui.components.TUNNEL_WINDOW_LIFT
 import com.flick.receiver.ui.components.VEIL_DENSITY
 import com.flick.receiver.ui.components.apertureRampAlpha
 import com.flick.receiver.ui.components.apertureScale
@@ -29,6 +26,8 @@ import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
 import com.flick.receiver.ui.components.houseStageFor
+import com.flick.receiver.ui.components.tunnelApproach
+import com.flick.receiver.ui.components.tunnelCutout
 import com.flick.receiver.ui.components.tunnelFade
 import com.flick.receiver.ui.components.tunnelHoldLeftMs
 import com.flick.receiver.ui.components.tunnelShownSinceMs
@@ -41,6 +40,7 @@ import org.junit.Test
 import org.w3c.dom.Element
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 class HouseLightsPlanTest {
@@ -286,30 +286,98 @@ class HouseLightsPlanTest {
         assertEquals(0f, tunnelFade(1f), 0f)
     }
 
-    @Test fun theBezelCoversTheSurfacesSquareCorners() {
-        // The surface's corner sits √2 · (R − w) from the bezel's outer arc's centre.
-        val w = TUNNEL_RIM_WIDTH.value
-        val r = TUNNEL_RIM_RADIUS.value
-        assertTrue(sqrt(2f) * (r - w) <= r)
-        // And the bezel is never sharper than the window it frames, at the 960 dp stage.
-        assertTrue(r >= TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * STAGE_DP_WIDTH)
+    @Test fun theWindowApproachesWithoutStallingOrJumping() {
+        assertEquals(FlickMotion.TUNNEL_APPROACH_FROM, tunnelApproach(0L), 0f)
+        var last = tunnelApproach(0L)
+        for (t in 16L..20_000L step 16L) {
+            val now = tunnelApproach(t)
+            assertTrue("the approach went back at $t ms", now >= last)
+            assertTrue("the approach jumped at $t ms", now - last < 0.01f)
+            last = now
+        }
+        assertTrue("never past the window's own size", last <= 1f)
+        assertTrue("still growing after the usual handshake", tunnelApproach(3_000L) < 0.95f)
+        // The drawables carry the same curve on the RenderThread.
+        for (file in listOf(TUNNEL_XML, WINDOW_XML)) {
+            val doc = parse(file)
+            val target = doc.getElementsByTagName("target").let { targets ->
+                (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == "approach" }
+            }
+            val animator = target.getElementsByTagName("objectAnimator").item(0) as Element
+            val duration = animator.android("duration").toLong()
+            val frames = target.getElementsByTagName("keyframe")
+            assertTrue(frames.length > 10)
+            for (i in 0 until frames.length) {
+                val k = frames.item(i) as Element
+                val at = (k.android("fraction").toFloat() * duration).toLong()
+                assertEquals("$file at $at ms", tunnelApproach(at), k.android("value").toFloat(), 0.001f)
+            }
+        }
     }
 
-    @Test fun theWindowIsCentredOnTheVanishingPoint() {
-        assertEquals(TUNNEL_VANISH_Y - 0.5f, TUNNEL_WINDOW_LIFT, 0f)
+    @Test fun theExpansionLeavesAtTheApproachsSpeedAndOnlyGrows() {
+        val w = 1920f
+        val h = 1080f
+        val startAt = 2_500L
+        fun width(t: Long): Float {
+            val u = ((t - startAt).toFloat() / FlickMotion.TUNNEL_EXPAND_MS).coerceIn(0f, 1f)
+            val p = if (t <= startAt) 0f else FlickMotion.TunnelExpand.transform(u)
+            val c = tunnelCutout(p, w, h, tunnelApproach(t))
+            return c.right - c.left
+        }
+        val before = width(startAt) - width(startAt - 16)
+        val after = width(startAt + 16) - width(startAt)
+        assertTrue("the window's speed jumped from $before to $after px a frame", abs(after - before) < 1f)
+        var last = width(0L)
+        for (t in 16L..startAt + FlickMotion.TUNNEL_EXPAND_MS step 16L) {
+            val now = width(t)
+            assertTrue("the window shrank at $t ms", now >= last)
+            last = now
+        }
+        assertEquals(w, width(startAt + FlickMotion.TUNNEL_EXPAND_MS), 0.01f)
+        // Quickest at the end: the last frame covers more than the first.
+        val first = width(startAt + 16) - width(startAt)
+        val lastStep = width(startAt + FlickMotion.TUNNEL_EXPAND_MS) - width(startAt + FlickMotion.TUNNEL_EXPAND_MS - 16)
+        assertTrue("the expansion does not accelerate: $first then $lastStep", lastStep > 10 * first)
+    }
+
+    @Test fun thePortholeIsTheWindowAndOpensOntoTheWholeScreen() {
+        val w = 1920f
+        val h = 1080f
+        val window = tunnelCutout(0f, w, h)
+        assertEquals(w / 2f - TUNNEL_WINDOW_FRACTION * w / 2f, window.left, 0.01f)
+        assertEquals(TUNNEL_VANISH_Y * h - TUNNEL_WINDOW_FRACTION * h / 2f, window.top, 0.01f)
+        assertEquals(TUNNEL_WINDOW_FRACTION * w, window.right - window.left, 0.01f)
+        assertEquals(TUNNEL_WINDOW_FRACTION * h, window.bottom - window.top, 0.01f)
+        assertEquals(TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * w, window.radius, 0.01f)
+        val full = tunnelCutout(1f, w, h)
+        assertEquals(0f, full.left, 0f)
+        assertEquals(0f, full.top, 0f)
+        assertEquals(w, full.right, 0f)
+        assertEquals(h, full.bottom, 0f)
+        assertEquals("square once it fills the screen", 0f, full.radius, 0f)
+        var last = window
+        for (step in 1..100) {
+            val now = tunnelCutout(step / 100f, w, h)
+            assertTrue("the porthole narrowed at $step %", now.left <= last.left && now.top <= last.top &&
+                now.right >= last.right && now.bottom >= last.bottom)
+            last = now
+        }
     }
 
     @Test fun theTunnelDrawableIsTheGeometryHouseLightsPoses() {
-        val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-            .newDocumentBuilder().parse(TUNNEL_XML)
-        val vector = doc.getElementsByTagName("vector").item(0) as Element
+        val doc = parse(TUNNEL_XML)
+        val pane = parse(WINDOW_XML)
+        val vector = pane.getElementsByTagName("vector").item(0) as Element
         val vw = vector.android("viewportWidth").toFloat()
         val vh = vector.android("viewportHeight").toFloat()
         assertEquals("the stage is 16:9", 16f / 9f, vw / vh, 0.0001f)
-        val window = doc.byName("path", "window")
-        val ww = TUNNEL_WINDOW_FRACTION * vw
-        val wh = TUNNEL_WINDOW_FRACTION * vh
-        val r = TUNNEL_WINDOW_CORNER * ww
+        // The pane overlaps the porthole by one unit all round, so no seam shows at its edge.
+        val bleed = 1f
+        val window = pane.byName("path", "window")
+        val ww = TUNNEL_WINDOW_FRACTION * vw + 2 * bleed
+        val wh = TUNNEL_WINDOW_FRACTION * vh + 2 * bleed
+        val r = TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * vw + bleed
         val x0 = vw / 2f - ww / 2f
         val y0 = TUNNEL_VANISH_Y * vh - wh / 2f
         val numbers = Regex("-?[0-9.]+").findAll(window.android("pathData")).map { it.value.toFloat() }.toList()
@@ -319,15 +387,17 @@ class HouseLightsPlanTest {
         assertEquals(ww - 2 * r, numbers[2], 0.01f)
         assertEquals(r, numbers[3], 0.01f)
         assertEquals(wh - 2 * r, numbers[10], 0.01f)
-        // Its fade over the room is the span the curtain and onLightsDown wait out.
+        // Their fade over the room is the span the curtain and onLightsDown wait out.
         assertFadesIn(doc)
+        assertFadesIn(pane)
+        // The pane's only animations are its fade and its approach.
+        assertEquals(2, pane.getElementsByTagName("target").length)
         // No gradient is redrawn every frame: the wash and glow live in the static drawable.
         assertEquals(0, doc.getElementsByTagName("gradient").length)
     }
 
     @Test fun theTunnelsWashIsStaticAndFadesInWithTheLoop() {
-        val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-            .newDocumentBuilder().parse(WASH_XML)
+        val doc = parse(WASH_XML)
         assertEquals(2, doc.getElementsByTagName("gradient").length)
         // Its only animation is the fade, which leaves its rasterised bitmap alone.
         assertEquals(1, doc.getElementsByTagName("target").length)
@@ -364,7 +434,9 @@ class HouseLightsPlanTest {
             "tunnel_streak_white" to FlickColor.TunnelStreakWhite,
             "tunnel_streak_blue" to FlickColor.TunnelStreakBlue,
             "tunnel_streak_amber" to FlickColor.TunnelAmber,
-            "tunnel_window" to FlickColor.TunnelWindow,
+            "tunnel_porthole_base" to FlickColor.TunnelPortholeBase,
+            "tunnel_porthole_light" to FlickColor.TunnelPortholeLight,
+            "tunnel_porthole_light_edge" to FlickColor.TunnelPortholeLightEdge,
         )
         assertEquals(tokens.keys, colours.keys)
         for ((name, token) in tokens) {
@@ -406,6 +478,9 @@ class HouseLightsPlanTest {
         assertEquals("gate of $actual", gate, actual.gate)
     }
 
+    private fun parse(file: File) = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        .newDocumentBuilder().parse(file)
+
     private fun Element.android(attr: String): String = getAttributeNS(ANDROID_NS, attr)
 
     private fun org.w3c.dom.Document.byName(tag: String, name: String): Element {
@@ -415,9 +490,9 @@ class HouseLightsPlanTest {
 
     private companion object {
         const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
-        const val STAGE_DP_WIDTH = 960f
         val TUNNEL_XML = File("src/main/res/drawable/tunnel_loop.xml")
         val WASH_XML = File("src/main/res/drawable/tunnel_wash.xml")
+        val WINDOW_XML = File("src/main/res/drawable/tunnel_window.xml")
         val TUNNEL_COLOURS = File("src/main/res/values/colors_tunnel.xml")
     }
 }

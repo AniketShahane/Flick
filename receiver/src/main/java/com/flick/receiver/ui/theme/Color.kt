@@ -362,8 +362,13 @@ object FlickColor {
     val TunnelStreakBlue = Color(0xFF9FC0FF)
     val TunnelStreakWhite = Color(0xFFFFFFFF)
 
-    /** The window at the far end of the tunnel, and the bezel the film carries in it. */
+    /** The bezel round the porthole while the film plays in it. */
     val TunnelWindow = Color(0xFFEAF0FF)
+
+    /** The porthole's pane before the film shows through it: a deep blue, lit from its centre. */
+    val TunnelPortholeBase = Color(0xFF17297A)
+    val TunnelPortholeLight = Color(0xE69FC0FF)
+    val TunnelPortholeLightEdge = Color(0x009FC0FF)
 
     /** The flash as the window takes the screen. */
     val TunnelFlash = Color(0xFFFFFFFF)

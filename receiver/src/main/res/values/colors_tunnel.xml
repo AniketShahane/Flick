@@ -13,5 +13,7 @@
     <color name="tunnel_streak_white">#FFFFFFFF</color>
     <color name="tunnel_streak_blue">#FF9FC0FF</color>
     <color name="tunnel_streak_amber">#FFFFB61E</color>
-    <color name="tunnel_window">#FFEAF0FF</color>
+    <color name="tunnel_porthole_base">#FF17297A</color>
+    <color name="tunnel_porthole_light">#E69FC0FF</color>
+    <color name="tunnel_porthole_light_edge">#009FC0FF</color>
 </resources>

@@ -206,8 +206,22 @@ object FlickMotion {
     /** The handshake copy leaving once the film is in the window. */
     const val TUNNEL_CAPTION_OUT_MS = 400
 
-    /** The window flying down the tunnel to fill the screen. */
-    const val TUNNEL_EXPAND_MS = 700
+    /**
+     * The porthole flying down the tunnel to fill the screen, on [TunnelExpand]; then
+     * [TUNNEL_SETTLE_MS] for the tunnel's fade and the flash to finish before the screen
+     * is handed over.
+     */
+    const val TUNNEL_EXPAND_MS = 640
+    const val TUNNEL_SETTLE_MS = 80L
+
+    /**
+     * The window's approach while the cast arrives: from [TUNNEL_APPROACH_FROM] of its size
+     * toward the whole of it as `1 − e^(−t / τ)`, τ = [TUNNEL_APPROACH_TAU_MS], from the
+     * tunnel's first frame. Bounded and never still, because the handshake's length is
+     * unknown. `drawable/tunnel_loop.xml` and `tunnel_window.xml` carry the same curve.
+     */
+    const val TUNNEL_APPROACH_FROM = 0.55f
+    const val TUNNEL_APPROACH_TAU_MS = 1_600f
 
     /** The flash as the window takes the screen: [TUNNEL_FLASH_PEAK] white, gone over the expansion's first third. */
     const val TUNNEL_FLASH_PEAK = 0.35f
@@ -223,8 +237,14 @@ object FlickMotion {
     /** A re-cast: the paused film drawn back down into the window. */
     const val TUNNEL_SHRINK_MS = 600
 
-    /** Accelerating away from the window, then landing softly on the screen's edges. */
-    val TunnelExpand: Easing = CubicBezierEasing(0.55f, 0f, 0.15f, 1f)
+    /**
+     * Ease-in heavy: it leaves with no speed of its own, so the window carries on at its
+     * approach's speed, and it is quickest at the end, as the cast arrives.
+     */
+    val TunnelExpand: Easing = CubicBezierEasing(0.5f, 0f, 0.9f, 0.6f)
+
+    /** The porthole closing in on a re-cast's old film: quick, then settling onto the window. */
+    val TunnelShrink: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
     // --- tvPulse envelope ---------------------------------------------------
 
@@ -427,8 +447,8 @@ object FlickMotion {
     /** See [TUNNEL_EXPAND_MS]. Nothing re-aims it: a key during the dwell only starts it sooner. */
     fun tunnelExpand(): TweenSpec<Float> = tween(TUNNEL_EXPAND_MS, easing = TunnelExpand)
 
-    /** See [TUNNEL_SHRINK_MS]: [TunnelExpand] run backwards, so the film leaves the screen the way it arrives. */
-    fun tunnelShrink(): TweenSpec<Float> = tween(TUNNEL_SHRINK_MS, easing = TunnelExpand)
+    /** See [TUNNEL_SHRINK_MS]. */
+    fun tunnelShrink(): TweenSpec<Float> = tween(TUNNEL_SHRINK_MS, easing = TunnelShrink)
 
     /** The flash decaying. */
     fun tunnelFlash(): TweenSpec<Float> = tween(TUNNEL_FLASH_MS, easing = LinearEasing)

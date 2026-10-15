@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Writes the handshake tunnel's drawables: tunnel_loop.xml (rings, streaks, the window
-and its breathing halo) and tunnel_wash.xml (the static wash and glow under them).
+"""Writes the handshake tunnel's drawables: tunnel_loop.xml (rings, streaks and the halo
+breathing around the window), tunnel_wash.xml (the static wash and glow under them) and
+tunnel_window.xml (the porthole's pane before the film shows through it).
 
 The tunnel is an AnimatedVectorDrawable because that is the one public animation the
 platform runs on the RenderThread: it keeps flowing while the main thread is blocked at a
@@ -52,6 +53,14 @@ FADE_IN_MS = 360
 BREATH_MS = 900
 BREATH_SCALE = 1.05
 GLOW_REACH = 2.2          # the glow is this many times the window's size
+# The window's approach: it grows from APPROACH_FROM of its size toward its full size as
+# 1 - exp(-t / tau), on the RenderThread so a stalled main thread never stops it. Must
+# match TUNNEL_APPROACH_* in HouseLights.kt.
+APPROACH_FROM = 0.55
+APPROACH_TAU_MS = 1600.0
+APPROACH_MS = 12000
+APPROACH_SAMPLES = 32
+PANE_BLEED = 1.0          # viewport units the porthole's pane overlaps the cutout by
 HALO = [(5.0, 6.0, 0.22), (12.0, 10.0, 0.08)]  # (offset from the window, stroke, alpha)
 SAMPLES = 16
 
@@ -228,6 +237,31 @@ def main():
             "\n    </target>" % (name, FADE_IN_MS)
         )
 
+    def approach_size(t_ms):
+        return APPROACH_FROM + (1 - APPROACH_FROM) * (1 - math.exp(-t_ms / APPROACH_TAU_MS))
+
+    # Denser early, where it moves fastest.
+    approach_stops = sorted({(i / APPROACH_SAMPLES) ** 2 for i in range(APPROACH_SAMPLES + 1)})
+    approach_target = (
+        '\n    <target android:name="approach">'
+        '\n        <aapt:attr name="android:animation">'
+        '\n            <objectAnimator android:duration="%d" android:interpolator="@android:anim/linear_interpolator">%s%s'
+        "\n            </objectAnimator>"
+        "\n        </aapt:attr>"
+        "\n    </target>"
+        % (
+            APPROACH_MS,
+            pvh("scaleX", [(fr, fr) for fr in approach_stops], lambda fr: approach_size(fr * APPROACH_MS)),
+            pvh("scaleY", [(fr, fr) for fr in approach_stops], lambda fr: approach_size(fr * APPROACH_MS)),
+        )
+    )
+
+    def approaching(body):
+        return (
+            '\n        <group android:name="approach" android:pivotX="%s" android:pivotY="%s" android:scaleX="%s" android:scaleY="%s">%s'
+            "\n        </group>" % (f(VP_X), f(VP_Y), f(APPROACH_FROM), f(APPROACH_FROM), body)
+        )
+
     def document(name, body, targets):
         return (
             '<?xml version="1.0" encoding="utf-8"?>'
@@ -254,8 +288,29 @@ def main():
         '\n        <group android:name="breath" android:pivotX="%s" android:pivotY="%s">%s'
         "\n        </group>"
         "%s"
-        '\n        <path android:name="window" android:pathData="%s" android:fillColor="@color/tunnel_window" />'
-        % (f(VP_X), f(VP_Y), halo, "".join(paths), win)
+        % (f(VP_X), f(VP_Y), halo, "".join(paths))
+    )
+    # The porthole before the film is up: an opaque blue with a soft light in it. One unit
+    # larger than the cutout all round, so the two antialiased edges never leave a seam.
+    pane = rounded_rect(VP_X, VP_Y, WIN_W + 2 * PANE_BLEED, WIN_H + 2 * PANE_BLEED, WIN_R + PANE_BLEED)
+    light_r = WIN_W / 2
+    window_body = (
+        '\n        <path android:name="window" android:pathData="%s" android:fillColor="@color/tunnel_porthole_base" />'
+        '\n        <group android:pivotX="%s" android:pivotY="%s" android:scaleY="%s">'
+        '\n            <path android:name="light" android:pathData="M%s,%s a%s,%s 0 1 0 %s,0 a%s,%s 0 1 0 -%s,0 z">'
+        '\n                <aapt:attr name="android:fillColor">'
+        '\n                    <gradient android:type="radial" android:centerX="%s" android:centerY="%s" android:gradientRadius="%s">'
+        '\n                        <item android:offset="0" android:color="@color/tunnel_porthole_light" />'
+        '\n                        <item android:offset="1" android:color="@color/tunnel_porthole_light_edge" />'
+        "\n                    </gradient>"
+        "\n                </aapt:attr>"
+        "\n            </path>"
+        "\n        </group>"
+        % (
+            pane, f(VP_X), f(VP_Y), f(WIN_H / WIN_W),
+            f(VP_X - light_r), f(VP_Y), f(light_r), f(light_r), f(2 * light_r), f(light_r), f(light_r), f(2 * light_r),
+            f(VP_X), f(VP_Y), f(light_r),
+        )
     )
     # Nothing in the wash animates but its fade, which is the drawable's root alpha: that is
     # applied when its cached bitmap is composited, so the gradients are rasterised once.
@@ -290,8 +345,9 @@ def main():
     )
     drawables = os.path.join(root, "src", "main", "res", "drawable")
     for name, xml in (
-        ("tunnel_loop.xml", document("tunnel", loop_body, fade("tunnel") + breath + "".join(targets))),
+        ("tunnel_loop.xml", document("tunnel", approaching(loop_body), fade("tunnel") + approach_target + breath + "".join(targets))),
         ("tunnel_wash.xml", document("wash_root", wash_body, fade("wash_root"))),
+        ("tunnel_window.xml", document("window_root", approaching(window_body), fade("window_root") + approach_target)),
     ):
         path = os.path.join(drawables, name)
         with open(path, "w") as fh:

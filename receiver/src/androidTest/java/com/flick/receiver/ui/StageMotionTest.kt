@@ -29,7 +29,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import com.flick.receiver.ui.components.DisplayCadenceSource
-import com.flick.receiver.ui.components.FilmPose
+import com.flick.receiver.ui.components.FilmStaging
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
 import com.flick.receiver.ui.components.RATE_KNOWN_WAIT_MS
@@ -101,8 +101,11 @@ class StageMotionTest {
     private var pin by mutableFloatStateOf(0f)
     private val cadence = FakeDisplayCadence()
     private val keys = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
-    private val pose = FilmPose()
+    private val staging = FilmStaging()
     private var filmView: View? = null
+
+    // The retained face over the film's view: up until onLightsDown, like the real shell.
+    private var roomShown by mutableStateOf(true)
     private var lightsDown = 0
     private var up = 0
     private var settled = 0
@@ -124,7 +127,22 @@ class StageMotionTest {
             FlickTvTheme {
                 CompositionLocalProvider(LocalReducedMotion provides reduced) {
                     Box(Modifier.fillMaxSize()) {
-                        Box(Modifier.fillMaxSize().drawBehind { drawRect(Brush.verticalGradient(STANDBY)) })
+                        if (stage == HouseStage.Handshake || stage == HouseStage.Film) {
+                            AndroidView(
+                                modifier = Modifier.fillMaxSize(),
+                                factory = { context ->
+                                    View(context).apply {
+                                        background = GradientDrawable(
+                                            GradientDrawable.Orientation.TOP_BOTTOM,
+                                            intArrayOf(FILM[0].toArgb(), FILM[1].toArgb()),
+                                        )
+                                        filmView = this
+                                    }
+                                },
+                                onRelease = { if (filmView === it) filmView = null },
+                            )
+                        }
+                        if (roomShown) Box(Modifier.fillMaxSize().drawBehind { drawRect(Brush.verticalGradient(STANDBY)) })
                         HouseLights(
                             stage = stage,
                             filmDim = filmDim,
@@ -134,34 +152,17 @@ class StageMotionTest {
                             title = TITLE,
                             cadence = cadence,
                             keyPresses = keys,
-                            filmPose = pose,
-                            onLightsDown = { lightsDown++ },
+                            filmStaging = staging,
+                            onLightsDown = {
+                                lightsDown++
+                                roomShown = false
+                            },
                             onPictureUp = { up++ },
                             onPictureSettled = { settled++ },
                             now = { composeRule.mainClock.currentTime },
                             offstage = offstage,
                             leastShownMs = leastShownMs,
-                        ) {
-                            if (stage == HouseStage.Handshake || stage == HouseStage.Film) {
-                                AndroidView(
-                                    modifier = Modifier.fillMaxSize(),
-                                    factory = { context ->
-                                        View(context).apply {
-                                            background = GradientDrawable(
-                                                GradientDrawable.Orientation.TOP_BOTTOM,
-                                                intArrayOf(FILM[0].toArgb(), FILM[1].toArgb()),
-                                            )
-                                            pose.attach(this)
-                                            filmView = this
-                                        }
-                                    },
-                                    onRelease = {
-                                        pose.detach(it)
-                                        if (filmView === it) filmView = null
-                                    },
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }
@@ -172,11 +173,28 @@ class StageMotionTest {
     /** Exactly [ms] of virtual time, not rounded up to a whole test-clock frame. */
     private fun advance(ms: Long) = composeRule.mainClock.advanceTimeBy(ms, ignoreFrameDuration = true)
 
-    private fun frame() = composeRule.mainClock.advanceTimeByFrame()
+    /** One harness frame; the film's view must be whole and untouched after every one. */
+    private fun frame() {
+        composeRule.mainClock.advanceTimeByFrame()
+        assertFilmUntouched()
+    }
+
+    private fun assertFilmUntouched() = composeRule.runOnIdle {
+        filmView?.let {
+            assertTrue(
+                "the film's view was transformed: scale ${it.scaleX}x${it.scaleY} " +
+                    "at ${it.translationX},${it.translationY} alpha ${it.alpha}",
+                it.scaleX == 1f && it.scaleY == 1f && it.translationX == 0f && it.translationY == 0f && it.alpha == 1f,
+            )
+        }
+    }
 
     /** Sets the stage and returns the seam's time; the write lands on the next frame. */
     private fun cut(to: HouseStage): Long {
-        composeRule.runOnIdle { stage = to }
+        composeRule.runOnIdle {
+            stage = to
+            if (to == HouseStage.Room || to == HouseStage.Fault) roomShown = true
+        }
         return composeRule.mainClock.currentTime
     }
 
@@ -228,13 +246,32 @@ class StageMotionTest {
     private fun tunnelExists(): Boolean =
         composeRule.onAllNodesWithTag(TUNNEL_TAG).fetchSemanticsNodes().isNotEmpty()
 
-    /** The window's centre, where the film's own centre sits while it is in the window. */
-    private fun PixelMap.window(): Float = luma(0.5f, TUNNEL_VANISH_Y)
 
-    /** The film's view as the stage last left it. */
-    private fun filmScale(): Float = composeRule.runOnIdle { filmView?.scaleX ?: Float.NaN }
+    /** The film stand-in is a deep red: nothing of the tunnel, the room or the flash reads as one. */
+    private fun PixelMap.filmAt(x: Int, y: Int): Boolean {
+        val c = this[x.coerceIn(0, width - 1), y.coerceIn(0, height - 1)]
+        // Red over green rules out the amber ring and streaks, even under the flash.
+        return c.red > 0.6f && c.red - c.blue > 0.25f && c.red > 1.8f * c.green
+    }
 
-    private fun filmShown(): Boolean = composeRule.runOnIdle { (filmView?.alpha ?: 0f) > 0f }
+    private fun PixelMap.windowShowsFilm(): Boolean =
+        filmAt(width / 2, (TUNNEL_VANISH_Y * height).roundToInt())
+
+    /** The porthole's lit pane: a pale blue, well above the wash. */
+    private fun PixelMap.windowGlows(): Boolean {
+        val c = this[width / 2, (TUNNEL_VANISH_Y * height).roundToInt()]
+        return c.blue - c.red > 0.2f && lumaOf(c) > 0.45f
+    }
+
+    /** The porthole's left edge on the vanishing point's row: the first film pixel, or null if none shows. */
+    private fun PixelMap.portholeLeft(): Int? {
+        val y = (TUNNEL_VANISH_Y * height).roundToInt()
+        return (0..width / 2).firstOrNull { filmAt(it, y) }
+    }
+
+    /** The porthole's left edge with the window at [approach] of its full size. */
+    private fun windowLeft(px: PixelMap, approach: Float = 1f): Float =
+        px.width * (1f - TUNNEL_WINDOW_FRACTION * approach) / 2f
 
     // Past the tunnel's least time on screen, so a reveal waits on the display alone.
     private fun settleHandshake() {
@@ -261,7 +298,7 @@ class StageMotionTest {
             val t = since(seam)
             val px = shot("theTunnelRisesOverTheRoom", seam)
             assertTrue("the tunnel's overlay must be composed from the seam's first frame (t=$t)", tunnelExists())
-            assertTrue("the film's view showed before its first frame (t=$t)", !filmShown())
+            assertTrue("the film showed through the porthole before its first frame (t=$t)", !px.windowShowsFilm())
             if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
             if (lightsDownAt == null && lightsDown == 1) lightsDownAt = t
         }
@@ -274,8 +311,10 @@ class StageMotionTest {
             captionSeenAt != null && captionSeenAt in captionFrom..captionFrom + 300)
         val px = shot("theTunnelRisesOverTheRoom", seam)
         assertTrue("the room still showed at the corner: $room → ${px.luma(0.05f, 0.05f)}", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
-        assertEquals("the film's view is not in the window", TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+        assertTrue("the porthole does not glow", px.windowGlows())
+        // The window's approach never grows it past its full size, which the copy sits under.
+        val windowBottom = (TUNNEL_VANISH_Y + TUNNEL_WINDOW_FRACTION / 2f) * px.height
+        assertTrue("the copy is under the window's reach", headlineBounds().top > windowBottom)
     }
 
     @Test
@@ -286,41 +325,58 @@ class StageMotionTest {
         launch()
         settleHandshake()
         val seam = cut(HouseStage.Film)
-        var shownAt: Long? = null
+        var upAt: Long? = null
+        var filmInAt: Long? = null
+        var crossfading = false
         var settledAt: Long? = null
-        var lastScale = 0f
+        var lastLeft = Int.MAX_VALUE / 2
         var expandFrom: Long? = null
+        val lefts = mutableListOf<Pair<Long, Int>>()
         while (since(seam) < 2_400) {
             frame()
             val t = since(seam)
             val px = shot("theFilmPlaysInTheWindowThenTakesTheScreen", seam)
-            if (shownAt == null && up == 1) {
-                shownAt = t
-                assertTrue("the film was not shown with the picture", filmShown())
+            if (upAt == null && up == 1) upAt = t
+            val windowY = (TUNNEL_VANISH_Y * px.height).roundToInt()
+            val centre = px[px.width / 2, windowY]
+            // Neither the lit pane nor the film: the two mid-crossfade.
+            if (upAt != null && filmInAt == null && !px.windowGlows() && !px.windowShowsFilm()) crossfading = true
+            if (filmInAt == null && px.windowShowsFilm()) filmInAt = t
+            val left = px.portholeLeft()
+            if (left != null) {
+                assertTrue("the porthole narrowed at $t ms: $lastLeft → $left", left <= lastLeft + 2)
+                lastLeft = left
+                if (expandFrom == null && left < windowLeft(px) - 4f) expandFrom = t
             }
-            val scale = filmScale()
-            assertTrue("the film shrank at $t ms: $lastScale → $scale", scale >= lastScale - 0.0001f)
-            if (expandFrom == null && scale > TUNNEL_WINDOW_FRACTION + 0.0001f) expandFrom = t
-            lastScale = scale
-            if (shownAt != null && t - shownAt in FlickMotion.TUNNEL_FILM_IN_MS + 40L until FlickMotion.TUNNEL_DWELL_MS) {
-                // In the window: the film inside, the tunnel around it.
-                assertEquals("the film is not in the window at $t ms", lumaOf(filmAt(0.5f)), px.window(), 0.05f)
-                assertTrue("the tunnel is not around the window at $t ms", px.luma(0.05f, 0.05f) < WASH_DARK)
+            if (left != null) lefts += t to left
+            if (filmInAt != null && expandFrom == null && t - filmInAt in 40L until FlickMotion.TUNNEL_DWELL_MS - 300) {
+                // In the porthole: the full-size film's own centre, the tunnel all round it,
+                // and the window still on its approach.
+                assertTrue("the porthole is not the approaching window at $t ms (centre $centre): $left",
+                    left!! >= windowLeft(px) - 3f && left <= windowLeft(px, FlickMotion.TUNNEL_APPROACH_FROM) + 3f)
+                assertTrue("the tunnel is not around the porthole at $t ms", px.luma(0.05f, 0.05f) < WASH_DARK)
                 assertEquals("onPictureSettled during the dwell", 0, settled)
             }
             if (settledAt == null && settled == 1) settledAt = t
         }
         assertEquals("onPictureUp exactly once", 1, up)
-        assertTrue("the film came up at $shownAt ms, not within three frames", shownAt != null && shownAt <= 3 * HARNESS_FRAME_MS.toLong() + 2)
-        val dwell = expandFrom!! - shownAt!!
-        assertTrue("the film dwelt $dwell ms in the window", dwell in FlickMotion.TUNNEL_DWELL_MS..FlickMotion.TUNNEL_DWELL_MS + 50)
-        val took = settledAt!! - expandFrom
-        assertTrue("the expansion settled after $took ms", took in FlickMotion.TUNNEL_EXPAND_MS - 40L..FlickMotion.TUNNEL_EXPAND_MS + 60L)
-        assertEquals(1f, filmScale(), 0f)
+        assertTrue("the picture came up at $upAt ms, not within three frames", upAt != null && upAt <= 3 * HARNESS_FRAME_MS.toLong() + 2)
+        assertTrue("the pane cut to the film instead of crossfading", crossfading)
+        assertTrue("the film showed through at $filmInAt ms", filmInAt != null && filmInAt - upAt!! <= FlickMotion.TUNNEL_FILM_IN_MS + 40)
+        val show = FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS + FlickMotion.TUNNEL_SETTLE_MS
+        val took = settledAt!! - upAt!!
+        assertTrue("the dwell and expansion took $took ms, not about $show", took in show..show + 120)
+        // The expansion leaves at the approach's own speed: no frame around its start jumps.
+        val expandAt = upAt!! + FlickMotion.TUNNEL_DWELL_MS
+        lefts.zipWithNext().filter { (a, _) -> a.first in expandAt - 48..expandAt + 48 }.forEach { (a, b) ->
+            assertTrue("the porthole jumped ${a.second - b.second} px at ${b.first} ms", a.second - b.second <= 3)
+        }
         assertTrue("the tunnel outlived the expansion", !tunnelExists())
         val film = shot("theFilmPlaysInTheWindowThenTakesTheScreen", seam)
+        assertEquals("the porthole did not open onto the whole screen", 0, film.portholeLeft())
         assertEquals("the film does not fill the screen", lumaOf(filmAt(0.05f)), film.luma(0.5f, 0.05f), 0.03f)
     }
+
 
     @Test
     fun theWindowTakesTheScreenWithAFlash() {
@@ -350,18 +406,19 @@ class StageMotionTest {
         settleHandshake()
         cut(HouseStage.Film)
         while (up == 0) frame()
-        advance(300)
-        assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+        advance(400)
+        val before = shot().portholeLeft()!!
         val key = composeRule.mainClock.currentTime
         keys.tryEmit(Unit)
-        // One frame to take the key, one to start the expansion, one to move it.
-        frame()
-        frame()
-        frame()
-        assertTrue("a key must start the expansion at once", filmScale() > TUNNEL_WINDOW_FRACTION)
-        while (settled == 0 && since(key) < 1_200) frame()
-        assertTrue("settled ${since(key)} ms after the key", since(key) <= FlickMotion.TUNNEL_EXPAND_MS + 80)
+        // The expansion leaves slowly by design; ten frames in it has clearly gone.
+        repeat(10) { frame() }
+        val after = shot().portholeLeft()!!
+        assertTrue("a key must start the expansion at once: $before → $after", before - after > 8)
+        while (settled == 0 && since(key) < 1_400) frame()
+        assertTrue("settled ${since(key)} ms after the key",
+            since(key) <= FlickMotion.TUNNEL_EXPAND_MS + FlickMotion.TUNNEL_SETTLE_MS + 80)
     }
+
 
     /** A re-cast landing while the last film still dwells in the window. */
     @Test
@@ -380,15 +437,18 @@ class StageMotionTest {
             frame()
             val t = since(seam)
             val px = shot("aReCastDuringTheDwellDrawsTheFilmBackWithoutGrowingIt", seam)
-            assertTrue("the film grew toward the screen at $t ms: ${filmScale()}", filmScale() <= TUNNEL_WINDOW_FRACTION + 0.0001f)
+            px.portholeLeft()?.let {
+                assertTrue("the porthole widened at $t ms: $it", it >= windowLeft(px) - 3f)
+            }
             if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
         }
         assertTrue("the headline never came back", captionSeenAt != null)
-        assertTrue("the old film still shows in the window", !filmShown())
         val px = shot()
-        assertTrue("the tunnel is not around the window", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the old film still shows in the porthole", !px.windowShowsFilm())
+        assertTrue("the tunnel is not around the porthole", px.luma(0.05f, 0.05f) < WASH_DARK)
+        assertTrue("the porthole does not glow", px.windowGlows())
     }
+
 
     /** Stop then loadMedia while the last film's window is still taking the screen. */
     @Test
@@ -401,7 +461,9 @@ class StageMotionTest {
         cut(HouseStage.Film)
         while (up == 0) frame()
         advance(FlickMotion.TUNNEL_DWELL_MS + 300)
-        assertTrue("not mid-expansion", filmScale() > TUNNEL_WINDOW_FRACTION && filmScale() < 1f)
+        val mid = shot()
+        val midLeft = mid.portholeLeft()
+        assertTrue("not mid-expansion: $midLeft", midLeft != null && midLeft in 1 until windowLeft(mid).toInt())
         cut(HouseStage.Room)
         advance(100)
         val seam = cut(HouseStage.Handshake)
@@ -411,17 +473,45 @@ class StageMotionTest {
             val t = since(seam)
             val px = shot("aStopAndReCastMidExpansionStartsTheTunnelWhole", seam)
             if (captionSeenAt == null && px.glyphEnergy(headlineBounds()) > GLYPHS_VISIBLE) captionSeenAt = t
-            if (t > 40) {
-                assertTrue("the film's view showed in the new handshake at $t ms", !filmShown())
-                assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
-            }
+            if (t > 40) assertTrue("the film showed through the new handshake at $t ms", !px.windowShowsFilm())
         }
         assertTrue("the headline never came back", captionSeenAt != null)
         val px = shot()
         // The tunnel back at full strength and scale, and no flash left over it.
         assertTrue("the tunnel did not come back over the corner: ${px.luma(0.05f, 0.05f)}", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the porthole does not glow", px.windowGlows())
         assertTrue("the tunnel was not left up for the handshake", tunnelExists())
+    }
+
+
+    /** The porthole is a clip on plain views: nothing of the tunnel renders the screen offscreen. */
+    @Test
+    fun theTunnelDrawsWithoutAnOffscreenLayer() {
+        rate = 60f
+        cadence.physicalHz = 60f
+        cadence.blank = false
+        launch()
+        settleHandshake()
+        assertNoOffscreenTunnel()
+        cut(HouseStage.Film)
+        while (up == 0) frame()
+        advance(FlickMotion.TUNNEL_DWELL_MS + 300)
+        assertNoOffscreenTunnel()
+    }
+
+    private fun assertNoOffscreenTunnel() = composeRule.runOnIdle {
+        val root = filmView!!.rootView
+        val tunnel = generateSequence(listOf(root)) { level ->
+            level.flatMap { v -> if (v is android.view.ViewGroup) (0 until v.childCount).map(v::getChildAt) else emptyList() }
+                .ifEmpty { null }
+        }.flatten().first { it.javaClass.simpleName == "TunnelBackdropView" } as android.view.ViewGroup
+        assertEquals("the tunnel has a layer", View.LAYER_TYPE_NONE, tunnel.layerType)
+        assertEquals("the tunnel takes a group alpha", 1f, tunnel.alpha, 0f)
+        for (i in 0 until tunnel.childCount) {
+            val child = tunnel.getChildAt(i)
+            assertEquals(View.LAYER_TYPE_NONE, child.layerType)
+            assertTrue("a tunnel layer would render its alpha offscreen", !child.hasOverlappingRendering())
+        }
     }
 
     @Test
@@ -434,16 +524,17 @@ class StageMotionTest {
         cut(HouseStage.Film)
         advance(400)
         assertEquals(0, up)
-        assertTrue("the film showed inside the hold", !filmShown())
+        assertTrue("the film showed inside the hold", !shot().windowShowsFilm())
         cadence.physicalHz = 23.976f
         cadence.emitChange(composeRule.mainClock.currentTime)
         advance(499)
         assertEquals("the picture came up inside the resync grace", 0, up)
-        assertTrue("the film showed inside the resync grace", !filmShown())
+        assertTrue("the film showed inside the resync grace", !shot().windowShowsFilm())
         frame()
         frame()
         assertEquals("the picture did not come up once the grace ran out", 1, up)
-        assertTrue("the film was not shown with the picture", filmShown())
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 40L)
+        assertTrue("the film did not show through once the picture came up", shot().windowShowsFilm())
     }
 
     @Test
@@ -651,7 +742,7 @@ class StageMotionTest {
         }
         val px = shot()
         assertTrue("the tunnel did not rise", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the porthole does not glow", px.windowGlows())
         assertEquals(lightsDownBefore + 1, lightsDown)
         assertTrue("the tunnel was not left up for the handshake", tunnelExists())
     }
@@ -663,14 +754,14 @@ class StageMotionTest {
         val start = composeRule.mainClock.currentTime
         while (since(start) < 700) {
             frame()
-            shot("aFirstCompositionIntoAHandshakeRunsTheTunnel", start)
-            assertTrue("the film's view showed before its first frame", !filmShown())
+            val px = shot("aFirstCompositionIntoAHandshakeRunsTheTunnel", start)
+            assertTrue("the film showed through before its first frame", !px.windowShowsFilm())
             if (since(start) in 40L until FlickMotion.TUNNEL_FADE_IN_MS) assertEquals("onLightsDown must fire at once", 1, lightsDown)
         }
         assertEquals(1, lightsDown)
         val px = shot()
         assertTrue("the tunnel did not rise", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the porthole does not glow", px.windowGlows())
         assertTrue("the tunnel was not left up for the handshake", tunnelExists())
     }
 
@@ -691,11 +782,11 @@ class StageMotionTest {
         while (since(handshake) < FlickMotion.TUNNEL_MIN_SHOWN_MS) {
             frame()
             val t = since(handshake)
-            shot("aQuickFirstFrameWaitsForTheTunnelsLeastTime", handshake)
+            val px = shot("aQuickFirstFrameWaitsForTheTunnelsLeastTime", handshake)
             assertEquals("the picture came up before the tunnel's least time at $t ms", upBefore, up)
             if (t > 400 + 2 * FlickMotion.TUNNEL_FILM_IN_MS + 40) {
-                assertTrue("the held first frame showed in the window at $t ms", !filmShown())
-                assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
+                assertTrue("the held first frame showed in the porthole at $t ms", !px.windowShowsFilm())
+                assertTrue("the porthole does not glow at $t ms", px.windowGlows())
             }
         }
         while (up == upBefore && since(handshake) < 2_000) frame()
@@ -807,19 +898,21 @@ class StageMotionTest {
         frame()
         val first = shot("reCastDrawsTheOldFilmBackIntoTheWindow", seam).luma(0.5f, 0.1f)
         assertEquals("the dim must start at the paused film's", film + (canvas - film) * 0.34f, first, 0.03f)
-        var lastScale = filmScale()
+        var lastLeft = 0
+        var closedOnWindow = false
         while (since(seam) < FlickMotion.TUNNEL_SHRINK_MS + 2 * FlickMotion.TUNNEL_FILM_IN_MS + 100) {
             frame()
-            shot("reCastDrawsTheOldFilmBackIntoTheWindow", seam)
-            val scale = filmScale()
-            assertTrue("the film grew at ${since(seam)} ms: $lastScale → $scale", scale <= lastScale + 0.0001f)
-            lastScale = scale
+            val px = shot("reCastDrawsTheOldFilmBackIntoTheWindow", seam)
+            val left = px.portholeLeft() ?: continue
+            assertTrue("the porthole widened at ${since(seam)} ms: $lastLeft → $left", left >= lastLeft - 2)
+            lastLeft = left
+            if (left >= windowLeft(px) - 3f) closedOnWindow = true
         }
-        assertEquals(TUNNEL_WINDOW_FRACTION, filmScale(), 0.0001f)
-        assertTrue("the old film still shows in the window", !filmShown())
+        assertTrue("the porthole never closed onto the window", closedOnWindow)
         val px = shot()
+        assertTrue("the old film still shows in the porthole", !px.windowShowsFilm())
         assertTrue("the tunnel did not rise around the window", px.luma(0.05f, 0.05f) < WASH_DARK)
-        assertEquals("the window does not glow", lumaOf(FlickColor.TunnelWindow), px.window(), 0.04f)
+        assertTrue("the porthole does not glow", px.windowGlows())
     }
 
     @Test
@@ -929,14 +1022,13 @@ class StageMotionTest {
         assertEquals(1, lightsDown)
         assertTrue(tunnelExists())
         composeRule.onNodeWithText(HEADLINE).assertExists()
-        assertEquals("no tunnel window under reduced motion", 1f, filmScale(), 0f)
 
         cut(HouseStage.Film)
         oneStep()
         assertEquals("the pending switch must not hold a reduced-motion reveal", 1, up)
         assertEquals(1, settled)
         assertTrue(!tunnelExists())
-        assertTrue(filmShown())
+        assertTrue(shot().windowShowsFilm())
         val film = shot().luma(0.5f, 0.1f)
 
         composeRule.runOnIdle { filmDim = 0.5f }
@@ -984,7 +1076,7 @@ class StageMotionTest {
         const val WASH_DARK = 0.12f
 
         val STANDBY = listOf(Color.White, Color(0xFFFFB61E))
-        val FILM = listOf(Color.White, Color(0xFF1240E8))
+        val FILM = listOf(Color(0xFFE0204A), Color(0xFFC01070))
 
         fun lumaOf(c: Color): Float = 0.2126f * c.red + 0.7152f * c.green + 0.0722f * c.blue
     }

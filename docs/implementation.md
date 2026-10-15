@@ -789,25 +789,37 @@ Refresh-rate matching is **derived state, never a latch**. `preferredWindowRefre
 
 Every stage seam — launch, a cast arriving, the first frame, a cast ending, a fault — is
 drawn as the light of a projection room. The handshake itself is the **tunnel**: the room
-falls into a blue hyperspace tunnel with a glowing window at its far end, the film starts
-playing inside that window, and the window then flies down the tunnel to fill the screen.
-`ReceiverApp`'s root box stacks, bottom to top:
+falls into a blue hyperspace tunnel with a glowing window at its far end that keeps
+approaching while the cast arrives; the film starts playing behind that window, which becomes
+a porthole onto it, and the porthole then flies open to fill the screen. `ReceiverApp`'s root
+box stacks, bottom to top:
 
-1. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
-   crossfades, no travel), composed only while a live or retained face exists — never during
-   playback. It sits under everything else so the tunnel can rise over a retained face.
-2. `HouseLights` (`ui/components/HouseLights.kt`), which owns its own layers, bottom to top:
-   the tunnel's loop (an `AndroidView`); the stage router, passed in as `HouseLights`' `film`
-   slot — `Active` → `PlaybackScreen { playerSurface() }` plus the metrics overlay,
-   `Checking`/`Preparing` → `ConnectingScreen { playerSurface() }`, a bare `Box` around the
-   surface; the draw-only curtain; and the tunnel's overlay (the window's cover, the film's
-   bezel, the copy and the flash). The order is the point: the player's `SurfaceView` punches
-   its hole at its transformed rect, so what is drawn before it (the tunnel) shows around the
-   window and what is drawn after it (the overlay) covers the film.
-3. The rename dialog, in its own window. A cast arriving removes it from composition outright,
+1. `StageFilmLayers`: the player surface, hosted **once** for the whole cast — composed at one
+   place from `Checking` to the end of `Active`, never moved — and, at `Active`, the
+   `PlaybackScreen` over it (with `drawsCanvas = false`, since the film is beneath it) plus the
+   metrics overlay. The video's view is never scaled, moved or faded: it is always the
+   full-size film.
+2. The non-video shell: `None` and `Error` as one `AnimatedContent` (Standby ↔ Fault
+   crossfades, no travel), composed only while a live or retained face exists. A retained face
+   covers the freshly made, still-black player view until the tunnel is over it.
+3. `HouseLights` (`ui/components/HouseLights.kt`), bottom to top: the tunnel (an
+   `AndroidView`, opaque but for its porthole), the draw-only curtain, and the tunnel's overlay
+   (the bezel round the porthole, the copy and the flash).
+4. The rename dialog, in its own window. A cast arriving removes it from composition outright,
    so its own drawn exit never runs. The dialog window therefore keeps a platform exit
    animation (`Animation.Flick.RenameDialog`: no enter, a 150 ms alpha-only `decelerate_quad`
    fade out); under reduced motion it has none.
+
+**One surface per cast.** The player surface used to be `movableContentOf`, moved from the
+handshake's `ConnectingScreen` into `PlaybackScreen` at `Active`. Moving an `AndroidView` to
+another parent detaches it from the window, and a detached `SurfaceView` destroys its surface:
+on the emulator the move logs `destroyed, detached, attached, created, changed`, and on the TV
+it showed as two or three `MediaCodec: setting surface generation` within 250 ms of the first
+frame on every cast — a dropped picture, and for Dolby Vision a re-bound pipeline, just as the
+film arrives. `StageFilmLayers` keeps the surface's composition group in one place across
+Checking → Preparing → Active (`StageFilmHostTest`), and `PlayerSurface` logs its life under
+`[surface]` (`view attached`, `created`, `changed w=… h=…`, `destroyed`, `view detached`): a
+healthy cast shows one creation and nothing more until it ends.
 
 The root box's background is the lit room only at `None` and `Error`; from the handshake on it
 is `FlickColor.Canvas`, the dark a summoned tunnel rises out of.
@@ -827,8 +839,8 @@ restarting:
 | --- | --- | --- |
 | first composition at Room | Launch | seeded closed (identical to the window background), opens from the centre on `pictureUp()` 640 ms |
 | Room/Fault → Handshake | LightsDown | the outgoing face is retained, frozen and non-interactive, under the tunnel; the tunnel fades in over it (`TUNNEL_FADE_IN_MS` 360, on the RenderThread), and a curtain still drawing anything (a launch not yet open, a fault still dissolving, or an offstage seam's opaque Canvas) gives way to it over the same span; then `onLightsDown` drops the retained face and the curtain rests empty and closed `(0, 0)`. A seam seeded closed and fully dense (offstage, or a first composition into the handshake) calls `onLightsDown` at once |
-| Handshake → Film | PictureUp | the resync wait and the tunnel's least time on screen, in parallel; then the film appears in the window and plays; the window flies to the screen after the dwell (see *The tunnel* below) |
-| Film → Handshake | VeilIn (re-cast) | the paused film is drawn back down into the window over `tunnelShrink()` 600 ms while the tunnel rises behind it and the curtain, seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, clears to nothing over the same span; the window's glow then covers the old film (`TUNNEL_FILM_IN_MS` 240) and the film's view is hidden under it |
+| Handshake → Film | PictureUp | the resync wait and the tunnel's least time on screen, in parallel; then the film is released, and once its frames reach the screen the porthole's pane gives way to it; the porthole flies open after the dwell (see *The tunnel* below) |
+| Film → Handshake | VeilIn (re-cast) | the tunnel closes in on the paused, full-size film — the porthole shrinking from the whole screen to the window over `tunnelShrink()` 600 ms — while the curtain, seeded at `d = max(the dim PlaybackScreen drew over the last Active frame, a mid-lift veil)`, clears to nothing over the same span; the pane then lights over the old film (`TUNNEL_FILM_IN_MS` 240) |
 | Handshake/Film → Room | LightsUpRoom | the live standby composes interactive under a closed curtain; the tunnel's overlay leaves on `filmExit()` over it and the show is retired; the resync wait; `p` 0 → 1 on `pictureUp()`. From a handshake still rising it seeds from the live aperture, so a cancel in its first frames starts at `p` ≈ 1 and draws nothing |
 | Handshake/Film → Fault | LightsUpFault | same seeding, exit and wait, then a uniform `d` 1 → 0 on `crossDissolve()` — the aperture never moves for a fault |
 | Room ↔ Fault | Rest | none; the shell crossfades |
@@ -846,80 +858,89 @@ does **not** escape that: on API 36 it has no RenderThread backend at all (no `m
 field in `framework.jar`), so it is a main-thread `ValueAnimator`. The one public animation
 that runs on the RenderThread is an `AnimatedVectorDrawable` drawn on a hardware canvas, so:
 
-- **Two drawables**, both generated by `receiver/tools/gen_tunnel_avd.py` (edit the generator,
-  not the XML). `tunnel_wash.xml` is static: the radial wash (`TunnelWashCore` #1F3AA8 →
-  `TunnelWashMid` #0B1640 at 0.45 → Canvas at 0.75 of the stage width) and a glow 2.2 × the
-  window (`TunnelGlow*`). Its only animation is its fade, the drawable's root alpha, which is
-  applied when its cached bitmap is composited, so its gradients are rasterised once, at a
-  quarter of the screen's pixels. `tunnel_loop.xml` holds what moves and nothing smooth: a
-  halo of two soft outlines breathing around the window (scale 1 ↔ 1.05 over 900 ms each way);
-  seven 16:9 rounded-rect rings growing as
-  `1 + 4.2 q²` over a 3.1 s life, alpha rising over the first 12 % of `q` and falling linearly
-  to 0, on-screen stroke 1.5 → 3 dp, one ring amber; ten streaks squashed `y × 0.7` around the
-  vanishing point, travelling with `q²`, 20 → 72 dp long, white / #9FC0FF / amber; and the pale
-  window itself (`TunnelWindow` #EAF0FF). Each ring and streak loops on its own period with its
-  phase baked into its keyframes, wrapping where its alpha is 0, so the tunnel is full from its
-  first frame. Both fade 0 → 1 over `TUNNEL_FADE_IN_MS` 360, started in the same frame. The
-  palette lives twice — `colors_tunnel.xml` for the drawable, `FlickColor.Tunnel*` for Compose —
-  and `HouseLightsPlanTest` holds them, and the window's geometry and fade, equal.
-- The loop is drawn by `TunnelBackdropView` at **half resolution** and scaled up by the child view's
-  own `scaleX/Y` (`TUNNEL_RASTER_SCALE`): a vector drawable animating on the RenderThread is
-  re-rasterised into a bitmap and uploaded every frame, and the drawable sizes that bitmap from
-  the recorded canvas matrix, which a view property is not part of.
-- **Everything else** — the film appearing, the dwell, the expansion, the tunnel rushing past,
+- **Three drawables**, all generated by `receiver/tools/gen_tunnel_avd.py` (edit the
+  generator, not the XML). `tunnel_wash.xml` is static: the radial wash (`TunnelWashCore`
+  #1F3AA8 → `TunnelWashMid` #0B1640 at 0.45 → Canvas at 0.75 of the stage width) and a glow
+  2.2 × the window (`TunnelGlow*`). `tunnel_window.xml` is the porthole's pane before the film
+  shows: an opaque `TunnelPortholeBase` blue lit from its centre (`TunnelPortholeLight`
+  #9FC0FF), one unit larger than the porthole all round so the two antialiased edges leave no
+  seam. Each of these two animates only its fade (the drawable's root alpha, applied when its
+  cached bitmap is composited) and, for the pane, its approach, so its gradients are rasterised
+  once, at a quarter of the screen's pixels. `tunnel_loop.xml` holds what moves and nothing
+  smooth: a halo of two soft outlines breathing round the window (scale 1 ↔ 1.05 over 900 ms
+  each way); seven 16:9 rounded-rect rings growing as `1 + 4.2 q²` over a 3.1 s life, alpha
+  rising over the first 12 % of `q` and falling linearly to 0, on-screen stroke 1.5 → 3 dp, one
+  ring amber; and ten streaks squashed `y × 0.7` around the vanishing point, travelling with
+  `q²`, 20 → 72 dp long, white / #9FC0FF / amber. Each ring and streak loops on its own period
+  with its phase baked into its keyframes, wrapping where its alpha is 0, so the tunnel is full
+  from its first frame. All three fade 0 → 1 over `TUNNEL_FADE_IN_MS` 360, started in the same
+  frame. The palette lives twice — `colors_tunnel.xml` for the drawables, `FlickColor.Tunnel*`
+  for Compose — and `HouseLightsPlanTest` holds them, the window's geometry, the fades and the
+  approach equal.
+- **The approach.** The loop and the pane are each wrapped in an `approach` group that grows
+  from `TUNNEL_APPROACH_FROM` 0.55 of the window's size toward its whole as `1 − e^(−t/1.6 s)`
+  over 12 s, on the RenderThread, so the window never stalls with the main thread and never
+  stops on a long handshake. The porthole's clip follows the same curve, `tunnelApproach`, read
+  off a frame clock that runs while the show is up, so only the clip and the bezel change per
+  frame. The copy sits under the window's full size, which the approach never exceeds, and it
+  has faded before the expansion takes the window past it.
+- `TunnelBackdropView` holds the three in image views scaled up by their own `scaleX/Y` (the
+  loop at half resolution, `TUNNEL_RASTER_SCALE`): a vector drawable sizes its bitmap from the
+  recorded canvas matrix, which a view property is not part of.
+- **The porthole is a clip, not a punched hole.** The wash and the loop are drawn under
+  `clipOutPath` of one rounded rect (`tunnelCutout`), which the GPU applies analytically; the
+  pane is drawn outside the clip. There is no offscreen layer — every alpha is the image view's
+  own, and an image view with no background draws it per op — and no `BlendMode.CLEAR`. The
+  clip changes only with the approach and the expansion, and then only `TunnelBackdropView`'s
+  three recorded ops are redrawn; the drawables' bitmaps are untouched by it.
+- **Everything else** — the pane giving way, the dwell, the expansion, the tunnel rushing past,
   the flash and the copy — is main-thread motion on Compose's clock, started only once the
-  seam's own composition has landed (the first frame waits two frames after `Active`). Compose
-  animatables write the film view's transform directly and drive `graphicsLayer` properties, so
-  nothing recomposes while they run, and the stage tests can drive all of it on a paused clock.
+  seam's own composition has landed (the first frame waits two frames after `Active`). It moves
+  view and draw properties from the animatables' reads (`AndroidView`'s `update`, draw lambdas),
+  so nothing recomposes while it runs, and the stage tests drive all of it on a paused clock.
 
-*The film in the window is a transform, never a resize.* `FilmPose` scales the `PlayerView`
-(still laid out full screen) by 0.3 about its centre and lifts it to the vanishing point. A view
-transform leaves the `SurfaceView`'s buffer alone, so there is no `onSurfaceSizeChanged`, no
-`SurfaceSyncGroup` hold and no decoder reconfigure, and the `SurfaceView` follows its
-ancestors' transform (verified on the API 36 emulator: a scaled, translated parent puts the
-surface's pixels exactly in the window rect). Hidden is alpha 0 — `INVISIBLE`/`GONE` would
-destroy the surface; alpha 0 leaves it intact and simply punches no hole. The pose is set while
-the seam composes, before any effect, so a `PlayerView` created by that same composition is in
-the window and hidden from its first draw (`PlayerSurface` attaches it in its factory). The
-surface's square corners are covered by the film's bezel, a 4 dp `TunnelWindow` ring whose 12 dp
-outer radius stays within (2 + √2) × its width, which is what covering a square corner takes.
+*Why a porthole.* On the Google TV Streamer a video layer at any scale but 1 leaves the
+hardware composer for the MediaTek MDP blitter (`hwcomposer: [DP] layer[N] use MDP: 1`): the
+first scaled Dolby Vision frame waited a second (`wait_release … [1001.1 ms]`), then about 20 fps,
+so a scaled film showed as a black window and its growth landed as a snap. The film is
+therefore never transformed: it plays full-size behind the tunnel, and the window is the
+tunnel's porthole onto its centre.
 
 | Phase | Motion |
 | --- | --- |
-| cue (`Checking` composed) | once the window is on screen (`awaitOnScreen`, `WindowEntrance`), the loop starts and its first drawn frame is stamped; the copy (headline + `connecting_detail`, 560 dp wide, 28 dp under the window) fades in 300 ms later over 400 ms |
-| waiting | the loop runs on the RenderThread for as long as the TV takes; the film's view sits in the window, hidden |
+| cue (`Checking` composed) | once the window is on screen (`awaitOnScreen`, `WindowEntrance`), the tunnel starts and its first drawn frame is stamped; the window starts its approach at 0.55 of its size; the copy (headline + `connecting_detail`, 560 dp wide, 28 dp under the window's full size) fades in 300 ms later over 400 ms |
+| waiting | the loop and the approach run on the RenderThread for as long as the TV takes; the lit pane fills the porthole |
 | first frame (`Active`) | the resync wait and the tunnel's least time on screen (`TUNNEL_MIN_SHOWN_MS` 1 100 from its first frame), in parallel |
-| film in | the glowing cover is put over the window, the film's view shown under it and `onPictureUp` releases the held film, so it **plays** in the window, with sound; the cover fades to it and the bezel in over `TUNNEL_FILM_IN_MS` 240, the copy out over 400 |
-| dwell | `TUNNEL_DWELL_MS` 1 200 with the film playing in the flowing tunnel; any key ends it |
-| expansion | `tunnelExpand()` 700 ms, `cubic-bezier(.55,0,.15,1)`: the film's view scales 0.3 → 1 and settles at the centre; the tunnel rushes past (scale 1 → 2.6 about the vanishing point) and fades over the last 30 %; a white flash snaps to 0.35 and decays over the first third; the bezel leaves in 180 ms. Then the show is retired and `onPictureSettled` runs |
+| film released | `onPictureUp` releases the held film, which **plays**, with sound, behind the pane |
+| film in | once the film has rendered two more frames (`awaitFilmFlowing`: the decoder's `renderedOutputBufferCount`, polled each frame, at most 500 ms), the pane crossfades to the film over `TUNNEL_FILM_IN_MS` 240 and the bezel comes in; the copy leaves over 400 |
+| dwell | `TUNNEL_DWELL_MS` 1 200 with the film playing in the porthole and the window still approaching; any key ends it |
+| expansion | `tunnelExpand()` 640 ms, `cubic-bezier(.5,0,.9,.6)`, laid over the approach: it leaves with no speed of its own, so the window carries on at the approach's speed, then accelerates to the screen's edges, its centre gliding from the vanishing point to the screen's and its corners squaring; the tunnel rushes past (scale 1 → 2.6 about the vanishing point) and fades over the last 30 %; a white flash snaps to 0.35 and decays over the first third; the bezel leaves in 180 ms. `TUNNEL_SETTLE_MS` 80 later the show is retired and `onPictureSettled` runs |
 | cancel, fault, lights up, Rest | the overlay leaves on `filmExit()` and the show is retired under the curtain |
-| re-cast (VeilIn) | the old film drawn back into the window (above), then waiting as from the cue |
+| re-cast (VeilIn) | the porthole closes in on the old film (above), then waiting as from the cue |
 
 **The show belongs to the tunnel, not to the seam.** Starting the loop and stamping its first
 frame run in `HouseLights`' own `rememberCoroutineScope()` (`Tunnel.entrance`), so a first frame
 landing while the tunnel is still waiting for the window joins it instead of restarting it, and a
 first frame that beat the cue starts it there. A seam that cuts a show short — a re-cast in
 its hold, dwell or expansion, or a stop and re-cast before its exit fade ends — leaves the loop
-running, and the next handshake takes it on whole (`resumeTunnel`): presence back to 1, flash
-and cover to 0, the copy faded in again; LightsDown puts the window back at the far end, and
-VeilIn draws the film back from wherever its view had reached, so it never grows on the way.
-The least time counts from the first **drawn**
-frame (`withFrameMillis`), not the cue, because the main thread can be held between the two by
-the previous player's synchronous release; and it counts only while the panel is showing: a
-display-mode change that lands after the tunnel started, or whose `RESYNC_GRACE_MS` was still
-running when it did, restarts it from that change's settle (`tunnelShownSinceMs`), and the wait
-re-reads it on every change. The pin made at the first frame is the usual case, so a hold that
-already had its time and then saw the reveal wait out a switch checks again before the film
-appears, unless a key ended that wait. All of it stays inside `STAGE_HOLD_CAP_MS` from the seam,
-and any key ends it. A re-cast whose first frame lands while the old film is still being drawn
-back finishes that leg (240 ms) and covers the window before waiting, so the new film's held
-first frame is never shown before its time. While the house lights are staging the film —
-`FilmPose.staged`, true whenever the film's view is anywhere but whole and shown, so a settle
-fallback firing mid-show cannot end it — `PlaybackScreen(staged = true)` draws the film alone:
-no canvas, no dim (which eases in afterwards rather than stepping), no buffering plate or seek
-burst, and `ReceiverApp` keeps the chrome and the metrics HUD down, because the tunnel around
-the window is drawn beneath the whole playback screen. The bezel is put up with the cover at
-picture-up, so the surface's square corners never stand outside the window.
+running, and the next handshake takes it on whole (`resumeTunnel`): presence back to 1 and the
+flash to 0, the copy faded in again; LightsDown closes the porthole and lights the pane at
+once, and VeilIn closes it from wherever it had opened to, so it never widens on the way back.
+The least time counts from the first **drawn** frame (`withFrameMillis`), not the cue, because
+the main thread can be held between the two by the previous player's synchronous release; and
+it counts only while the panel is showing: a display-mode change that lands after the tunnel
+started, or whose `RESYNC_GRACE_MS` was still running when it did, restarts it from that
+change's settle (`tunnelShownSinceMs`), and the wait re-reads it on every change. The pin made
+at the first frame is the usual case, so a hold that already had its time and then saw the
+reveal wait out a switch checks again before the film appears, unless a key ended that wait.
+All of it stays inside `STAGE_HOLD_CAP_MS` from the seam, and any key ends it. A re-cast whose
+first frame lands while the porthole is still closing finishes that leg (240 ms) and lights the
+pane before waiting, so the new film's held first frame is never shown before its time. While
+the show is up the house lights are staging the film (`FilmStaging.staged`, set by the tunnel
+itself, so a settle fallback firing mid-show cannot end it): `PlaybackScreen(staged = true)`
+draws no dim (which eases in afterwards rather than stepping), no buffering plate and no seek
+burst, and `ReceiverApp` keeps the chrome and the metrics HUD down, because the tunnel over them
+would leave them showing only through the porthole.
 
 **No film is spent before the window.** The hold would otherwise cost the opening second or two of
 the film: `playStartup` used to prepare with `playWhenReady = true`, so the audio played and
@@ -968,11 +989,13 @@ The tunnel logs its life alongside the hold line, all under `[stage]` (`move` on
 [stage] tunnel pictureUp up=true running=true shownMs=840
 [stage] hold kind=Reveal rateWaitMs=0 waitedMs=0 reason=NoSwitch requestedHz=60.0 physicalHz=60.0 restHz=60.0
 [stage] tunnel hold reason=shown waitedMs=262
-[stage] tunnel film shown sinceSeamMs=268
 [player] pictureHold release reason=pictureUp play=true heldMs=290
+[stage] tunnel film released sinceSeamMs=268
+[stage] film flowing frames=2 waitedMs=84 timedOut=false
+[stage] tunnel film shown sinceSeamMs=352
 [stage] tunnel dwell end reason=time sinceSeamMs=1470
 [stage] tunnel expand start sinceSeamMs=1470
-[stage] tunnel expand done tookMs=702
+[stage] tunnel expand done tookMs=722
 ```
 
 `tunnel waited for window waitedMs=…` marks a summoned cast that waited out the open animation;

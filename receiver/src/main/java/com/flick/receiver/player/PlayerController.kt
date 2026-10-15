@@ -2375,6 +2375,16 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     fun onPictureUp() = releasePictureHold("pictureUp")
 
+    /**
+     * Video frames released to the surface so far, read from the decoder's own counters
+     * rather than a per-frame callback: the ordinary path keeps no frame listener.
+     */
+    fun renderedVideoFrames(): Int {
+        val counters = player?.videoDecoderCounters ?: return 0
+        counters.ensureUpdated()
+        return counters.renderedOutputBufferCount
+    }
+
     private fun releasePictureHold(reason: String) {
         cancelPictureHoldCap()
         val heldSinceMs = pictureHold.firstFrameAtMs
