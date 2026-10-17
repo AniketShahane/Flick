@@ -106,6 +106,9 @@ class ControlClient(private val scope: CoroutineScope) {
         internal var ended = false
             private set
 
+        /** The last ping on this line went unanswered while the line stayed open. */
+        internal var pongTimedOut = false
+
         internal fun onInbound(atMs: Long) {
             lastInboundAtMs = atMs
             heard += 1
@@ -416,11 +419,13 @@ class ControlClient(private val scope: CoroutineScope) {
      * reason. Pings stay sequential and budgeted — see [ControlLiveness.step] — because
      * the receiver closes the socket on its sixth inside ten seconds.
      */
-    internal suspend fun confirmAlive(line: Line): Liveness {
+    internal suspend fun confirmAlive(line: Line, roundTrip: Boolean = false): Liveness {
         if (line.ended || this.line !== line) return Liveness.DEAD
         val nowMs = SystemClock.elapsedRealtime()
         val step = ControlLiveness.step(
-            lastInboundAtMs = line.lastInboundAtMs,
+            // [roundTrip]: frames from the TV prove only the TV-to-phone direction, and a
+            // half-set-up direct link leaves exactly that one working.
+            lastInboundAtMs = if (roundTrip) 0L else line.lastInboundAtMs,
             outstandingSentAtMs = line.outstanding?.sentAtMs,
             budgetAvailable = line.budget.available(nowMs),
             nowMs = nowMs,
@@ -429,6 +434,7 @@ class ControlClient(private val scope: CoroutineScope) {
             ControlLiveness.Step.TRUST -> return Liveness.ALIVE
             ControlLiveness.Step.OVERDUE -> {
                 FlickLog.w("ws", "ping overdue sinceMs=${nowMs - (line.outstanding?.sentAtMs ?: nowMs)}")
+                line.pongTimedOut = true
                 return Liveness.DEAD
             }
             ControlLiveness.Step.UNBUDGETED -> {
@@ -440,6 +446,7 @@ class ControlClient(private val scope: CoroutineScope) {
                 val id = ControlProtocolV2.randomId()
                 val sent = OutstandingPing(id, nowMs)
                 line.outstanding = sent
+                line.pongTimedOut = false
                 line.budget.tryAcquire(nowMs)
                 if (!send(ControlProtocolV2.command("ping", null).put("id", id))) {
                     line.outstanding = null
@@ -459,6 +466,7 @@ class ControlClient(private val scope: CoroutineScope) {
             false -> Liveness.DEAD
             null -> {
                 FlickLog.w("ws", "ping unanswered waitedMs=$waitedMs")
+                line.pongTimedOut = !line.ended && this.line === line
                 Liveness.DEAD
             }
         }
