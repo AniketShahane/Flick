@@ -883,22 +883,30 @@ wait), so the RenderThread ran at 13–18 ms a frame and backed up the main thre
 tunnel now draws on it, with GPU-native ops only. On the API 36 emulator, traced through a
 real-time show (`atrace gfx view`): no `VectorDrawable`, no per-frame `Texture upload` and no
 `flush layers` from the cue to the settle; RenderThread work per frame (`DrawFrame` less the
-swap) 1.2–1.5 ms on average, UI `doFrame` work 2.6–3.4 ms (p90 about 3 ms), GPU p50 2 ms and
-p90 3 ms, with spikes only at the stage seams' compositions.
+swap) about 1–2 ms on average, UI `doFrame` work about 2–3 ms (p90 about 3 ms), GPU p50 2 ms
+and p90 3 ms, with spikes only at the stage seams' compositions. The chrome's scrims fading in
+after the settle are the show's first `flush layers`.
 
 - **The approach.** The window grows from `TUNNEL_APPROACH_FROM` 0.55 of its size toward its
   whole as `1 − e^(−t/1.6 s)` (`tunnelApproach`), never stopping on a long handshake; rings,
   halo, streaks, pane, porthole and bezel all read the same value off the frame clock. The copy
   sits under the window's full size, which the approach never exceeds, and it has faded before
   the expansion takes the window past it.
-- **The porthole is a hole in the window's buffer.** Once the film is released, one antialiased
-  rounded rect (`tunnelCutout`) is drawn with `BlendMode.Clear` straight into the window's
-  buffer, as a `SurfaceView` punches its own hole, so the film's surface beneath shows through:
-  no clip (a difference clip was rasterised into a mask and uploaded every frame) and no
-  offscreen layer. It is punched only once the film is released, so it never opens onto a
-  surface with nothing in it yet; until the pane has crossfaded away the pane covers it. The
-  bezel is one analytic stroked rounded rect, concentric with the porthole: an even-odd path
-  bezel was also being rendered to a mask and uploaded every frame.
+- **The porthole is a clip.** Once the film is released, the wash and the loop are drawn under
+  `clipOutPath` of one rounded rect (`tunnelCutout`, rebuilt in a reused path), so nothing of
+  the tunnel is drawn inside it and the film's view shows through exactly as it is: its
+  surface or, for a turned film, its texture inside the window, with its letterbox and its
+  captions. A rounded-rect difference clip is applied analytically (traced: no clip mask, no
+  per-frame upload). A `BlendMode.Clear` hole was tried and dropped: it erased a turned film's
+  texture, the captions and the letterbox inside the porthole. The bezel is one analytic stroked
+  rounded rect, concentric with the porthole (an even-odd path bezel was rendered to a mask and
+  uploaded every frame). The draw allocates nothing per frame: strokes and lines go through one
+  reused `Paint`, the cutout through one reused array.
+- **Nothing heavy composes during the show.** `StageFilmLayers` holds the `PlaybackScreen` back
+  until the show has handed the screen over (`playbackReady = !FilmStaging.staged`), so the
+  Active seam's frame recomposes only the stage change: traced on the emulator's debug build it
+  fell from 16.6 ms (11.4 ms of recomposition) to 9.0 ms (3.3 ms). The playback screen then
+  composes at the settle, with the chrome it brings up anyway, after the film has the screen.
 - **Everything else** — the pane giving way, the dwell, the expansion, the tunnel rushing past,
   the flash and the copy — is main-thread motion on Compose's clock, started only once the
   seam's own composition has landed (the first frame waits two frames after `Active`). The

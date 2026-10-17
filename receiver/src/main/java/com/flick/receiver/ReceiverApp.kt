@@ -1376,6 +1376,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             // just as the film arrives.
             StageFilmLayers(
                 stage = stage,
+                // The playback screen composes once the show has handed the screen over: the
+                // tunnel animates on the main thread, so the Active seam's frame stays small.
+                playbackReady = !filmStaging.staged,
                 surface = {
                     PlayerSurface(
                         controller = controller,
@@ -1991,18 +1994,20 @@ private fun standbyTransform(
  * The film's layers: the player surface, hosted at one place from the first handshake
  * stage to the end of the cast, and the playback screen over it once the film is Active.
  * The surface's group is the same across Checking → Preparing → Active, so its view is
- * never detached; nothing here may ever move it.
+ * never detached; nothing here may ever move it. [playbackReady] holds the playback screen
+ * back while the house lights still stage the film.
  */
 @Composable
 internal fun StageFilmLayers(
     stage: MediaStage,
     surface: @Composable () -> Unit,
+    playbackReady: Boolean = true,
     playback: @Composable BoxScope.() -> Unit,
 ) {
     val mode = playerSurfaceMode(stage)
     Box(Modifier.fillMaxSize()) {
         if (mode != PlayerSurfaceMode.Hidden) surface()
-        if (mode == PlayerSurfaceMode.VisiblePlayback) playback()
+        if (mode == PlayerSurfaceMode.VisiblePlayback && playbackReady) playback()
     }
 }
 

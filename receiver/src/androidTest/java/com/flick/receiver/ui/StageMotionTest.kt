@@ -258,18 +258,15 @@ class StageMotionTest {
 
 
     /**
-     * Whether the film shows here. Through the porthole that is the hole the tunnel punches
-     * through the window's buffer down to the film's surface, which a capture of the window
-     * reads as transparent (a 35 % flash over it stays well under half). Once the tunnel is gone it is
-     * the film stand-in's own deep red, which nothing of the tunnel, the room or the flash
-     * reads as.
+     * The film stand-in is a deep red that nothing of the tunnel, the room or the flash
+     * reads as; red over green rules out the amber ring and streaks, even under the flash.
+     * It is a view inside the window, as a turned film's texture is, so it shows through the
+     * porthole only if nothing of the tunnel is drawn there; `PortholeCompositionTest` checks
+     * the surface case on the composed display.
      */
     private fun PixelMap.filmAt(x: Int, y: Int): Boolean {
         val c = this[x.coerceIn(0, width - 1), y.coerceIn(0, height - 1)]
-        val hole = c.alpha < 0.5f
-        // Red over green rules out the amber ring and streaks, even under the flash.
-        val film = c.red > 0.6f && c.red - c.blue > 0.25f && c.red > 1.8f * c.green
-        return hole || film
+        return c.red > 0.6f && c.red - c.blue > 0.25f && c.red > 1.8f * c.green
     }
 
     private fun PixelMap.windowShowsFilm(): Boolean =
@@ -357,8 +354,8 @@ class StageMotionTest {
             if (upAt == null && up == 1) upAt = t
             val windowY = (TUNNEL_VANISH_Y * px.height).roundToInt()
             val centre = px[px.width / 2, windowY]
-            // The lit pane part-way gone over the porthole: the two mid-crossfade.
-            if (upAt != null && filmInAt == null && centre.alpha in 0.1f..0.9f) crossfading = true
+            // Neither the lit pane nor the film: the two mid-crossfade.
+            if (upAt != null && filmInAt == null && !px.windowGlows() && !px.windowShowsFilm()) crossfading = true
             if (filmInAt == null && px.windowShowsFilm()) filmInAt = t
             val left = px.portholeLeft()
             if (left != null) {

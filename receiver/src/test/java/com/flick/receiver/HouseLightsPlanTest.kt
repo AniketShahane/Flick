@@ -1,5 +1,6 @@
 package com.flick.receiver
 
+import androidx.compose.ui.graphics.toArgb
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.receiverErrorFace
@@ -423,13 +424,27 @@ class HouseLightsPlanTest {
         assertEquals(10, TUNNEL_STREAKS.size)
     }
 
-    @Test fun theTunnelsPaletteIsTheBrands() {
-        assertEquals(FlickColor.Canvas, FlickColor.TunnelWashEdge)
-        assertEquals(FlickColor.Link, FlickColor.TunnelRing)
-        assertEquals(FlickColor.Spark, FlickColor.TunnelAmber)
-        assertTrue("the glow does not fade to nothing", FlickColor.TunnelGlowEdge.alpha == 0f)
-        assertTrue("the porthole's light does not fade to nothing", FlickColor.TunnelPortholeLightEdge.alpha == 0f)
+    @Test fun theTunnelsPaletteIsTheSpecs() {
+        // The reference look's values, written out so a token that drifts fails here.
+        val spec = mapOf(
+            FlickColor.TunnelWashCore to 0xFF1F3AA8.toInt(),
+            FlickColor.TunnelWashMid to 0xFF0B1640.toInt(),
+            FlickColor.TunnelWashEdge to 0xFF04070F.toInt(),
+            FlickColor.TunnelRing to 0xFF6FA0FF.toInt(),
+            FlickColor.TunnelAmber to 0xFFFFB61E.toInt(),
+            FlickColor.TunnelStreakBlue to 0xFF9FC0FF.toInt(),
+            FlickColor.TunnelStreakWhite to 0xFFFFFFFF.toInt(),
+            FlickColor.TunnelWindow to 0xFFEAF0FF.toInt(),
+            FlickColor.TunnelPortholeLight to 0xE69FC0FF.toInt(),
+        )
+        for ((token, argb) in spec) assertEquals(String.format("#%08X", argb), argb, token.toArgb())
+        // Gradients that end clear, and a pane that hides the film completely.
+        assertEquals(0f, FlickColor.TunnelGlowEdge.alpha, 0f)
+        assertEquals(0f, FlickColor.TunnelPortholeLightEdge.alpha, 0f)
         assertEquals(1f, FlickColor.TunnelPortholeBase.alpha, 0f)
+        // The glow and the light are the ring's and the streak's own hues, faded.
+        assertEquals(FlickColor.TunnelRing.copy(alpha = 1f).toArgb(), FlickColor.TunnelGlowCore.copy(alpha = 1f).toArgb())
+        assertEquals(FlickColor.TunnelStreakBlue.toArgb(), FlickColor.TunnelPortholeLight.copy(alpha = 1f).toArgb())
     }
 
     @Test fun aTunnelOwesItsLeastTimeFromItsFirstFrame() {

@@ -38,10 +38,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.geometry.RoundRect
@@ -232,8 +229,10 @@ internal val TUNNEL_STREAKS = listOf(
     TunnelStreak(333f, 1_700f, 0.50f, FlickColor.TunnelStreakBlue),
 )
 
-/** The halo breathing round the window: (offset from it, stroke, alpha), in units. */
-private val HALO = listOf(Triple(5f, 6f, 0.22f), Triple(12f, 10f, 0.08f))
+/** The halo breathing round the window: offset from it, stroke, alpha, in units. */
+private val HALO_OFFSET = floatArrayOf(5f, 12f)
+private val HALO_STROKE = floatArrayOf(6f, 10f)
+private val HALO_ALPHA = floatArrayOf(0.22f, 0.08f)
 private const val BREATH_MS = 900f
 private const val BREATH_SCALE = 1.05f
 
@@ -471,18 +470,23 @@ internal fun tunnelApproach(elapsedMs: Long): Float {
  * the approach rather than replacing it, so the window keeps its own speed into it.
  */
 internal fun tunnelCutout(e: Float, w: Float, h: Float, approach: Float = 1f): TunnelCutout {
+    val out = FloatArray(5)
+    tunnelCutoutInto(out, e, w, h, approach)
+    return TunnelCutout(out[0], out[1], out[2], out[3], out[4])
+}
+
+/** [tunnelCutout] into [out] as left, top, right, bottom, radius: the draw's own, allocation-free. */
+internal fun tunnelCutoutInto(out: FloatArray, e: Float, w: Float, h: Float, approach: Float) {
     val p = e.coerceIn(0f, 1f)
     val ww = TUNNEL_WINDOW_FRACTION * w * approach
     val wh = TUNNEL_WINDOW_FRACTION * h * approach
     val cx = w / 2f
     val cy = TUNNEL_VANISH_Y * h
-    return TunnelCutout(
-        left = lerp(cx - ww / 2f, 0f, p),
-        top = lerp(cy - wh / 2f, 0f, p),
-        right = lerp(cx + ww / 2f, w, p),
-        bottom = lerp(cy + wh / 2f, h, p),
-        radius = lerp(TUNNEL_WINDOW_CORNER * ww, 0f, p),
-    )
+    out[0] = lerp(cx - ww / 2f, 0f, p)
+    out[1] = lerp(cy - wh / 2f, 0f, p)
+    out[2] = lerp(cx + ww / 2f, w, p)
+    out[3] = lerp(cy + wh / 2f, h, p)
+    out[4] = lerp(TUNNEL_WINDOW_CORNER * ww, 0f, p)
 }
 
 /**
@@ -728,6 +732,8 @@ internal fun HouseLights(
         suspend fun dismissTunnel() {
             if (!tunnel.up) return
             FlickLog.i("stage", "tunnel dismiss covered=${covered()} sinceSeamMs=${now() - edge}")
+            // The porthole closes at once: the film's view leaves with this seam.
+            tunnel.glow.snapTo(1f)
             tunnel.presence.animateTo(0f, spec(FlickMotion.filmExit()))
             tunnel.retire()
         }
@@ -1069,8 +1075,8 @@ internal fun HouseLights(
  * GPU ops — gradient fills, rounded-rect strokes, round-capped lines — read off the tunnel's
  * frame clock and animatables in the draw phase only, on a layer of its own, so a frame of it
  * re-records this lambda and nothing else. There is no bitmap, no vector drawable and no
- * offscreen layer: every alpha is per op, and the porthole is one rounded rect cleared
- * through to the film's surface.
+ * offscreen layer: every alpha is per op, and once the film is released the porthole is
+ * one rounded rect clipped out of it, so the film's view shows through as it is.
  */
 @Composable
 private fun TunnelBackdrop(tunnel: Tunnel) {
@@ -1106,6 +1112,9 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
                     radius = lightR,
                 )
                 val squash = WINDOW_H / WINDOW_W
+                val cut = FloatArray(5)
+                val porthole = android.graphics.Path()
+                val strokes = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
                 onDrawBehind {
                     val started = tunnel.startedAtMs ?: return@onDrawBehind
                     val t = (tunnel.clockMs - started).coerceAtLeast(0L)
@@ -1117,25 +1126,25 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
                     val alpha = shown * tunnelFade(going)
                     val pane = shown * tunnel.glow.value
                     if (e < 1f && alpha > 0f) {
-                        scale(rush, rush, vp) {
-                            drawRect(wash, alpha = alpha)
-                            scale(1f, squash, vp) { drawCircle(glow, glowR, vp, alpha = alpha) }
-                            drawLoop(t, a * k, vp, alpha)
+                        drawIntoCanvas { canvas ->
+                            val native = canvas.nativeCanvas
+                            val saved = native.save()
+                            // The porthole: once the film is released, nothing of the tunnel
+                            // is drawn inside it, so the film's view shows through as it is —
+                            // its surface or texture, its letterbox and its captions alike.
+                            if (tunnel.glow.value < 1f) {
+                                tunnelCutoutInto(cut, e, w, h, a)
+                                porthole.rewind()
+                                porthole.addRoundRect(cut[0], cut[1], cut[2], cut[3], cut[4], cut[4], android.graphics.Path.Direction.CW)
+                                native.clipOutPath(porthole)
+                            }
+                            scale(rush, rush, vp) {
+                                drawRect(wash, alpha = alpha)
+                                scale(1f, squash, vp) { drawCircle(glow, glowR, vp, alpha = alpha) }
+                                drawLoop(native, strokes, t, a * k, vp, alpha)
+                            }
+                            native.restoreToCount(saved)
                         }
-                    }
-                    // The porthole is punched straight through the window's buffer, as a
-                    // SurfaceView punches its own hole: one antialiased rounded rect, no clip
-                    // mask and no offscreen layer. Only once the film is released, so it never
-                    // opens onto a surface with nothing in it yet.
-                    if (e < 1f && tunnel.glow.value < 1f) {
-                        val c = tunnelCutout(e, w, h, a)
-                        drawRoundRect(
-                            Color.Black,
-                            topLeft = Offset(c.left, c.top),
-                            size = Size(c.right - c.left, c.bottom - c.top),
-                            cornerRadius = CornerRadius(c.radius),
-                            blendMode = BlendMode.Clear,
-                        )
                     }
                     if (pane > 0f) {
                         scale(a * rush, a * rush, vp) {
@@ -1156,14 +1165,20 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
     )
 }
 
-/** The halo, the rings and the streaks, at [unit] pixels a stage unit (the approach folded in). */
-private fun DrawScope.drawLoop(t: Long, unit: Float, vp: Offset, alpha: Float) {
+/**
+ * The halo, the rings and the streaks, at [unit] pixels a stage unit (the approach folded
+ * in), through one reused [paint]: no allocation per frame.
+ */
+private fun drawLoop(canvas: android.graphics.Canvas, paint: android.graphics.Paint, t: Long, unit: Float, vp: Offset, alpha: Float) {
     val beat = (t % (2f * BREATH_MS)) / BREATH_MS
     val leg = if (beat <= 1f) beat else 2f - beat
     val breath = 1f + (BREATH_SCALE - 1f) * (0.5f - cos(leg * PI.toFloat()) / 2f)
-    for ((offset, stroke, haloAlpha) in HALO) {
-        frame(vp, (WINDOW_W / 2f + offset) * breath * unit, (WINDOW_H / 2f + offset) * breath * unit,
-            (WINDOW_R + offset) * breath * unit, FlickColor.TunnelRing, haloAlpha * alpha, stroke * breath * unit)
+    paint.style = android.graphics.Paint.Style.STROKE
+    paint.strokeCap = android.graphics.Paint.Cap.BUTT
+    for (i in HALO_OFFSET.indices) {
+        val o = HALO_OFFSET[i]
+        frame(canvas, paint, vp, (WINDOW_W / 2f + o) * breath * unit, (WINDOW_H / 2f + o) * breath * unit,
+            (WINDOW_R + o) * breath * unit, FlickColor.TunnelRing, HALO_ALPHA[i] * alpha, HALO_STROKE[i] * breath * unit)
     }
     for (i in 0 until TUNNEL_RING_COUNT) {
         val q = tunnelLoopAt(t, TUNNEL_RING_LIFE_MS, i.toFloat() / TUNNEL_RING_COUNT)
@@ -1172,40 +1187,48 @@ private fun DrawScope.drawLoop(t: Long, unit: Float, vp: Offset, alpha: Float) {
         val amber = i == AMBER_RING
         val s = tunnelRingScale(q) * unit
         frame(
-            vp, WINDOW_W / 2f * s, WINDOW_H / 2f * s, WINDOW_R * s,
+            canvas, paint, vp, WINDOW_W / 2f * s, WINDOW_H / 2f * s, WINDOW_R * s,
             if (amber) FlickColor.TunnelAmber else FlickColor.TunnelRing,
             (if (amber) RING_AMBER_ALPHA else RING_ALPHA) * env * alpha,
             (RING_STROKE_FROM + (RING_STROKE_TO - RING_STROKE_FROM) * q) * unit,
         )
     }
-    for (streak in TUNNEL_STREAKS) {
+    paint.strokeCap = android.graphics.Paint.Cap.ROUND
+    paint.strokeWidth = STREAK_WIDTH * unit
+    for (i in TUNNEL_STREAKS.indices) {
+        val streak = TUNNEL_STREAKS[i]
         val q = tunnelLoopAt(t, streak.lifeMs, streak.phase)
         val env = tunnelEnvelope(q)
         if (env <= 0f) continue
         val from = streak.reach0 + streak.travel * q * q
         val to = from + STREAK_LEN_FROM + (STREAK_LEN_TO - STREAK_LEN_FROM) * q
-        drawLine(
-            streak.colour,
-            start = Offset(vp.x + streak.ux * from * unit, vp.y + streak.uy * from * unit),
-            end = Offset(vp.x + streak.ux * to * unit, vp.y + streak.uy * to * unit),
-            strokeWidth = STREAK_WIDTH * unit,
-            cap = StrokeCap.Round,
-            alpha = STREAK_ALPHA * env * alpha,
+        paint.color = streak.colour.toArgb()
+        paint.alpha = (STREAK_ALPHA * env * alpha * 255f).roundToInt()
+        canvas.drawLine(
+            vp.x + streak.ux * from * unit, vp.y + streak.uy * from * unit,
+            vp.x + streak.ux * to * unit, vp.y + streak.uy * to * unit,
+            paint,
         )
     }
 }
 
 /** A rounded-rect outline centred on [c]. */
-private fun DrawScope.frame(c: Offset, halfW: Float, halfH: Float, radius: Float, colour: Color, alpha: Float, stroke: Float) {
+private fun frame(
+    canvas: android.graphics.Canvas,
+    paint: android.graphics.Paint,
+    c: Offset,
+    halfW: Float,
+    halfH: Float,
+    radius: Float,
+    colour: Color,
+    alpha: Float,
+    stroke: Float,
+) {
     if (alpha <= 0f) return
-    drawRoundRect(
-        colour,
-        topLeft = Offset(c.x - halfW, c.y - halfH),
-        size = Size(2f * halfW, 2f * halfH),
-        cornerRadius = CornerRadius(radius),
-        alpha = alpha,
-        style = Stroke(width = stroke),
-    )
+    paint.color = colour.toArgb()
+    paint.alpha = (alpha * colour.alpha * 255f).roundToInt()
+    paint.strokeWidth = stroke
+    canvas.drawRoundRect(c.x - halfW, c.y - halfH, c.x + halfW, c.y + halfH, radius, radius, paint)
 }
 
 /**
@@ -1232,20 +1255,22 @@ private fun TunnelOverlay(tunnel: Tunnel, headline: String, live: Boolean) {
                 .graphicsLayer()
                 .drawWithCache {
                     val rimW = TUNNEL_RIM_WIDTH.toPx()
+                    val rimStroke = Stroke(width = rimW)
+                    val cut = FloatArray(5)
                     onDrawBehind {
                         val r = tunnel.rim.value
                         if (r <= 0f) return@onDrawBehind
-                        val c = tunnelCutout(tunnel.expand.value, size.width, size.height, tunnel.approach)
+                        tunnelCutoutInto(cut, tunnel.expand.value, size.width, size.height, tunnel.approach)
                         // A stroke centred half its width outside the porthole, so its inner edge
                         // is the porthole's own: one analytic rounded rect, not a path mask.
                         val half = rimW / 2f
                         drawRoundRect(
                             FlickColor.TunnelWindow,
-                            topLeft = Offset(c.left - half, c.top - half),
-                            size = Size(c.right - c.left + rimW, c.bottom - c.top + rimW),
-                            cornerRadius = CornerRadius(c.radius + half),
+                            topLeft = Offset(cut[0] - half, cut[1] - half),
+                            size = Size(cut[2] - cut[0] + rimW, cut[3] - cut[1] + rimW),
+                            cornerRadius = CornerRadius(cut[4] + half),
                             alpha = r,
-                            style = Stroke(width = rimW),
+                            style = rimStroke,
                         )
                     }
                 },
