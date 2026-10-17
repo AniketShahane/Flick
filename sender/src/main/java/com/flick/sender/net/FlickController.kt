@@ -1107,6 +1107,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             val result = control.resume(pairing, candidate.host, candidate.port)
             if (currentCastId != castId) return
             FlickLog.i("ws", "reattach dial=$dials ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
+            if (PhoneDirectLink.provesUnheard(result) && !servedWithin(PhoneDirectLink.SERVING_PROOF_MS)) {
+                PhoneDirectLink.release(appContext, candidate.host, "reattach_unanswered")
+            }
             when (ControlReattachPolicy.classify(result)) {
                 ReattachDial.RETRY -> Unit
                 ReattachDial.REFUSED -> return fallBackFromReattach(castId, servingAtLoss, "refused", dials)
@@ -2281,6 +2284,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             var lastFault: DialFault? = null
             var sweep = 1
             var awaitedNsd = false
+            var lastDialUnheard = false
             sweeps@ while (true) {
                 val candidates = ResumeCandidateQueue(pairing.host, pairing.port, pairing.tvId, MAX_RESUME_CANDIDATES)
                 while (true) {
@@ -2295,6 +2299,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     if (candidate == null) break
                     dialedHost = DialedHost(candidate.host, candidate.discovered)
                     val result = control.resume(pairing, candidate.host, candidate.port)
+                    lastDialUnheard = PhoneDirectLink.provesUnheard(result)
                     FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
                     when (result) {
                         is ControlClient.Result.Resumed -> if (pairingGate.isCurrent(attempt)) {
@@ -2339,6 +2344,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (sawUntrustedFailure || !sawTransportFailure) break@sweeps
                 val onWifi = com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) != null
                 if (!ResumeRetryPolicy.sweepsAgain(sweep, userDial, onWifi)) break@sweeps
+                if (lastDialUnheard) dialedHost?.let { PhoneDirectLink.release(appContext, it.host, "dial_unanswered") }
                 sweep++
                 FlickLog.i("ws", "resume sweep=$sweep after fault=${lastFault?.name?.lowercase() ?: "denied"}")
                 delay(ResumeRetryPolicy.RETRY_DELAY_MS)
@@ -2571,6 +2577,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 return@launch
             }
             FlickLog.w("cast", "control line unusable before cast verdict=${verdict.name.lowercase()} held=$held redial=true")
+            if (line.pongTimedOut) _connectedTv.value?.let { PhoneDirectLink.release(appContext, it.host, "ping_unanswered") }
             pendingCast = null
             currentCastId?.let { live ->
                 castJob?.cancel()
@@ -2584,6 +2591,21 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pairingJob = probe
         probe.start()
     }
+
+    /**
+     * A ping that must cross both directions. Released only for a pong that timed out on
+     * a line still open, and not if [ready] landed meanwhile: either of those means the
+     * TV did hear this phone.
+     */
+    private suspend fun probeDirectLink(line: ControlClient.Line?, ready: CompletableDeferred<*>?, reason: String) {
+        val held = line ?: return
+        val host = _connectedTv.value?.host ?: return
+        control.confirmAlive(held, roundTrip = true)
+        if (held.pongTimedOut && ready?.isCompleted != true) PhoneDirectLink.release(appContext, host, reason)
+    }
+
+    private fun servedWithin(windowMs: Long): Boolean =
+        lastServedByteAtMs > 0L && SystemClock.elapsedRealtime() - lastServedByteAtMs <= windowMs
     private fun startCast(request: CastRequest) {
         val item = request.item
         pendingCast = null
@@ -2718,7 +2740,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 startupRetrying = null; _startupRetryItem.value = null
                 stage = StartupStage.AWAITING_FIRST_FRAME
                 publishCastStart(CastStartState.AwaitingFirstFrame(castId))
-                withTimeoutOrNull(CastStartupPolicy.FIRST_FRAME_TIMEOUT_MS) { ready?.await() }
+                val firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
+                (withTimeoutOrNull(CastStartupPolicy.FIRST_FRAME_PROBE_MS) { ready?.await() }
+                    ?: run {
+                        probeDirectLink(loadLine, ready, "startup_unanswered")
+                        val leftMs = CastStartupPolicy.FIRST_FRAME_TIMEOUT_MS -
+                            (SystemClock.elapsedRealtime() - firstFrameWaitStartedAtMs)
+                        withTimeoutOrNull(leftMs.coerceAtLeast(1L)) { ready?.await() }
+                    })
                     ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
                 readyCommit = true

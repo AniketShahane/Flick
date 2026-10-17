@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Used to resolve this device's Wi-Fi/LAN IP to display the cast URL. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Drop a half-set-up Wi-Fi direct (TDLS) link to the TV once the TV stops
+         hearing this phone; see PhoneDirectLink. A normal permission. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!-- The library is a real MediaStore-backed video gallery, so it needs read
          access to the user's videos. READ_MEDIA_VIDEO (33+) / the partial
