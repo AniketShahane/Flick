@@ -61,7 +61,9 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -74,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -95,6 +98,8 @@ import com.flick.sender.net.PreCastLinkAdvisory
 import com.flick.sender.net.Route
 import com.flick.sender.ui.FilmSoftBackdrop
 import com.flick.sender.ui.FilmTitleLogo
+import com.flick.sender.ui.rememberIntertitleInks
+import com.flick.sender.ui.rememberIntertitleSource
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.SoftBackdropRadiusPx
 import com.flick.sender.ui.SoftBackdropWidthPx
@@ -106,7 +111,7 @@ import com.flick.sender.ui.components.FactChip
 import com.flick.sender.ui.components.RuntimeChip
 import com.flick.sender.ui.components.SynopsisPolicy
 import com.flick.sender.ui.components.rememberSynopsisReveal
-import com.flick.sender.ui.components.synopsisDrift
+import com.flick.sender.ui.components.synopsisRecede
 import com.flick.sender.ui.components.LocalCardFlipHandoff
 import com.flick.sender.ui.components.TileFace
 import com.flick.sender.ui.components.TileMarkings
@@ -148,9 +153,10 @@ import kotlinx.coroutines.CancellationException
  * poster is the page's only send; there is no button. The back disc routes through
  * [FlickController.back], as the shell's BackHandler does for system back.
  *
- * A rightward pull on the poster brings the film's synopsis in from the left ([SynopsisPanel]).
- * While it is open the page registers one handler of its own, enabled only then, so back
- * closes the synopsis first; with it away, back is the shell's again.
+ * A leftward push on the poster brings the film's synopsis up as a silent-film intertitle in
+ * the poster's own colours ([SynopsisIntertitle]). While it is open the page registers one
+ * handler of its own, enabled only then, so back closes the synopsis first; with it away, back
+ * is the shell's again.
  *
  * The poster is the tile the user just tapped, turned over (see [FlipCard]): the card flies
  * from the grid into its seat while the page fades up around it, and [cardFlip] is the shell's
@@ -190,6 +196,18 @@ fun DetailScreen(
         ?: connectedTv?.let { stringResource(R.string.detail_cta, it.name) }
         ?: stringResource(R.string.detail_cta_noconnect)
     val committing = castStart.isCommitting()
+    val request = rememberDetailVideoFrameRequest(item)
+    val art = item.rememberFilmArt()
+    val posterPath = art?.poster
+    val details = item.rememberFilmDetails(art?.tmdbId)
+    val heading = item.simplifiedName()
+    val synopsisTitle = item.titleWithoutYear()
+    // The card is still flying to its seat until this turns true; nothing new is composed under
+    // it before then, and nothing pulls the synopsis over a card in flight.
+    val landed = sharedScope?.isTransitionActive != true
+    val synopsis = details?.takeIf { it.hasSynopsis }
+    val reveal = rememberSynopsisReveal(item.id, reduceMotion)
+    val revealable = synopsis != null && landed
     val caption = connectedTv?.let { stringResource(R.string.flick_pad_title_tv, it.name) }
         ?: stringResource(R.string.flick_pad_title)
     // Resume is never silent: the pad says where the film will start before it is thrown.
@@ -197,6 +215,7 @@ fun DetailScreen(
         committing -> stringResource(R.string.flick_pad_sending, tvName)
         resumeTime != null -> stringResource(R.string.flick_pad_resume, resumeTime)
         connectedTv == null -> stringResource(R.string.flick_pad_no_tv)
+        revealable -> stringResource(R.string.flick_pad_story_hint)
         else -> null
     }
     val backDescription = stringResource(R.string.a11y_back_to_library)
@@ -226,23 +245,11 @@ fun DetailScreen(
     // Same predicate the button had: the send waits for the resume point and is single-flight.
     val castEnabled = progressReady && !committing
 
-    val request = rememberDetailVideoFrameRequest(item)
-    val art = item.rememberFilmArt()
-    val posterPath = art?.poster
-    val details = item.rememberFilmDetails(art?.tmdbId)
-    val heading = item.simplifiedName()
-    val synopsisTitle = item.titleWithoutYear()
-    // The card is still flying to its seat until this turns true; nothing new is composed under
-    // it before then, and nothing pulls the synopsis over a card in flight.
-    val landed = sharedScope?.isTransitionActive != true
-    val synopsis = details?.takeIf { it.hasSynopsis }
-    val reveal = rememberSynopsisReveal(item.id, reduceMotion)
-    val revealable = synopsis != null && landed
     val route by controller.route.collectAsState()
     val qualityOpen by controller.showQualitySheet.collectAsState()
     val diagnosticsOpen by controller.showDiagnostics.collectAsState()
     val supportOpen by controller.showSupportSheet.collectAsState()
-    // Registered after the shell's, so it answers first — and only while the panel is open on
+    // Registered after the shell's, so it answers first — and only while the story is open on
     // this route with no sheet over it; a sheet's own handler, or the shell's for an overlay,
     // keeps back otherwise.
     PredictiveBackHandler(
@@ -309,12 +316,17 @@ fun DetailScreen(
         val density = LocalDensity.current
         val bars = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        BoxWithConstraints(Modifier.fillMaxSize().drawBehind { drawRect(CinemaDeep, alpha = page()) }) {
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { reveal.pageOrigin = it.positionInRoot() }
+                .drawBehind { drawRect(CinemaDeep, alpha = page()) },
+        ) {
             val viewport = maxHeight
-            // The panel's travel, known before the panel is first composed: the first pull is
+            // The reveal's travel, known before the story is first composed: the first pull is
             // measured against it on the frame it starts.
-            val panelWidthPx = with(density) { SynopsisPolicy.panelWidthDp(maxWidth.value).dp.toPx() }
-            SideEffect { reveal.widthPx = panelWidthPx }
+            val travelPx = with(density) { SynopsisPolicy.travelDp(maxWidth.value).dp.toPx() }
+            SideEffect { reveal.widthPx = travelPx }
             val wide = maxWidth > maxHeight
             val compact = viewport < CompactHeight
             val heroGap = if (compact) HeroGapCompact else HeroGap
@@ -339,6 +351,17 @@ fun DetailScreen(
             }
             val posterWidth = posterHeight / FlickPadMotion.PosterAspect
             val posterHeightPx = with(density) { posterHeight.roundToPx() }
+            // The story is made of the poster the seat draws: read once the page has landed.
+            val inks = rememberIntertitleInks(
+                source = rememberIntertitleSource(
+                    posterPath = posterPath,
+                    frameRequest = request,
+                    seatPx = IntSize(with(density) { posterWidth.roundToPx() }, posterHeightPx),
+                ),
+                imageLoader = imageLoader,
+                ready = revealable,
+                visible = { reveal.engaged },
+            )
 
             // Blurred once into a small bitmap rather than live: a full-screen blur re-runs on
             // every frame the page is drawn, and the page's entrance is nothing but frames.
@@ -381,13 +404,20 @@ fun DetailScreen(
                     modifier = backdropModifier,
                 )
             }
-            // It deepens as the page scrolls, so copy carried up never stands on bright art.
+            // It deepens as the page scrolls, so copy carried up never stands on bright art. As
+            // the story comes the whole window goes down into the poster's own darkest tone,
+            // under the page's chrome as it steps back.
             Box(
                 Modifier
                     .fillMaxSize()
                     .drawBehind {
                         val lift = (pageScroll.value / ScrimLiftDistance.toPx()).coerceIn(0f, 1f)
                         drawRect(cinemaScrim(lift), alpha = page())
+                        val p = reveal.progress.value.coerceIn(0f, 1f)
+                        if (p > 0f) {
+                            val ground = if (reduceMotion) SynopsisPolicy.GROUND_ALPHA * p else SynopsisPolicy.groundAlpha(p)
+                            drawRect(inks.ground(), alpha = ground)
+                        }
                     },
             )
 
@@ -432,7 +462,7 @@ fun DetailScreen(
                             identityPx = it.height
                             MeasuredSeat.identityPx = it.height
                         }
-                        .synopsisDrift(reveal.takeIf { revealable }, reduceMotion),
+                        .synopsisRecede(reveal.takeIf { revealable }, reduceMotion),
                 ) {
                     BackDisc(
                         description = backDescription,
@@ -464,7 +494,7 @@ fun DetailScreen(
                     onCastAnyway = onFlick,
                     modifier = Modifier
                         .fadeUp({ tracks?.caption?.value ?: 1f }, CardFlipMotion.CaptionRiseDistance)
-                        .synopsisDrift(reveal.takeIf { revealable }, reduceMotion),
+                        .synopsisRecede(reveal.takeIf { revealable }, reduceMotion),
                 )
             }
 
@@ -533,14 +563,13 @@ fun DetailScreen(
                 }
             }
             // Not composed until the first reveal starts: most visits never open it, and its
-            // copy and logo are not worth laying out under a card in flight on every one.
+            // copy is not worth laying out under a card in flight on every one.
             if (synopsis != null && reveal.everShown && (landed || reveal.engaged)) {
-                SynopsisPanel(
+                SynopsisIntertitle(
                     reveal = reveal,
+                    inks = inks,
                     details = synopsis,
                     title = synopsisTitle,
-                    logoPath = art?.logo,
-                    imageLoader = imageLoader,
                     reduceMotion = reduceMotion,
                 )
             }
@@ -610,13 +639,18 @@ private fun BackDisc(
     modifier: Modifier = Modifier,
 ) = CinemaDiscButton(FlickIcons.ChevronLeft, description, onClick, modifier)
 
-/** A 44 dp dark disc inside a 48 dp target, white glyph, white hairline. */
+/**
+ * A 44 dp dark disc inside a 48 dp target, white glyph, white hairline. [enabled] false takes
+ * it out of the hit path altogether, not merely inert, so an invisible disc never swallows a
+ * touch meant for what is under it.
+ */
 @Composable
 internal fun CinemaDiscButton(
     icon: ImageVector,
     description: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val source = remember { MutableInteractionSource() }
     Box(
@@ -624,13 +658,20 @@ internal fun CinemaDiscButton(
             .size(BackTouchSize)
             .pressScale(source)
             .clip(CircleShape)
-            .clickable(
-                interactionSource = source,
-                indication = flickRipple(Color.White),
-                role = Role.Button,
-                onClick = onClick,
-            )
-            .semantics { contentDescription = description },
+            .then(
+                if (enabled) {
+                    Modifier
+                        .clickable(
+                            interactionSource = source,
+                            indication = flickRipple(Color.White),
+                            role = Role.Button,
+                            onClick = onClick,
+                        )
+                        .semantics { contentDescription = description }
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Box(

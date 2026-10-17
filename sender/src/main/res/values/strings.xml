@@ -183,15 +183,14 @@
     <string name="flick_pad_no_tv">No TV connected yet — you\'ll pick one first</string>
     <!-- %1$s is the TV's name. -->
     <string name="flick_pad_sending">Reaching %1$s…</string>
+    <!-- The pad's quiet second line when it has nothing else to say and the film has a synopsis. -->
+    <string name="flick_pad_story_hint">Swipe left for the story</string>
     <!-- The subtitle this film was left with, confirmed where it is put back. The value is
          the language when the memory names one and the file's own name when it does not. -->
     <string name="detail_subtitle_attached">Subtitles · %1$s</string>
-    <!-- The synopsis panel, pulled in from the left over the detail page. -->
-    <string name="synopsis_directed_by">Directed by</string>
-    <string name="synopsis_created_by">Created by</string>
-    <string name="synopsis_starring">Starring</string>
-    <string name="synopsis_runtime">%1$dh %2$02dm</string>
-    <string name="synopsis_runtime_short">%1$dm</string>
+    <!-- The synopsis as a silent-film intertitle, drawn in by pushing the poster left. The year
+         is TMDB's, set between dashes as a title card's date line; TalkBack reads the bare year. -->
+    <string name="synopsis_year">— %1$d —</string>
 
     <!-- S5 · Connecting. -->
     <string name="connecting_hyperspace_title">On its way</string>

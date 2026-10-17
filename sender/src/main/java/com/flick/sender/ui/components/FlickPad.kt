@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.center
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -54,6 +55,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -69,6 +72,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.lerp
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -111,9 +115,10 @@ import kotlinx.coroutines.launch
  * pad's chrome then arrives on the page's tracks — [glowIn] under the card, [chevronsIn] above
  * it, [captionIn] below — and [throwReady] holds the throw until the card has landed.
  *
- * [reveal], when given, is the film's synopsis: a rightward, mostly sideways drag on the poster
- * pulls it in from the left ([FlickPadPolicy.reveals]) instead of throwing, and does so even
- * while the send is unavailable. [revealLabel] names it for TalkBack, as a custom action.
+ * [reveal], when given, is the film's synopsis: a leftward, mostly sideways drag on the poster
+ * draws the intertitle in ([FlickPadPolicy.reveals]) instead of throwing, and does so even
+ * while the send is unavailable; the poster then flies onto the story's film strip and the
+ * pad's chrome steps back. [revealLabel] names it for TalkBack, as a custom action.
  *
  * Drawn for the dark detail page only: its ink is white whatever the palette.
  */
@@ -167,13 +172,14 @@ internal fun FlickPad(
     var sending by remember { mutableStateOf(false) }
     // From the finger taking the poster until it is back at rest in its seat.
     var dragging by remember { mutableStateOf(false) }
-    // Under the panel the poster is covered; a nudge there is frames nobody sees.
-    val covered = reveal?.open == true
+    // With the story out the poster has flown onto its strip; a nudge there is frames nobody
+    // sees, and the story's copy of the poster sets off from the seat itself.
+    val covered = reveal?.engaged == true
 
     LaunchedEffect(touched, reduceMotion, resumed, enabled, covered) {
         if (touched || reduceMotion || !resumed || !enabled || covered) {
             // A nudge cut off mid-rise would otherwise leave the poster parked above its seat.
-            if (reduceMotion) nudge.snapTo(0f) else nudge.animateTo(0f, tween(FlickPadMotion.NudgeFallMs))
+            if (reduceMotion || covered) nudge.snapTo(0f) else nudge.animateTo(0f, tween(FlickPadMotion.NudgeFallMs))
             return@LaunchedEffect
         }
         // The page and the backdrop are still arriving when this route opens.
@@ -257,23 +263,23 @@ internal fun FlickPad(
                 }
             }
             if (start != null && reveal != null && revealLock == true) {
-                // The finger drives the panel 1:1 from where it went down; the poster stays in
-                // its seat and only drifts with the page.
+                // The finger drives the story 1:1 from where it went down, leftward toward
+                // open; the poster's own follow stays still, and the story flies it.
                 touched = true
                 dragging = true
                 reveal.beginDrag()
                 tracker.addPointerInputChange(start)
-                reveal.dragTo(start.position.x - down.position.x)
+                reveal.dragTo(down.position.x - start.position.x)
                 var released = false
                 try {
                     released = drag(start.id) { change ->
                         change.consume()
                         tracker.addPointerInputChange(change)
-                        reveal.dragTo(change.position.x - down.position.x)
+                        reveal.dragTo(down.position.x - change.position.x)
                     }
                 } finally {
                     // Cut off mid-drag, it settles by where it is rather than by a stale speed.
-                    val velocity = if (released) tracker.calculateVelocity().x else 0f
+                    val velocity = if (released) -tracker.calculateVelocity().x else 0f
                     reveal.release(velocity, density, opening = true)
                     dragging = false
                 }
@@ -400,7 +406,7 @@ internal fun FlickPad(
                     height = FlickPadMotion.ChevronRowDp.dp,
                 )
                 .fadeUp(chevronsIn, CardFlipMotion.RiseDistance)
-                .synopsisDrift(reveal, reduceMotion),
+                .synopsisRecede(reveal, reduceMotion),
         )
         Spacer(Modifier.height(chevronGap))
         Box {
@@ -410,11 +416,32 @@ internal fun FlickPad(
                 imageLoader = imageLoader,
                 width = posterWidth,
                 seat = seat,
-                glowIn = glowIn,
+                // The glow is the pad's chrome: it steps back with the rest as the story comes.
+                glowIn = { glowIn() * storyRecede(reveal, reduceMotion) },
                 glare = { FlickPadMotion.StreakGlare * FlickPadMotion.StreakEasing.transform(streak.value) },
+                // While the story draws the poster's flight over its strip and card, the face
+                // here is hidden rather than flown under them.
+                faceAlpha = {
+                    val r = reveal?.progress?.value ?: 0f
+                    when {
+                        reveal == null || r <= 0f -> 1f
+                        reveal.posterCopyLive -> 0f
+                        else -> posterFlightAlpha(r, reduceMotion)
+                    }
+                },
                 // Outside the layer, so the hit area stays at the seat while the poster moves;
                 // inside it the finger's own deltas would shrink as the poster followed them.
+                // The seat is measured here for the same reason: where the poster rests.
                 modifier = gesture
+                    .then(
+                        if (reveal != null) {
+                            Modifier.onGloballyPositioned { seat ->
+                                reveal.posterSeat = Rect(seat.positionInRoot(), seat.size.toSize())
+                            }
+                        } else {
+                            Modifier
+                        },
+                    )
                     .animatingFrameRate(dragging || sending)
                     .graphicsLayer {
                         val liftPx = FlickPadMotion.NudgeDp.dp.toPx() * nudge.value +
@@ -423,12 +450,13 @@ internal fun FlickPad(
                         // tilt are let go while the card stretches into a line and leaves upward.
                         val s = streak.value
                         val e = FlickPadMotion.StreakEasing.transform(s)
-                        val r = if (reveal == null || reduceMotion) 0f else reveal.progress.value
-                        translationX = offsetX.value * (1f - s) + SynopsisPolicy.PAGE_DRIFT_DP.dp.toPx() * r
+                        val r = reveal?.progress?.value ?: 0f
+                        translationX = offsetX.value * (1f - s) +
+                            (reveal?.posterFlightShiftPx(r, this, reduceMotion) ?: 0f)
                         translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
                         rotationZ = FlickPadPolicy.tiltDegrees(offsetX.value / density) * (1f - s)
                         val scale = lerp(1f, FlickPadMotion.HeldScale, held.value) *
-                            lerp(1f, SynopsisPolicy.POSTER_RECEDE_SCALE, r.coerceIn(0f, 1f))
+                            (reveal?.posterFlightScale(r, this, reduceMotion) ?: 1f)
                         scaleX = scale * lerp(1f, FlickPadMotion.StreakEndScaleX, e)
                         scaleY = scale * lerp(1f, FlickPadMotion.StreakEndScaleY, e)
                         alpha = presence.value
@@ -441,9 +469,9 @@ internal fun FlickPad(
                 SynopsisTab(
                     visible = { tabIn.value * (if (dragging || sending) 0f else 1f) * (1f - reveal.progress.value * 3f).coerceIn(0f, 1f) },
                     modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .offset(x = -SynopsisTabGap - SynopsisTabWidth)
-                        .synopsisDrift(reveal, reduceMotion),
+                        .align(Alignment.CenterEnd)
+                        .offset(x = SynopsisTabGap + SynopsisTabWidth)
+                        .synopsisRecede(reveal, reduceMotion),
                 )
             }
         }
@@ -451,7 +479,7 @@ internal fun FlickPad(
         Column(
             Modifier
                 .fadeUp(captionIn, CardFlipMotion.CaptionRiseDistance, flat = true)
-                .synopsisDrift(reveal, reduceMotion),
+                .synopsisRecede(reveal, reduceMotion),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -483,7 +511,8 @@ internal fun FlickPad(
  * The glow and the shadow are a layer of their own under the card rather than part of it: the
  * card is what turns over when it flies in from the grid ([seat]), and light cast on the page
  * stays flat on the page. They grow in with [glowIn] once the card is nearly seated. [glare]
- * washes the art toward white, for the send's streak; read in the draw phase.
+ * washes the art toward white, for the send's streak; read in the draw phase. [faceAlpha]
+ * fades the card alone, leaving the light under it to [glowIn].
  */
 @Composable
 internal fun FlickPosterCard(
@@ -495,6 +524,7 @@ internal fun FlickPosterCard(
     seat: CardFlipSeat? = null,
     glowIn: () -> Float = { 1f },
     glare: () -> Float = { 0f },
+    faceAlpha: () -> Float = { 1f },
 ) {
     val colors = LocalFlickColors.current
     val shape = posterCardShape(width)
@@ -534,7 +564,11 @@ internal fun FlickPosterCard(
                     }
                 },
         )
-        FlipCard(seat = seat, seatCorner = width * PosterCornerShare, modifier = Modifier.matchParentSize()) {
+        FlipCard(
+            seat = seat,
+            seatCorner = width * PosterCornerShare,
+            modifier = Modifier.matchParentSize().graphicsLayer { alpha = faceAlpha() },
+        ) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -564,8 +598,8 @@ internal fun FlickPosterCard(
 }
 
 /**
- * The synopsis's one discoverability cue: a slim tab at the poster's leading edge, like the
- * spine of a page tucked behind it. It does nothing itself — a pull on the poster, or TalkBack's
+ * The synopsis's one discoverability cue: a slim tab at the poster's trailing edge, the side
+ * the story is drawn from. It does nothing itself — a push left on the poster, or TalkBack's
  * action, opens the synopsis — so it carries no touch target that could promise otherwise.
  */
 @Composable
@@ -579,6 +613,12 @@ private fun SynopsisTab(visible: () -> Float, modifier: Modifier = Modifier) {
             alpha = a * SynopsisTabAlpha,
         )
     }
+}
+
+/** The pad's chrome stepping back as the story comes, as one alpha; 1 with no story. */
+private fun storyRecede(reveal: SynopsisReveal?, reduceMotion: Boolean): Float {
+    val p = reveal?.progress?.value?.coerceIn(0f, 1f) ?: return 1f
+    return if (reduceMotion) 1f - p else SynopsisPolicy.chromeAlpha(p)
 }
 
 private val SynopsisTabWidth = 3.dp

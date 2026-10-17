@@ -286,6 +286,39 @@ object FlickIcons {
     }
 
     /**
+     * The hedera, the printer's ivy leaf (❦), drawn because the intertitle's serif has no
+     * glyph for it and a fallback face would set it in another hand. A heart-shaped leaf lying
+     * on its side, point to the right, on a stem that curls back under itself.
+     */
+    val Fleuron: ImageVector = ImageVector.Builder(
+        name = "Fleuron",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(21.5f, 12f)
+            curveTo(18f, 8.6f, 14.6f, 5.2f, 10.8f, 5.6f)
+            curveTo(7.9f, 5.9f, 7.1f, 8.8f, 8.9f, 11.2f)
+            lineTo(9.9f, 12f)
+            lineTo(8.9f, 12.8f)
+            curveTo(7.1f, 15.2f, 7.9f, 18.1f, 10.8f, 18.4f)
+            curveTo(14.6f, 18.8f, 18f, 15.4f, 21.5f, 12f)
+            close()
+        }
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.3f,
+            strokeLineCap = StrokeCap.Round,
+        ) {
+            moveTo(9.6f, 12f)
+            curveTo(6.6f, 12f, 3.6f, 11.4f, 3f, 9f)
+            curveTo(2.6f, 7.2f, 4.6f, 6.6f, 5.3f, 8.1f)
+        }
+    }.build()
+
+    /**
      * Three bars and a down arrow — the library's list, and the direction it is dealt in.
      *
      * The bars used to descend in length and to be the whole mark, because the glyph beside

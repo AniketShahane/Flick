@@ -3,8 +3,8 @@ package com.flick.sender.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
@@ -20,13 +20,13 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import coil.ImageLoader
 import com.flick.sender.media.FilmDetails
 import com.flick.sender.ui.components.RuntimeChip
-import com.flick.sender.ui.screens.SynopsisLeaf
+import com.flick.sender.ui.screens.IntertitleCard
 import com.flick.sender.ui.theme.CinemaDeep
 import com.flick.sender.ui.theme.FlickCinematicTheme
 import org.junit.Assert.assertTrue
@@ -36,7 +36,7 @@ import org.junit.runner.RunWith
 import java.io.File
 
 /**
- * The runtime chip and the synopsis drawn with seeded data, without TMDB. Writes what it draws
+ * The runtime chip and the synopsis intertitle drawn with seeded data, without TMDB. Writes what it draws
  * to the app's external files dir (`looks/`) for judging by eye.
  */
 @RunWith(AndroidJUnit4::class)
@@ -74,26 +74,57 @@ class FilmFactsLookTest {
         save("runtime-font2x")
     }
 
+    /** A poster stand-in with a dominant green and a vivid streak, so the inks are the poster's. */
+    private fun posterArt(): IntertitleArt {
+        val bitmap = Bitmap.createBitmap(300, 450, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        canvas.drawColor(android.graphics.Color.rgb(6, 32, 14))
+        val paint = android.graphics.Paint()
+        for (x in 0 until 300 step 21) {
+            paint.color = android.graphics.Color.rgb(40, 220, 90)
+            canvas.drawRect(x.toFloat(), 0f, x + 4f, 450f, paint)
+        }
+        paint.color = android.graphics.Color.rgb(230, 240, 230)
+        canvas.drawRect(40f, 380f, 260f, 410f, paint)
+        return IntertitleArt.from(bitmap, IntSize(220, 330))
+    }
+
     @Test
-    fun synopsisLeafReadsWithEveryPart() {
+    fun intertitleCardReadsWithEveryPart() {
+        val inks = IntertitleInks(posterArt())
         composeRule.setContent {
             FlickCinematicTheme {
-                Box(Modifier.width(336.dp).height(900.dp).background(CinemaDeep)) {
-                    SynopsisLeaf(
-                        details = details,
-                        title = "The Matrix",
-                        logoPath = null,
-                        imageLoader = ImageLoader(InstrumentationRegistry.getInstrumentation().targetContext),
-                        onClose = {},
-                    )
+                Box(Modifier.size(width = 300.dp, height = 700.dp).background(inks.ground()).padding(30.dp)) {
+                    IntertitleCard(details = details, title = "The Matrix", inks = inks)
                 }
             }
         }
         composeRule.onNodeWithText("The Matrix").assertIsDisplayed()
         composeRule.onNodeWithText("Believe the unbelievable.").assertIsDisplayed()
-        composeRule.onNodeWithText("Keanu Reeves, Laurence Fishburne, Carrie-Anne Moss, Hugo Weaving").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Close the synopsis").assertIsDisplayed()
-        save("synopsis-leaf")
+        composeRule.onNodeWithContentDescription("1999").assertIsDisplayed()
+        save("intertitle-card")
+    }
+
+    @Test
+    fun atDoubleFontALongOverviewScrollsInsideTheCard() {
+        val inks = IntertitleInks(posterArt())
+        val long = details.copy(overview = List(6) { details.overview }.joinToString(" "))
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
+                FlickCinematicTheme {
+                    Box(
+                        Modifier.size(width = 300.dp, height = 600.dp).background(inks.ground()).padding(30.dp).testTag("seat"),
+                    ) {
+                        IntertitleCard(details = long, title = "The Matrix", inks = inks, modifier = Modifier.testTag("card"))
+                    }
+                }
+            }
+        }
+        val seat = composeRule.onNodeWithTag("seat").getBoundsInRoot()
+        val card = composeRule.onNodeWithTag("card").getBoundsInRoot()
+        assertTrue("card inside its seat", card.top >= seat.top && card.bottom <= seat.bottom)
+        save("intertitle-card-font2x")
     }
 
     private fun save(name: String) {

@@ -122,8 +122,10 @@ the platform default and the design would just look wrong, with no error):
 - **Timecode / telemetry / pairing codes:** Geist Mono, **tabular figures mandatory** —
   `TextStyle(fontFeatureSettings = "tnum, zero")`. Digits must not shimmy while the clock runs,
   and the slashed zero keeps a pairing code read off the TV from being typed in as `O`.
+- **The synopsis intertitle (phone only):** Instrument Serif, regular and its drawn italic —
+  the one surface set in a book face, as a silent-film title card.
 
-All three are SIL OFL 1.1; the licenses ship at `<module>/src/main/assets/licenses/`.
+All of them are SIL OFL 1.1; the licenses ship at `<module>/src/main/assets/licenses/`.
 
 The two scale tables below are the original design intent, not the shipped numbers. The
 implemented receiver scale lives in `receiver/.../ui/theme/Type.kt`: `FlickType` helpers clamp
