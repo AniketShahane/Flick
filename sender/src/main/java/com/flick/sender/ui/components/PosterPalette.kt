@@ -4,22 +4,23 @@ import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * A poster's own colours, read once from a small thumbnail of it: the hue most of it leans
- * to, its most vivid usable colour, and its darkest and lightest tones. Pure, so the read is
- * a JVM test; [IntertitleColors.stainedGlass] turns it into the synopsis intertitle's inks.
+ * A poster's own colours, read once from a small thumbnail of it: its most vivid usable colour
+ * and its darkest tone. Pure, so the read is a JVM test; [IntertitleColors.stainedGlass] turns
+ * it into the synopsis intertitle's inks.
  */
 internal data class PosterPalette(
-    /** The dominant hue, degrees: the centre of the heaviest 15° bin. */
-    val hue: Float,
-    /** The most vivid mid-tone's hue and saturation (never under 0.55). */
+    /**
+     * The most vivid mid-tone's hue and saturation (never under 0.55); with no mid-tone at
+     * all, the centre of the heaviest 15° hue bin at 0.5.
+     */
     val vibrantHue: Float,
     val vibrantSaturation: Float,
-    /** Mean of the darkest quarter of pixels and of the lightest tenth, as 0..1 sRGB. */
+    /** Mean of the darkest quarter of pixels, as 0..1 sRGB. */
     val dark: Rgb,
-    val light: Rgb,
 ) {
     data class Rgb(val r: Float, val g: Float, val b: Float)
 
@@ -34,8 +35,7 @@ internal data class PosterPalette(
         /** Packed ARGB [pixels], alpha ignored. Empty input reads as black. */
         fun of(pixels: IntArray): PosterPalette {
             if (pixels.isEmpty()) {
-                val black = Rgb(0f, 0f, 0f)
-                return PosterPalette(BIN_DEGREES / 2f, BIN_DEGREES / 2f, 0.5f, black, black)
+                return PosterPalette(BIN_DEGREES / 2f, 0.5f, Rgb(0f, 0f, 0f))
             }
             val n = pixels.size
             val r = FloatArray(n)
@@ -95,7 +95,6 @@ internal data class PosterPalette(
             // Stable, as the read this was tuned on: equal lightness keeps pixel order.
             val byLight = (0 until n).sortedBy { l[it] }
             val darkCount = n / 4
-            val lightCount = n / 10
             fun mean(indices: List<Int>): Rgb {
                 if (indices.isEmpty()) return Rgb(0f, 0f, 0f)
                 var sr = 0f
@@ -110,11 +109,9 @@ internal data class PosterPalette(
                 return Rgb(sr / k, sg / k, sb / k)
             }
             return PosterPalette(
-                hue = hue,
                 vibrantHue = if (vibrant >= 0) h[vibrant] else hue,
                 vibrantSaturation = if (vibrant >= 0) max(0.55f, s[vibrant]) else 0.5f,
                 dark = mean(byLight.subList(0, darkCount)),
-                light = mean(byLight.subList(n - lightCount, n)),
             )
         }
 
@@ -147,6 +144,35 @@ internal data class PosterPalette(
             (channel(alpha) shl 24) or (channel(r) shl 16) or (channel(g) shl 8) or channel(b)
 
         private fun channel(v: Float): Int = (v.coerceIn(0f, 1f) * 255f).roundToInt()
+
+        /** WCAG relative luminance of packed ARGB, alpha ignored. */
+        fun luminance(argb: Int): Float {
+            fun lin(c: Int): Float {
+                val v = c / 255f
+                return if (v <= 0.04045f) v / 12.92f else ((v + 0.055f) / 1.055f).pow(2.4f)
+            }
+            return 0.2126f * lin((argb shr 16) and 0xFF) + 0.7152f * lin((argb shr 8) and 0xFF) + 0.0722f * lin(argb and 0xFF)
+        }
+
+        fun contrast(a: Int, b: Int): Float {
+            val la = luminance(a)
+            val lb = luminance(b)
+            return (max(la, lb) + 0.05f) / (min(la, lb) + 0.05f)
+        }
+
+        /** The pixel at the 90th percentile of luminance: the bright end, not one stray highlight. */
+        fun brightTenth(pixels: IntArray): Int {
+            if (pixels.isEmpty()) return 0xFF000000.toInt()
+            val sorted = pixels.sortedBy { luminance(it) }
+            return sorted[((sorted.size - 1) * 0.9f).roundToInt()]
+        }
+
+        /** [a] over [b] at [alpha], channel by channel in sRGB, as the renderer blends. */
+        fun over(a: Int, b: Int, alpha: Float): Int {
+            fun mix(shift: Int): Float =
+                (((a shr shift) and 0xFF) * alpha + ((b shr shift) and 0xFF) * (1f - alpha)) / 255f
+            return argb(1f, mix(16), mix(8), mix(0))
+        }
 
         /**
          * CSS `saturate([amount])` over packed ARGB [pixels], in place: the filter-effects
@@ -181,7 +207,8 @@ internal data class PosterPalette(
  * The intertitle's inks as packed ARGB: [ground] behind everything, [film] the strip's body,
  * [rule] the card's double frame, [ruleSoft] the outline outside it, [glow] the light around
  * the card, [accent] the year, the ornament and the tagline. The title and the overview are
- * white whatever the poster, so they are not here.
+ * white whatever the poster, so they are not here. [veilTop] and [veilFoot] are the black
+ * veil over the card's glass, top to foot.
  */
 internal data class IntertitleColors(
     val ground: Int,
@@ -190,17 +217,57 @@ internal data class IntertitleColors(
     val ruleSoft: Int,
     val glow: Int,
     val accent: Int,
+    val veilTop: Float = VEIL_TOP,
+    val veilFoot: Float = VEIL_FOOT,
 ) {
     companion object {
-        /** "Stained glass": the poster's own dark for the ground, its vivid colour for the light. */
-        fun stainedGlass(p: PosterPalette): IntertitleColors = IntertitleColors(
-            ground = PosterPalette.scaled(p.dark, 0.45f),
-            film = PosterPalette.scaled(p.dark, 0.70f),
-            rule = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.70f, 0.95f),
-            ruleSoft = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.70f, 0.35f),
-            glow = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.55f, 0.35f),
-            accent = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.80f),
-        )
+        const val VEIL_TOP = 0.45f
+        const val VEIL_FOOT = 0.62f
+        const val GLASS_ALPHA = 0.75f
+        const val ACCENT_LIGHTNESS = 0.80f
+        const val BODY_CONTRAST = 7f
+        const val ACCENT_CONTRAST = 4.5f
+        private const val MAX_VEIL = 0.95f
+        private const val MAX_LIGHTNESS = 0.97f
+        private const val STEP = 0.01f
+
+        /** The overview's ink, #F5F5F5. */
+        const val OVERVIEW_INK: Int = 0xFFF5F5F5.toInt()
+
+        /**
+         * "Stained glass": the poster's own dark for the ground, its vivid colour for the light.
+         *
+         * With [glassBright] (packed ARGB; the brightest tenth of the blurred poster behind the
+         * card) the inks are made legible over it: the veil deepened until the overview reads
+         * at [BODY_CONTRAST] and the accent lightened until it reads at [ACCENT_CONTRAST], both
+         * against the card at its top, where the veil is lightest. A poster dark enough already
+         * keeps the theme's own numbers.
+         */
+        fun stainedGlass(p: PosterPalette, glassBright: Int? = null): IntertitleColors {
+            val ground = PosterPalette.scaled(p.dark, 0.45f)
+            fun accentAt(lightness: Float) = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, lightness)
+            var top = VEIL_TOP
+            var lightness = ACCENT_LIGHTNESS
+            if (glassBright != null) {
+                val glass = PosterPalette.over(glassBright, ground, GLASS_ALPHA)
+                fun card(veil: Float) = PosterPalette.over(0xFF000000.toInt(), glass, veil)
+                while (top < MAX_VEIL && PosterPalette.contrast(OVERVIEW_INK, card(top)) < BODY_CONTRAST) top += STEP
+                val behind = card(top)
+                while (lightness < MAX_LIGHTNESS && PosterPalette.contrast(accentAt(lightness), behind) < ACCENT_CONTRAST) {
+                    lightness += STEP
+                }
+            }
+            return IntertitleColors(
+                ground = ground,
+                film = PosterPalette.scaled(p.dark, 0.70f),
+                rule = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.70f, 0.95f),
+                ruleSoft = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.70f, 0.35f),
+                glow = PosterPalette.hsl(p.vibrantHue, p.vibrantSaturation, 0.55f, 0.35f),
+                accent = accentAt(lightness),
+                veilTop = top,
+                veilFoot = max(VEIL_FOOT, top),
+            )
+        }
 
         /**
          * Until a poster has been read: the cinema page's own blue-black and a cool silver,
@@ -208,11 +275,9 @@ internal data class IntertitleColors(
          */
         val Neutral: IntertitleColors = stainedGlass(
             PosterPalette(
-                hue = 222f,
                 vibrantHue = 222f,
                 vibrantSaturation = 0.3f,
                 dark = PosterPalette.Rgb(0.07f, 0.09f, 0.15f),
-                light = PosterPalette.Rgb(0.9f, 0.92f, 0.96f),
             ),
         )
     }

@@ -1,6 +1,7 @@
 package com.flick.sender.ui.components
 
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * The poster-flick on the detail sheet, as numbers. Everything is in dp and dp/s so the
@@ -36,16 +37,34 @@ internal object FlickPadPolicy {
 
     /**
      * A leftward drag at least this many times more sideways than vertical opens the
-     * synopsis instead of being thrown: within about 34° of horizontal.
+     * synopsis instead of being thrown: within about 27° of horizontal.
      */
-    const val REVEAL_DOMINANCE = 1.5f
+    const val REVEAL_DOMINANCE = 2f
 
     /**
-     * Whether a drag that has just crossed touch slop, [travelXDp] and [travelYDp] from where
-     * the finger went down, is the synopsis being drawn in by pushing the poster left. Decided
-     * once, at slop, and never revisited: a drag that starts as a reveal stays one, and anything
-     * else — up, down, right, or a steep diagonal — is the throw's, exactly as before.
+     * How far the finger travels before a leftward drag is judged. A thumb flicking up often
+     * sets off sideways for its first few millimetres and only then curves up; judged at touch
+     * slop that start reads as a reveal.
      */
+    const val REVEAL_DECIDE_DP = 20f
+
+    /**
+     * Whether a drag that has just crossed touch slop leans left enough to be worth judging
+     * at [REVEAL_DECIDE_DP]. Anything else is the throw's at once, exactly as before; until
+     * the judgement a leaning drag is the throw's too, following the finger as one.
+     */
+    fun mayReveal(travelXDp: Float, travelYDp: Float): Boolean =
+        travelXDp < 0f && -travelXDp >= abs(travelYDp)
+
+    /**
+     * The judgement on a leaning drag [travelXDp], [travelYDp] from where the finger went
+     * down: null while it has not yet travelled [REVEAL_DECIDE_DP], then whether it is the
+     * synopsis being drawn in ([reveals]) — decided once and never revisited.
+     */
+    fun revealDecision(travelXDp: Float, travelYDp: Float): Boolean? =
+        if (hypot(travelXDp, travelYDp) < REVEAL_DECIDE_DP) null else reveals(travelXDp, travelYDp)
+
+    /** A drag that is the synopsis being drawn in by pushing the poster left. */
     fun reveals(travelXDp: Float, travelYDp: Float): Boolean =
         travelXDp < 0f && -travelXDp >= abs(travelYDp) * REVEAL_DOMINANCE
 

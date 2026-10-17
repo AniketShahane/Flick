@@ -11,10 +11,10 @@ class FilmDetailsPolicyTest {
     private val film = FilmPosterQuery("Example Movie", 1999, show = false)
     private val show = FilmPosterQuery("Example Show", null, show = true)
 
-    @Test fun detailsUrlAsksForCreditsInOneCall() {
+    @Test fun detailsUrlAsksForTheDetailsAlone() {
         val url = FilmDetailsPolicy.detailsUrl(film, 603, "abc123")
         assertTrue(url.startsWith("https://api.themoviedb.org/3/movie/603?"))
-        assertTrue(url.contains("append_to_response=credits"))
+        assertFalse("credits are not shown, so not asked for", url.contains("append_to_response"))
         assertTrue(url.contains("api_key=abc123"))
         assertTrue(FilmDetailsPolicy.detailsUrl(show, 1, "k").contains("/3/tv/1?"))
         assertFalse(FilmDetailsPolicy.detailsUrl(film, 603, "eyJhbGciOi.x.y").contains("api_key"))
@@ -22,44 +22,25 @@ class FilmDetailsPolicyTest {
 
     @Test fun readsAFilm() {
         val body = """{"id":603,"overview":"  A hacker   learns\nthe truth. ","tagline":"Believe.",
-            "genres":[{"name":"Action"},{"name":"Science Fiction"},{"name":"Drama"},{"name":"Fourth"}],
-            "release_date":"1999-03-30","runtime":136,
-            "credits":{
-              "cast":[{"name":"Second","order":1},{"name":"First","order":0},{"name":"Third","order":2},
-                      {"name":"Fourth","order":3},{"name":"Fifth","order":4}],
-              "crew":[{"name":"Composer","job":"Original Music Composer"},
-                      {"name":"Director One","job":"Director"},{"name":"Director Two","job":"Director"}]}}"""
+            "genres":[{"name":"Action"}],"release_date":"1999-03-30","runtime":136,
+            "credits":{"cast":[{"name":"First","order":0}]}}"""
         val details = FilmDetailsPolicy.parse(film, body)!!
         assertEquals("A hacker learns the truth.", details.overview)
         assertEquals("Believe.", details.tagline)
-        assertEquals(listOf("Action", "Science Fiction", "Drama"), details.genres)
         assertEquals(1999, details.year)
-        assertEquals(136, details.runtimeMinutes)
-        assertEquals(listOf("Director One", "Director Two"), details.creators)
-        assertEquals(listOf("First", "Second", "Third", "Fourth"), details.cast)
         assertTrue(details.hasSynopsis)
-        assertFalse(details.show)
     }
 
-    @Test fun readsAShowFromItsCreators() {
-        val body = """{"id":1,"overview":"A show.","first_air_date":"2008-01-20",
-            "episode_run_time":[],"last_episode_to_air":{"runtime":47},
-            "created_by":[{"name":"Creator"}],
-            "credits":{"cast":[{"name":"Lead","order":0}],"crew":[{"name":"Not Him","job":"Director"}]}}"""
-        val details = FilmDetailsPolicy.parse(show, body)!!
-        assertEquals(2008, details.year)
-        assertEquals(47, details.runtimeMinutes)
-        assertEquals(listOf("Creator"), details.creators)
-        assertTrue(details.show)
+    @Test fun readsAShowsYearFromItsFirstAirDate() {
+        val body = """{"id":1,"overview":"A show.","first_air_date":"2008-01-20","release_date":"1990-01-01"}"""
+        assertEquals(2008, FilmDetailsPolicy.parse(show, body)!!.year)
     }
 
     @Test fun missingFieldsAreAbsentNotInvented() {
-        val details = FilmDetailsPolicy.parse(film, """{"id":7,"overview":"","tagline":null,"runtime":0,"release_date":""}""")!!
+        val details = FilmDetailsPolicy.parse(film, """{"id":7,"overview":"","tagline":null,"release_date":""}""")!!
         assertNull(details.overview)
         assertNull(details.tagline)
-        assertNull(details.runtimeMinutes)
         assertNull(details.year)
-        assertTrue(details.genres.isEmpty() && details.creators.isEmpty() && details.cast.isEmpty())
         assertFalse(details.hasSynopsis)
     }
 
@@ -69,13 +50,10 @@ class FilmDetailsPolicyTest {
     }
 
     @Test fun cacheRoundTripsAndRejectsOtherVersions() {
-        val details = FilmDetails(
-            overview = "Text", tagline = null, genres = listOf("Drama"), year = 2001,
-            runtimeMinutes = 90, creators = listOf("A"), cast = listOf("B", "C"),
-            show = false,
-        )
+        val details = FilmDetails(overview = "Text", tagline = null, year = 2001)
         assertEquals(details, FilmDetailsPolicy.decode(FilmDetailsPolicy.encode(details)))
-        assertNull(FilmDetailsPolicy.decode("""{"v":0,"overview":"Text"}"""))
+        // The previous format, with credits, is asked for again rather than read.
+        assertNull(FilmDetailsPolicy.decode("""{"v":1,"overview":"Text","cast":["B"]}"""))
         assertNull(FilmDetailsPolicy.decode("garbage"))
     }
 }

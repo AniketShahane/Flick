@@ -38,7 +38,16 @@ internal class SynopsisReveal(
     private val scope: CoroutineScope,
     private val settleSpec: () -> FiniteAnimationSpec<Float>,
 ) {
-    val progress = Animatable(0f)
+    private val progress = Animatable(0f)
+
+    /**
+     * Set by [shut] until the progress itself is home: everything reads the reveal as away from
+     * that same frame, though the animation behind it can only stop on the next.
+     */
+    private var shutting by mutableStateOf(false)
+
+    /** Where the story is, 0 away to 1 open (a spring may overshoot either end). */
+    val value: Float get() = if (shutting) 0f else progress.value
 
     var open by mutableStateOf(false)
         private set
@@ -62,9 +71,11 @@ internal class SynopsisReveal(
     private var dragFrom = 0f
     private var dragging by mutableStateOf(false)
     private var settle: Job? = null
+    private var backFrom = 1f
+    private var backWasOpen = true
 
     /** Anything on screen is in motion, or the story is anywhere but away. */
-    val engaged by derivedStateOf { open || dragging || progress.value > 0f }
+    val engaged by derivedStateOf { open || dragging || value > 0f }
 
     /**
      * Whether the story takes touches: open, or under a finger. Not merely [engaged] — a story
@@ -82,18 +93,25 @@ internal class SynopsisReveal(
     /** A finger takes the story wherever it is, mid-settle included. */
     fun beginDrag() {
         settle?.cancel()
+        dragFrom = value
+        shutting = false
         dragging = true
         everShown = true
-        dragFrom = progress.value
     }
 
-    /** [travelPx] from where the finger went down, positive toward open (leftward). */
+    /**
+     * [travelPx] from where the finger went down, positive toward open (leftward). Ignored once
+     * something else has settled the story mid-drag (the ✕ under a second finger, back): the
+     * finger still down must not pull it back off its settle and strand it there.
+     */
     fun dragTo(travelPx: Float) {
+        if (!dragging) return
         val next = SynopsisPolicy.progress(dragFrom, travelPx, widthPx)
         scope.launch { progress.snapTo(next) }
     }
 
     fun dragBy(deltaPx: Float) {
+        if (!dragging) return
         dragFrom = SynopsisPolicy.progress(dragFrom, deltaPx, widthPx)
         val next = dragFrom
         scope.launch { progress.snapTo(next) }
@@ -101,24 +119,56 @@ internal class SynopsisReveal(
 
     /** Settles where the release says; [velocityPxPerS] positive is toward open (leftward). */
     fun release(velocityPxPerS: Float, density: Float, opening: Boolean) {
-        dragging = false
-        val toOpen = SynopsisPolicy.settlesOpen(progress.value, velocityPxPerS / density, opening)
+        if (!dragging) return
+        val toOpen = SynopsisPolicy.settlesOpen(value, velocityPxPerS / density, opening)
         settleTo(toOpen, velocityPxPerS / widthPx)
+    }
+
+    /** A drag that ended with no release (its node gone, the gesture cancelled) settles by where it is. */
+    fun abandonDrag() {
+        if (dragging) settleTo(value >= SynopsisPolicy.CLOSE_AT, 0f)
     }
 
     fun show() = settleTo(true, 0f)
 
     fun hide() = settleTo(false, 0f)
 
+    /**
+     * Put away at once, this frame: the page is leaving, or a throw is taking the poster
+     * while the story springs home. No settle, nothing left composed in flight.
+     */
+    fun shut() {
+        settle?.cancel()
+        dragging = false
+        open = false
+        if (progress.value == 0f && !progress.isRunning) return
+        shutting = true
+        settle = scope.launch {
+            progress.snapTo(0f)
+            shutting = false
+        }
+    }
+
+    /** Predictive back starting: it leans from wherever the story is, toward home. */
+    fun beginBack() {
+        settle?.cancel()
+        backFrom = value.coerceIn(0f, 1f)
+        backWasOpen = open
+        dragging = true
+    }
+
     /** Predictive back in flight: the story leans toward home without committing. */
     fun holdForBack(backProgress: Float) {
-        settle?.cancel()
-        dragging = true
-        scope.launch { progress.snapTo(SynopsisPolicy.backHold(backProgress)) }
+        if (!dragging) return
+        scope.launch { progress.snapTo(SynopsisPolicy.backHold(backFrom, backProgress)) }
     }
+
+    /** Predictive back cancelled: back to where it was going. */
+    fun cancelBack() = settleTo(backWasOpen, 0f)
 
     private fun settleTo(toOpen: Boolean, velocity: Float) {
         dragging = false
+        shutting = false
         open = toOpen
         if (toOpen) everShown = true
         settle?.cancel()
@@ -145,7 +195,7 @@ internal fun Modifier.synopsisRecede(reveal: SynopsisReveal?, reduceMotion: Bool
         this
     } else {
         graphicsLayer {
-            val p = reveal.progress.value.coerceIn(0f, 1f)
+            val p = reveal.value.coerceIn(0f, 1f)
             if (reduceMotion) {
                 alpha = 1f - p
             } else {
@@ -165,6 +215,7 @@ internal fun Modifier.synopsisRecede(reveal: SynopsisReveal?, reduceMotion: Bool
 internal fun SynopsisReveal.posterFlightShiftPx(p: Float, density: Density, reduceMotion: Boolean): Float {
     val seat = posterSeat
     if (reduceMotion || p <= 0f || seat.width <= 0f) return 0f
+    // Physical left, whatever the layout direction: the story is drawn from the left edge.
     val target = pageOrigin.x + with(density) { SynopsisPolicy.STRIP_CENTER_DP.dp.toPx() }
     return (target - seat.center.x) * SynopsisPolicy.easeInOutCubic(p)
 }

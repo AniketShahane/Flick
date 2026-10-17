@@ -20,7 +20,7 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * A film's synopsis and credits from TMDB, asked for only when its detail page opens — never
+ * A film's synopsis, tagline and year from TMDB, asked for only when its detail page opens — never
  * per library tile — and remembered across launches.
  *
  * Details are kept for [DETAILS_TTL_MS] (a film's synopsis rarely changes, but it does get

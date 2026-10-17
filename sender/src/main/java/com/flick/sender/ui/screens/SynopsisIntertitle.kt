@@ -1,5 +1,18 @@
 package com.flick.sender.ui.screens
 
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import com.flick.sender.ui.motion.loopFrameRate
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
@@ -9,10 +22,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,14 +78,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
 import com.flick.sender.media.FilmDetails
-import com.flick.sender.ui.IntertitleArt
+import com.flick.sender.ui.PosterImage
 import com.flick.sender.ui.IntertitleInks
 import com.flick.sender.ui.components.SynopsisPolicy
 import com.flick.sender.ui.components.SynopsisReveal
 import com.flick.sender.ui.components.posterFlightAlpha
 import com.flick.sender.ui.components.posterFlightScale
 import com.flick.sender.ui.components.posterFlightShiftPx
-import com.flick.sender.ui.motion.animatingFrameRate
 import com.flick.sender.ui.theme.FlickIcons
 import com.flick.sender.ui.theme.FlickText
 import com.flick.sender.ui.theme.PosterHairline
@@ -110,18 +120,28 @@ internal fun SynopsisIntertitle(
     val density = LocalDensity.current
     val engaged = reveal.engaged
     val catching = reveal.catching
+    val moving = reveal.moving
     val resumed = rememberIsResumed()
     val reel = remember { ReelClock() }
-    // Stops settled closed, in the background and under reduce motion; runs while open.
+    // Never settled closed, in the background or under reduce motion. Moving, it runs every
+    // frame; settled open it eases to a stop and goes quiet but for a rare flicker.
     val running = engaged && resumed && !reduceMotion
-    LaunchedEffect(running, density) {
+    LaunchedEffect(running, moving, density) {
         if (running) reel.run(reveal, density) else reel.rest()
     }
-    val art = inks.art
-    DisposableEffect(reveal, art) {
-        reveal.posterCopyLive = art != null
+    val poster = inks.poster
+    DisposableEffect(reveal, poster) {
+        reveal.posterCopyLive = poster != null
         onDispose { reveal.posterCopyLive = false }
     }
+    // A close-drag whose node goes (the story leaving composition mid-drag) still settles.
+    DisposableEffect(reveal) { onDispose { reveal.abandonDrag() } }
+    // Read from the top again next time, not where the last reading left off; while it closes
+    // it keeps its place, shown without the scroll that would take touches.
+    val cardScroll = rememberScrollState()
+    LaunchedEffect(engaged) { if (!engaged) cardScroll.scrollTo(0) }
+    val statusTop = WindowInsets.statusBars.getTop(density)
+    val outerDirection = LocalLayoutDirection.current
     val dragState = rememberDraggableState { delta -> reveal.dragBy(-delta) }
     // A push right anywhere on the story takes it home, finger-driven like the pull that
     // brought it; the card's own scroll keeps the vertical drags.
@@ -133,10 +153,13 @@ internal fun SynopsisIntertitle(
         onDragStopped = { velocity -> reveal.release(-velocity, density.density, opening = false) },
     )
     val pane = stringResource(R.string.a11y_synopsis_pane)
+    // Laid out left to right in either direction: the push that opens it is physically left,
+    // and the strip is drawn from that edge. The card's own copy keeps the page's direction.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
     Box(
         modifier
             .fillMaxSize()
-            .animatingFrameRate(running || reveal.moving)
+            .loopFrameRate(fast = moving)
             .then(if (catching) closeDrag else Modifier)
             .then(
                 when {
@@ -153,11 +176,24 @@ internal fun SynopsisIntertitle(
                 .then(if (catching) Modifier.pointerInput(reveal) { detectTapGestures { reveal.hide() } } else Modifier),
         )
         FilmStrip(reveal, inks, reel, reduceMotion)
+        // The status bar's clock and icons over the strip's bright frames: a short shade.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(with(density) { statusTop.toDp() } + TopShade)
+                .drawWithCache {
+                    val shade = Brush.verticalGradient(listOf(Color.Black.copy(alpha = TopShadeAlpha), Color.Transparent))
+                    onDrawBehind {
+                        val p = reveal.value.coerceIn(0f, 1f)
+                        val a = if (reduceMotion) p else SynopsisPolicy.stripAlpha(p)
+                        if (a > 0f) drawRect(shade, alpha = a)
+                    }
+                },
+        )
         Box(
             Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(
                     start = SynopsisPolicy.CARD_START_DP.dp,
                     end = SynopsisPolicy.CARD_END_DP.dp,
@@ -166,10 +202,12 @@ internal fun SynopsisIntertitle(
                 ),
             contentAlignment = Alignment.Center,
         ) {
+            CompositionLocalProvider(LocalLayoutDirection provides outerDirection) {
             IntertitleCard(
                 details = details,
                 title = title,
                 inks = inks,
+                scroll = cardScroll,
                 interactive = catching,
                 lineIn = { index -> if (reduceMotion) Modifier else Modifier.lineIn(reveal, index) },
                 brightness = { reel.brightness },
@@ -177,16 +215,17 @@ internal fun SynopsisIntertitle(
                     .widthIn(max = SynopsisPolicy.CARD_MAX_WIDTH_DP.dp)
                     .fillMaxWidth()
                     .graphicsLayer {
-                        val p = reveal.progress.value.coerceIn(0f, 1f)
+                        val p = reveal.value.coerceIn(0f, 1f)
                         alpha = if (reduceMotion) p else SynopsisPolicy.cardAlpha(p)
                         translationX = reel.jitterX
                         translationY = reel.jitterY
                         compositingStrategy = CompositingStrategy.ModulateAlpha
                     },
             )
+            }
         }
         // Over the strip and the card, as the poster is until it has become a frame.
-        if (art != null) PosterFlight(reveal, art, reduceMotion)
+        if (poster != null) PosterFlight(reveal, poster, reduceMotion)
         CinemaDiscButton(
             icon = FlickIcons.Close,
             description = stringResource(R.string.a11y_synopsis_close),
@@ -194,19 +233,22 @@ internal fun SynopsisIntertitle(
             enabled = catching,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .statusBarsPadding()
+                // Clear of the status bar, a cutout, and landscape's side navigation bar.
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End))
                 .padding(top = 12.dp, end = 12.dp)
                 .graphicsLayer {
-                    val p = reveal.progress.value.coerceIn(0f, 1f)
+                    val p = reveal.value.coerceIn(0f, 1f)
                     alpha = if (reduceMotion) p else SynopsisPolicy.closeAlpha(p)
                 },
         )
+    }
     }
 }
 
 /**
  * The title card. [lineIn] is each line's arrival; [interactive] false is a card on its way
- * home, which must take no touch; [brightness] is the projector's flicker, read in the draw.
+ * home, which must take no touch but keeps showing where [scroll] had it; [brightness] is the
+ * projector's flicker, read in the draw.
  * Separate from the reveal so it can be drawn and checked with any data.
  */
 @Composable
@@ -215,11 +257,11 @@ internal fun IntertitleCard(
     title: String,
     inks: IntertitleInks,
     modifier: Modifier = Modifier,
+    scroll: ScrollState = rememberScrollState(),
     interactive: Boolean = true,
     lineIn: (Int) -> Modifier = { Modifier },
     brightness: () -> Float = { 1f },
 ) {
-    val scroll = rememberScrollState()
     val fleuron = rememberVectorPainter(FlickIcons.Fleuron)
     val overview = details.overview.orEmpty()
     Box(modifier.drawBehind { drawCardLight(inks) }) {
@@ -231,7 +273,7 @@ internal fun IntertitleCard(
             Modifier
                 .fillMaxWidth()
                 .padding(RuleBand)
-                .then(if (interactive) Modifier.verticalScroll(scroll) else Modifier)
+                .then(if (interactive) Modifier.verticalScroll(scroll) else Modifier.shownAt(scroll))
                 .padding(horizontal = CardPadX, vertical = CardPadY),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(LineGap),
@@ -333,14 +375,13 @@ private fun CacheDrawScope.cardFace(inks: IntertitleInks) =
         val bleed = GlassBleed.toPx()
         val boxW = size.width + 2 * bleed
         val boxH = size.height + 2 * bleed
-        val veil = Brush.verticalGradient(listOf(Color.Black.copy(alpha = VeilTop), Color.Black.copy(alpha = VeilFoot)))
         val stroke = 1.dp.toPx()
         onDrawBehind {
-            val art = inks.art
+            val look = inks.look
             val a = inks.artAlpha()
-            if (art != null && a > 0f) {
-                val gw = art.glass.width.toFloat()
-                val gh = art.glass.height.toFloat()
+            if (look != null && a > 0f) {
+                val gw = look.glass.width.toFloat()
+                val gh = look.glass.height.toFloat()
                 val scale = max(boxW / gw, boxH / gh)
                 val dx = -bleed + (boxW - gw * scale) / 2f
                 val dy = -bleed + (boxH - gh * scale) / 2f
@@ -349,11 +390,12 @@ private fun CacheDrawScope.cardFace(inks: IntertitleInks) =
                         translate(dx, dy)
                         scale(scale, scale, pivot = Offset.Zero)
                     }) {
-                        drawImage(art.glass, alpha = GlassAlpha * a, filterQuality = FilterQuality.Low)
+                        drawImage(look.glass, alpha = GlassAlpha * a, filterQuality = FilterQuality.Low)
                     }
                 }
             }
-            drawRect(veil)
+            // Deepened for a pale poster, so the copy over it always reads (see IntertitleColors).
+            drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = inks.veilTop()), Color.Black.copy(alpha = inks.veilFoot()))))
             val rule = inks.rule()
             drawRect(rule, Offset(stroke / 2f, stroke / 2f), Size(size.width - stroke, size.height - stroke), style = Stroke(stroke))
             val inner = stroke * 2.5f
@@ -379,7 +421,7 @@ private fun FilmStrip(reveal: SynopsisReveal, inks: IntertitleInks, reel: ReelCl
                 }
             }
             .graphicsLayer {
-                val p = reveal.progress.value.coerceIn(0f, 1f)
+                val p = reveal.value.coerceIn(0f, 1f)
                 alpha = if (reduceMotion) p else SynopsisPolicy.stripAlpha(p)
                 translationX = if (reduceMotion) 0f else SynopsisPolicy.stripShiftDp(p).dp.toPx()
             }
@@ -414,14 +456,14 @@ private fun FilmStrip(reveal: SynopsisReveal, inks: IntertitleInks, reel: ReelCl
                         // The punched edge catching the light: on a near-black poster the film
                         // and the ground are a few levels apart, and the holes would vanish.
                         drawPath(holes, SprocketRim, style = Stroke(rim))
-                        val art = inks.art
+                        val look = inks.look
                         val a = inks.artAlpha()
                         for (k in 0 until frames) {
                             val y = k * pitch
                             if (a < 1f) drawRect(FrameEmpty, Offset(frameX, y), Size(frameW, frameH), alpha = 1f - a)
-                            if (art != null && a > 0f) {
+                            if (look != null && a > 0f) {
                                 drawImage(
-                                    art.frame,
+                                    look.frame,
                                     dstOffset = IntOffset(frameX.roundToInt(), y.roundToInt()),
                                     dstSize = IntSize(frameW.roundToInt(), frameH.roundToInt()),
                                     alpha = a,
@@ -456,7 +498,7 @@ private fun sprocketHoles(density: Density, length: Float, pitch: Float): Path =
  * rests in, flown onto the strip's centre line and shrunk to a frame by layer properties only.
  */
 @Composable
-private fun PosterFlight(reveal: SynopsisReveal, art: IntertitleArt, reduceMotion: Boolean) {
+private fun PosterFlight(reveal: SynopsisReveal, poster: PosterImage, reduceMotion: Boolean) {
     Box(
         Modifier
             .layout { measurable, constraints ->
@@ -469,7 +511,7 @@ private fun PosterFlight(reveal: SynopsisReveal, art: IntertitleArt, reduceMotio
                 }
             }
             .graphicsLayer {
-                val p = reveal.progress.value
+                val p = reveal.value
                 alpha = if (p <= 0f) 0f else posterFlightAlpha(p, reduceMotion)
                 translationX = reveal.posterFlightShiftPx(p, this, reduceMotion)
                 val scale = reveal.posterFlightScale(p, this, reduceMotion)
@@ -480,9 +522,9 @@ private fun PosterFlight(reveal: SynopsisReveal, art: IntertitleArt, reduceMotio
             }
             .drawBehind {
                 drawImage(
-                    art.poster,
-                    srcOffset = art.posterSrcOffset,
-                    srcSize = art.posterSrcSize,
+                    poster.bitmap,
+                    srcOffset = poster.srcOffset,
+                    srcSize = poster.srcSize,
                     dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
                     filterQuality = FilterQuality.Medium,
                 )
@@ -504,7 +546,7 @@ private fun PosterFlight(reveal: SynopsisReveal, art: IntertitleArt, reduceMotio
  * driven by the travel itself, so the stagger follows the finger, the settle and back alike.
  */
 private fun Modifier.lineIn(reveal: SynopsisReveal, index: Int): Modifier = graphicsLayer {
-    val t = SynopsisPolicy.lineIn(reveal.progress.value, index)
+    val t = SynopsisPolicy.lineIn(reveal.value, index)
     alpha = t
     translationY = (1f - t) * SynopsisPolicy.LINES_RISE_DP.dp.toPx()
     compositingStrategy = CompositingStrategy.ModulateAlpha
@@ -512,7 +554,10 @@ private fun Modifier.lineIn(reveal: SynopsisReveal, index: Int): Modifier = grap
 
 /**
  * The projector: the reel's run and the card's flicker, written once a frame and read only in
- * layers and draws.
+ * layers and draws. While the story moves the reel runs with it; settled open it eases to a
+ * stop, so a story being read costs no frames. The flicker is the title card's arrival — the
+ * first second or so it is up — and after that only a rare, faint one, with no jitter, so the
+ * words being read stay still.
  */
 @Stable
 private class ReelClock {
@@ -525,19 +570,38 @@ private class ReelClock {
     var jitterY by mutableFloatStateOf(0f)
         private set
 
+    /** When this opening's flicker began, in frame time; -1 until the card is up. */
+    private var flickerFrom = -1L
+
     suspend fun run(reveal: SynopsisReveal, density: Density) {
         val pitch = SynopsisPolicy.FRAME_PITCH_DP * density.density
         val speed = SynopsisPolicy.REEL_DP_PER_S * density.density
         val jitter = SynopsisPolicy.FLICKER_JITTER_DP * density.density
+        var settledFrom = -1L
         var last = withFrameNanos { it }
-        while (true) {
+        var quiet = false
+        while (!quiet) {
             withFrameNanos { now ->
                 // A long gap (a dropped run of frames) is not a jump in the reel.
                 val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, MaxStepS)
                 last = now
-                val p = reveal.progress.value.coerceIn(0f, 1f)
-                scrollPx = (scrollPx + dt * p * speed) % pitch
-                if (p > SynopsisPolicy.FLICKER_FROM) {
+                val p = reveal.value.coerceIn(0f, 1f)
+                val settledOpen = reveal.open && !reveal.moving
+                if (settledOpen && settledFrom < 0) settledFrom = now
+                val runOut = if (settledFrom < 0) {
+                    1f
+                } else {
+                    val left = 1f - (now - settledFrom) / (ReelStopMs * 1_000_000f)
+                    left.coerceAtLeast(0f).let { it * it }
+                }
+                scrollPx = (scrollPx + dt * p * speed * runOut) % pitch
+                if (p <= SynopsisPolicy.FLICKER_FROM || !reveal.open) {
+                    flickerFrom = -1L
+                } else if (flickerFrom < 0) {
+                    flickerFrom = now
+                }
+                val flickering = flickerFrom >= 0 && now - flickerFrom < FlickerMs * 1_000_000L
+                if (flickering) {
                     brightness = SynopsisPolicy.FLICKER_MIN_BRIGHTNESS +
                         Random.nextFloat() * (1f - SynopsisPolicy.FLICKER_MIN_BRIGHTNESS)
                     jitterX = (Random.nextFloat() * 2f - 1f) * jitter
@@ -545,7 +609,21 @@ private class ReelClock {
                 } else {
                     rest()
                 }
+                quiet = settledOpen && runOut == 0f && !flickering
             }
+        }
+        // Settled and being read: now and then the lamp dips, for a few frames, and nothing moves.
+        while (true) {
+            delay(RareFlickerMinMs + Random.nextLong(RareFlickerSpreadMs))
+            val until = withFrameNanos { it } + RareFlickerBurstMs * 1_000_000L
+            var now = 0L
+            while (now < until) {
+                now = withFrameNanos { frame ->
+                    brightness = RareFlickerMin + Random.nextFloat() * (1f - RareFlickerMin)
+                    frame
+                }
+            }
+            brightness = 1f
         }
     }
 
@@ -556,9 +634,32 @@ private class ReelClock {
     }
 }
 
+/**
+ * Where [scroll] last had the card's copy, shown without the scroll itself: a card on its way
+ * home keeps its place but must take no touch, and a scroll stays in the hit path even disabled.
+ */
+private fun Modifier.shownAt(scroll: ScrollState): Modifier = clipToBounds().layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints.copy(maxHeight = Constraints.Infinity))
+    val height = placeable.height.coerceAtMost(constraints.maxHeight)
+    layout(placeable.width, height) {
+        placeable.place(0, -scroll.value.coerceIn(0, max(0, placeable.height - height)))
+    }
+}
+
 private const val MaxStepS = 0.05f
+/** Settled open, the reel runs down over this long. */
+private const val ReelStopMs = 1200L
+/** The card's flicker as it arrives. */
+private const val FlickerMs = 1000L
+/** After that, a dip of [RareFlickerBurstMs] every 9–21 s, never darker than [RareFlickerMin]. */
+private const val RareFlickerMinMs = 9_000L
+private const val RareFlickerSpreadMs = 12_000L
+private const val RareFlickerBurstMs = 160L
+private const val RareFlickerMin = 0.94f
 
 private val CardTop = 64.dp
+private val TopShade = 24.dp
+private const val TopShadeAlpha = 0.55f
 private val CardBottom = 40.dp
 /** The double rule: two 1 dp lines 1 dp apart. */
 private val RuleBand = 3.dp
@@ -569,8 +670,6 @@ private val OrnamentSize = 18.dp
 private val OverviewInk = Color(0xFFF5F5F5)
 private val GlassBleed = 30.dp
 private const val GlassAlpha = 0.75f
-private const val VeilTop = 0.45f
-private const val VeilFoot = 0.62f
 private val OutlineOffset = 5.dp
 private val GlowReach = 40.dp
 

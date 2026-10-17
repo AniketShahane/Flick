@@ -34,22 +34,21 @@ import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.ui.components.IntertitleColors
 import com.flick.sender.ui.components.PosterPalette
 import com.flick.sender.ui.components.SynopsisPolicy
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
- * What the synopsis intertitle is made of, read once from the poster the page already shows:
- * its [colors], the [poster] itself (the page's own decode) with the 2:3 window the page crops
- * it to, the strip's [frame] (that crop at frame size, saturated ×1.2) and the card's [glass]
- * (that crop small, saturated ×1.5 and blurred, drawn scaled up — never blurred per frame).
+ * What the synopsis intertitle derives from a poster, small enough to keep for the session:
+ * its [colors], the strip's [frame] (the seat's 2:3 crop at frame size, saturated ×1.2) and the
+ * card's [glass] (that crop small, saturated ×1.5 and blurred, drawn scaled up — never blurred
+ * per frame). The poster itself is never kept here; Coil's memory cache owns it.
  */
-internal class IntertitleArt(
+internal class IntertitleLook(
     val colors: IntertitleColors,
-    val poster: ImageBitmap,
-    val posterSrcOffset: IntOffset,
-    val posterSrcSize: IntSize,
     val frame: ImageBitmap,
     val glass: ImageBitmap,
 ) {
@@ -65,10 +64,10 @@ internal class IntertitleArt(
         private const val GLASS_SATURATION = 1.5f
         private const val FRAME_SATURATION = 1.2f
 
-        /** Off the main thread: reads, scales and blurs [source] into everything above. */
-        fun from(source: Bitmap, framePx: IntSize): IntertitleArt {
+        /** Off the main thread: reads, scales and blurs [source]. Throws on a bitmap it cannot read. */
+        fun from(source: Bitmap, framePx: IntSize): IntertitleLook {
             val soft = if (source.config == Bitmap.Config.HARDWARE) {
-                source.copy(Bitmap.Config.ARGB_8888, false)
+                checkNotNull(source.copy(Bitmap.Config.ARGB_8888, false)) { "unreadable poster" }
             } else {
                 source
             }
@@ -82,30 +81,13 @@ internal class IntertitleArt(
                 val frameHeight = framePx.height.coerceAtLeast(1)
                 val framePixels = sample(soft, crop, frameWidth, frameHeight)
                 PosterPalette.saturate(framePixels, FRAME_SATURATION)
-                return IntertitleArt(
-                    colors = IntertitleColors.stainedGlass(palette),
-                    poster = source.asImageBitmap(),
-                    posterSrcOffset = IntOffset(crop.left, crop.top),
-                    posterSrcSize = IntSize(crop.width(), crop.height()),
+                return IntertitleLook(
+                    colors = IntertitleColors.stainedGlass(palette, PosterPalette.brightTenth(blurred)),
                     frame = Bitmap.createBitmap(framePixels, frameWidth, frameHeight, Bitmap.Config.ARGB_8888).asImageBitmap(),
                     glass = Bitmap.createBitmap(blurred, GLASS_WIDTH, GLASS_HEIGHT, Bitmap.Config.ARGB_8888).asImageBitmap(),
                 )
             } finally {
                 if (soft !== source) soft.recycle()
-            }
-        }
-
-        /** The centred 2:3 window the page's poster seat crops [width] × [height] to. */
-        private fun posterCrop(width: Int, height: Int): Rect {
-            val aspect = 2f / 3f
-            return if (width.toFloat() / height > aspect) {
-                val w = (height * aspect).roundToInt().coerceIn(1, width)
-                val left = (width - w) / 2
-                Rect(left, 0, left + w, height)
-            } else {
-                val h = (width / aspect).roundToInt().coerceIn(1, height)
-                val top = (height - h) / 2
-                Rect(0, top, width, top + h)
             }
         }
 
@@ -133,6 +115,30 @@ internal class IntertitleArt(
             out.recycle()
             return pixels
         }
+    }
+}
+
+/** The poster as the seat draws it — the page's own decode — and the 2:3 window it is cropped to. */
+internal class PosterImage(val bitmap: ImageBitmap, val srcOffset: IntOffset, val srcSize: IntSize) {
+    companion object {
+        fun of(bitmap: Bitmap): PosterImage {
+            val crop = posterCrop(bitmap.width, bitmap.height)
+            return PosterImage(bitmap.asImageBitmap(), IntOffset(crop.left, crop.top), IntSize(crop.width(), crop.height()))
+        }
+    }
+}
+
+/** The centred 2:3 window the page's poster seat crops [width] × [height] to. */
+private fun posterCrop(width: Int, height: Int): Rect {
+    val aspect = 2f / 3f
+    return if (width.toFloat() / height > aspect) {
+        val w = (height * aspect).roundToInt().coerceIn(1, width)
+        val left = (width - w) / 2
+        Rect(left, 0, left + w, height)
+    } else {
+        val h = (width / aspect).roundToInt().coerceIn(1, height)
+        val top = (height - h) / 2
+        Rect(0, top, width, top + h)
     }
 }
 
@@ -166,24 +172,33 @@ internal fun rememberIntertitleSource(posterPath: String?, frameRequest: ImageRe
 }
 
 /**
- * The intertitle's inks as they stand: [IntertitleColors.Neutral] until the poster has been
- * read, then that poster's, crossfaded over [ArrivalMs] if the story is on screen as they land.
- * Every getter is meant for a draw, a layer or a [androidx.compose.ui.graphics.ColorProducer]:
- * the crossfade redraws, it never recomposes.
+ * The intertitle's inks and art as they stand: [IntertitleColors.Neutral] until the poster has
+ * been read, then that poster's, crossfaded over [ArrivalMs] if the story is on screen as they
+ * land. Every getter is meant for a draw, a layer or a
+ * [androidx.compose.ui.graphics.ColorProducer]: the crossfade redraws, it never recomposes.
+ * [poster] is the page's decode for the story's copy of the poster; until it is here the page's
+ * poster flies itself.
  */
 @Stable
-internal class IntertitleInks(initial: IntertitleArt? = null) {
-    var art by mutableStateOf(initial)
+internal class IntertitleInks(initial: IntertitleLook? = null) {
+    var look by mutableStateOf(initial)
         private set
+    var poster by mutableStateOf<PosterImage?>(null)
+        internal set
     private val arrival = Animatable(if (initial != null) 1f else 0f)
 
-    private fun mix(neutral: Int, read: (IntertitleColors) -> Int): Color {
-        val target = art?.colors ?: return Color(neutral)
+    private inline fun mix(neutral: Int, read: (IntertitleColors) -> Int): Color {
+        val target = look?.colors ?: return Color(neutral)
         return lerp(Color(neutral), Color(read(target)), arrival.value)
     }
 
+    private inline fun mixF(neutral: Float, read: (IntertitleColors) -> Float): Float {
+        val target = look?.colors ?: return neutral
+        return neutral + (read(target) - neutral) * arrival.value
+    }
+
     /** How far the poster's own art (frames, glass) has faded in. */
-    fun artAlpha(): Float = if (art == null) 0f else arrival.value
+    fun artAlpha(): Float = if (look == null) 0f else arrival.value
 
     fun ground(): Color = mix(IntertitleColors.Neutral.ground) { it.ground }
     fun film(): Color = mix(IntertitleColors.Neutral.film) { it.film }
@@ -191,11 +206,25 @@ internal class IntertitleInks(initial: IntertitleArt? = null) {
     fun ruleSoft(): Color = mix(IntertitleColors.Neutral.ruleSoft) { it.ruleSoft }
     fun glow(): Color = mix(IntertitleColors.Neutral.glow) { it.glow }
     fun accent(): Color = mix(IntertitleColors.Neutral.accent) { it.accent }
+    fun veilTop(): Float = mixF(IntertitleColors.Neutral.veilTop) { it.veilTop }
+    fun veilFoot(): Float = mixF(IntertitleColors.Neutral.veilFoot) { it.veilFoot }
 
-    /** Settles [art] in, crossfading only when someone can see it arrive. */
-    internal suspend fun land(loaded: IntertitleArt, visible: Boolean) {
-        art = loaded
-        if (visible) arrival.animateTo(1f, tween(ArrivalMs)) else arrival.snapTo(1f)
+    /**
+     * Settles [loaded] in, crossfading only when someone can see it arrive. A crossfade cut
+     * off (the page leaving, the effect restarting) still ends whole, never half-mixed.
+     */
+    internal suspend fun land(loaded: IntertitleLook, visible: Boolean) {
+        look = loaded
+        try {
+            if (visible) arrival.animateTo(1f, tween(ArrivalMs)) else arrival.snapTo(1f)
+        } finally {
+            if (arrival.value < 1f) withContext(NonCancellable) { arrival.snapTo(1f) }
+        }
+    }
+
+    /** A look read earlier whose crossfade never finished. */
+    internal suspend fun finishLanding() {
+        if (look != null && arrival.value < 1f) arrival.snapTo(1f)
     }
 
     companion object {
@@ -204,9 +233,10 @@ internal class IntertitleInks(initial: IntertitleArt? = null) {
 }
 
 /**
- * Reads [source] into the intertitle's art once [ready] (the page has landed and has a
- * synopsis to show), off the main thread, from a small per-process cache when this poster
- * was read before. [visible] is whether the story is on screen right now.
+ * Reads [source] into the intertitle's look once [ready] (the page has landed and has a
+ * synopsis to show), off the main thread, from a small per-process cache when this poster was
+ * read before. [visible] is whether the story is on screen right now. A poster that cannot be
+ * read leaves the neutral inks: never a crash.
  */
 @Composable
 internal fun rememberIntertitleInks(
@@ -221,10 +251,12 @@ internal fun rememberIntertitleInks(
     }
     val key = source?.key
     // Already read this session: drawn in its own colours from the first frame, no crossfade.
-    val inks = remember(key) { IntertitleInks(key?.let { IntertitleArtCache.get(it) }) }
+    val inks = remember(key) { IntertitleInks(key?.let { IntertitleLookCache.get(it) }) }
     val currentVisible by rememberUpdatedState(visible)
     LaunchedEffect(inks, ready) {
-        if (!ready || source == null || inks.art != null) return@LaunchedEffect
+        inks.finishLanding()
+        if (!ready || source == null) return@LaunchedEffect
+        // The seat's own decode, from Coil's memory cache: a lookup, not a decode.
         val result = imageLoader.execute(source.request)
         val bitmap = ((result as? SuccessResult)?.drawable?.let { drawable ->
             when (drawable) {
@@ -233,18 +265,29 @@ internal fun rememberIntertitleInks(
                 else -> null
             }
         }) ?: return@LaunchedEffect
-        val art = withContext(Dispatchers.Default) { IntertitleArt.from(bitmap, framePx) }
-        IntertitleArtCache.put(source.key, art)
-        inks.land(art, currentVisible())
+        if (inks.poster == null) inks.poster = PosterImage.of(bitmap)
+        if (inks.look != null) return@LaunchedEffect
+        val look = withContext(Dispatchers.Default) {
+            try {
+                IntertitleLook.from(bitmap, framePx)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Out of memory, or a bitmap that would not copy: the neutral inks stand.
+                null
+            }
+        } ?: return@LaunchedEffect
+        IntertitleLookCache.put(source.key, look)
+        inks.land(look, currentVisible())
     }
     return inks
 }
 
-/** A few posters' worth: a film revisited in the same session does not read its poster again. */
-private object IntertitleArtCache {
-    private val cache = LruCache<String, IntertitleArt>(4)
-    fun get(key: String): IntertitleArt? = cache.get(key)
-    fun put(key: String, art: IntertitleArt) {
-        cache.put(key, art)
+/** A handful of posters' derived art (about half a megabyte each), never the posters themselves. */
+private object IntertitleLookCache {
+    private val cache = LruCache<String, IntertitleLook>(6)
+    fun get(key: String): IntertitleLook? = cache.get(key)
+    fun put(key: String, look: IntertitleLook) {
+        cache.put(key, look)
     }
 }

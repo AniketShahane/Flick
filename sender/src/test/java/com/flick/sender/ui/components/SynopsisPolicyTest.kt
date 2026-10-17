@@ -9,8 +9,8 @@ class SynopsisPolicyTest {
 
     @Test fun aClearlySidewaysLeftwardDragReveals() {
         assertTrue(FlickPadPolicy.reveals(-10f, 0f))
-        assertTrue(FlickPadPolicy.reveals(-9f, 6f))
-        assertTrue(FlickPadPolicy.reveals(-9f, -6f))
+        assertTrue(FlickPadPolicy.reveals(-12f, 6f))
+        assertTrue(FlickPadPolicy.reveals(-12f, -6f))
     }
 
     @Test fun everythingElseStaysTheThrows() {
@@ -18,12 +18,27 @@ class SynopsisPolicyTest {
         assertFalse("down", FlickPadPolicy.reveals(0f, 10f))
         assertFalse("right is the throw's sideways follow again", FlickPadPolicy.reveals(10f, 0f))
         assertFalse("steep diagonal up", FlickPadPolicy.reveals(-6f, -6f))
-        assertFalse("just past the lock", FlickPadPolicy.reveals(-8.9f, -6f))
+        assertFalse("just past the lock", FlickPadPolicy.reveals(-11.9f, -6f))
+    }
+
+    @Test fun aLeaningDragIsOnlyJudgedOnceItHasTravelled() {
+        assertTrue("worth judging", FlickPadPolicy.mayReveal(-6f, -4f))
+        assertFalse("up at slop is the throw's at once", FlickPadPolicy.mayReveal(-3f, -6f))
+        assertEquals(null, FlickPadPolicy.revealDecision(-15f, 0f))
+        assertEquals(true, FlickPadPolicy.revealDecision(-20f, 0f))
+    }
+
+    @Test fun aThumbFlickThatSetsOffLeftAndCurvesUpIsAThrow() {
+        // The verifier's case: the first 30 px (8 dp) mostly left, then up.
+        assertTrue(FlickPadPolicy.mayReveal(-8f, -2f))
+        assertEquals(null, FlickPadPolicy.revealDecision(-8f, -2f))
+        assertEquals(false, FlickPadPolicy.revealDecision(-12f, -17f))
+        assertEquals(false, FlickPadPolicy.revealDecision(-18f, -10f))
     }
 
     @Test fun anUpwardThrowIsNeverReadAsARevealWhateverItsDrift() {
         // A thrown poster drifts sideways as the thumb arcs; up must stay up.
-        for (dx in listOf(-12f, -9f, -6f, -3f, 0f, 3f, 6f, 9f, 12f)) assertFalse(FlickPadPolicy.reveals(dx, -12f))
+        for (dx in listOf(-23f, -18f, -12f, -9f, -6f, -3f, 0f, 3f, 6f, 9f, 12f)) assertFalse(FlickPadPolicy.reveals(dx, -12f))
     }
 
     @Test fun anOpeningPullSettlesByDistanceOrSpeed() {
@@ -112,8 +127,10 @@ class SynopsisPolicyTest {
     }
 
     @Test fun predictiveBackOnlyLeansTheWayHome() {
-        assertEquals(1f, SynopsisPolicy.backHold(0f), 0f)
-        assertEquals(1f - SynopsisPolicy.BACK_TRAVEL, SynopsisPolicy.backHold(1f), 1e-6f)
-        assertTrue(SynopsisPolicy.backHold(1f) > SynopsisPolicy.CLOSE_AT - 0.5f)
+        assertEquals(1f, SynopsisPolicy.backHold(1f, 0f), 0f)
+        assertEquals(1f - SynopsisPolicy.BACK_TRAVEL, SynopsisPolicy.backHold(1f, 1f), 1e-6f)
+        // From a story already springing home, back never pulls it open again.
+        assertEquals(0.4f * (1f - SynopsisPolicy.BACK_TRAVEL), SynopsisPolicy.backHold(0.4f, 1f), 1e-6f)
+        assertTrue(SynopsisPolicy.backHold(0.4f, 0.5f) <= 0.4f)
     }
 }

@@ -13,10 +13,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitDragOrCancellation
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
@@ -50,6 +53,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -251,39 +255,16 @@ internal fun FlickPad(
             val throwLive = currentThrowOn
             val reveal = currentReveal?.takeIf { currentRevealOn }
             if (!throwLive && reveal == null) return@awaitEachGesture
-            // Decided once, at the first slop crossing, and never revisited: a drag that set
-            // off up and then drifted right is not a reveal measured from where it began.
-            var revealLock: Boolean? = null
+            // A drag leaning left at slop is judged a little later, at REVEAL_DECIDE_DP: a thumb
+            // flick that sets off sideways and curves up is a throw. Until then it is the
+            // throw's, following the finger like any other.
+            var leaning = false
             val start = awaitTouchSlopOrCancellation(down.id) { change, _ ->
                 val travel = (change.position - down.position) / density
-                val lock = revealLock ?: (reveal != null && FlickPadPolicy.reveals(travel.x, travel.y))
-                    .also { revealLock = it }
-                if (lock || (throwLive && FlickPadPolicy.claims(pageScroll.canScrollForward, pageScroll.canScrollBackward, travel.y))) {
+                leaning = reveal != null && FlickPadPolicy.mayReveal(travel.x, travel.y)
+                if (leaning || (throwLive && FlickPadPolicy.claims(pageScroll.canScrollForward, pageScroll.canScrollBackward, travel.y))) {
                     change.consume()
                 }
-            }
-            if (start != null && reveal != null && revealLock == true) {
-                // The finger drives the story 1:1 from where it went down, leftward toward
-                // open; the poster's own follow stays still, and the story flies it.
-                touched = true
-                dragging = true
-                reveal.beginDrag()
-                tracker.addPointerInputChange(start)
-                reveal.dragTo(down.position.x - start.position.x)
-                var released = false
-                try {
-                    released = drag(start.id) { change ->
-                        change.consume()
-                        tracker.addPointerInputChange(change)
-                        reveal.dragTo(down.position.x - change.position.x)
-                    }
-                } finally {
-                    // Cut off mid-drag, it settles by where it is rather than by a stale speed.
-                    val velocity = if (released) -tracker.calculateVelocity().x else 0f
-                    reveal.release(velocity, density, opening = true)
-                    dragging = false
-                }
-                return@awaitEachGesture
             }
             if (start == null) {
                 if (!throwLive) return@awaitEachGesture
@@ -301,25 +282,84 @@ internal fun FlickPad(
                 }
                 return@awaitEachGesture
             }
-            if (!throwLive) return@awaitEachGesture
+            if (!throwLive && !leaning) return@awaitEachGesture
 
             // Also reached when the detector is cancelled mid-drag (a new page scroll state, the
             // pad leaving composition) without any release: the poster must not be left
             // displaced or armed. A send that stops being available mid-drag is caught at the
             // release instead, which checks it again.
+            var revealing = false
             try {
-                touched = true
-                dragging = true
-                scope.launch { nudge.snapTo(0f) }
-                scope.launch { held.animateTo(1f, motionScheme.fastSpatialSpec<Float>()) }
                 tracker.addPointerInputChange(start)
-                follow(start.position - down.position)
-                var last = start
-                val released = drag(start.id) { change ->
-                    change.consume()
-                    tracker.addPointerInputChange(change)
-                    last = change
-                    follow(change.position - down.position)
+                var last: PointerInputChange = start
+                if (throwLive) {
+                    touched = true
+                    dragging = true
+                    scope.launch { nudge.snapTo(0f) }
+                    scope.launch { held.animateTo(1f, motionScheme.fastSpatialSpec<Float>()) }
+                    follow(start.position - down.position)
+                }
+                // The judgement on a leaning drag; a drag that never leaned is the throw's.
+                var decision: Boolean? = if (leaning) null else false
+                // Lifted (or taken by someone else) before it was judged.
+                var ended = false
+                var endedOnRelease = false
+                while (decision == null) {
+                    val travel = (last.position - down.position) / density
+                    decision = FlickPadPolicy.revealDecision(travel.x, travel.y)
+                    if (decision != null) break
+                    val next = awaitDragOrCancellation(last.id)
+                    if (next == null) {
+                        ended = true
+                        endedOnRelease = currentEvent.changes.any { it.id == last.id && it.changedToUp() }
+                        decision = false
+                        break
+                    }
+                    next.consume()
+                    tracker.addPointerInputChange(next)
+                    last = next
+                    if (throwLive) follow(next.position - down.position)
+                }
+                if (decision == true && reveal != null) {
+                    // The finger drives the story 1:1 from where it went down, leftward toward
+                    // open; the poster lets go of the throw's follow, and the story flies it.
+                    revealing = true
+                    armed = false
+                    scope.launch { held.animateTo(0f, motionScheme.fastSpatialSpec<Float>()) }
+                    scope.launch { offsetX.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
+                    scope.launch { offsetY.animateTo(0f, motionScheme.defaultSpatialSpec<Float>()) }
+                    touched = true
+                    dragging = true
+                    reveal.beginDrag()
+                    reveal.dragTo(down.position.x - last.position.x)
+                    var released = false
+                    try {
+                        released = drag(last.id) { change ->
+                            change.consume()
+                            tracker.addPointerInputChange(change)
+                            reveal.dragTo(down.position.x - change.position.x)
+                        }
+                    } finally {
+                        // Cut off mid-drag, it settles by where it is rather than by a stale speed.
+                        val velocity = if (released) -tracker.calculateVelocity().x else 0f
+                        reveal.release(velocity, density, opening = true)
+                        dragging = false
+                    }
+                    return@awaitEachGesture
+                }
+                if (!throwLive) return@awaitEachGesture
+                // A throw while the story springs home takes the poster back whole: its face
+                // is the story's copy until the story is put away.
+                currentReveal?.let { if (it.engaged && !it.catching) it.shut() }
+                val released = if (ended) {
+                    endedOnRelease
+                } else {
+                    drag(last.id) { change ->
+                        change.consume()
+                        tracker.addPointerInputChange(change)
+                        last = change
+                        follow(change.position - down.position)
+                    }
                 }
                 val upDp = -(last.position.y - down.position.y) / density
                 val upVelocity = -tracker.calculateVelocity().y / density
@@ -363,7 +403,7 @@ internal fun FlickPad(
                     }
                 }
             } finally {
-                if (!sending) settle()
+                if (!sending && !revealing) settle()
             }
         }
     }
@@ -422,7 +462,7 @@ internal fun FlickPad(
                 // While the story draws the poster's flight over its strip and card, the face
                 // here is hidden rather than flown under them.
                 faceAlpha = {
-                    val r = reveal?.progress?.value ?: 0f
+                    val r = reveal?.value ?: 0f
                     when {
                         reveal == null || r <= 0f -> 1f
                         reveal.posterCopyLive -> 0f
@@ -450,7 +490,7 @@ internal fun FlickPad(
                         // tilt are let go while the card stretches into a line and leaves upward.
                         val s = streak.value
                         val e = FlickPadMotion.StreakEasing.transform(s)
-                        val r = reveal?.progress?.value ?: 0f
+                        val r = reveal?.value ?: 0f
                         translationX = offsetX.value * (1f - s) +
                             (reveal?.posterFlightShiftPx(r, this, reduceMotion) ?: 0f)
                         translationY = offsetY.value - liftPx - streakDistance.dp.toPx() * e
@@ -467,10 +507,12 @@ internal fun FlickPad(
             )
             if (reveal != null) {
                 SynopsisTab(
-                    visible = { tabIn.value * (if (dragging || sending) 0f else 1f) * (1f - reveal.progress.value * 3f).coerceIn(0f, 1f) },
+                    visible = { tabIn.value * (if (dragging || sending) 0f else 1f) * (1f - reveal.value * 3f).coerceIn(0f, 1f) },
+                    // Physically right, in either layout direction: the push that opens the story
+                    // is physically left, and the cue marks the side it is drawn from.
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .offset(x = SynopsisTabGap + SynopsisTabWidth)
+                        .align(AbsoluteAlignment.CenterRight)
+                        .absoluteOffset(x = SynopsisTabGap + SynopsisTabWidth)
                         .synopsisRecede(reveal, reduceMotion),
                 )
             }
@@ -617,7 +659,7 @@ private fun SynopsisTab(visible: () -> Float, modifier: Modifier = Modifier) {
 
 /** The pad's chrome stepping back as the story comes, as one alpha; 1 with no story. */
 private fun storyRecede(reveal: SynopsisReveal?, reduceMotion: Boolean): Float {
-    val p = reveal?.progress?.value?.coerceIn(0f, 1f) ?: return 1f
+    val p = reveal?.value?.coerceIn(0f, 1f) ?: return 1f
     return if (reduceMotion) 1f - p else SynopsisPolicy.chromeAlpha(p)
 }
 

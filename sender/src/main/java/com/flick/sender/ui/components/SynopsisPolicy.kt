@@ -94,8 +94,11 @@ internal object SynopsisPolicy {
         else -> progress >= CLOSE_AT
     }
 
-    /** Where predictive back holds the reveal for a back gesture [backProgress] of the way in. */
-    fun backHold(backProgress: Float): Float = 1f - BACK_TRAVEL * backProgress.coerceIn(0f, 1f)
+    /**
+     * Where predictive back holds a reveal that was at [from] when the gesture began, for a
+     * back gesture [backProgress] of the way in: only ever further home.
+     */
+    fun backHold(from: Float, backProgress: Float): Float = from * (1f - BACK_TRAVEL * backProgress.coerceIn(0f, 1f))
 
     fun easeInOutCubic(t: Float): Float {
         val x = t.coerceIn(0f, 1f)

@@ -48,12 +48,7 @@ class FilmFactsLookTest {
         overview = "A computer hacker learns from mysterious rebels about the true nature of his " +
             "reality and his role in the war against its controllers.",
         tagline = "Believe the unbelievable.",
-        genres = listOf("Action", "Science Fiction"),
         year = 1999,
-        runtimeMinutes = 136,
-        creators = listOf("Lana Wachowski", "Lilly Wachowski"),
-        cast = listOf("Keanu Reeves", "Laurence Fishburne", "Carrie-Anne Moss", "Hugo Weaving"),
-        show = false,
     )
 
     @Test
@@ -75,7 +70,7 @@ class FilmFactsLookTest {
     }
 
     /** A poster stand-in with a dominant green and a vivid streak, so the inks are the poster's. */
-    private fun posterArt(): IntertitleArt {
+    private fun posterArt(): IntertitleLook {
         val bitmap = Bitmap.createBitmap(300, 450, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
         canvas.drawColor(android.graphics.Color.rgb(6, 32, 14))
@@ -86,7 +81,7 @@ class FilmFactsLookTest {
         }
         paint.color = android.graphics.Color.rgb(230, 240, 230)
         canvas.drawRect(40f, 380f, 260f, 410f, paint)
-        return IntertitleArt.from(bitmap, IntSize(220, 330))
+        return IntertitleLook.from(bitmap, IntSize(220, 330))
     }
 
     @Test

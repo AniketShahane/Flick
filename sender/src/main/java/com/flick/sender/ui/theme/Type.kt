@@ -9,6 +9,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
@@ -179,6 +180,8 @@ object FlickText {
     )
 
     // --- Intertitle: the synopsis as a silent-film title card, the one surface in a serif ---
+    // Direction from the copy itself: TMDB answers in English, and an English sentence in an
+    // Arabic-locale app must not end with its full stop at the start of the line.
 
     /** "— 1999 —": spaced wide, as a card's date line. */
     val intertitleYear = TextStyle(
@@ -187,6 +190,7 @@ object FlickText {
         lineHeight = 18.sp,
         letterSpacing = 0.3.em,
         textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
     )
 
     /** The film's name; set at 26 sp instead when it runs long. Balanced, so no lone last word. */
@@ -195,6 +199,7 @@ object FlickText {
         fontSize = 32.sp,
         lineHeight = 1.02.em,
         textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
         lineBreak = LineBreak.Heading,
         lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
     )
@@ -205,6 +210,7 @@ object FlickText {
         fontSize = 16.sp,
         lineHeight = 1.4.em,
         textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
         lineBreak = LineBreak.Paragraph,
     )
 
@@ -215,6 +221,7 @@ object FlickText {
         fontSize = 15.sp,
         lineHeight = 1.3.em,
         textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
     )
 
     /** A running time in a chip: proportional figures, so "2h 16m" reads as a time, not a code. */

@@ -12,7 +12,7 @@ import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmDetailsStore
 
 /**
- * This file's TMDB synopsis and credits, or null while there are none — the film-art setting
+ * This file's TMDB synopsis, or null while there are none — the film-art setting
  * is off (it is the user's word on asking TMDB anything), the build has no key, the name is
  * not a title, or TMDB has nothing that matches it. Only a detail page calls this.
  *

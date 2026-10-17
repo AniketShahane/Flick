@@ -249,20 +249,36 @@ fun DetailScreen(
     val qualityOpen by controller.showQualitySheet.collectAsState()
     val diagnosticsOpen by controller.showDiagnostics.collectAsState()
     val supportOpen by controller.showSupportSheet.collectAsState()
-    // Registered after the shell's, so it answers first — and only while the story is open on
+    // Registered after the shell's, so it answers first — and only while the story is out on
     // this route with no sheet over it; a sheet's own handler, or the shell's for an overlay,
-    // keeps back otherwise.
+    // keeps back otherwise. Out, not merely open: a back made while it springs home puts it
+    // away rather than leaving the page under a story still in flight.
     PredictiveBackHandler(
-        enabled = reveal.open && route is Route.Detail && !qualityOpen && !diagnosticsOpen && !supportOpen,
+        enabled = reveal.engaged && route is Route.Detail && !qualityOpen && !diagnosticsOpen && !supportOpen,
     ) { progress ->
+        reveal.beginBack()
         try {
             progress.collect { event -> reveal.holdForBack(event.progress) }
             reveal.hide()
         } catch (e: CancellationException) {
-            reveal.show()
+            reveal.cancelBack()
             throw e
         }
     }
+    // The page leaving puts the story away in that very frame: a story still in flight over a
+    // page in flight is two posters. Done where the leaving starts, not on recomposing after
+    // it — a route on its way out stops recomposing and its animation clock stands still, so
+    // a story springing home would freeze where it was for the length of the exit. The side
+    // effect is the backstop for a route change this page did not start.
+    val leave = { action: () -> Unit ->
+        reveal.shut()
+        action()
+    }
+    val leaving = !landed || route !is Route.Detail
+    SideEffect { if (leaving && reveal.engaged) reveal.shut() }
+    // Once the story has been out, the pad and the chrome keep the same reveal through the
+    // page's exit, so the poster's flight and its hidden face stay one decision.
+    val padReveal = reveal.takeIf { synopsis != null && (revealable || reveal.everShown) }
     val pageScroll = rememberScrollState()
     // The wide layout's pad column scrolls on its own, and only if the pad cannot fit it.
     val padScroll = rememberScrollState()
@@ -273,7 +289,7 @@ fun DetailScreen(
             }
         Unit
     }
-    val onFlick = { controller.flickToTv(item) }
+    val onFlick = { leave { controller.flickToTv(item) } }
     val flipKey = cardFlipKey(item.id)
     val handoff = LocalCardFlipHandoff.current
     // The size the tapped tile drew its face at, so the card's front asks Coil for that very
@@ -413,7 +429,7 @@ fun DetailScreen(
                     .drawBehind {
                         val lift = (pageScroll.value / ScrimLiftDistance.toPx()).coerceIn(0f, 1f)
                         drawRect(cinemaScrim(lift), alpha = page())
-                        val p = reveal.progress.value.coerceIn(0f, 1f)
+                        val p = reveal.value.coerceIn(0f, 1f)
                         if (p > 0f) {
                             val ground = if (reduceMotion) SynopsisPolicy.GROUND_ALPHA * p else SynopsisPolicy.groundAlpha(p)
                             drawRect(inks.ground(), alpha = ground)
@@ -443,7 +459,7 @@ fun DetailScreen(
                     glowIn = { tracks?.let { flipGlowPresence(it.glow.value, it.move.value) } ?: 1f },
                     chevronsIn = { tracks?.chevrons?.value ?: 1f },
                     captionIn = { tracks?.caption?.value ?: 1f },
-                    reveal = reveal.takeIf { revealable },
+                    reveal = padReveal,
                     revealLabel = stringResource(R.string.a11y_synopsis_open),
                     modifier = Modifier
                         .padding(vertical = heroGap)
@@ -462,11 +478,11 @@ fun DetailScreen(
                             identityPx = it.height
                             MeasuredSeat.identityPx = it.height
                         }
-                        .synopsisRecede(reveal.takeIf { revealable }, reduceMotion),
+                        .synopsisRecede(padReveal, reduceMotion),
                 ) {
                     BackDisc(
                         description = backDescription,
-                        onClick = { controller.back() },
+                        onClick = { leave { controller.back() } },
                         modifier = Modifier
                             .offset(x = -(BackTouchSize - BackDiscSize) / 2)
                             .fadeUp({ tracks?.disc?.value ?: 1f }, CardFlipMotion.RiseDistance),
@@ -494,7 +510,7 @@ fun DetailScreen(
                     onCastAnyway = onFlick,
                     modifier = Modifier
                         .fadeUp({ tracks?.caption?.value ?: 1f }, CardFlipMotion.CaptionRiseDistance)
-                        .synopsisRecede(reveal.takeIf { revealable }, reduceMotion),
+                        .synopsisRecede(padReveal, reduceMotion),
                 )
             }
 
