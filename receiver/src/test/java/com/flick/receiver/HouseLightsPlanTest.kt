@@ -1,6 +1,5 @@
 package com.flick.receiver
 
-import androidx.compose.ui.graphics.toArgb
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.session.MediaStage
 import com.flick.receiver.session.receiverErrorFace
@@ -28,7 +27,14 @@ import com.flick.receiver.ui.components.houseRest
 import com.flick.receiver.ui.components.houseStageFor
 import com.flick.receiver.ui.components.FILM_FLOWING_WAIT_MS
 import com.flick.receiver.ui.components.TunnelCutout
+import com.flick.receiver.ui.components.TUNNEL_RING_COUNT
+import com.flick.receiver.ui.components.TUNNEL_RING_LIFE_MS
+import com.flick.receiver.ui.components.TUNNEL_STREAKS
 import com.flick.receiver.ui.components.tunnelApproach
+import com.flick.receiver.ui.components.tunnelEnvelope
+import com.flick.receiver.ui.components.tunnelFadeIn
+import com.flick.receiver.ui.components.tunnelLoopAt
+import com.flick.receiver.ui.components.tunnelRingScale
 import com.flick.receiver.ui.components.tunnelCutout
 import com.flick.receiver.ui.components.tunnelFade
 import com.flick.receiver.ui.components.tunnelHoldLeftMs
@@ -39,10 +45,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.w3c.dom.Element
-import java.io.File
-import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -301,22 +305,6 @@ class HouseLightsPlanTest {
         }
         assertTrue("never past the window's own size", last <= 1f)
         assertTrue("still growing after the usual handshake", tunnelApproach(3_000L) < 0.95f)
-        // The drawables carry the same curve on the RenderThread.
-        for (file in listOf(TUNNEL_XML)) {
-            val doc = parse(file)
-            val target = doc.getElementsByTagName("target").let { targets ->
-                (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == "approach" }
-            }
-            val animator = target.getElementsByTagName("objectAnimator").item(0) as Element
-            val duration = animator.android("duration").toLong()
-            val frames = target.getElementsByTagName("keyframe")
-            assertTrue(frames.length > 10)
-            for (i in 0 until frames.length) {
-                val k = frames.item(i) as Element
-                val at = (k.android("fraction").toFloat() * duration).toLong()
-                assertEquals("$file at $at ms", tunnelApproach(at), k.android("value").toFloat(), 0.001f)
-            }
-        }
     }
 
     @Test fun theExpansionLeavesAtTheApproachsSpeedAndOnlyGrows() {
@@ -401,88 +389,47 @@ class HouseLightsPlanTest {
         }
     }
 
-    @Test fun theTunnelDrawableIsTheGeometryHouseLightsPoses() {
-        val doc = parse(TUNNEL_XML)
-        val pane = parse(WINDOW_XML)
-        val stage = doc.getElementsByTagName("vector").item(0) as Element
-        val sw = stage.android("viewportWidth").toFloat()
-        val sh = stage.android("viewportHeight").toFloat()
-        assertEquals("the stage is 16:9", 16f / 9f, sw / sh, 0.0001f)
-        // The pane is laid out at the window's rect, overlapping the porthole by one unit all
-        // round so no seam shows at its edge; its viewport is that rect.
-        val bleed = 1f
-        val vector = pane.getElementsByTagName("vector").item(0) as Element
-        val ww = TUNNEL_WINDOW_FRACTION * sw + 2 * bleed
-        val wh = TUNNEL_WINDOW_FRACTION * sh + 2 * bleed
-        assertEquals(ww, vector.android("viewportWidth").toFloat(), 0.01f)
-        assertEquals(wh, vector.android("viewportHeight").toFloat(), 0.01f)
-        val window = pane.byName("path", "window")
-        val r = TUNNEL_WINDOW_CORNER * TUNNEL_WINDOW_FRACTION * sw + bleed
-        val x0 = 0f
-        val y0 = 0f
-        val numbers = Regex("-?[0-9.]+").findAll(window.android("pathData")).map { it.value.toFloat() }.toList()
-        // M x0+r,y0 h(w-2r) a r,r 0 0 1 r,r v(h-2r) ...
-        assertEquals(x0 + r, numbers[0], 0.01f)
-        assertEquals(y0, numbers[1], 0.01f)
-        assertEquals(ww - 2 * r, numbers[2], 0.01f)
-        assertEquals(r, numbers[3], 0.01f)
-        assertEquals(wh - 2 * r, numbers[10], 0.01f)
-        // Their fade over the room is the span the curtain and onLightsDown wait out.
-        assertFadesIn(doc)
-        assertFadesIn(pane)
-        // The pane's only animation is its fade: its approach is its view's scale, which
-        // leaves its bitmap alone.
-        assertEquals(1, pane.getElementsByTagName("target").length)
-        // No gradient is redrawn every frame: the wash and glow live in the static drawable.
-        assertEquals(0, doc.getElementsByTagName("gradient").length)
+    @Test fun theTunnelFadesInDeceleratingOverItsFadeIn() {
+        assertEquals(0f, tunnelFadeIn(0L), 0f)
+        assertEquals(1f, tunnelFadeIn(FlickMotion.TUNNEL_FADE_IN_MS), 0f)
+        assertEquals(1f, tunnelFadeIn(10_000L), 0f)
+        val half = tunnelFadeIn(FlickMotion.TUNNEL_FADE_IN_MS / 2)
+        assertTrue("not decelerating: $half at half time", half > 0.5f)
     }
 
-    @Test fun theTunnelsWashIsStaticAndFadesInWithTheLoop() {
-        val doc = parse(WASH_XML)
-        assertEquals(2, doc.getElementsByTagName("gradient").length)
-        // Its only animation is the fade, which leaves its rasterised bitmap alone.
-        assertEquals(1, doc.getElementsByTagName("target").length)
-        assertFadesIn(doc)
-    }
-
-    private fun assertFadesIn(doc: org.w3c.dom.Document) {
-        val vector = doc.getElementsByTagName("vector").item(0) as Element
-        val fade = doc.getElementsByTagName("target").let { targets ->
-            (0 until targets.length).map { targets.item(it) as Element }.first { it.android("name") == vector.android("name") }
-        }.getElementsByTagName("objectAnimator").item(0) as Element
-        assertEquals(FlickMotion.TUNNEL_FADE_IN_MS, fade.android("duration").toLong())
-        assertEquals("alpha", fade.android("propertyName"))
-        assertEquals("0", vector.android("alpha"))
-    }
-
-    @Test fun theTunnelsPaletteMatchesItsTokens() {
-        val colours = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(TUNNEL_COLOURS)
-            .getElementsByTagName("color").let { list ->
-                (0 until list.length).associate { i ->
-                    val e = list.item(i) as Element
-                    e.getAttribute("name") to e.textContent.trim().removePrefix("#").toLong(16).toInt()
-                }
-            }
-        val tokens = mapOf(
-            "tunnel_wash_core" to FlickColor.TunnelWashCore,
-            "tunnel_wash_mid" to FlickColor.TunnelWashMid,
-            "tunnel_wash_edge" to FlickColor.TunnelWashEdge,
-            "tunnel_glow_core" to FlickColor.TunnelGlowCore,
-            "tunnel_glow_mid" to FlickColor.TunnelGlowMid,
-            "tunnel_glow_edge" to FlickColor.TunnelGlowEdge,
-            "tunnel_ring" to FlickColor.TunnelRing,
-            "tunnel_amber" to FlickColor.TunnelAmber,
-            "tunnel_streak_white" to FlickColor.TunnelStreakWhite,
-            "tunnel_streak_blue" to FlickColor.TunnelStreakBlue,
-            "tunnel_streak_amber" to FlickColor.TunnelAmber,
-            "tunnel_porthole_base" to FlickColor.TunnelPortholeBase,
-            "tunnel_porthole_light" to FlickColor.TunnelPortholeLight,
-            "tunnel_porthole_light_edge" to FlickColor.TunnelPortholeLightEdge,
-        )
-        assertEquals(tokens.keys, colours.keys)
-        for ((name, token) in tokens) {
-            assertEquals("$name drifted from its token", token.toArgb(), colours.getValue(name))
+    @Test fun theLoopIsFullFromItsFirstFrameAndWrapsUnseen() {
+        // Evenly phased rings: at the first frame each is at its own point in its life.
+        val starts = (0 until TUNNEL_RING_COUNT).map { tunnelLoopAt(0L, TUNNEL_RING_LIFE_MS, it.toFloat() / TUNNEL_RING_COUNT) }
+        assertEquals(TUNNEL_RING_COUNT, starts.distinct().size)
+        assertTrue("fewer than five rings lit on the first frame", starts.count { tunnelEnvelope(it) > 0f } >= 5)
+        // A ring or streak wraps where its alpha is 0, so the jump from its end to its start is never seen.
+        assertEquals(0f, tunnelEnvelope(0f), 0f)
+        assertEquals(0f, tunnelEnvelope(1f), 0f)
+        assertEquals(1f, tunnelEnvelope(0.12f), 0.0001f)
+        assertEquals(TUNNEL_RING_LIFE_MS * 0.5f / TUNNEL_RING_LIFE_MS, tunnelLoopAt((TUNNEL_RING_LIFE_MS * 1.5f).toLong(), TUNNEL_RING_LIFE_MS, 0f), 0.001f)
+        // At the end of its life a ring has left every edge of the 960 × 540 stage.
+        val ringEnd = tunnelRingScale(1f)
+        val windowW = TUNNEL_WINDOW_FRACTION * 960f
+        val windowH = TUNNEL_WINDOW_FRACTION * 540f
+        assertTrue(windowW / 2f * ringEnd > 480f)
+        assertTrue(windowH / 2f * ringEnd > 540f * (1f - TUNNEL_VANISH_Y))
+        // Every streak starts outside the window, along its own direction.
+        for (streak in TUNNEL_STREAKS) {
+            val x = abs(streak.ux) * streak.reach0
+            val y = abs(streak.uy) * streak.reach0
+            assertTrue("a streak at ${streak.angleDeg}° starts inside the window", x > windowW / 2f || y > windowH / 2f)
+            assertEquals(1f, hypot(streak.ux, streak.uy), 0.0001f)
         }
+        assertEquals(10, TUNNEL_STREAKS.size)
+    }
+
+    @Test fun theTunnelsPaletteIsTheBrands() {
+        assertEquals(FlickColor.Canvas, FlickColor.TunnelWashEdge)
+        assertEquals(FlickColor.Link, FlickColor.TunnelRing)
+        assertEquals(FlickColor.Spark, FlickColor.TunnelAmber)
+        assertTrue("the glow does not fade to nothing", FlickColor.TunnelGlowEdge.alpha == 0f)
+        assertTrue("the porthole's light does not fade to nothing", FlickColor.TunnelPortholeLightEdge.alpha == 0f)
+        assertEquals(1f, FlickColor.TunnelPortholeBase.alpha, 0f)
     }
 
     @Test fun aTunnelOwesItsLeastTimeFromItsFirstFrame() {
@@ -517,23 +464,5 @@ class HouseLightsPlanTest {
         assertEquals("aperture of $actual", aperture, actual.seedAperture, 0.0001f)
         assertEquals("density of $actual", density, actual.seedDensity, 0.0001f)
         assertEquals("gate of $actual", gate, actual.gate)
-    }
-
-    private fun parse(file: File) = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-        .newDocumentBuilder().parse(file)
-
-    private fun Element.android(attr: String): String = getAttributeNS(ANDROID_NS, attr)
-
-    private fun org.w3c.dom.Document.byName(tag: String, name: String): Element {
-        val list = getElementsByTagName(tag)
-        return (0 until list.length).map { list.item(it) as Element }.first { it.android("name") == name }
-    }
-
-    private companion object {
-        const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
-        val TUNNEL_XML = File("src/main/res/drawable/tunnel_loop.xml")
-        val WASH_XML = File("src/main/res/drawable/tunnel_wash.xml")
-        val WINDOW_XML = File("src/main/res/drawable/tunnel_window.xml")
-        val TUNNEL_COLOURS = File("src/main/res/values/colors_tunnel.xml")
     }
 }

@@ -331,8 +331,6 @@ object FlickColor {
     val HistogramBarLow = Color(0x99FFA23A)
 
     // ── The handshake tunnel ────────────────────────────────────────────────
-    // `res/values/colors_tunnel.xml` carries the same values for the tunnel's vector
-    // drawable, which cannot read these; HouseLightsPlanTest holds the two equal.
 
     /** The wash at the vanishing point. */
     val TunnelWashCore = Color(0xFF1F3AA8)

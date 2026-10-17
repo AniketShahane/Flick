@@ -1,14 +1,9 @@
 package com.flick.receiver.ui.components
 
-import android.content.Context
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
-import android.graphics.drawable.AnimatedVectorDrawable
 import android.os.SystemClock
-import android.view.View
-import android.view.ViewGroup
-import android.widget.ImageView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FiniteAnimationSpec
@@ -40,10 +35,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
@@ -55,7 +58,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.session.MediaStage
@@ -77,8 +79,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.math.ceil
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -126,7 +132,7 @@ internal fun apertureScale(p: Float): Float = p.coerceIn(0f, 1f) * APERTURE_S_OP
 /**
  * The tunnel's window, as a fraction of the stage on each axis. The film's view is
  * scaled by exactly this, so the window and the film inside it are one rectangle.
- * `drawable/tunnel_loop.xml` is generated from the same three numbers.
+ * The tunnel's loop is laid out from the same three numbers.
  */
 internal const val TUNNEL_WINDOW_FRACTION = 0.3f
 
@@ -137,26 +143,106 @@ internal const val TUNNEL_VANISH_Y = 0.42f
 internal const val TUNNEL_WINDOW_CORNER = 0.04f
 
 /**
- * The tunnel is rasterised at this share of the screen's pixels and scaled up by its
- * view. A vector drawable animating on the RenderThread is redrawn into a bitmap and
- * uploaded every frame, and at full 1080p that is 8 MB a frame on the TV's GPU.
+ * The stage the tunnel is laid out on, in units: the TV's 960 × 540 dp. Every length of the
+ * loop below is in these units and scaled to the screen's pixels at draw.
  */
-private const val TUNNEL_RASTER_SCALE = 0.5f
+private const val STAGE_UNITS = 960f
+
+/** The window on the stage, in units: 288 × 162 with a 11.52 corner. */
+private const val WINDOW_W = TUNNEL_WINDOW_FRACTION * STAGE_UNITS
+private const val WINDOW_H = TUNNEL_WINDOW_FRACTION * STAGE_UNITS * 9f / 16f
+private const val WINDOW_R = TUNNEL_WINDOW_CORNER * WINDOW_W
+
+/** The tunnel's fade-in over the room, decelerating, from its first frame. */
+internal fun tunnelFadeIn(elapsedMs: Long): Float {
+    val x = (elapsedMs.toFloat() / FlickMotion.TUNNEL_FADE_IN_MS).coerceIn(0f, 1f)
+    return 1f - (1f - x) * (1f - x)
+}
 
 /**
- * The wash and glow under the loop (`tunnel_wash.xml`) are smooth gradients that never
- * change after their fade, which is the drawable's root alpha and so leaves its bitmap
- * alone: they are rasterised once, at a quarter of the screen's pixels.
+ * Rings: [TUNNEL_RING_COUNT] 16:9 rounded rects starting at the window's size and growing as
+ * `1 + growth · q²` over a [TUNNEL_RING_LIFE_MS] life, evenly phased so the tunnel is full from
+ * its first frame. One of them is amber.
  */
-private const val TUNNEL_WASH_RASTER_SCALE = 0.25f
+internal const val TUNNEL_RING_COUNT = 7
+internal const val TUNNEL_RING_LIFE_MS = 3_100f
+internal const val TUNNEL_RING_GROWTH = 4.2f
+private const val RING_STROKE_FROM = 1.5f
+private const val RING_STROKE_TO = 3f
+private const val RING_ALPHA = 0.55f
+private const val RING_AMBER_ALPHA = 0.8f
+private const val AMBER_RING = 3
 
-/**
- * The porthole's pane (`tunnel_window.xml`) overlaps the cutout by this share of the stage's
- * width all round (one unit of its 960-unit viewport), so the two antialiased edges leave no
- * seam. It is laid out at the window's rect and grown by its own view scale, never by the
- * vector, so it too is rasterised once, at the window's size.
- */
-private const val TUNNEL_PANE_BLEED = 1f / 960f
+/** Every ring and streak rises over the first 12 % of its life and fades linearly to 0 by its end. */
+private const val ENVELOPE_RISE = 0.12f
+
+internal fun tunnelEnvelope(q: Float): Float = when {
+    q <= 0f || q >= 1f -> 0f
+    q < ENVELOPE_RISE -> q / ENVELOPE_RISE
+    else -> (1f - q) / (1f - ENVELOPE_RISE)
+}
+
+internal fun tunnelRingScale(q: Float): Float = 1f + TUNNEL_RING_GROWTH * q * q
+
+/** Where in its life a loop of [lifeMs] that starts at [phase] is, [elapsedMs] in. */
+internal fun tunnelLoopAt(elapsedMs: Long, lifeMs: Float, phase: Float): Float {
+    val q = elapsedMs / lifeMs + phase
+    return q - kotlin.math.floor(q)
+}
+
+/** A streak: its angle on the unsquashed circle, its life, its phase and its colour. */
+internal class TunnelStreak(val angleDeg: Float, val lifeMs: Float, val phase: Float, val colour: Color) {
+    private val rad = angleDeg * PI.toFloat() / 180f
+    private val dx = cos(rad)
+    private val dy = STREAK_SQUASH * sin(rad)
+    private val k = hypot(dx, dy)
+
+    /** The screen direction, squashed about the vanishing point. */
+    val ux = dx / k
+    val uy = dy / k
+
+    /** Where it starts: just outside the window's edge in its direction, in units. */
+    val reach0 = minOf(
+        if (abs(ux) > 1e-6f) (WINDOW_W / 2f) / abs(ux) else Float.MAX_VALUE,
+        if (abs(uy) > 1e-6f) (WINDOW_H / 2f) / abs(uy) else Float.MAX_VALUE,
+    ) + STREAK_GAP
+
+    /** How far it travels over its life, in units, as `q²`. */
+    val travel = STREAK_TRAVEL * k
+}
+
+private const val STREAK_SQUASH = 0.7f
+private const val STREAK_GAP = 8f
+private const val STREAK_TRAVEL = 520f
+private const val STREAK_LEN_FROM = 20f
+private const val STREAK_LEN_TO = 72f
+private const val STREAK_WIDTH = 2f
+private const val STREAK_ALPHA = 0.9f
+
+internal val TUNNEL_STREAKS = listOf(
+    TunnelStreak(12f, 1_500f, 0.00f, FlickColor.TunnelStreakWhite),
+    TunnelStreak(48f, 1_700f, 0.55f, FlickColor.TunnelStreakBlue),
+    TunnelStreak(83f, 1_400f, 0.25f, FlickColor.TunnelStreakWhite),
+    TunnelStreak(118f, 1_600f, 0.80f, FlickColor.TunnelAmber),
+    TunnelStreak(152f, 1_500f, 0.40f, FlickColor.TunnelStreakBlue),
+    TunnelStreak(196f, 1_800f, 0.10f, FlickColor.TunnelStreakWhite),
+    TunnelStreak(231f, 1_400f, 0.65f, FlickColor.TunnelStreakBlue),
+    TunnelStreak(262f, 1_600f, 0.35f, FlickColor.TunnelAmber),
+    TunnelStreak(297f, 1_500f, 0.90f, FlickColor.TunnelStreakWhite),
+    TunnelStreak(333f, 1_700f, 0.50f, FlickColor.TunnelStreakBlue),
+)
+
+/** The halo breathing round the window: (offset from it, stroke, alpha), in units. */
+private val HALO = listOf(Triple(5f, 6f, 0.22f), Triple(12f, 10f, 0.08f))
+private const val BREATH_MS = 900f
+private const val BREATH_SCALE = 1.05f
+
+/** The glow round the window is this many times its size; the wash reaches 0.75 of the stage's width. */
+private const val GLOW_REACH = 2.2f
+private const val WASH_REACH = 0.75f
+
+/** The porthole's pane overlaps the cutout by one unit all round, so no seam shows at its edge. */
+private const val PANE_BLEED = 1f
 
 /** The pale bezel round the porthole while the film plays in it, concentric with its corners. */
 internal val TUNNEL_RIM_WIDTH = 4.dp
@@ -400,154 +486,6 @@ internal fun tunnelCutout(e: Float, w: Float, h: Float, approach: Float = 1f): T
 }
 
 /**
- * The tunnel, drawn over the film with a porthole cut out of it. Three vector drawables,
- * each on the RenderThread and each in an image view scaled up from a fraction of the
- * screen's pixels (see [TUNNEL_RASTER_SCALE]): the scale must be the child's own view
- * property, because a canvas scale is recorded into the display list and a vector drawable
- * sizes its bitmap from that.
- *
- * The porthole is a clip, not a punched hole: the wash and the loop are drawn under
- * `clipOutPath` of one rounded rect, which the GPU applies analytically, so there is no
- * offscreen layer and the drawables' bitmaps are untouched by it. The pane that fills the
- * porthole before the film shows is drawn outside the clip. Only the expansion changes
- * the clip, and then only this view's few recorded ops are redrawn.
- */
-private class TunnelBackdropView(context: Context) : ViewGroup(context) {
-    private val drawables = listOf(R.drawable.tunnel_wash, R.drawable.tunnel_loop, R.drawable.tunnel_window)
-        .map { context.getDrawable(it) as AnimatedVectorDrawable }
-    private val images = drawables.map { drawable ->
-        ImageView(context).apply {
-            scaleType = ImageView.ScaleType.FIT_XY
-            setImageDrawable(drawable)
-        }
-    }
-    private val wash get() = images[0]
-    private val loop get() = images[1]
-    private val pane get() = images[2]
-
-    /** The full-screen layers and the share of the screen's pixels each is rasterised at. */
-    private val screenLayers get() = listOf(wash to TUNNEL_WASH_RASTER_SCALE, loop to TUNNEL_RASTER_SCALE)
-    private val cutoutPath = android.graphics.Path()
-    private var cutoutAt = 0f
-    private var approachAt = 1f
-    private var rush = 1f
-
-    init {
-        images.forEach(::addView)
-        screenLayers.forEach { (image, _) ->
-            image.pivotX = 0f
-            image.pivotY = 0f
-        }
-        visibility = INVISIBLE
-        isFocusable = false
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-    }
-
-    private fun paneWidth(w: Int) = ceil(w * (TUNNEL_WINDOW_FRACTION + 2f * TUNNEL_PANE_BLEED)).toInt()
-    private fun paneHeight(w: Int, h: Int) = ceil(h * TUNNEL_WINDOW_FRACTION + 2f * w * TUNNEL_PANE_BLEED).toInt()
-
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = MeasureSpec.getSize(widthMeasureSpec)
-        val h = MeasureSpec.getSize(heightMeasureSpec)
-        setMeasuredDimension(w, h)
-        for ((image, scale) in screenLayers) {
-            image.measure(
-                MeasureSpec.makeMeasureSpec(ceil(w * scale).toInt(), MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(ceil(h * scale).toInt(), MeasureSpec.EXACTLY),
-            )
-        }
-        pane.measure(
-            MeasureSpec.makeMeasureSpec(paneWidth(w), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(paneHeight(w, h), MeasureSpec.EXACTLY),
-        )
-    }
-
-    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
-        for ((image, _) in screenLayers) image.layout(0, 0, image.measuredWidth, image.measuredHeight)
-        val vx = (r - l) / 2f
-        val vy = TUNNEL_VANISH_Y * (b - t)
-        val left = (vx - pane.measuredWidth / 2f).roundToInt()
-        val top = (vy - pane.measuredHeight / 2f).roundToInt()
-        pane.layout(left, top, left + pane.measuredWidth, top + pane.measuredHeight)
-        pane.pivotX = vx - left
-        pane.pivotY = vy - top
-        placeImages()
-        shapeCutout()
-    }
-
-    /**
-     * Expansion progress (the porthole's), time through the expansion (the tunnel's rush and
-     * fade), the pane's share of the porthole, the whole show's presence, and the window's
-     * approach.
-     */
-    fun pose(expand: Float, leave: Float, glow: Float, presence: Float, approach: Float) {
-        val e = expand.coerceIn(0f, 1f)
-        val going = maxOf(e, leave.coerceIn(0f, 1f))
-        rush = lerp(1f, FlickMotion.TUNNEL_RUSH_SCALE, going)
-        // Each child takes its own alpha: an image view with no background draws it per
-        // op, where an alpha on this group would render the whole screen offscreen.
-        val fade = presence * tunnelFade(going)
-        wash.alpha = fade
-        loop.alpha = fade
-        pane.alpha = presence * glow
-        val paneScale = approach * rush
-        pane.scaleX = paneScale
-        pane.scaleY = paneScale
-        placeImages()
-        if (e != cutoutAt || approach != approachAt) {
-            cutoutAt = e
-            approachAt = approach
-            shapeCutout()
-            invalidate()
-        }
-    }
-
-    // Scaled up from its raster, then rushed out about the vanishing point.
-    private fun placeImages() {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        if (w <= 0f || h <= 0f) return
-        val vx = w / 2f
-        val vy = TUNNEL_VANISH_Y * h
-        for ((image, _) in screenLayers) {
-            if (image.measuredWidth <= 0 || image.measuredHeight <= 0) continue
-            image.scaleX = w / image.measuredWidth * rush
-            image.scaleY = h / image.measuredHeight * rush
-            image.translationX = vx * (1f - rush)
-            image.translationY = vy * (1f - rush)
-        }
-    }
-
-    private fun shapeCutout() {
-        val c = tunnelCutout(cutoutAt, width.toFloat(), height.toFloat(), approachAt)
-        cutoutPath.rewind()
-        cutoutPath.addRoundRect(c.left, c.top, c.right, c.bottom, c.radius, c.radius, android.graphics.Path.Direction.CW)
-    }
-
-    override fun dispatchDraw(canvas: android.graphics.Canvas) {
-        val time = drawingTime
-        if (cutoutAt < 1f) {
-            val saved = canvas.save()
-            canvas.clipOutPath(cutoutPath)
-            drawChild(canvas, wash, time)
-            drawChild(canvas, loop, time)
-            canvas.restoreToCount(saved)
-        }
-        drawChild(canvas, pane, time)
-    }
-
-    fun start() {
-        visibility = VISIBLE
-        drawables.forEach { it.start() }
-    }
-
-    fun stop() {
-        drawables.forEach { it.reset() }
-        visibility = INVISIBLE
-    }
-}
-
-/**
  * The tunnel's state. Outlives every curtain, so a show interrupted by a seam carries on
  * from where it is. [expand] is the porthole's progress to the whole screen; [glow] the
  * lit pane that fills the porthole until the film shows through it, [rim] the porthole's bezel, [caption] the copy, [flash] the
@@ -555,7 +493,6 @@ private class TunnelBackdropView(context: Context) : ViewGroup(context) {
  * dismisses it with nothing covering it.
  */
 private class Tunnel(private val staging: FilmStaging) {
-    private var host: TunnelBackdropView? = null
     var running = false
         private set
 
@@ -563,8 +500,8 @@ private class Tunnel(private val staging: FilmStaging) {
     var entrance: Job? = null
     var captionIn: Job? = null
 
-    /** The loop's first drawn frame; null while it is not running. */
-    var startedAtMs: Long? = null
+    /** The loop's first drawn frame; null while it is not running, and nothing is drawn. */
+    var startedAtMs by mutableStateOf<Long?>(null)
 
     /** The frame clock while the show is up, which the window's approach is read against. */
     var clockMs by mutableLongStateOf(0L)
@@ -593,26 +530,9 @@ private class Tunnel(private val staging: FilmStaging) {
     val flash = Animatable(0f)
     val presence = Animatable(1f)
 
-    fun attach(view: TunnelBackdropView) {
-        host = view
-        if (running) view.start()
-    }
-
-    fun detach(view: TunnelBackdropView) {
-        if (host !== view) return
-        view.stop()
-        host = null
-    }
-
     fun start() {
         running = true
         up = true
-        host?.start()
-    }
-
-    /** Called from the draw phase, so the pose lands in the frame its values changed in. */
-    fun applyPose() {
-        host?.pose(expand.value, leave.value, glow.value, presence.value, approach)
     }
 
     suspend fun retire() {
@@ -620,7 +540,6 @@ private class Tunnel(private val staging: FilmStaging) {
         entrance = null
         captionIn?.cancel()
         captionIn = null
-        host?.stop()
         running = false
         startedAtMs = null
         up = false
@@ -735,8 +654,8 @@ internal fun HouseLights(
         onDispose { filmStaging.staged = false }
     }
 
-    // The approach is read off this clock, so only the porthole's clip and the bezel follow
-    // it: nothing recomposes, and the drawables carry their own copy on the RenderThread.
+    // The tunnel is drawn off this clock, read only in the draw phase: nothing recomposes
+    // while it runs.
     LaunchedEffect(tunnel.up) {
         while (tunnel.up) withFrameMillis { tunnel.clockMs = now() }
     }
@@ -1068,25 +987,8 @@ internal fun HouseLights(
     }
 
     Box(modifier.fillMaxSize()) {
-        // The tunnel's pose is applied in the draw phase, before the tunnel's own view is
-        // drawn, so it lands in the same frame as the bezel, flash and curtain read the same
-        // values. Both sit on layers of their own: a per-frame redraw of either then stops
-        // at its layer instead of re-running every draw lambda in the tree.
-        Spacer(
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer()
-                .drawBehind { tunnel.applyPose() },
-        )
         // Over the film, which shows through its porthole.
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer()
-                .clearAndSetSemantics { },
-            factory = { context -> TunnelBackdropView(context).also(tunnel::attach) },
-            onRelease = { tunnel.detach(it) },
-        )
+        TunnelBackdrop(tunnel)
 
         // Under the overlay: a tunnel leaving over a closed curtain takes its copy with it.
         Spacer(
@@ -1163,6 +1065,150 @@ internal fun HouseLights(
 }
 
 /**
+ * The tunnel, drawn over the film with a porthole cut out of it: one draw lambda of plain
+ * GPU ops — gradient fills, rounded-rect strokes, round-capped lines — read off the tunnel's
+ * frame clock and animatables in the draw phase only, on a layer of its own, so a frame of it
+ * re-records this lambda and nothing else. There is no bitmap, no vector drawable and no
+ * offscreen layer: every alpha is per op, and the porthole is one rounded rect cleared
+ * through to the film's surface.
+ */
+@Composable
+private fun TunnelBackdrop(tunnel: Tunnel) {
+    Spacer(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer()
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val k = w / STAGE_UNITS
+                val vp = Offset(w / 2f, TUNNEL_VANISH_Y * h)
+                val wash = Brush.radialGradient(
+                    0f to FlickColor.TunnelWashCore,
+                    0.45f to FlickColor.TunnelWashMid,
+                    1f to FlickColor.TunnelWashEdge,
+                    center = vp,
+                    radius = WASH_REACH * w,
+                )
+                val glowR = GLOW_REACH * WINDOW_W / 2f * k
+                val glow = Brush.radialGradient(
+                    0f to FlickColor.TunnelGlowCore,
+                    0.5f to FlickColor.TunnelGlowMid,
+                    1f to FlickColor.TunnelGlowEdge,
+                    center = vp,
+                    radius = glowR,
+                )
+                val lightR = WINDOW_W / 2f * k
+                val light = Brush.radialGradient(
+                    0f to FlickColor.TunnelPortholeLight,
+                    1f to FlickColor.TunnelPortholeLightEdge,
+                    center = vp,
+                    radius = lightR,
+                )
+                val squash = WINDOW_H / WINDOW_W
+                onDrawBehind {
+                    val started = tunnel.startedAtMs ?: return@onDrawBehind
+                    val t = (tunnel.clockMs - started).coerceAtLeast(0L)
+                    val shown = tunnelFadeIn(t) * tunnel.presence.value
+                    val e = tunnel.expand.value
+                    val going = maxOf(e, tunnel.leave.value)
+                    val rush = lerp(1f, FlickMotion.TUNNEL_RUSH_SCALE, going)
+                    val a = tunnelApproach(t)
+                    val alpha = shown * tunnelFade(going)
+                    val pane = shown * tunnel.glow.value
+                    if (e < 1f && alpha > 0f) {
+                        scale(rush, rush, vp) {
+                            drawRect(wash, alpha = alpha)
+                            scale(1f, squash, vp) { drawCircle(glow, glowR, vp, alpha = alpha) }
+                            drawLoop(t, a * k, vp, alpha)
+                        }
+                    }
+                    // The porthole is punched straight through the window's buffer, as a
+                    // SurfaceView punches its own hole: one antialiased rounded rect, no clip
+                    // mask and no offscreen layer. Only once the film is released, so it never
+                    // opens onto a surface with nothing in it yet.
+                    if (e < 1f && tunnel.glow.value < 1f) {
+                        val c = tunnelCutout(e, w, h, a)
+                        drawRoundRect(
+                            Color.Black,
+                            topLeft = Offset(c.left, c.top),
+                            size = Size(c.right - c.left, c.bottom - c.top),
+                            cornerRadius = CornerRadius(c.radius),
+                            blendMode = BlendMode.Clear,
+                        )
+                    }
+                    if (pane > 0f) {
+                        scale(a * rush, a * rush, vp) {
+                            val pw = (WINDOW_W / 2f + PANE_BLEED) * k
+                            val ph = (WINDOW_H / 2f + PANE_BLEED) * k
+                            drawRoundRect(
+                                FlickColor.TunnelPortholeBase,
+                                topLeft = Offset(vp.x - pw, vp.y - ph),
+                                size = Size(2f * pw, 2f * ph),
+                                cornerRadius = CornerRadius((WINDOW_R + PANE_BLEED) * k),
+                                alpha = pane,
+                            )
+                            scale(1f, squash, vp) { drawCircle(light, lightR, vp, alpha = pane) }
+                        }
+                    }
+                }
+            },
+    )
+}
+
+/** The halo, the rings and the streaks, at [unit] pixels a stage unit (the approach folded in). */
+private fun DrawScope.drawLoop(t: Long, unit: Float, vp: Offset, alpha: Float) {
+    val beat = (t % (2f * BREATH_MS)) / BREATH_MS
+    val leg = if (beat <= 1f) beat else 2f - beat
+    val breath = 1f + (BREATH_SCALE - 1f) * (0.5f - cos(leg * PI.toFloat()) / 2f)
+    for ((offset, stroke, haloAlpha) in HALO) {
+        frame(vp, (WINDOW_W / 2f + offset) * breath * unit, (WINDOW_H / 2f + offset) * breath * unit,
+            (WINDOW_R + offset) * breath * unit, FlickColor.TunnelRing, haloAlpha * alpha, stroke * breath * unit)
+    }
+    for (i in 0 until TUNNEL_RING_COUNT) {
+        val q = tunnelLoopAt(t, TUNNEL_RING_LIFE_MS, i.toFloat() / TUNNEL_RING_COUNT)
+        val env = tunnelEnvelope(q)
+        if (env <= 0f) continue
+        val amber = i == AMBER_RING
+        val s = tunnelRingScale(q) * unit
+        frame(
+            vp, WINDOW_W / 2f * s, WINDOW_H / 2f * s, WINDOW_R * s,
+            if (amber) FlickColor.TunnelAmber else FlickColor.TunnelRing,
+            (if (amber) RING_AMBER_ALPHA else RING_ALPHA) * env * alpha,
+            (RING_STROKE_FROM + (RING_STROKE_TO - RING_STROKE_FROM) * q) * unit,
+        )
+    }
+    for (streak in TUNNEL_STREAKS) {
+        val q = tunnelLoopAt(t, streak.lifeMs, streak.phase)
+        val env = tunnelEnvelope(q)
+        if (env <= 0f) continue
+        val from = streak.reach0 + streak.travel * q * q
+        val to = from + STREAK_LEN_FROM + (STREAK_LEN_TO - STREAK_LEN_FROM) * q
+        drawLine(
+            streak.colour,
+            start = Offset(vp.x + streak.ux * from * unit, vp.y + streak.uy * from * unit),
+            end = Offset(vp.x + streak.ux * to * unit, vp.y + streak.uy * to * unit),
+            strokeWidth = STREAK_WIDTH * unit,
+            cap = StrokeCap.Round,
+            alpha = STREAK_ALPHA * env * alpha,
+        )
+    }
+}
+
+/** A rounded-rect outline centred on [c]. */
+private fun DrawScope.frame(c: Offset, halfW: Float, halfH: Float, radius: Float, colour: Color, alpha: Float, stroke: Float) {
+    if (alpha <= 0f) return
+    drawRoundRect(
+        colour,
+        topLeft = Offset(c.x - halfW, c.y - halfH),
+        size = Size(2f * halfW, 2f * halfH),
+        cornerRadius = CornerRadius(radius),
+        alpha = alpha,
+        style = Stroke(width = stroke),
+    )
+}
+
+/**
  * Everything of the tunnel that draws over the porthole's edge: the bezel around it, the
  * copy under it, and the flash. Each moves on draw-phase or layer reads, so nothing here
  * recomposes while it animates.
@@ -1178,23 +1224,29 @@ private fun TunnelOverlay(tunnel: Tunnel, headline: String, live: Boolean) {
                 compositingStrategy = CompositingStrategy.ModulateAlpha
             },
     ) {
+        // The bezel and the flash each redraw per frame on a layer of their own, so the copy's
+        // text is never re-recorded with them.
         Spacer(
             Modifier
                 .fillMaxSize()
+                .graphicsLayer()
                 .drawWithCache {
                     val rimW = TUNNEL_RIM_WIDTH.toPx()
-                    val bezel = Path().apply { fillType = PathFillType.EvenOdd }
                     onDrawBehind {
                         val r = tunnel.rim.value
                         if (r <= 0f) return@onDrawBehind
                         val c = tunnelCutout(tunnel.expand.value, size.width, size.height, tunnel.approach)
-                        bezel.reset()
-                        bezel.fillType = PathFillType.EvenOdd
-                        bezel.addRoundRect(
-                            RoundRect(c.left - rimW, c.top - rimW, c.right + rimW, c.bottom + rimW, CornerRadius(c.radius + rimW)),
+                        // A stroke centred half its width outside the porthole, so its inner edge
+                        // is the porthole's own: one analytic rounded rect, not a path mask.
+                        val half = rimW / 2f
+                        drawRoundRect(
+                            FlickColor.TunnelWindow,
+                            topLeft = Offset(c.left - half, c.top - half),
+                            size = Size(c.right - c.left + rimW, c.bottom - c.top + rimW),
+                            cornerRadius = CornerRadius(c.radius + half),
+                            alpha = r,
+                            style = Stroke(width = rimW),
                         )
-                        bezel.addRoundRect(RoundRect(c.left, c.top, c.right, c.bottom, CornerRadius(c.radius)))
-                        drawPath(bezel, FlickColor.TunnelWindow, alpha = r)
                     }
                 },
         )
@@ -1245,6 +1297,7 @@ private fun TunnelOverlay(tunnel: Tunnel, headline: String, live: Boolean) {
         Spacer(
             Modifier
                 .fillMaxSize()
+                .graphicsLayer()
                 .drawBehind {
                     val f = tunnel.flash.value
                     if (f > 0f) drawRect(FlickColor.TunnelFlash, alpha = f)

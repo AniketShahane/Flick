@@ -257,11 +257,19 @@ class StageMotionTest {
         composeRule.onAllNodesWithTag(TUNNEL_TAG).fetchSemanticsNodes().isNotEmpty()
 
 
-    /** The film stand-in is a deep red: nothing of the tunnel, the room or the flash reads as one. */
+    /**
+     * Whether the film shows here. Through the porthole that is the hole the tunnel punches
+     * through the window's buffer down to the film's surface, which a capture of the window
+     * reads as transparent (a 35 % flash over it stays well under half). Once the tunnel is gone it is
+     * the film stand-in's own deep red, which nothing of the tunnel, the room or the flash
+     * reads as.
+     */
     private fun PixelMap.filmAt(x: Int, y: Int): Boolean {
         val c = this[x.coerceIn(0, width - 1), y.coerceIn(0, height - 1)]
+        val hole = c.alpha < 0.5f
         // Red over green rules out the amber ring and streaks, even under the flash.
-        return c.red > 0.6f && c.red - c.blue > 0.25f && c.red > 1.8f * c.green
+        val film = c.red > 0.6f && c.red - c.blue > 0.25f && c.red > 1.8f * c.green
+        return hole || film
     }
 
     private fun PixelMap.windowShowsFilm(): Boolean =
@@ -270,7 +278,7 @@ class StageMotionTest {
     /** The porthole's lit pane: a pale blue, well above the wash. */
     private fun PixelMap.windowGlows(): Boolean {
         val c = this[width / 2, (TUNNEL_VANISH_Y * height).roundToInt()]
-        return c.blue - c.red > 0.2f && lumaOf(c) > 0.45f
+        return c.alpha > 0.9f && c.blue - c.red > 0.2f && lumaOf(c) > 0.45f
     }
 
     /** The porthole's left edge on the vanishing point's row: the first film pixel, or null if none shows. */
@@ -349,8 +357,8 @@ class StageMotionTest {
             if (upAt == null && up == 1) upAt = t
             val windowY = (TUNNEL_VANISH_Y * px.height).roundToInt()
             val centre = px[px.width / 2, windowY]
-            // Neither the lit pane nor the film: the two mid-crossfade.
-            if (upAt != null && filmInAt == null && !px.windowGlows() && !px.windowShowsFilm()) crossfading = true
+            // The lit pane part-way gone over the porthole: the two mid-crossfade.
+            if (upAt != null && filmInAt == null && centre.alpha in 0.1f..0.9f) crossfading = true
             if (filmInAt == null && px.windowShowsFilm()) filmInAt = t
             val left = px.portholeLeft()
             if (left != null) {
@@ -494,34 +502,28 @@ class StageMotionTest {
     }
 
 
-    /** The porthole is a clip on plain views: nothing of the tunnel renders the screen offscreen. */
+    /** The tunnel is drawn in the window's own draw pass: no views of its own, and so no view layers or drawables. */
     @Test
-    fun theTunnelDrawsWithoutAnOffscreenLayer() {
+    fun theTunnelDrawsWithoutViewsOrLayers() {
         rate = 60f
         cadence.physicalHz = 60f
         cadence.blank = false
         launch()
         settleHandshake()
-        assertNoOffscreenTunnel()
+        assertNoTunnelViews()
         cut(HouseStage.Film)
         while (up == 0) frame()
         advance(FlickMotion.TUNNEL_DWELL_MS + 300)
-        assertNoOffscreenTunnel()
+        assertNoTunnelViews()
     }
 
-    private fun assertNoOffscreenTunnel() = composeRule.runOnIdle {
-        val root = filmView!!.rootView
-        val tunnel = generateSequence(listOf(root)) { level ->
+    private fun assertNoTunnelViews() = composeRule.runOnIdle {
+        val all = generateSequence(listOf(filmView!!.rootView)) { level ->
             level.flatMap { v -> if (v is android.view.ViewGroup) (0 until v.childCount).map(v::getChildAt) else emptyList() }
                 .ifEmpty { null }
-        }.flatten().first { it.javaClass.simpleName == "TunnelBackdropView" } as android.view.ViewGroup
-        assertEquals("the tunnel has a layer", View.LAYER_TYPE_NONE, tunnel.layerType)
-        assertEquals("the tunnel takes a group alpha", 1f, tunnel.alpha, 0f)
-        for (i in 0 until tunnel.childCount) {
-            val child = tunnel.getChildAt(i)
-            assertEquals(View.LAYER_TYPE_NONE, child.layerType)
-            assertTrue("a tunnel layer would render its alpha offscreen", !child.hasOverlappingRendering())
-        }
+        }.flatten().toList()
+        assertTrue("a view draws a drawable in the show", all.none { it is android.widget.ImageView })
+        assertTrue("a view in the show has a layer of its own", all.all { it.layerType == View.LAYER_TYPE_NONE })
     }
 
     /** The porthole opens only once the released film's frames are reaching the screen. */
@@ -752,8 +754,10 @@ class StageMotionTest {
             d = shot().densityAt(fx = 0.5f, fy = 0.1f)
         }
         val lightsDownBefore = lightsDown
-        val half = shot().luma(0.05f, 0.05f)
         val seam = cut(HouseStage.Handshake)
+        // The seam's own frame still ticks the dissolve before the new move seeds from it.
+        frame()
+        val half = shot().luma(0.05f, 0.05f)
         var last = half
         while (since(seam) < 700) {
             frame()
