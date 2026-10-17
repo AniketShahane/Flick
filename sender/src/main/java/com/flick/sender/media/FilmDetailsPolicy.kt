@@ -16,7 +16,6 @@ data class FilmDetails(
     val runtimeMinutes: Int?,
     val creators: List<String>,
     val cast: List<String>,
-    val imdbId: String?,
     val show: Boolean,
 ) {
     /** Only a film with something to read opens the synopsis. */
@@ -37,11 +36,11 @@ object FilmDetailsPolicy {
     /** The cache format. An entry carrying any other version reads as unknown and is asked again. */
     const val FORMAT_VERSION = 1
 
-    /** Details, IMDb id and credits in one call. */
+    /** Details and credits in one call. */
     fun detailsUrl(query: FilmPosterQuery, id: Long, key: String): String {
         val path = if (query.show) "tv" else "movie"
         val auth = if (FilmPosterPolicy.isBearerToken(key)) "" else "&api_key=${encode(key)}"
-        return "$API/$path/$id?append_to_response=external_ids,credits&language=en-US$auth"
+        return "$API/$path/$id?append_to_response=credits&language=en-US$auth"
     }
 
     /** Null for a body that is not a details object at all; otherwise whatever fields it had. */
@@ -67,8 +66,6 @@ object FilmDetailsPolicy {
         } else {
             json.optInt("runtime", 0)
         }
-        val imdbId = (json.text("imdb_id") ?: json.optJSONObject("external_ids")?.text("imdb_id"))
-            ?.takeIf(FilmRatingsPolicy::isImdbId)
         return FilmDetails(
             overview = json.text("overview"),
             tagline = json.text("tagline"),
@@ -77,7 +74,6 @@ object FilmDetailsPolicy {
             runtimeMinutes = runtime?.takeIf { it in 1..1000 },
             creators = creators.distinct().take(CREATOR_LIMIT),
             cast = cast.distinct().take(CAST_LIMIT),
-            imdbId = imdbId,
             show = query.show,
         )
     }
@@ -91,7 +87,6 @@ object FilmDetailsPolicy {
         put("runtime", details.runtimeMinutes ?: JSONObject.NULL)
         put("creators", JSONArray(details.creators))
         put("cast", JSONArray(details.cast))
-        put("imdb", details.imdbId ?: JSONObject.NULL)
         put("show", details.show)
     }.toString()
 
@@ -106,7 +101,6 @@ object FilmDetailsPolicy {
             runtimeMinutes = if (json.isNull("runtime")) null else json.optInt("runtime"),
             creators = json.optJSONArray("creators").strings(),
             cast = json.optJSONArray("cast").strings(),
-            imdbId = json.text("imdb")?.takeIf(FilmRatingsPolicy::isImdbId),
             show = json.optBoolean("show", false),
         )
     }

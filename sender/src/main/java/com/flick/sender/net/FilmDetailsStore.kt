@@ -7,8 +7,6 @@ import com.flick.sender.media.FilmDetails
 import com.flick.sender.media.FilmDetailsPolicy
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.FilmPosterQuery
-import com.flick.sender.media.FilmRatings
-import com.flick.sender.media.FilmRatingsPolicy
 import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -22,36 +20,31 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * A film's synopsis and credits from TMDB, and its IMDb and Rotten Tomatoes scores from OMDb,
- * asked for only when its detail page opens — never per library tile — and remembered across
- * launches.
+ * A film's synopsis and credits from TMDB, asked for only when its detail page opens — never
+ * per library tile — and remembered across launches.
  *
  * Details are kept for [DETAILS_TTL_MS] (a film's synopsis rarely changes, but it does get
- * written after release); a miss for a week, as [FilmPosters] does; scores for
- * [RATINGS_TTL_MS], since they move. A failure is never written down, and within this process
- * it backs off for [FAILURE_BACKOFF_MS] rather than asking again on every visit.
+ * written after release); a miss for a week, as [FilmPosters] does. A failure is never written
+ * down, and within this process it backs off for [FAILURE_BACKOFF_MS] rather than asking again
+ * on every visit.
  */
 object FilmDetailsStore {
     private val tmdbKey = BuildConfig.TMDB_API_KEY.trim()
-    private val omdbKey = BuildConfig.OMDB_API_KEY.trim()
 
     val available: Boolean get() = tmdbKey.isNotEmpty()
-    val ratingsAvailable: Boolean get() = omdbKey.isNotEmpty()
 
     private const val PREFS = "flick_film_details"
     private const val DETAILS_TTL_MS = 90L * 24 * 60 * 60 * 1000
     private const val MISS_TTL_MS = 7L * 24 * 60 * 60 * 1000
-    private const val RATINGS_TTL_MS = 3L * 24 * 60 * 60 * 1000
     private const val FAILURE_BACKOFF_MS = 2L * 60 * 1000
     private const val TIMEOUT_MS = 8_000
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val inFlight = ConcurrentHashMap<String, Deferred<Any?>>()
+    private val inFlight = ConcurrentHashMap<String, Deferred<FilmDetails?>>()
     private val failedUntil = ConcurrentHashMap<String, Long>()
 
     @Volatile private var prefs: SharedPreferences? = null
     @Volatile private var tmdbRejected = false
-    @Volatile private var omdbRejected = false
 
     /** Starts the cache file loading off the main thread, before any page reads it. */
     fun warm(context: Context) {
@@ -78,28 +71,11 @@ object FilmDetailsStore {
         }
         if ((failedUntil[key] ?: 0L) > System.currentTimeMillis()) return stored?.details
         val appContext = context.applicationContext
-        return (once(key) { lookUpDetails(appContext, query, tmdbId, key) } as FilmDetails?) ?: stored?.details
-    }
-
-    fun cachedRatings(context: Context, imdbId: String): FilmRatings? =
-        readRatings(context, imdbId)?.ratings?.takeUnless { it.isEmpty }
-
-    suspend fun ratings(context: Context, imdbId: String): FilmRatings? {
-        if (!ratingsAvailable || omdbRejected || !FilmRatingsPolicy.isImdbId(imdbId)) return null
-        val stored = readRatings(context, imdbId)
-        if (stored != null && System.currentTimeMillis() - stored.atMs < RATINGS_TTL_MS) {
-            return stored.ratings.takeUnless { it.isEmpty }
-        }
-        val key = ratingsKey(imdbId)
-        val fallback = stored?.ratings?.takeUnless { it.isEmpty }
-        if ((failedUntil[key] ?: 0L) > System.currentTimeMillis()) return fallback
-        val appContext = context.applicationContext
-        val fetched = once(key) { lookUpRatings(appContext, imdbId, key) } as FilmRatings?
-        return fetched?.takeUnless { it.isEmpty } ?: fallback
+        return once(key) { lookUpDetails(appContext, query, tmdbId, key) } ?: stored?.details
     }
 
     // Lazy, so the entry is in the map before the work that removes it can finish.
-    private suspend fun once(key: String, work: () -> Any?): Any? {
+    private suspend fun once(key: String, work: () -> FilmDetails?): FilmDetails? {
         val lookup = inFlight.computeIfAbsent(key) { scope.async(start = CoroutineStart.LAZY) { work() } }
         lookup.invokeOnCompletion { inFlight.remove(key, lookup) }
         lookup.start()
@@ -107,8 +83,8 @@ object FilmDetailsStore {
     }
 
     private fun lookUpDetails(context: Context, query: FilmPosterQuery, tmdbId: Long?, key: String): FilmDetails? = try {
-        val id = tmdbId ?: FilmPosterPolicy.pickMatch(query, get(FilmPosterPolicy.searchUrl(query, tmdbKey), tmdb = true))?.id
-        val details = id?.let { FilmDetailsPolicy.parse(query, get(FilmDetailsPolicy.detailsUrl(query, it, tmdbKey), tmdb = true)) }
+        val id = tmdbId ?: FilmPosterPolicy.pickMatch(query, get(FilmPosterPolicy.searchUrl(query, tmdbKey)))?.id
+        val details = id?.let { FilmDetailsPolicy.parse(query, get(FilmDetailsPolicy.detailsUrl(query, it, tmdbKey))) }
         // A match whose details came back unreadable is a failure, not a film with nothing to say.
         if (id != null && details == null) throw IllegalStateException("unreadable details")
         writeDetails(context, key, details)
@@ -120,42 +96,26 @@ object FilmDetailsStore {
         null
     }
 
-    private fun lookUpRatings(context: Context, imdbId: String, key: String): FilmRatings? = try {
-        val url = FilmRatingsPolicy.ratingsUrl(imdbId, omdbKey) ?: throw IllegalStateException("bad id")
-        // Null is OMDb answering with a transient error (a busy server, a spent quota): asked
-        // again later, never written down as "no scores" for three days.
-        val ratings = FilmRatingsPolicy.parse(get(url, tmdb = false))
-            ?: throw IllegalStateException("omdb error")
-        writeRatings(context, key, ratings)
-        ratings
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        failed(key, e)
-        null
-    }
-
     /**
      * The body of a 200, or an exception naming why not — including a key already refused, so
      * that nothing after a refusal can be mistaken for an answer and cached.
      */
-    private fun get(url: String, tmdb: Boolean): String {
-        if (if (tmdb) tmdbRejected else omdbRejected) throw IllegalStateException("key refused")
+    private fun get(url: String): String {
+        if (tmdbRejected) throw IllegalStateException("key refused")
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = false
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.setRequestProperty("Accept", "application/json")
-            if (tmdb && FilmPosterPolicy.isBearerToken(tmdbKey)) {
+            if (FilmPosterPolicy.isBearerToken(tmdbKey)) {
                 connection.setRequestProperty("Authorization", "Bearer $tmdbKey")
             }
             return when (val status = connection.responseCode) {
                 HttpURLConnection.HTTP_OK -> connection.inputStream.bufferedReader().use { it.readText() }
                 HttpURLConnection.HTTP_UNAUTHORIZED -> {
-                    // Every other title would be refused the same way (OMDb also answers a
-                    // spent daily quota with this); stop asking for this process.
-                    if (tmdb) tmdbRejected = true else omdbRejected = true
+                    // Every other title would be refused the same way; stop asking for this process.
+                    tmdbRejected = true
                     throw IllegalStateException("status=$status")
                 }
                 else -> throw IllegalStateException("status=$status")
@@ -174,11 +134,9 @@ object FilmDetailsStore {
     }
 
     private class StoredDetails(val details: FilmDetails?, val atMs: Long)
-    private class StoredRatings(val ratings: FilmRatings, val atMs: Long)
 
     private fun detailsKey(query: FilmPosterQuery, tmdbId: Long?) =
         "d${FilmDetailsPolicy.FORMAT_VERSION}|${query.cacheKey}|${tmdbId ?: ""}"
-    private fun ratingsKey(imdbId: String) = "r1|$imdbId"
 
     // "<epoch ms>|<details json>", the json empty for a miss.
     private fun readDetails(context: Context, key: String): StoredDetails? {
@@ -193,20 +151,6 @@ object FilmDetailsStore {
     private fun writeDetails(context: Context, key: String, details: FilmDetails?) {
         val body = details?.let(FilmDetailsPolicy::encode).orEmpty()
         prefs(context).edit().putString(key, "${System.currentTimeMillis()}|$body").apply()
-    }
-
-    // "<epoch ms>|<imdb>|<rotten tomatoes>".
-    private fun readRatings(context: Context, imdbId: String): StoredRatings? {
-        val raw = prefs(context).getString(ratingsKey(imdbId), null) ?: return null
-        val split = raw.indexOf('|').takeIf { it > 0 } ?: return null
-        val atMs = raw.substring(0, split).toLongOrNull() ?: return null
-        return FilmRatingsPolicy.decode(raw.substring(split + 1))?.let { StoredRatings(it, atMs) }
-    }
-
-    private fun writeRatings(context: Context, key: String, ratings: FilmRatings) {
-        prefs(context).edit()
-            .putString(key, "${System.currentTimeMillis()}|${FilmRatingsPolicy.encode(ratings)}")
-            .apply()
     }
 
     private fun prefs(context: Context): SharedPreferences =

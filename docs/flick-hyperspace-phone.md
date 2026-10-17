@@ -14,7 +14,7 @@ Code: `ui/components/FlickPad.kt` (`FlickPadMotion`), `ui/components/FlickPadPol
 The detail page has no send button: the pad is the only send, in every state — no TV
 connected (the flick bounces to pairing, as `flickToTv` always has), a remembered refusal,
 or a link advisory. Page order, top to bottom: back disc; title logo (else the simplified name),
-two chip rows — resolution · range · size in mono, then running time with the scores joining it,
+two chip rows — resolution · range · size in mono, then running time on its own row,
 in proportional figures (the film's identity); the pad, centred in what is left (`Arrangement.SpaceBetween` over a page at
 least the window tall); the refusal or advisory card at the foot. Wider than tall, the page
 splits: identity and card in a scrolling left column, the pad centred on the right.
@@ -57,8 +57,8 @@ The film's synopsis, pulled in from the left over the page. Code: `ui/screens/Sy
 | Settle | the scheme's default spatial spring from the release velocity. Opening: open at ≥ 35% travel or ≥ 500 dp/s rightward (a fling never opens a panel that never moved). Closing (push left on the panel or the uncovered page): closed below 65% travel or ≥ 500 dp/s leftward. A tap on the uncovered page closes |
 | Touch | the panel and the uncovered page take touches only while the panel is open or under a finger; a panel springing home lets a throw through at once. The panel is not composed until the first reveal starts; its travel is known from the window before then |
 | Back | a `PredictiveBackHandler` registered after the shell's, enabled only while the panel is open on the detail route with no sheet up: the gesture leans the panel up to 30% home, commit closes it, cancel springs it open. With the panel away back is the shell's again (library) |
-| Lines | heading, facts, tagline, overview, credits, scores; line *i* fades in and closes a 28 dp lag from travel 0.25 + 0.05 *i* over 0.45, eased cubic-out, all whole before travel 1 |
-| Type | heading: logo (200 × 64 dp, the page's own seat and decode, left) else the film's name with no year in `displayMedium`; facts: `1999 · 2h 16m` on one line that never wraps (TMDB's year — one year, one source), then the genres spaced, not dotted, at most two lines, both mono eyebrow at 0.06 em; tagline: `readingEpigraph` (Geist Medium 19/26 sp, upright — Geist has no italic and a synthesised slope is not one — dim ink at 0.88); a 28 × 2 dp spark rule; overview: `readingBody` (Geist Medium 16.5/27 sp), measure ≤ 460 dp; credits: mono eyebrow + `readingCredit`; scores as chips. Insets and the close disc sit outside the scroll, with a 20 dp fade under the status bar once copy has scrolled into it |
+| Lines | heading, facts, tagline, overview, credits; line *i* fades in and closes a 28 dp lag from travel 0.25 + 0.05 *i* over 0.45, eased cubic-out, all whole before travel 1 |
+| Type | heading: logo (200 × 64 dp, the page's own seat and decode, left) else the film's name with no year in `displayMedium`; facts: `1999 · 2h 16m` on one line that never wraps (TMDB's year — one year, one source), then the genres spaced, not dotted, at most two lines, both mono eyebrow at 0.06 em; tagline: `readingEpigraph` (Geist Medium 19/26 sp, upright — Geist has no italic and a synthesised slope is not one — dim ink at 0.88); a 28 × 2 dp spark rule; overview: `readingBody` (Geist Medium 16.5/27 sp), measure ≤ 460 dp; credits: mono eyebrow + `readingCredit`. Insets and the close disc sit outside the scroll, with a 20 dp fade under the status bar once copy has scrolled into it |
 | Cue | a 3 × 34 dp white 34% tab 9 dp left of the poster, arriving on the slow effects spec once a synopsis is known; hidden while the poster is held or sending and as the panel comes; not a touch target |
 | Reduce motion | no travel or drift: the panel crossfades in place on a 180 ms tween |
 | No overview | no lock, no tab, no action, no panel |

@@ -55,7 +55,7 @@ class SynopsisPolicyTest {
     }
 
     @Test fun linesArriveInOrderAndAllLandBeforeThePanelDoes() {
-        for (index in 0..5) {
+        for (index in 0..4) {
             assertEquals(0f, SynopsisPolicy.lineIn(SynopsisPolicy.STAGGER_START, index), 0f)
             assertEquals("line $index whole at rest", 1f, SynopsisPolicy.lineIn(1f, index), 0f)
             if (index > 0) assertTrue(SynopsisPolicy.lineIn(0.6f, index) < SynopsisPolicy.lineIn(0.6f, index - 1))

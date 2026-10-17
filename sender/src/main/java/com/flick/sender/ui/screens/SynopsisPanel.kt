@@ -57,12 +57,9 @@ import androidx.compose.ui.unit.em
 import coil.ImageLoader
 import com.flick.sender.R
 import com.flick.sender.media.FilmDetails
-import com.flick.sender.media.FilmRatings
 import com.flick.sender.ui.FilmTitleLogo
-import com.flick.sender.ui.components.ImdbChip
 import com.flick.sender.ui.components.SynopsisPolicy
 import com.flick.sender.ui.components.SynopsisReveal
-import com.flick.sender.ui.components.TomatoChip
 import com.flick.sender.ui.motion.animatingFrameRate
 import com.flick.sender.ui.theme.CinemaDeep
 import com.flick.sender.ui.theme.CinemaGlassEdge
@@ -78,7 +75,7 @@ import com.flick.sender.ui.theme.LocalFlickColors
 /**
  * The film's synopsis as a leaf of the cinema page, pulled in from the left over it: the
  * heading again, the facts, the tagline as an epigraph, the overview to read, then who made it
- * and who is in it, then the scores.
+ * and who is in it.
  *
  * Opaque and travelling, never a fading page: the page behind is dimmed by one rect and drifts
  * aside in its own layers, and every frame of travel is a layer property read from [reveal].
@@ -88,12 +85,10 @@ import com.flick.sender.ui.theme.LocalFlickColors
  * draws nothing and takes no touch or focus. [title] is the film's own name with no year: the
  * facts line under it carries the year, from one source.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SynopsisPanel(
     reveal: SynopsisReveal,
     details: FilmDetails,
-    ratings: FilmRatings?,
     title: String,
     logoPath: String?,
     imageLoader: ImageLoader,
@@ -187,7 +182,6 @@ internal fun SynopsisPanel(
         ) {
             SynopsisLeaf(
                 details = details,
-                ratings = ratings,
                 title = title,
                 logoPath = logoPath,
                 imageLoader = imageLoader,
@@ -204,11 +198,9 @@ internal fun SynopsisPanel(
  * [interactive] false is a panel on its way home, which must take no touch. Separate from the
  * panel so it can be drawn and checked with any data.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SynopsisLeaf(
     details: FilmDetails,
-    ratings: FilmRatings?,
     title: String,
     logoPath: String?,
     imageLoader: ImageLoader,
@@ -216,7 +208,6 @@ internal fun SynopsisLeaf(
     interactive: Boolean = true,
     lineIn: (Int) -> Modifier = { Modifier },
 ) {
-    val colors = LocalFlickColors.current
     val scroll = rememberScrollState()
     // The insets and the close disc stay outside the scroll: copy carried up passes under a
     // short fade below the status bar rather than under the bar itself, and the way out never
@@ -242,7 +233,7 @@ internal fun SynopsisLeaf(
                     .navigationBarsPadding()
                     .padding(start = LeafStart, end = LeafEnd, top = 6.dp, bottom = 48.dp),
             ) {
-                SynopsisCopy(details, ratings, title, logoPath, imageLoader, lineIn)
+                SynopsisCopy(details, title, logoPath, imageLoader, lineIn)
             }
             Box(
                 Modifier
@@ -259,11 +250,9 @@ internal fun SynopsisLeaf(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SynopsisCopy(
     details: FilmDetails,
-    ratings: FilmRatings?,
     title: String,
     logoPath: String?,
     imageLoader: ImageLoader,
@@ -308,20 +297,6 @@ private fun SynopsisCopy(
                 }
                 if (details.cast.isNotEmpty()) {
                     Credit(label = stringResource(R.string.synopsis_starring), names = details.cast)
-                }
-            }
-        }
-        if (ratings != null && !ratings.isEmpty) {
-            Spacer(Modifier.height(30.dp))
-            Column(lineIn(5)) {
-                Eyebrow(stringResource(R.string.synopsis_scores))
-                Spacer(Modifier.height(10.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ratings.imdb?.let { ImdbChip(it) }
-                    ratings.rottenTomatoes?.let { TomatoChip(it) }
                 }
             }
         }

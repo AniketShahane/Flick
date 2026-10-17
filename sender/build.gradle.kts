@@ -55,23 +55,6 @@ val tmdbApiKey: String = run {
 }
 
 /**
- * The OMDb key the detail page's IMDb and Rotten Tomatoes scores are read with, from
- * `omdb.apiKey=...` in `local.properties` or `OMDB_API_KEY` for CI. Empty is the normal state
- * of a clone: no score is ever asked for and the page simply shows none.
- */
-val omdbApiKey: String = run {
-    val local = rootProject.file("local.properties")
-    val fromProperties = if (local.isFile) {
-        Properties()
-            .apply { local.inputStream().use { load(it) } }
-            .getProperty("omdb.apiKey")
-    } else {
-        null
-    }
-    (fromProperties ?: System.getenv("OMDB_API_KEY")).orEmpty().trim()
-}
-
-/**
  * Public Stripe-hosted checkout URLs. A clone deliberately has no fallback links:
  * support is offered only when every tier is configured and validated at runtime.
  * Values are never printed because build logs are a poor place for deployment config.
@@ -228,11 +211,6 @@ android {
             "String",
             "TMDB_API_KEY",
             "\"${javaStringLiteral(tmdbApiKey)}\"",
-        )
-        buildConfigField(
-            "String",
-            "OMDB_API_KEY",
-            "\"${javaStringLiteral(omdbApiKey)}\"",
         )
         buildConfigField(
             "String",

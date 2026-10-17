@@ -322,12 +322,6 @@ val CinemaNoticeFoot = Color(0x0FFFFFFF)
 val CinemaLeafTop = Color(0xFF0B1631)
 val CinemaLeafFoot = Color(0xFF060D1F)
 
-// The Tomatometer marks' own colours, drawn here rather than copied from any artwork. IMDb's
-// chip has none: it is the app's glass and a neutral star.
-val RatingTomatoRed = Color(0xFFF2391B)
-val RatingTomatoLeaf = Color(0xFF2E9E3E)
-val RatingSplatGreen = Color(0xFF5FC24A)
-
 /**
  * The floating nav pill's shadow on the dark set. A tinted ink shadow is a way of making
  * a pale canvas darker, and there is nothing darker than a near-black canvas to make it —

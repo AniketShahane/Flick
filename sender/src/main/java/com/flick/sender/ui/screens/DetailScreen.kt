@@ -82,7 +82,6 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.flick.sender.R
 import com.flick.sender.media.FilmArt
-import com.flick.sender.media.FilmRatings
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.MediaProbe
 import com.flick.sender.media.PlaybackProgressState
@@ -104,7 +103,7 @@ import com.flick.sender.ui.components.CardFlipSeat
 import com.flick.sender.ui.components.FlickPad
 import com.flick.sender.ui.components.FlickPadMotion
 import com.flick.sender.ui.components.FactChip
-import com.flick.sender.ui.components.RuntimeAndScores
+import com.flick.sender.ui.components.RuntimeChip
 import com.flick.sender.ui.components.SynopsisPolicy
 import com.flick.sender.ui.components.rememberSynopsisReveal
 import com.flick.sender.ui.components.synopsisDrift
@@ -121,7 +120,6 @@ import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.rememberFilmArt
 import com.flick.sender.ui.rememberFilmDetails
-import com.flick.sender.ui.rememberFilmRatings
 import com.flick.sender.ui.simplifiedName
 import com.flick.sender.ui.titleWithoutYear
 import com.flick.sender.ui.softBackdropHeightPx
@@ -232,7 +230,6 @@ fun DetailScreen(
     val art = item.rememberFilmArt()
     val posterPath = art?.poster
     val details = item.rememberFilmDetails(art?.tmdbId)
-    val ratings = rememberFilmRatings(details?.imdbId)
     val heading = item.simplifiedName()
     val synopsisTitle = item.titleWithoutYear()
     // The card is still flying to its seat until this turns true; nothing new is composed under
@@ -449,8 +446,6 @@ fun DetailScreen(
                         item = item,
                         art = art,
                         title = heading,
-                        ratings = ratings,
-                        reduceMotion = reduceMotion,
                         hdr = hdr,
                         subtitle = subtitle?.let { it.displayName to it.language },
                         imageLoader = imageLoader,
@@ -543,7 +538,6 @@ fun DetailScreen(
                 SynopsisPanel(
                     reveal = reveal,
                     details = synopsis,
-                    ratings = ratings,
                     title = synopsisTitle,
                     logoPath = art?.logo,
                     imageLoader = imageLoader,
@@ -660,10 +654,10 @@ internal fun CinemaDiscButton(
 /**
  * Which film this is, before anything asks to be thrown: title, facts, attached subtitle.
  *
- * Two rows of facts: what the file is (resolution, range, size), then how long it runs and what
- * it scored. The running time holds the second row from the first frame, so scores arriving
- * later join a row that is already there — the block, and so the poster sized beneath it, keep
- * their height at the default font scale. Larger type may still wrap either row.
+ * Two rows of facts: what the file is (resolution, range, size), then how long it runs. Every
+ * one is read off the file itself, so all four are there from the first frame and nothing that
+ * arrives later — the synopsis, the art — changes the block's height, or the poster's sized
+ * beneath it. Larger type may still wrap the first row.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -671,8 +665,6 @@ private fun DetailIdentity(
     item: MediaItem,
     art: FilmArt?,
     title: String,
-    ratings: FilmRatings?,
-    reduceMotion: Boolean,
     hdr: HdrType?,
     subtitle: Pair<String, String?>?,
     imageLoader: ImageLoader,
@@ -704,15 +696,10 @@ private fun DetailIdentity(
             FactChip(text = Format.bytes(item.sizeBytes), known = true)
         }
         Spacer(Modifier.height(8.dp))
-        // Known when the page opened means simply there; arriving later means arriving.
-        val ratingsAtOpen = remember(item.id) { ratings != null }
-        RuntimeAndScores(
-            runtime = runtimeText(item),
-            runtimeKnown = item.knowsDuration,
-            ratings = ratings,
-            animate = !reduceMotion,
-            scoresArrive = !ratingsAtOpen,
-            modifier = Modifier.fillMaxWidth().fadeUp(chipsIn, CardFlipMotion.RiseDistance),
+        RuntimeChip(
+            text = runtimeText(item),
+            known = item.knowsDuration,
+            modifier = Modifier.fadeUp(chipsIn, CardFlipMotion.RiseDistance),
         )
         // With the file's own facts, because it is one of them: what will be sent with the
         // flick. Not a chip — those are the three the phone reads off the file itself.

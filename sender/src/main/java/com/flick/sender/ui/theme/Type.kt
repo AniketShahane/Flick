@@ -200,7 +200,7 @@ object FlickText {
         letterSpacing = 0.em,
     )
 
-    /** A score or a running time in a chip: proportional figures, so "8.7" reads as a number. */
+    /** A running time in a chip: proportional figures, so "2h 16m" reads as a time, not a code. */
     val chipFigure = TextStyle(
         fontFamily = Geist,
         fontWeight = FontWeight.SemiBold,

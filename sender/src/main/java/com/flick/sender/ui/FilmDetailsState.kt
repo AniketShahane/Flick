@@ -7,7 +7,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import com.flick.sender.media.FilmDetails
 import com.flick.sender.media.FilmPosterPolicy
-import com.flick.sender.media.FilmRatings
 import com.flick.sender.media.VideoNames
 import com.flick.sender.model.MediaItem
 import com.flick.sender.net.FilmDetailsStore
@@ -38,16 +37,3 @@ fun MediaItem.rememberFilmDetails(tmdbId: Long?): FilmDetails? {
     return details?.takeIf { enabled }
 }
 
-/** IMDb and Rotten Tomatoes for [imdbId], or null while neither is known. */
-@Composable
-fun rememberFilmRatings(imdbId: String?): FilmRatings? {
-    val context = LocalContext.current.applicationContext
-    val id = imdbId?.takeIf { FilmDetailsStore.ratingsAvailable }
-    val stored = remember(id) { id?.let { FilmDetailsStore.cachedRatings(context, it) } }
-    val ratings by produceState(initialValue = stored, id) {
-        value = stored
-        if (id == null) return@produceState
-        FilmDetailsStore.ratings(context, id)?.let { value = it }
-    }
-    return ratings?.takeIf { id != null && !it.isEmpty }
-}
