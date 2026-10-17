@@ -60,6 +60,7 @@ class ControlServer(
     private val pairing: PairingManager,
     private val commands: ControlCommands,
     private val stateProvider: () -> PlaybackFrame,
+    private val onPeerQuiet: (peerIp: String, trigger: String, stillQuiet: () -> Boolean) -> Unit = { _, _, _ -> },
 ) {
     private data class Auth(
         val record: PairingRecord,
@@ -75,6 +76,7 @@ class ControlServer(
         val generation: Long,
         /** Which paired phone holds this lease, so a per-phone forget can find it. */
         val keyId: String,
+        val peer: String,
         val emit: suspend (String) -> Unit,
         /**
          * The cast this socket took over from the same phone's previous socket, until
@@ -468,6 +470,7 @@ class ControlServer(
         if (terminal) connection.session.launch { connection.emit(frame) } else emit(connection, frame)
         if (terminal) {
             synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, castId) }
+            releaseDirectLink(connection.peer, "cast_failed")
         }
     }
 
@@ -543,7 +546,7 @@ class ControlServer(
                 )
                 if (decision == LeaseAdmission.INSTALL || decision == LeaseAdmission.TAKEOVER) {
                     val next = counter.incrementAndGet()
-                    connection = Connection(this, token, next, auth.record.keyId, emit)
+                    connection = Connection(this, token, next, auth.record.keyId, peer, emit)
                     displaced = if (decision == LeaseAdmission.TAKEOVER) {
                         ownership.takeOverController(token, next).displaced
                     } else {
@@ -653,6 +656,7 @@ class ControlServer(
                 // every revoke above clears ownership first, so `released` is false
                 // there. That is what makes DROPPED provable rather than assumed.
                 if (released) notifyControlLost(connection.generation, ControlLossReason.DROPPED, connection.keyId)
+                releaseDirectLink(peer, "control_close")
             }
         } finally {
             resume.getAndSet(null)?.let(outstandingResumes::remove)
@@ -887,6 +891,7 @@ class ControlServer(
                     if (active?.token !== connection.token || active?.generation != connection.generation) return reject("ownership")
                     ownership.adoptCast(connection.token, connection.generation, cast).also {
                         if (it == ControlOwnership.CastAdoption.NEW) pairing.closeSurface()
+                        if (it != ControlOwnership.CastAdoption.STALE_LEASE) DirectLinkReset.castStarted()
                     }
                 }
                 val reload = when (adoption) {
@@ -1077,8 +1082,12 @@ class ControlServer(
         // even if an idle replacement authenticates immediately afterward.
         connection.session.launch { connection.emit(resultFrame(ControlCastResult.Stopped(castId))) }
         synchronized(serverLock) { ownership.clearCast(connection.token, connection.generation, castId) }
+        releaseDirectLink(connection.peer, "cast_stop")
         return true
     }
+
+    private fun releaseDirectLink(peer: String, trigger: String) =
+        onPeerQuiet(peer, trigger) { !ownership.isBusy() }
 
     /**
      * How many casts this TV's own main thread failed to adopt in time. Counted rather

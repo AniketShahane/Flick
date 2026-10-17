@@ -612,6 +612,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var blockAdvertised = false
     private var blockDialing = false
 
+    /** Set only around a dial the person started, so [resume] may give it a second sweep. */
+    private var userDialing = false
+
     /**
      * The control link this phone is putting back under a cast the TV is still playing.
      *
@@ -2054,7 +2057,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun selectDevice(tv: DiscoveredTv) {
         if ((tv.protocolVersion ?: 0) < ControlProtocolV2.VERSION) { _pairError.value = PairErrorKind.UPDATE_REQUIRED; _route.value = Route.Connect; return }
         val paired = store.last()?.takeIf { it.tvId == tv.tvId && !it.needsRepair }
-        if (paired != null) { resume(paired); return }
+        if (paired != null) { resume(paired, userDial = true); return }
         // The tapped row is the only component that knows the TV's live control
         // endpoint; keep it so the code sheet can dial it without the user retyping.
         if (tv.tvId != null) {
@@ -2262,7 +2265,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
-    private fun resume(pairing: PairingStore.Pairing, afterResume: (() -> Unit)? = null) {
+    private fun resume(pairing: PairingStore.Pairing, userDial: Boolean = false, afterResume: (() -> Unit)? = null) {
         val attempt = beginPairingAttempt()
         pairingJob = scope.launch {
             var sawUntrustedFailure = false
@@ -2276,60 +2279,72 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // that answered, and reporting "got no answer at all" about it is the exact
             // false sentence this taxonomy exists to stop.
             var lastFault: DialFault? = null
-            val candidates = ResumeCandidateQueue(pairing.host, pairing.port, pairing.tvId, MAX_RESUME_CANDIDATES)
+            var sweep = 1
             var awaitedNsd = false
-            while (true) {
-                var candidate = candidates.next(devices.value)
-                if (candidate == null && sawTransportFailure && candidates.hasCapacity() && !awaitedNsd) {
-                    awaitedNsd = true
-                    withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
-                        devices.first(candidates::hasNext)
+            sweeps@ while (true) {
+                val candidates = ResumeCandidateQueue(pairing.host, pairing.port, pairing.tvId, MAX_RESUME_CANDIDATES)
+                while (true) {
+                    var candidate = candidates.next(devices.value)
+                    if (candidate == null && sawTransportFailure && candidates.hasCapacity() && !awaitedNsd) {
+                        awaitedNsd = true
+                        withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
+                            devices.first(candidates::hasNext)
+                        }
+                        candidate = candidates.next(devices.value)
                     }
-                    candidate = candidates.next(devices.value)
-                }
-                if (candidate == null) break
-                dialedHost = DialedHost(candidate.host, candidate.discovered)
-                val result = control.resume(pairing, candidate.host, candidate.port)
-                FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
-                when (result) {
-                    is ControlClient.Result.Resumed -> if (pairingGate.isCurrent(attempt)) {
-                        if (!PairingPersistence.commit { store.commitVerifiedEndpoint(pairing.tvId, result.endpoint.tv, candidate.host, candidate.port) }) {
-                            control.close()
-                            // The dial succeeded end to end and a write to this phone
-                            // failed. `persistPaired` has said so honestly for years; this
-                            // path used to report the TV as unreachable instead.
-                            failPendingResume(
-                                "pairing_store_failed",
-                                pairError = PairErrorKind.LOCAL_STORAGE,
-                            )
+                    if (candidate == null) break
+                    dialedHost = DialedHost(candidate.host, candidate.discovered)
+                    val result = control.resume(pairing, candidate.host, candidate.port)
+                    FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
+                    when (result) {
+                        is ControlClient.Result.Resumed -> if (pairingGate.isCurrent(attempt)) {
+                            if (!PairingPersistence.commit { store.commitVerifiedEndpoint(pairing.tvId, result.endpoint.tv, candidate.host, candidate.port) }) {
+                                control.close()
+                                // The dial succeeded end to end and a write to this phone
+                                // failed. `persistPaired` has said so honestly for years; this
+                                // path used to report the TV as unreachable instead.
+                                failPendingResume(
+                                    "pairing_store_failed",
+                                    pairError = PairErrorKind.LOCAL_STORAGE,
+                                )
+                                return@launch
+                            }
+                            _connectedTv.value = PairedTv(result.endpoint.tv, candidate.host, candidate.port, pairing.tvId)
+                            _route.value = Route.Library
+                            afterResume?.invoke()
                             return@launch
                         }
-                        _connectedTv.value = PairedTv(result.endpoint.tv, candidate.host, candidate.port, pairing.tvId)
-                        _route.value = Route.Library
-                        afterResume?.invoke()
-                        return@launch
+                        ControlClient.Result.Busy -> if (pairingGate.isCurrent(attempt)) { publishBusyFailure(); return@launch }
+                        // A policy close is not proof the stored key is bad; only a
+                        // credential-shaped denial may cost the pairing its trust.
+                        is ControlClient.Result.Denied ->
+                            if (result.reason in TRANSIENT_DENIALS) sawTransportFailure = true else sawUntrustedFailure = true
+                        is ControlClient.Result.ProtocolError -> sawUntrustedFailure = true
+                        is ControlClient.Result.Unreachable -> {
+                            lastFault = result.fault
+                            sawTransportFailure = true
+                        }
+                        is ControlClient.Result.TimedOut -> {
+                            lastFault = result.fault
+                            sawTransportFailure = true
+                        }
+                        is ControlClient.Result.RejectedByTv -> {
+                            lastFault = DialFault.REJECTED
+                            sawTransportFailure = true
+                        }
+                        else -> sawUntrustedFailure = true
                     }
-                    ControlClient.Result.Busy -> if (pairingGate.isCurrent(attempt)) { publishBusyFailure(); return@launch }
-                    // A policy close is not proof the stored key is bad; only a
-                    // credential-shaped denial may cost the pairing its trust.
-                    is ControlClient.Result.Denied ->
-                        if (result.reason in TRANSIENT_DENIALS) sawTransportFailure = true else sawUntrustedFailure = true
-                    is ControlClient.Result.ProtocolError -> sawUntrustedFailure = true
-                    is ControlClient.Result.Unreachable -> {
-                        lastFault = result.fault
-                        sawTransportFailure = true
-                    }
-                    is ControlClient.Result.TimedOut -> {
-                        lastFault = result.fault
-                        sawTransportFailure = true
-                    }
-                    is ControlClient.Result.RejectedByTv -> {
-                        lastFault = DialFault.REJECTED
-                        sawTransportFailure = true
-                    }
-                    else -> sawUntrustedFailure = true
+                    if (!pairingGate.isCurrent(attempt)) return@launch
                 }
+                if (sawUntrustedFailure || !sawTransportFailure) break@sweeps
+                val onWifi = com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) != null
+                if (!ResumeRetryPolicy.sweepsAgain(sweep, userDial, onWifi)) break@sweeps
+                sweep++
+                FlickLog.i("ws", "resume sweep=$sweep after fault=${lastFault?.name?.lowercase() ?: "denied"}")
+                delay(ResumeRetryPolicy.RETRY_DELAY_MS)
                 if (!pairingGate.isCurrent(attempt)) return@launch
+                sawTransportFailure = false
+                lastFault = null
             }
             if (pairingGate.isCurrent(attempt)) {
                 // A single spoofed/expired candidate must not poison a durable pairing.
@@ -2478,7 +2493,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         startupRetries = 0
         startupRetrying = null
         _startupRetryItem.value = null
+        userDialing = true
         flickToTv(request)
+        userDialing = false
     }
 
     private fun flickToTv(request: CastRequest) {
@@ -2508,7 +2525,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 return
             }
             pendingCast = request
-            resume(pairing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
+            resume(pairing, userDial = userDialing) { pendingCast?.takeIf { control.authenticatedEndpoint() != null }?.let(::startCast) }
             return
         }
         // A live cast's own state feed has already answered for the socket, so replacing a
@@ -2542,6 +2559,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // Assigned before it runs: the dispatcher is immediate, so a verdict that needs no
         // wait would otherwise re-enter the resume below and have its pairingJob overwritten
         // by this one on the way out.
+        val userDial = userDialing
         val probe = scope.launch(start = CoroutineStart.LAZY) {
             val verdict = control.confirmAlive(line)
             if (!pairingGate.isCurrent(attempt)) return@launch
@@ -2559,7 +2577,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 cleanup(live, stopRemoteIfLoaded = false)
             }
             control.retire(line)
+            userDialing = userDial
             flickToTv(queued)
+            userDialing = false
         }
         pairingJob = probe
         probe.start()
