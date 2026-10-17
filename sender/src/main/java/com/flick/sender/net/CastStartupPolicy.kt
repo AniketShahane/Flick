@@ -37,6 +37,13 @@ internal object CastStartupPolicy {
     /** The `loadReady` wait, unchanged: reaching it took an accept, which is the TV answering. */
     const val FIRST_FRAME_TIMEOUT_MS = 18_000L
 
+    /**
+     * When a first frame that has not come yet earns a round-trip ping. A healthy start
+     * lands in about one to three seconds; a stall past this is either a slow decoder,
+     * which answers the ping, or a TV that has stopped hearing this phone, which does not.
+     */
+    const val FIRST_FRAME_PROBE_MS = 5_000L
+
     /** The old accept budget: an acceptance slower than this is logged, since it used to fail. */
     const val SLOW_ACCEPT_MS = 2_000L
 
