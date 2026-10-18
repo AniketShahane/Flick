@@ -1378,7 +1378,7 @@ private const val MAX_COMMAND_NAME = 32
  * on arrival, and a reader correlating the two logs should not have to know which end
  * dropped what.
  */
-private val RateDrivenCommands = setOf("seek", "setVolume", "setAudioDelay")
+private val RateDrivenCommands = setOf("seek", "setVolume", "setAudioDelay", "ping")
 
 /** Whether a frame of [command] is rare enough that its arrival is worth a line. */
 internal fun logsFrameArrival(command: String): Boolean = command !in RateDrivenCommands
