@@ -516,6 +516,20 @@ private class Tunnel(private val staging: FilmStaging) {
 
     private var shown by mutableStateOf(false)
 
+    /** The film's copies the window shows, while it shows them; null for a porthole. */
+    var frames: FilmFrames? = null
+
+    /** True while the window shows [frames] rather than a porthole onto the live film. */
+    var snapshotting by mutableStateOf(false)
+
+    /** Stops copying and drops the copies: the window is a porthole, or gone, from here. */
+    fun endSnapshots() {
+        frames?.stop()
+        frames?.clear()
+        frames = null
+        snapshotting = false
+    }
+
     /** Composes the overlay and stages the film; true from the cue until the show is retired. */
     var up: Boolean
         get() = shown
@@ -544,6 +558,7 @@ private class Tunnel(private val staging: FilmStaging) {
         entrance = null
         captionIn?.cancel()
         captionIn = null
+        endSnapshots()
         running = false
         startedAtMs = null
         up = false
@@ -602,6 +617,10 @@ private class HeadlineLatch {
  * so a cast that summons the app from the background runs after the system's open
  * animation rather than under it.
  *
+ * [filmFrames], when given, copies the released film so the window shows its whole frame
+ * shrunk; without it, or when it cannot copy this film, the window is a porthole onto the
+ * live film's centre.
+ *
  * [leastShownMs] is the tunnel's least time on screen before the film may appear in it;
  * the stage tests lower it to judge the resync hold on its own.
  */
@@ -627,6 +646,7 @@ internal fun HouseLights(
     awaitOnScreen: suspend () -> Unit = {},
     leastShownMs: Long = FlickMotion.TUNNEL_MIN_SHOWN_MS,
     awaitFilmFlowing: suspend () -> Unit = {},
+    filmFrames: FilmFrames? = null,
 ) {
     val reduced = LocalReducedMotion.current
     val memory = remember { HouseMemory() }
@@ -653,9 +673,13 @@ internal fun HouseLights(
     val pictureSettledNow by rememberUpdatedState(onPictureSettled)
     val awaitOnScreenNow by rememberUpdatedState(awaitOnScreen)
     val awaitFilmFlowingNow by rememberUpdatedState(awaitFilmFlowing)
+    val filmFramesNow by rememberUpdatedState(filmFrames)
 
     DisposableEffect(Unit) {
-        onDispose { filmStaging.staged = false }
+        onDispose {
+            filmStaging.staged = false
+            tunnel.endSnapshots()
+        }
     }
 
     // The tunnel is drawn off this clock, read only in the draw phase: nothing recomposes
@@ -732,8 +756,9 @@ internal fun HouseLights(
         suspend fun dismissTunnel() {
             if (!tunnel.up) return
             FlickLog.i("stage", "tunnel dismiss covered=${covered()} sinceSeamMs=${now() - edge}")
-            // The porthole closes at once: the film's view leaves with this seam.
+            // The window closes at once: the film's view leaves with this seam.
             tunnel.glow.snapTo(1f)
+            tunnel.endSnapshots()
             tunnel.presence.animateTo(0f, spec(FlickMotion.filmExit()))
             tunnel.retire()
         }
@@ -750,6 +775,8 @@ internal fun HouseLights(
                 launch { tunnel.leave.animateTo(1f, tween(FlickMotion.TUNNEL_EXPAND_MS, easing = LinearEasing)) }
                 tunnel.expand.animateTo(1f, FlickMotion.tunnelExpand())
             }
+            // Landed: the live film behind the window takes over in this frame.
+            tunnel.frames?.stop()
             delay(FlickMotion.TUNNEL_SETTLE_MS)
             tunnel.retire()
             FlickLog.i("stage", "tunnel expand done tookMs=${now() - start}")
@@ -876,6 +903,7 @@ internal fun HouseLights(
                 if (dark) lightsDownNow()
                 if (tunnel.up) {
                     resumeTunnel()
+                    tunnel.endSnapshots()
                     tunnel.expand.snapTo(0f)
                     tunnel.rim.snapTo(0f)
                     tunnel.glow.snapTo(1f)
@@ -930,8 +958,18 @@ internal fun HouseLights(
                 // screen, so the porthole never opens onto a frame still held or a surface
                 // still settling.
                 awaitFilmFlowingNow()
+                // The window shows the whole frame, shrunk, from copies of the film; if this
+                // film cannot be copied, a porthole onto it instead. Decided once a cast.
+                val frames = filmFramesNow
+                tunnel.frames = frames
+                val copying = frames != null && frames.start()
+                if (!copying) tunnel.endSnapshots()
+                tunnel.snapshotting = copying
                 tunnel.captionIn?.cancel()
-                FlickLog.i("stage", "tunnel film shown sinceSeamMs=${now() - edge}")
+                FlickLog.i(
+                    "stage",
+                    "tunnel film shown window=${if (copying) "snapshot" else "porthole"} sinceSeamMs=${now() - edge}",
+                )
                 launch { tunnel.glow.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
                 launch { tunnel.rim.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve)) }
                 launch { tunnel.caption.animateTo(0f, tween(FlickMotion.TUNNEL_CAPTION_OUT_MS, easing = FlickMotion.ChromeFade)) }
@@ -947,6 +985,8 @@ internal fun HouseLights(
                 // wherever the porthole is: a re-cast during the last show's dwell or
                 // expansion finds it part way open, and it must never widen on the way back.
                 val resumed = tunnel.up
+                // A window showing copies keeps its last one while it closes.
+                tunnel.frames?.stop()
                 if (resumed) resumeTunnel() else tunnel.glow.snapTo(0f)
                 tunnel.expand.snapTo(if (resumed) tunnel.expand.value else 1f)
                 startTunnel()
@@ -960,6 +1000,7 @@ internal fun HouseLights(
                     tunnel.expand.animateTo(0f, FlickMotion.tunnelShrink())
                 }
                 tunnel.glow.animateTo(1f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
+                tunnel.endSnapshots()
                 FlickLog.i("stage", "tunnel film withdrawn sinceSeamMs=${now() - edge}")
                 aperture.snapTo(0f)
                 tunnel.rim.animateTo(0f, tween(FlickMotion.TUNNEL_FILM_IN_MS, easing = FlickMotion.CrossDissolve))
@@ -1123,7 +1164,10 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
                     val going = maxOf(e, tunnel.leave.value)
                     val rush = lerp(1f, FlickMotion.TUNNEL_RUSH_SCALE, going)
                     val a = tunnelApproach(t)
-                    val alpha = shown * tunnelFade(going)
+                    val snapshot = tunnel.snapshotting
+                    // Showing copies, the tunnel stays opaque to the landing: the live film is
+                    // right behind it, and showing round a shrunk copy of itself would not match.
+                    val alpha = shown * (if (snapshot) 1f else tunnelFade(going))
                     val pane = shown * tunnel.glow.value
                     if (e < 1f && alpha > 0f) {
                         drawIntoCanvas { canvas ->
@@ -1132,7 +1176,7 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
                             // The porthole: once the film is released, nothing of the tunnel
                             // is drawn inside it, so the film's view shows through as it is —
                             // its surface or texture, its letterbox and its captions alike.
-                            if (tunnel.glow.value < 1f) {
+                            if (!snapshot && tunnel.glow.value < 1f) {
                                 tunnelCutoutInto(cut, e, w, h, a)
                                 porthole.rewind()
                                 porthole.addRoundRect(cut[0], cut[1], cut[2], cut[3], cut[4], cut[4], android.graphics.Path.Direction.CW)
@@ -1143,6 +1187,20 @@ private fun TunnelBackdrop(tunnel: Tunnel) {
                                 scale(1f, squash, vp) { drawCircle(glow, glowR, vp, alpha = alpha) }
                                 drawLoop(native, strokes, t, a * k, vp, alpha)
                             }
+                            native.restoreToCount(saved)
+                        }
+                    }
+                    // The window: the film's whole frame, shrunk, clipped to the window's corners.
+                    // Gone at the landing, where the live film behind it is the same picture.
+                    if (snapshot && e < 1f) {
+                        drawIntoCanvas { canvas ->
+                            val native = canvas.nativeCanvas
+                            tunnelCutoutInto(cut, e, w, h, a)
+                            val saved = native.save()
+                            porthole.rewind()
+                            porthole.addRoundRect(cut[0], cut[1], cut[2], cut[3], cut[4], cut[4], android.graphics.Path.Direction.CW)
+                            native.clipPath(porthole)
+                            tunnel.frames?.draw(native, cut[0], cut[1], cut[2], cut[3])
                             native.restoreToCount(saved)
                         }
                     }

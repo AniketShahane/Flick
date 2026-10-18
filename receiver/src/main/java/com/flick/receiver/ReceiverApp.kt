@@ -98,6 +98,7 @@ import com.flick.receiver.player.ORIENTATION_HINT_MS
 import com.flick.receiver.player.OrientationHintPhase
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.player.PlaybackPhase
+import com.flick.receiver.player.PictureColour
 import com.flick.receiver.player.PlayerController
 import com.flick.receiver.player.SILENT_AUDIO_NOTICE_MS
 import com.flick.receiver.player.SUBTITLE_GLYPH_BACKGROUND_ALPHA
@@ -120,7 +121,9 @@ import com.flick.receiver.session.SessionController
 import com.flick.receiver.summon.ForegroundSummoner
 import com.flick.receiver.summon.SummonPolicy
 import com.flick.receiver.ui.components.FilmDimReading
+import com.flick.receiver.ui.components.FilmSnapshots
 import com.flick.receiver.ui.components.FilmStaging
+import com.flick.receiver.ui.components.SNAPSHOT_HDR
 import com.flick.receiver.ui.components.FlickLoader
 import com.flick.receiver.ui.components.GlassPanel
 import com.flick.receiver.ui.components.GlassPanelTone
@@ -479,6 +482,22 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val subtitleSizePreference = remember { SubtitleSizePreference() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     val filmStaging = remember { FilmStaging() }
+    // The window's copies of the film: the whole frame, shrunk, without ever transforming
+    // the film's own view. Dolby Vision is never copied: its picture is in the display's
+    // video layer, and a readback is not its colours.
+    val filmSnapshots = remember {
+        FilmSnapshots(
+            frame = { playerView },
+            video = { playerView?.videoSurfaceView },
+            refusal = {
+                when (controller.pictureColourNow()) {
+                    PictureColour.DolbyVision -> "dolbyVision"
+                    PictureColour.Hdr -> if (SNAPSHOT_HDR) null else "hdr"
+                    PictureColour.Sdr -> null
+                }
+            },
+        )
+    }
 
     var showSettings by remember { mutableStateOf(false) }
     // Whether leaving Settings owes the viewer a pairing code back.
@@ -1822,6 +1841,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 onPictureSettled = onPictureSettled,
                 filmStaging = filmStaging,
                 awaitFilmFlowing = { awaitFramesFlowing(controller::renderedVideoFrames) },
+                filmFrames = filmSnapshots,
             )
 
             // Gated on the stage, and composed outside the router only because it may

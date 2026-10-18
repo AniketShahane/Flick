@@ -2375,6 +2375,11 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     fun onPictureUp() = releasePictureHold("pictureUp")
 
+    /** The playing film's colour class, read from the decoder's own format. */
+    fun pictureColourNow(): PictureColour = player?.videoFormat
+        ?.let { pictureColourOf(it.sampleMimeType, it.colorInfo?.colorTransfer ?: Format.NO_VALUE) }
+        ?: filmColour
+
     /**
      * Video frames released to the surface so far, read from the decoder's own counters
      * rather than a per-frame callback: the ordinary path keeps no frame listener.

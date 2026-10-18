@@ -892,7 +892,7 @@ after the settle are the show's first `flush layers`.
   halo, streaks, pane, porthole and bezel all read the same value off the frame clock. The copy
   sits under the window's full size, which the approach never exceeds, and it has faded before
   the expansion takes the window past it.
-- **The porthole is a clip.** Once the film is released, the wash and the loop are drawn under
+- **The porthole is a clip** (the fallback window; see *The snapshot window* below). Once the film is released, the wash and the loop are drawn under
   `clipOutPath` of one rounded rect (`tunnelCutout`, rebuilt in a reused path), so nothing of
   the tunnel is drawn inside it and the film's view shows through exactly as it is: its
   surface or, for a turned film, its texture inside the window, with its letterbox and its
@@ -918,8 +918,39 @@ after the settle are the show's first `flush layers`.
 hardware composer for the MediaTek MDP blitter (`hwcomposer: [DP] layer[N] use MDP: 1`): the
 first scaled Dolby Vision frame waited a second (`wait_release … [1001.1 ms]`), then about 20 fps,
 so a scaled film showed as a black window and its growth landed as a snap. The film is
-therefore never transformed: it plays full-size behind the tunnel, and the window is the
-tunnel's porthole onto its centre.
+therefore never transformed: it plays full-size behind the tunnel.
+
+*The snapshot window.* The window shows the film's **whole** frame, letterbox and all, shrunk
+— not a crop. `FilmSnapshots` copies the live film with `PixelCopy.request(SurfaceView, …)` on a
+thread of its own (`flick-snapshot`) every `SNAPSHOT_INTERVAL_MS` 83 ms (about 12 a second) into
+three reused bitmaps `SNAPSHOT_WIDTH` 960 wide at the surface's own aspect (960 × 400 for a
+scope film), never writing the one on screen or the one before it. Each copy is placed at the
+surface's rect within the player's view and the rest of the frame is the player's black, so the
+window is exactly the full-screen picture, shrunk. The tunnel is opaque everywhere during the
+show; the draw clips one rounded rect (the window, on today's approach and expansion curve) and
+draws the latest copy into it with filtering, so the main thread's cost is one `drawBitmap`;
+the RenderThread uploads the ~1.5 MB copy when it changes. The lit pane gives way over 240 ms
+only when the first copy has landed, so the window is never empty. At the landing (`e` = 1)
+the copy is no longer drawn and the live film right behind it takes over in that frame, at
+most one copy (83 ms) apart; copying stops there, and on every other way out (retire, dismiss,
+re-cast, reduced motion, dispose). It is started once the film is released and its frames are
+flowing, and decided once a cast, falling back to the porthole below when:
+
+- the film is Dolby Vision (`PictureColour.DolbyVision`): its picture is in the display's video
+  layer and a readback is not its colours;
+- HDR10/HLG and `SNAPSHOT_HDR` is false (true for now: the readback may tone-map, and the first
+  copy's mean luma is logged to judge it on the TV);
+- the film plays on a texture (a turned film): `TextureView.getBitmap` is a synchronous GPU
+  readback on the main thread, 2.6 ms on average and 3.9 ms at worst on the emulator, on the
+  thread the tunnel animates on;
+- there is no surface or view to copy, a copy fails, the first copy takes longer than
+  `SNAPSHOT_FIRST_WAIT_MS` 250 ms, or the first copy is black on average (the surface empty).
+
+On the emulator a copy took 2–10 ms off the main thread (20 ms for the first), and through the
+show the RenderThread's work stayed about 1 ms a frame and the main thread's about 2 ms, with
+the copy's upload (0.1–0.5 ms) once every 83 ms. The log carries `[snapshot] first copy
+latencyMs=… tookMs=… luma=… size=… usable=…`, `[snapshot] fallback reason=…` and `[snapshot]
+stop copies=… avgMs=… maxMs=… failures=…`, and `[stage] tunnel film shown window=snapshot|porthole`.
 
 | Phase | Motion |
 | --- | --- |
@@ -927,7 +958,7 @@ tunnel's porthole onto its centre.
 | waiting | the loop and the approach run for as long as the TV takes; the lit pane fills the porthole |
 | first frame (`Active`) | the resync wait and the tunnel's least time on screen (`TUNNEL_MIN_SHOWN_MS` 1 100 from its first frame), in parallel |
 | film released | `onPictureUp` releases the held film, which **plays**, with sound, behind the pane |
-| film in | once the film has rendered two more frames (`awaitFilmFlowing`: the decoder's `renderedOutputBufferCount`, polled each frame, at most 500 ms), the pane crossfades to the film over `TUNNEL_FILM_IN_MS` 240 and the bezel comes in; the copy leaves over 400 |
+| film in | once the film has rendered two more frames (`awaitFilmFlowing`: the decoder's `renderedOutputBufferCount`, polled each frame, at most 500 ms) and, in a snapshot window, its first copy has landed, the pane crossfades to the film over `TUNNEL_FILM_IN_MS` 240 and the bezel comes in; the copy leaves over 400 |
 | dwell | `TUNNEL_DWELL_MS` 1 200 with the film playing in the porthole and the window still approaching; any key ends it |
 | expansion | `tunnelExpand()` 640 ms, `cubic-bezier(.5,0,.85,.75)`, laid over the approach: it leaves with no speed of its own, so the window carries on at the approach's speed, then accelerates toward the screen's edges, its centre gliding from the vanishing point to the screen's and its corners squaring. Its final slope of 5/3 keeps the last frames to about 17 dp of edge travel each at 60 Hz (`HouseLightsPlanTest` bounds the last 150 ms at 25 dp a frame, and the 24 Hz equivalent), so it never jumps onto the screen's edges. The tunnel's rush (scale 1 → 2.6 about the vanishing point) and fade run on the expansion's **time**, not the porthole's eased travel, fading over its last 30 % (192 ms); a white flash snaps to 0.35 and decays over the first half; the bezel leaves in 180 ms. `TUNNEL_SETTLE_MS` 80 later the show is retired and `onPictureSettled` runs |
 | cancel, fault, lights up, Rest | the overlay leaves on `filmExit()` and the show is retired under the curtain |
