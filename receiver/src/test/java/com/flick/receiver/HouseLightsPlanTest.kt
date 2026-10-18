@@ -27,6 +27,7 @@ import com.flick.receiver.ui.components.houseMove
 import com.flick.receiver.ui.components.houseRest
 import com.flick.receiver.ui.components.houseStageFor
 import com.flick.receiver.ui.components.FILM_FLOWING_WAIT_MS
+import com.flick.receiver.ui.components.SNAPSHOT_FIRST_WAIT_MS
 import com.flick.receiver.ui.components.TunnelCutout
 import com.flick.receiver.ui.components.TUNNEL_RING_COUNT
 import com.flick.receiver.ui.components.TUNNEL_RING_LIFE_MS
@@ -280,8 +281,11 @@ class HouseLightsPlanTest {
     }
 
     @Test fun theSettleFallbackOutlastsTheWholeShow() {
-        val show = STAGE_HOLD_CAP_MS + FILM_FLOWING_WAIT_MS + FlickMotion.TUNNEL_FILM_IN_MS +
-            FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS + FlickMotion.TUNNEL_SETTLE_MS
+        // The hold, the wait for frames, the first copy's wait (an HDR film's longer wait comes
+        // out of the dwell), the pane giving way, the dwell, the expansion and the landing.
+        val show = STAGE_HOLD_CAP_MS + FILM_FLOWING_WAIT_MS + SNAPSHOT_FIRST_WAIT_MS + FlickMotion.TUNNEL_FILM_IN_MS +
+            FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS +
+            maxOf(FlickMotion.TUNNEL_SETTLE_MS, FlickMotion.TUNNEL_HANDOVER_MS.toLong())
         assertTrue("fallback $REVEAL_SETTLE_FALLBACK_MS ms inside a $show ms show", REVEAL_SETTLE_FALLBACK_MS > show)
     }
 

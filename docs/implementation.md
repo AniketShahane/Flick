@@ -923,18 +923,26 @@ therefore never transformed: it plays full-size behind the tunnel.
 *The snapshot window.* The window shows the film's **whole** frame, letterbox and all, shrunk
 — not a crop. `FilmSnapshots` copies the live film with `PixelCopy.request(SurfaceView, …)` on a
 thread of its own (`flick-snapshot`) every `SNAPSHOT_INTERVAL_MS` 83 ms (about 12 a second) into
-three reused bitmaps `SNAPSHOT_WIDTH` 960 wide at the surface's own aspect (960 × 400 for a
-scope film), never writing the one on screen or the one before it. Each copy is placed at the
-surface's rect within the player's view and the rest of the frame is the player's black, so the
-window is exactly the full-screen picture, shrunk. The tunnel is opaque everywhere during the
+three reused bitmaps `SNAPSHOT_WIDTH` 640 wide at the surface's own aspect (640 × 267 for a
+scope film; the one constant to tune on the TV), never writing the one on screen or the one
+before it, and dropped when the show is retired. Each copy is placed at the surface's rect
+within the player's view — kept in step by a layout listener, so a later re-layout cannot
+misalign the letterbox — and the player's black fills the frame around it, never under it. The tunnel is opaque everywhere during the
 show; the draw clips one rounded rect (the window, on today's approach and expansion curve) and
 draws the latest copy into it with filtering, so the main thread's cost is one `drawBitmap`;
 the RenderThread uploads the ~1.5 MB copy when it changes. The lit pane gives way over 240 ms
-only when the first copy has landed, so the window is never empty. At the landing (`e` = 1)
-the copy is no longer drawn and the live film right behind it takes over in that frame, at
-most one copy (83 ms) apart; copying stops there, and on every other way out (retire, dismiss,
-re-cast, reduced motion, dispose). It is started once the film is released and its frames are
-flowing, and decided once a cast, falling back to the porthole below when:
+only when the first copy has landed, so the window is never empty. The tunnel round the window
+fades on the expansion's time, so it is gone at the landing (`e` = 1); there the copy covers
+the screen and fades over the live film right behind it over `TUNNEL_HANDOVER_MS` 120, with
+per-op alpha, and copying stops. It also stops on every other way out (retire, dismiss,
+re-cast, reduced motion, dispose), and after `SNAPSHOT_LOST_AFTER` 3 failed copies in a row (the
+surface gone, a turn, a stop), when the window carries on as a porthole. It is started once the
+film is released and its frames are flowing. An SDR film's first copy is taken whatever it
+shows — films and logo cards open on black, and a black window zooming in is the truth. An
+HDR10/HLG film keeps the pane up and keeps copying until a copy has a mean luma over
+`SNAPSHOT_HDR_LUMA` 0.01 (each is logged until then); the time that takes comes out of the
+dwell, so the show's length is bounded. It is decided once a cast, falling back to the porthole
+below when:
 
 - the film is Dolby Vision (`PictureColour.DolbyVision`): its picture is in the display's video
   layer and a readback is not its colours;
@@ -943,13 +951,14 @@ flowing, and decided once a cast, falling back to the porthole below when:
 - the film plays on a texture (a turned film): `TextureView.getBitmap` is a synchronous GPU
   readback on the main thread, 2.6 ms on average and 3.9 ms at worst on the emulator, on the
   thread the tunnel animates on;
-- there is no surface or view to copy, a copy fails, the first copy takes longer than
-  `SNAPSHOT_FIRST_WAIT_MS` 250 ms, or the first copy is black on average (the surface empty).
+- there is no surface or view to copy, the first copy fails, an SDR film's first copy takes
+  longer than `SNAPSHOT_FIRST_WAIT_MS` 250 ms, or an HDR film shows no picture within the dwell.
 
-On the emulator a copy took 2–10 ms off the main thread (20 ms for the first), and through the
-show the RenderThread's work stayed about 1 ms a frame and the main thread's about 2 ms, with
-the copy's upload (0.1–0.5 ms) once every 83 ms. The log carries `[snapshot] first copy
-latencyMs=… tookMs=… luma=… size=… usable=…`, `[snapshot] fallback reason=…` and `[snapshot]
+`PixelCopy` reads the surface back on the app's RenderThread (`copySurfaceInto`). Traced on the
+emulator at 640 wide: the readback averaged 0.95 ms (max 3.9 ms), the copy's upload 0.07 ms,
+and the RenderThread's work on a frame carrying a copy 0.92 ms on average (p90 0.94 ms) against
+0.65 ms on the others; the main thread's stayed about 2 ms. The log carries `[snapshot] copy
+latencyMs=… tookMs=… luma=… size=… hdr=… accepted=…`, `[snapshot] fallback reason=…`, `[snapshot] lost after … failed copies` and `[snapshot]
 stop copies=… avgMs=… maxMs=… failures=…`, and `[stage] tunnel film shown window=snapshot|porthole`.
 
 | Phase | Motion |

@@ -496,6 +496,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     PictureColour.Sdr -> null
                 }
             },
+            hdr = { controller.pictureColourNow() == PictureColour.Hdr },
         )
     }
 

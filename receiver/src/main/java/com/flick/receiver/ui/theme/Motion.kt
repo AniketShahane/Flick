@@ -211,6 +211,9 @@ object FlickMotion {
     const val TUNNEL_EXPAND_MS = 640
     const val TUNNEL_SETTLE_MS = 80L
 
+    /** A window showing copies of the film lands, then its last copy fades over the live film. */
+    const val TUNNEL_HANDOVER_MS = 120
+
     /**
      * The window's approach while the cast arrives: from [TUNNEL_APPROACH_FROM] of its size
      * toward the whole of it as `1 − e^(−t / τ)`, τ = [TUNNEL_APPROACH_TAU_MS], from the

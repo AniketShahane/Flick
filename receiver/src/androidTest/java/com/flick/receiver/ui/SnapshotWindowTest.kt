@@ -25,6 +25,7 @@ import com.flick.receiver.ui.components.FilmSnapshots
 import com.flick.receiver.ui.components.FilmStaging
 import com.flick.receiver.ui.components.HouseLights
 import com.flick.receiver.ui.components.HouseStage
+import com.flick.receiver.ui.components.SNAPSHOT_FIRST_WAIT_MS
 import com.flick.receiver.ui.components.TUNNEL_TAG
 import com.flick.receiver.ui.components.TUNNEL_VANISH_Y
 import com.flick.receiver.ui.theme.FlickMotion
@@ -61,6 +62,8 @@ class SnapshotWindowTest {
     private var frameView: FrameLayout? = null
     private val surface get() = surfaceView!!
     private val frame get() = frameView!!
+
+    @Volatile private var left = RED
 
     @Volatile private var right = GREEN
 
@@ -122,7 +125,7 @@ class SnapshotWindowTest {
         val canvas: Canvas = holder.lockCanvas() ?: return
         val w = canvas.width.toFloat()
         val p = Paint()
-        p.color = RED
+        p.color = left
         canvas.drawRect(0f, 0f, w / 2f, canvas.height.toFloat(), p)
         p.color = right
         canvas.drawRect(w / 2f, 0f, w, canvas.height.toFloat(), p)
@@ -198,10 +201,11 @@ class SnapshotWindowTest {
         var stopped = 0
         launch { _, _ ->
             object : FilmFrames {
-                override suspend fun start() = false
+                override suspend fun start(budgetMs: Long) = false
                 override fun stop() { stopped++ }
                 override fun clear() = Unit
-                override fun draw(canvas: Canvas, l: Float, t: Float, r: Float, b: Float) = false
+                override val lost = false
+                override fun draw(canvas: Canvas, l: Float, t: Float, r: Float, b: Float, alpha: Float) = false
             }
         }
         releaseFilm()
@@ -227,6 +231,159 @@ class SnapshotWindowTest {
         assertTrue("the snapshot thread outlived the cast", !snapshots[0]!!.running)
     }
 
+    /** Films and logo cards often open on black: an SDR film's black first copy is still its picture. */
+    @Test
+    fun aBlackOpeningStillZooms() {
+        left = BLACK
+        right = BLACK
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s).also { snapshots[0] = it } }
+        releaseFilm()
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 100L)
+        assertTrue("a black opening fell back to the porthole", snapshots[0]!!.running)
+        val shot = screen("blackOpening")
+        assertTrue("the window does not show the black frame",
+            isDark(shot.getPixel(shot.width / 2, (TUNNEL_VANISH_Y * shot.height).roundToInt())))
+    }
+
+    /** An HDR readback can come back dark; the pane stays until a copy shows a picture. */
+    @Test
+    fun anHdrFilmWaitsForACopyWithAPicture() {
+        left = BLACK
+        right = BLACK
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s, hdr = { true }).also { snapshots[0] = it } }
+        releaseFilm()
+        assertTrue("the copying stopped before a picture came", snapshots[0]!!.running)
+        val dark = screen("hdrDark")
+        val cx = dark.width / 2
+        val cy = (TUNNEL_VANISH_Y * dark.height).roundToInt()
+        assertTrue("the pane gave way to a dark copy", !isDark(dark.getPixel(cx, cy)))
+        left = RED
+        right = GREEN
+        paint(surface.holder)
+        repeat(4) {
+            Thread.sleep(100)
+            composeRule.mainClock.advanceTimeByFrame()
+        }
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 100L)
+        assertTrue("the copy with a picture was not taken", isColour(screen("hdrPicture").getPixel(cx - 60, cy), RED))
+    }
+
+    /** One that never shows a picture falls back to the porthole, and the wait comes out of the dwell. */
+    @Test
+    fun anHdrFilmWithNoPictureFallsBackWithinTheDwell() {
+        left = BLACK
+        right = BLACK
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s, hdr = { true }).also { snapshots[0] = it } }
+        composeRule.runOnIdle { stage = HouseStage.Film }
+        val seam = composeRule.mainClock.currentTime
+        var frames = 0
+        while (up == 0 && frames++ < 60) composeRule.mainClock.advanceTimeByFrame()
+        // Copies keep running in real time while the stage's clock walks through the dwell.
+        while (settled == 0 && composeRule.mainClock.currentTime - seam < 4_000) {
+            Thread.sleep(20)
+            composeRule.mainClock.advanceTimeByFrame()
+        }
+        val took = composeRule.mainClock.currentTime - seam
+        val show = FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS + FlickMotion.TUNNEL_SETTLE_MS
+        assertTrue("the show ran $took ms, not about $show", took in show..show + 250)
+        assertTrue("the copying outlived the fallback", !snapshots[0]!!.running)
+    }
+
+    @Test
+    fun dolbyVisionIsNeverCopied() {
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s, refusal = { "dolbyVision" }).also { snapshots[0] = it } }
+        releaseFilm()
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 100L)
+        assertTrue("a refused film was copied", !snapshots[0]!!.running)
+        val shot = screen("dolbyVision")
+        val cx = shot.width / 2
+        val cy = (TUNNEL_VANISH_Y * shot.height).roundToInt()
+        assertTrue("no porthole onto the live film", isColour(shot.getPixel(cx - 60, cy), RED))
+        assertTrue("the porthole shows a letterbox", letterboxAbove(shot, cx - 60, cy) < 3)
+    }
+
+    @Test
+    fun aFirstCopyThatNeverLandsFallsBackToThePorthole() {
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s ->
+            FilmSnapshots(f, s, { null }, { false }, { _, _, _, _ -> }).also { snapshots[0] = it }
+        }
+        composeRule.runOnIdle { stage = HouseStage.Film }
+        var frames = 0
+        while (up == 0 && frames++ < 60) composeRule.mainClock.advanceTimeByFrame()
+        advance(SNAPSHOT_FIRST_WAIT_MS + FlickMotion.TUNNEL_FILM_IN_MS + 100L)
+        assertTrue("the copying outlived its first copy's wait", !snapshots[0]!!.running)
+        val shot = screen("firstCopyTimeout")
+        val cx = shot.width / 2
+        val cy = (TUNNEL_VANISH_Y * shot.height).roundToInt()
+        assertTrue("no porthole onto the live film", isColour(shot.getPixel(cx - 60, cy), RED))
+    }
+
+    /** Around the landing every frame is the film: no black, no tunnel back, and then the live film. */
+    @Test
+    fun theLandingHandsTheCopyToTheLiveFilmWithoutAFlash() {
+        launch { f, s -> FilmSnapshots(frame = f, video = s) }
+        composeRule.runOnIdle { stage = HouseStage.Film }
+        val seam = composeRule.mainClock.currentTime
+        var frames = 0
+        while (up == 0 && frames++ < 60) composeRule.mainClock.advanceTimeByFrame()
+        repeat(3) {
+            Thread.sleep(100)
+            composeRule.mainClock.advanceTimeByFrame()
+        }
+        // To most of the way through the expansion: the window then covers both sample points.
+        advance(FlickMotion.TUNNEL_DWELL_MS + FlickMotion.TUNNEL_EXPAND_MS * 9L / 10L - (composeRule.mainClock.currentTime - seam))
+        var sampled = 0
+        while (settled == 0 && sampled < 24) {
+            val shot = screen("landing_$sampled")
+            assertTrue("frame $sampled is not the film's left half", isColour(shot.getPixel(shot.width / 4, shot.height / 2), RED))
+            assertTrue("frame $sampled is not the film's right half", isColour(shot.getPixel(shot.width * 3 / 4, shot.height / 2), GREEN))
+            composeRule.mainClock.advanceTimeByFrame()
+            sampled++
+        }
+        assertTrue("the show never landed", settled == 1)
+        val live = screen("landed")
+        assertTrue("the letterbox is not the live film's", isDark(live.getPixel(live.width / 2, 40)))
+        assertTrue("the tunnel is still at the corner", isDark(live.getPixel(20, 20)))
+    }
+
+    /** A re-cast while the window shows copies: the copying stops and the pane closes over the last one. */
+    @Test
+    fun aReCastDuringTheDwellStopsTheCopying() {
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s).also { snapshots[0] = it } }
+        releaseFilm()
+        advance(FlickMotion.TUNNEL_FILM_IN_MS + 200L)
+        composeRule.runOnIdle { stage = HouseStage.Handshake }
+        repeat(2) { composeRule.mainClock.advanceTimeByFrame() }
+        assertTrue("the copying outlived the re-cast", !snapshots[0]!!.running)
+        advance(FlickMotion.TUNNEL_SHRINK_MS + 2L * FlickMotion.TUNNEL_FILM_IN_MS)
+        val shot = screen("reCast")
+        val c = shot.getPixel(shot.width / 2, (TUNNEL_VANISH_Y * shot.height).roundToInt())
+        assertTrue("the pane did not close over the window", android.graphics.Color.blue(c) > android.graphics.Color.red(c) + 40)
+    }
+
+    /** The film's surface going away mid-show ends the copying rather than repeating a failure. */
+    @Test
+    fun aLostSurfaceEndsTheCopying() {
+        val snapshots = arrayOfNulls<FilmSnapshots>(1)
+        launch { f, s -> FilmSnapshots(frame = f, video = s).also { snapshots[0] = it } }
+        releaseFilm()
+        advance(200)
+        assertTrue(snapshots[0]!!.running)
+        composeRule.runOnIdle { frame.removeView(surface) }
+        repeat(8) {
+            Thread.sleep(100)
+            composeRule.mainClock.advanceTimeByFrame()
+        }
+        assertTrue("the copying went on after its surface went away", !snapshots[0]!!.running)
+        assertTrue("the copier did not report the film lost", snapshots[0]!!.lost)
+    }
+
     private fun advance(ms: Long) = composeRule.mainClock.advanceTimeBy(ms, ignoreFrameDuration = true)
 
     private fun screen(name: String): Bitmap {
@@ -243,6 +400,12 @@ class SnapshotWindowTest {
     private fun letterboxAbove(shot: Bitmap, x: Int, fromY: Int): Int {
         var y = fromY
         while (y > 0 && isColour(shot.getPixel(x, y), RED)) y--
+        // The scaled picture's filtered edge: a row or two between it and whatever is above.
+        var edge = 0
+        while (y > 0 && edge < 3 && !isDark(shot.getPixel(x, y))) {
+            y--
+            edge++
+        }
         var band = 0
         while (y > 0 && isDark(shot.getPixel(x, y))) {
             band++
@@ -276,5 +439,6 @@ class SnapshotWindowTest {
         val RED = android.graphics.Color.rgb(0xE0, 0x20, 0x30)
         val GREEN = android.graphics.Color.rgb(0x20, 0xC0, 0x40)
         val BLUE = android.graphics.Color.rgb(0x30, 0x40, 0xE0)
+        val BLACK = android.graphics.Color.BLACK
     }
 }
