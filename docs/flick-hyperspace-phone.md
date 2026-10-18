@@ -13,8 +13,9 @@ Code: `ui/components/FlickPad.kt` (`FlickPadMotion`), `ui/components/FlickPadPol
 
 The detail page has no send button: the pad is the only send, in every state — no TV
 connected (the flick bounces to pairing, as `flickToTv` always has), a remembered refusal,
-or a link advisory. Page order, top to bottom: back disc; title logo, meta line, chips (the
-film's identity); the pad, centred in what is left (`Arrangement.SpaceBetween` over a page at
+or a link advisory. Page order, top to bottom: back disc; title logo (else the simplified name),
+two chip rows — resolution · range · size in mono, then running time on its own row,
+in proportional figures (the film's identity); the pad, centred in what is left (`Arrangement.SpaceBetween` over a page at
 least the window tall); the refusal or advisory card at the foot. Wider than tall, the page
 splits: identity and card in a scrolling left column, the pad centred on the right.
 
@@ -23,12 +24,13 @@ splits: identity and card in a scrolling left column, the pad centred on the rig
 | Size | sized to the window, so the page does not scroll: poster height = window − system bars − 24 dp page padding − measured identity block − 2 × hero gap − measured pad chrome − 2 dp slack, minus the card; clamped 140–390 dp, so a card that does not fit beside a 140 dp poster only overflows by the difference (120 dp minimum wide). Hero gap 20 dp, chevron gap 10 dp, caption gap 16 dp; 8 / 4 / 8 dp under 700 dp of height |
 | Poster | exact 2:3 (Crop), corner 8% of the width, 1 dp white 12% hairline; action-colour glow: radial, 0.42 alpha at the centre, reach 0.8 × width (× 1.5 vertically), plus a 24 dp shadow tinted the same; TMDB **poster** (never the backdrop), else the video frame. The glow and the shadow are their own flat layer under the card (the card turns over on arrival, the light on the page does not); the poster's layer uses `ModulateAlpha`, so neither is clipped while the poster fades |
 | Backdrop | the film's backdrop (else its poster, else its own frame) pre-blurred into a 200 px-wide bitmap at the viewport's aspect (3-pass box, radius 6 px ≈ the old 24 dp live blur), `Crop`/`TopCenter`; scrim 0.60 / 0.70 / 0.92 / 1.0 down the page, to 0.95 as it scrolls |
-| Lines | caption, white, one line: "Flick it toward _TV_" ("… your TV" with none), "Let go to send" while armed. Note, dim, one line, seat always kept: "Reaching _TV_…" while committing, else "Picks up at _time_" with a resume point, else "No TV connected yet — you'll pick one first" |
+| Lines | caption, white, one line: "Flick it toward _TV_" ("… your TV" with none), "Let go to send" while armed. Note, dim, one line, seat always kept: "Reaching _TV_…" while committing, else "Picks up at _time_" with a resume point, else "No TV connected yet — you'll pick one first", else "Swipe left for the story" when the film has one (§1a) |
 | Chevrons | 3 in a 30 × 32 dp row, stroke 3.2 dp, rise 6 dp, pitch 8 dp, white over a black halo (stroke + 3 dp, dropped 1 dp, 0.35 × the chevron's alpha); ripple 1200 ms, peak at 25%, base alpha 0.55 |
 | Chevrons, still | 0.60 / 0.80 / 1.0 bottom to top (reduce motion or paused); 0.3 when disabled; 1.0 when armed |
 | Idle nudge | up 12 dp: rise 280 ms, fall 420 ms, rest 2100 ms (2.8 s period); first after 1200 ms; stops for good on first touch, never under reduce motion |
 | Tap | never sends. One hint lift of 22 dp (rise 200 ms, then the default spatial spring back); none under reduce motion |
 | Follow | up 1:1; down × 0.2; sideways × 0.25; tilt 0.12°/dp, capped ±8°; held scale 1.03 |
+| Reveal lock | a drag leaning left at touch slop (dx < 0 and \|dx\| ≥ \|dy\|) is judged once it has travelled 20 dp from where the finger went down: dx < 0 and \|dx\| ≥ 2 × \|dy\| (within ~27° of horizontal) draws the synopsis in (§1a) from there, 1:1 from the down point; anything else stays the throw. Until the judgement a leaning drag is the throw's, following the finger (if the send is available), so a thumb flick that sets off sideways and curves up is a throw. A drag not leaning left at slop is the throw's at once, unchanged. Decided once and never revisited; the reveal is allowed while the send is not (pad disabled) once the card has landed and while not sending. Whether the throw and the reveal are available is read live at the finger going down, not used as a restart key. Only offered when TMDB has an overview; otherwise a leftward drag is the throw's sideways follow and springs back, as before |
 | Claim | the page scrolls when it overflows, so the pad takes a drag only once it crosses touch slop with the page unable to scroll further down (`!canScrollForward`), and not a downward one the page could scroll back; anything else is left unconsumed and scrolls the page |
 | Arm | finger ≥ 80 dp up from where it went down (touch slop included) → "Let go to send" + `GestureThresholdActivate` haptic |
 | Send | armed, or ≥ 20 dp up and ≥ 1000 dp/s upward at release |
@@ -41,6 +43,39 @@ Accessibility: the pad is one node — `Role.Button`, described as "Cast _film_ 
 "Resume _film_ from _time_ on _TV_"), with a click action labelled "Flick to _TV_" / "Resume
 from _time_ on _TV_" that runs the same `flickToTv`; `disabled()` while the send is not
 available. A link advisory also keeps its "Cast anyway" action.
+
+## 1a. Synopsis intertitle (detail page)
+
+The film's synopsis as a silent-film intertitle in the poster's own colours ("Stained glass"),
+drawn in by pushing the poster left. Code: `ui/screens/SynopsisIntertitle.kt`,
+`ui/components/SynopsisReveal.kt`, `ui/components/SynopsisPolicy.kt` (`SynopsisPolicy`),
+`ui/components/PosterPalette.kt`, `ui/IntertitleArt.kt`. *p* is the reveal, 0 away to 1 open;
+*e* = easeInOutCubic(*p*). Lengths are dp from the window's leading edge.
+
+| What | Value |
+|---|---|
+| Open | the poster drag (§1 reveal lock), 1:1 from the down point once judged: *p* = finger travel left ÷ (0.72 × window width, at most 420 dp) from where it went down; TalkBack: the pad's custom action "Read the synopsis" |
+| Settle | the scheme's default spatial spring from the release velocity. Opening: open at ≥ 35% or ≥ 500 dp/s leftward (a fling never opens a story that never moved). Closing (drag right anywhere on the open story): closed below 65% or ≥ 500 dp/s rightward. A tap anywhere but the card closes; so do the ✕ disc and back. Anything that settles it mid-drag (a second finger on ✕, back) ends the drag: the finger still down no longer moves it, and a drag cancelled or whose node goes settles by where it is — it is never left between |
+| Leaving | the back disc and the throw put the story away in the frame they are pressed (*p* reads 0 at once; the spring stops on the next frame), before the route changes: a route on its way out stops recomposing and its clock stands still. A route change the page did not start does the same on its next composition. A throw begun while the story springs home puts it away too, handing the poster its face back |
+| Page chrome | back disc, heading, chips, chevrons, caption, cue and the poster's glow: alpha 1 − clamp(1.6 *p*), drift left 30 dp × *p*, in their own layers |
+| Ground | one full-window rect in the palette's ground at 0.96 × *e*, over the backdrop and under the chrome |
+| Poster | flies so its centre lands on the strip's centre (x = 66) and scales to a frame's width (74 dp ÷ seat width; 1 − 0.68 *e* for the prototype's 230 dp poster), on *e*; fades over *p* 0.55–0.85. Drawn by the story, over the strip and the card, from the page's own decode in the seat's 2:3 crop with the seat's corner and hairline; the page's card hides its face while that copy is live (it flies itself, under them, only before the poster has been read) |
+| Film strip | x 12, 108 wide, 20 dp past the top and foot; alpha clamp((*p* − 0.2) ÷ 0.4), shifted −130 × (1 − *e*); body in the film colour with a 28 dp black 50% shade each side. Sprocket holes 7 × 10 dp, corner 1.5 dp, 4 dp in from each edge, eight to a frame pitch (15.4 dp), in the ground colour with a 1 dp white 10% rim; frames 74 × 111 dp, 12 dp apart, inset 17 dp, the poster saturated × 1.2. The reel runs upward at 300 dp/s × *p* as one layer translation modulo the 123 dp pitch, while the story is anywhere but away, the screen is resumed and motion is not reduced |
+| Card | column from x 134 to 12 dp short of the trailing edge (at most 480 dp wide, centred), centred between 64 dp below the top safe-drawing inset and 40 dp above the bottom one (cutouts and side bars inset too); height = content, capped there, the copy scrolling inside the rule. Alpha clamp((*p* − 0.45) ÷ 0.3). The scroll takes touches only while the story does; closing, the copy keeps its place without it, and settled away it is back at the top |
+| Card glass | the poster cropped 2:3, saturated × 1.5 and blurred once (96 × 144 px, 3-pass box radius 6 ≈ CSS blur 18 px over the card) off the main thread, drawn scaled up at 0.75 to cover the card + 30 dp and clipped to it; veil black 0.45 → 0.62 down the card, deepened for a pale poster until the overview reads at 7:1 over the glass's brightest tenth (the foot never lighter than the top) |
+| Card frame | double rule: two 1 dp lines 1 dp apart in the rule ink; a 1 dp outline 5 dp outside in the soft rule ink; a 40 dp falloff outside in the glow ink (a box-shadow blur of 40 sampled 0.5 / 0.31 / 0.16 / 0.067 / 0) |
+| Card copy | Instrument Serif (bundled, OFL), centred, padding 20 / 14 dp inside the rule, 11 dp apart: "— 1999 —" 14 sp, 0.3 em, accent (TMDB's year; TalkBack reads the year); the title 32 sp (26 sp past 14 characters), line height 1.02, white, balanced; a drawn hedera fleuron 18 dp in accent (the face has no ❦); the overview 16 sp (14.5 sp past 240 characters), line height 1.4, `#F5F5F5`; the tagline in the italic, 15 sp, accent |
+| Lines | line *i* arrives at t = easeOutCubic(clamp((*p* − 0.55 − 0.06 *i*) ÷ min(0.3, 0.45 − 0.06 *i*))): alpha t, rising 6 dp × (1 − t). The late lines' span is cut so every line is whole at rest |
+| Reel and flicker | the reel runs with the story while it moves (frame rate at the panel's peak); settled open it runs down over 1.2 s and stops, and the loop goes quiet (30 Hz vote while easing). Flicker: from *p* 0.6 on the way open, for 1 s — each frame the card's brightness 0.9–1.0 (a black wash) and a ±0.4 dp jitter; then only a dip to 0.94–1.0 for 160 ms every 9–21 s, with no jitter, so copy being read stays still. Layers and draws only; none under reduce motion |
+| Close disc | ✕ at the top right, 12 dp inside the top and right safe-drawing insets (status bar, cutout, landscape's side navigation bar); alpha clamp((*p* − 0.6) ÷ 0.4); in the hit path only while the story takes touches |
+| Palette | read off the main thread from the poster the seat draws (TMDB's, else the file's own frame), from a 40 × 60 downscale (halved step by step): the most vivid mid-tone (score s × (1 − 1.6 \|l − 0.55\|) over l 0.25–0.82; saturation floored at 0.55; with none, the heaviest 15° hue bin at 0.5) and the mean of the darkest quarter. Inks: ground = dark × 0.45, film = dark × 0.70, rule = hsl(vh, vs, 0.70, 0.95), soft rule the same at 0.35, glow = hsl(vh, vs, 0.55, 0.35), accent = hsl(vh, vs, 0.80) — lightened (up to 0.97) until it reads at 4.5:1 on the card's top; title white, overview `#F5F5F5`. Only the derived inks, frame and glass are cached (6 posters, about 0.5 MB each); the poster itself comes from Coil's memory cache each visit. A poster that cannot be read (out of memory, a bitmap that will not copy) leaves the neutral inks. Until read: a neutral blue-black set, crossfaded over 400 ms if the story is on screen when it lands; a crossfade cut off always finishes |
+| Touch | the story takes touches only while open or under a finger; a story springing home lets a throw through at once, and nothing in it (the card's scroll included) stays in the hit path while away. Not composed until the first reveal starts; its travel is known from the window before then |
+| Back | a `PredictiveBackHandler` registered after the shell's, enabled while the story is out at all (open, or springing home) on the detail route with no sheet up: the gesture leans it up to 30% of the way it is from home, never further open; commit closes it, cancel returns it to where it was going. With it away back is the shell's again (library) |
+| Cue | a 3 × 34 dp white 34% tab 9 dp to the physical right of the poster in either layout direction, arriving on the slow effects spec once a synopsis is known; hidden while the poster is held or sending and as the story comes; not a touch target. With nothing else to say, the pad's second line reads "Swipe left for the story" |
+| Direction | the story is laid out left to right in an RTL locale too — the push is physically left and the strip is drawn from that edge; the card's copy takes its direction from its own text |
+| Status bar | a 24 dp black 55% shade below the status bar's height over the top of the window, at the strip's alpha, so the clock and icons hold over bright frames |
+| Reduce motion | nothing travels: the chrome, the poster in its seat, the ground, the strip (still), the card and the ✕ crossfade with *p* on a 180 ms tween; no stagger, no flicker |
+| No overview | no lock, no tab, no hint, no action, no story |
 
 ## 2. Hyperspace (connecting screen)
 
@@ -57,6 +92,8 @@ available. A link advisory also keeps its "Cast anyway" action.
 | Streaks | 12 radial, 30° apart ± fixed jitter; speed 1× or 2× the clock; 2 dp, born 18 dp out, up to 72 dp long; white / `#9FC0FF` / amber |
 | Fade | every ring and streak: in over its first 12%, linear out to 0 at end of life (seamless wrap) |
 | Copy text | "On its way" (Bricolage 26 sp, white); "film · TV name" (`#A8B8DC`); stage line, slow-link card, Cancel, status pill unchanged |
+| Direction | the story is laid out left to right in an RTL locale too — the push is physically left and the strip is drawn from that edge; the card's copy takes its direction from its own text |
+| Status bar | a 24 dp black 55% shade below the status bar's height over the top of the window, at the strip's alpha, so the clock and icons hold over bright frames |
 | Reduce motion | static wash and copy only: no streak, no flash, no loop; the route does not animate. A paused window stops the loop too |
 | Restored mid-handshake | the jump is not made again (`warped` is saved): field, copy and loop at rest, no flash |
 | Frame rate | the panel's peak through the jump; 30 Hz for the wait after it (`loopFrameRate`). The landing is under the shell's peak vote for the shared transition |

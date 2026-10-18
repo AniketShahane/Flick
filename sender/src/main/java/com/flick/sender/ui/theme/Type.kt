@@ -4,7 +4,12 @@ import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
@@ -41,11 +46,20 @@ val GeistMono: FontFamily = FontFamily(
 )
 
 /**
+ * Instrument Serif, for the synopsis intertitle only: the silent-film title card is the one
+ * surface set in a book face. It has one weight, and a drawn italic for the tagline.
+ */
+val InstrumentSerif: FontFamily = FontFamily(
+    Font(R.font.instrument_serif_regular, FontWeight.Normal, FontStyle.Normal),
+    Font(R.font.instrument_serif_italic, FontWeight.Normal, FontStyle.Italic),
+)
+
+/**
  * Every family the ramp below draws from. Declared as a list so the theme can warm all of
  * them without naming them a second time — a family added above and missed here would
  * silently go back to being created inside the first measure that asks for it.
  */
-internal val FlickFontFamilies: List<FontFamily> = listOf(Bricolage, Geist, GeistMono)
+internal val FlickFontFamilies: List<FontFamily> = listOf(Bricolage, Geist, GeistMono, InstrumentSerif)
 
 /**
  * Required on every live readout. `tnum` keeps a ticking timecode from re-laying out the
@@ -163,6 +177,60 @@ object FlickText {
         fontSize = 11.5.sp,
         lineHeight = 14.sp,
         letterSpacing = 0.em,
+    )
+
+    // --- Intertitle: the synopsis as a silent-film title card, the one surface in a serif ---
+    // Direction from the copy itself: TMDB answers in English, and an English sentence in an
+    // Arabic-locale app must not end with its full stop at the start of the line.
+
+    /** "— 1999 —": spaced wide, as a card's date line. */
+    val intertitleYear = TextStyle(
+        fontFamily = InstrumentSerif,
+        fontSize = 14.sp,
+        lineHeight = 18.sp,
+        letterSpacing = 0.3.em,
+        textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
+    )
+
+    /** The film's name; set at 26 sp instead when it runs long. Balanced, so no lone last word. */
+    val intertitleTitle = TextStyle(
+        fontFamily = InstrumentSerif,
+        fontSize = 32.sp,
+        lineHeight = 1.02.em,
+        textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
+        lineBreak = LineBreak.Heading,
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+    )
+
+    /** The overview; set at 14.5 sp instead when it runs long. */
+    val intertitleBody = TextStyle(
+        fontFamily = InstrumentSerif,
+        fontSize = 16.sp,
+        lineHeight = 1.4.em,
+        textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
+        lineBreak = LineBreak.Paragraph,
+    )
+
+    /** The tagline, in the face's own drawn italic. */
+    val intertitleTagline = TextStyle(
+        fontFamily = InstrumentSerif,
+        fontStyle = FontStyle.Italic,
+        fontSize = 15.sp,
+        lineHeight = 1.3.em,
+        textAlign = TextAlign.Center,
+        textDirection = TextDirection.Content,
+    )
+
+    /** A running time in a chip: proportional figures, so "2h 16m" reads as a time, not a code. */
+    val chipFigure = TextStyle(
+        fontFamily = Geist,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.5.sp,
+        lineHeight = 15.sp,
+        letterSpacing = 0.01.em,
     )
 
     // --- Emphasized: the weight step Material's expressive components ask for ---

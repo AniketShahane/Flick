@@ -172,17 +172,20 @@ object FilmPosters {
 
     private class Entry(val art: FilmArt?, val atMs: Long)
 
-    // Stored as "<poster>|<backdrop>|<logo>|<epoch ms>", empty fields for missing art and
-    // all three empty for a miss. Anything else, including the older two-field form, reads
-    // as unknown and is looked up again.
+    // Stored as "<poster>|<backdrop>|<logo>|<epoch ms>|<tmdb id>", empty fields for missing
+    // art and all three empty for a miss. The four-field form written before the id was kept
+    // still reads, with no id: its art is as good as ever, and the detail page searches for
+    // itself instead. Anything else, including the older two-field form, reads as unknown and
+    // is looked up again.
     private fun readEntry(context: Context, query: FilmPosterQuery): Entry? {
         val fields = prefs(context).getString(query.cacheKey, null)?.split('|') ?: return null
-        if (fields.size != 4) return null
+        if (fields.size != 4 && fields.size != 5) return null
         val atMs = fields[3].toLongOrNull() ?: return null
         val art = FilmArt(
             poster = fields[0].takeIf { it != MISS },
             backdrop = fields[1].takeIf { it != MISS },
             logo = fields[2].takeIf { it != MISS },
+            tmdbId = fields.getOrNull(4)?.toLongOrNull()?.takeIf { it > 0L },
         )
         return Entry(art.takeUnless { it.isEmpty }, atMs)
     }
@@ -190,7 +193,7 @@ object FilmPosters {
     private fun writeEntry(context: Context, query: FilmPosterQuery, art: FilmArt?) {
         val value = listOf(art?.poster, art?.backdrop, art?.logo).joinToString("|") { it ?: MISS }
         prefs(context).edit()
-            .putString(query.cacheKey, "$value|${System.currentTimeMillis()}")
+            .putString(query.cacheKey, "$value|${System.currentTimeMillis()}|${art?.tmdbId ?: ""}")
             .apply()
     }
 

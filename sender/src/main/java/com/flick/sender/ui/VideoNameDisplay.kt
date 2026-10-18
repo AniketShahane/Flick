@@ -19,3 +19,25 @@ fun MediaItem.displayName(): String {
     val displayed = if (simplify) VideoNames.format(parsed, editionLabel) else VideoNames.safeFileName(name)
     return displayed.ifBlank { stringResource(R.string.media_title_generic) }
 }
+
+/**
+ * Always the simplified name, whatever the setting: for a heading that stands in for the
+ * film's title logo, where a raw release name would be noise rather than information.
+ */
+@Composable
+fun MediaItem.simplifiedName(): String {
+    val parsed = remember(name) { VideoNames.parse(name) }
+    val editionLabel = parsed.edition?.let { stringResource(it.labelResource()) }
+    return VideoNames.format(parsed, editionLabel).ifBlank { stringResource(R.string.media_title_generic) }
+}
+
+/**
+ * The film's own name with no year and no episode marker, for a heading whose facts line
+ * already carries the year from TMDB: one year, from one source. The simplified name when the
+ * parser found no title.
+ */
+@Composable
+fun MediaItem.titleWithoutYear(): String {
+    val parsed = remember(name) { VideoNames.parse(name) }
+    return parsed.title?.takeIf { it.isNotBlank() } ?: simplifiedName()
+}
