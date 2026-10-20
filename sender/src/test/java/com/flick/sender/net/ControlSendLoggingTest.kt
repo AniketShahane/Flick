@@ -58,4 +58,9 @@ class ControlSendLoggingTest {
     @Test fun theSlowThresholdIsNowhereNearTheStallItReports() {
         assertTrue(CONTROL_SLOW_SEND_MS < 1_000L)
     }
+
+    /** A playing cast's direct-link watch pings every ten seconds; only a slow one is news. */
+    @Test fun theWatchPingIsNotWorthALineOfItsOwn() {
+        assertFalse(logsSendHandoff("ping"))
+    }
 }

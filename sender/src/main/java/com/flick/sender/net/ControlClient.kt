@@ -460,7 +460,8 @@ class ControlClient(private val scope: CoroutineScope) {
         val waitedMs = SystemClock.elapsedRealtime() - ping.sentAtMs
         return when (answered) {
             true -> {
-                FlickLog.i("ws", "pong rttMs=$waitedMs")
+                // A playing cast's watch pings every ten seconds; only its slow answers are news.
+                if (!roundTrip || waitedMs >= SLOW_PONG_MS) FlickLog.i("ws", "pong rttMs=$waitedMs")
                 Liveness.ALIVE
             }
             false -> Liveness.DEAD
@@ -780,7 +781,9 @@ internal fun controlDecisionBudgetMs(firstTimePairing: Boolean): Long =
  * cast it was made during — including the handoff this instrumentation exists to
  * correlate against the receiver's log.
  */
-private val RateDrivenVerbs = setOf("seek", "setVolume", "setAudioDelay")
+private const val SLOW_PONG_MS = 300L
+
+private val RateDrivenVerbs = setOf("seek", "setVolume", "setAudioDelay", "ping")
 
 /** Whether a frame of [verb] is rare enough that its handoff is worth a line. */
 internal fun logsSendHandoff(verb: String): Boolean = verb !in RateDrivenVerbs

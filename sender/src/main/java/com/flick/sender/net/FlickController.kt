@@ -504,6 +504,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         ?: appContext.getString(R.string.sender_device_generic)
     private var pairingJob: Job? = null
     private var castJob: Job? = null
+    private var directLinkWatch: Job? = null
+    private var directLinkReleasedFor: ControlClient.OutstandingPing? = null
     private var libraryJob: Job? = null
     private var subtitleJob: Job? = null
     private var progressResolutionJob: Job? = null
@@ -2604,6 +2606,42 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (held.pongTimedOut && ready?.isCompleted != true) PhoneDirectLink.release(appContext, host, reason)
     }
 
+    /**
+     * Round-trip checks for as long as [castId] plays. The phone's driver can set a direct
+     * link up after the film has started, and a setup the TV never finished leaves every
+     * frame from this phone lost while the film plays on from the TV's buffer — controls
+     * dead, and the cast lost once the buffer or the receiver's grace runs out. Frames from
+     * the TV keep arriving through the AP throughout, so only a ping it must answer shows it.
+     *
+     * A late pong is not proof: the receiver reads pings on the same loop that blocks up to
+     * 4 s adopting a mid-film `loadMedia` (a subtitle swap, a reattach reload). So one ping
+     * must stay unanswered for [DirectLinkWatchPolicy.UNANSWERED_PROOF_MS], and a second
+     * ping is never sent behind it — pings stay one at a time for the receiver's PingGate.
+     */
+    private fun watchDirectLink(castId: String) {
+        directLinkWatch?.cancel()
+        directLinkWatch = scope.launch {
+            delay(DirectLinkWatchPolicy.FIRST_CHECK_MS)
+            while (currentCastId == castId) {
+                val line = control.line()
+                val host = _connectedTv.value?.host
+                if (line != null && host != null) {
+                    control.confirmAlive(line, roundTrip = true)
+                    val ping = line.outstanding
+                    if (line.pongTimedOut && ping != null && ping !== directLinkReleasedFor) {
+                        val waitedMs = SystemClock.elapsedRealtime() - ping.sentAtMs
+                        delay((DirectLinkWatchPolicy.UNANSWERED_PROOF_MS - waitedMs).coerceAtLeast(0L))
+                        if (currentCastId == castId && control.line() === line && line.outstanding === ping) {
+                            directLinkReleasedFor = ping
+                            PhoneDirectLink.release(appContext, host, "cast_unanswered")
+                        }
+                    }
+                }
+                delay(DirectLinkWatchPolicy.PERIOD_MS)
+            }
+        }
+    }
+
     private fun servedWithin(windowMs: Long): Boolean =
         lastServedByteAtMs > 0L && SystemClock.elapsedRealtime() - lastServedByteAtMs <= windowMs
     private fun startCast(request: CastRequest) {
@@ -2753,6 +2791,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 readyCommit = true
                 supportPromptStore.recordSuccess()
                 publishCastStart(CastStartState.Active(castId))
+                watchDirectLink(castId)
                 playbackProgressRecorder.activate(
                     castId,
                     fingerprint,
@@ -2931,6 +2970,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // Stop, Cancel, a new film and every terminal reach here, and each of them ends the
         // reattach with the cast it was putting back.
         if (reattachCastId == castId) endReattach()
+        if (currentCastId == castId) { directLinkWatch?.cancel(); directLinkWatch = null }
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null

@@ -79,4 +79,9 @@ class ControlFrameLoggingTest {
     @Test fun theSlowThresholdIsNowhereNearTheStallItReports() {
         assertTrue(CONTROL_SLOW_FRAME_MS < 1_000L)
     }
+
+    /** A playing cast's direct-link watch pings every ten seconds; only a slow one is news. */
+    @Test fun theWatchPingIsNotWorthALineOfItsOwn() {
+        assertFalse(logsFrameArrival("ping"))
+    }
 }
