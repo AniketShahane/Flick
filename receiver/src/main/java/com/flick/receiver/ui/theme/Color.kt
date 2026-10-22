@@ -257,7 +257,7 @@ object FlickColor {
     /** Top playback scrim start, `#02040A` @ 78 %. */
     val ScrimTop = Color(0xC702040A)
 
-    /** Full-bleed veil behind the handshake card, [Canvas] @ 82 %. */
+    /** Full-bleed veil over the handshake when motion is reduced and no tunnel runs, [Canvas] @ 82 %. */
     val ScrimVeil = Color(0xD104070F)
 
     /** The transport panel's 1 dp inner top hairline, `rgba(230,242,255,.75)`. */
@@ -329,6 +329,47 @@ object FlickColor {
 
     /** Bars below 50 % of the rolling peak, [Caution] @ 60 %. */
     val HistogramBarLow = Color(0x99FFA23A)
+
+    // ── The handshake tunnel ────────────────────────────────────────────────
+
+    /** The wash at the vanishing point. */
+    val TunnelWashCore = Color(0xFF1F3AA8)
+
+    /** The wash at 45 % of its radius. */
+    val TunnelWashMid = Color(0xFF0B1640)
+
+    /** The wash at its rim: the house dark. */
+    val TunnelWashEdge = Canvas
+
+    /** The window's glow at its centre, [Link] @ 55 %. */
+    val TunnelGlowCore = Color(0x8C6FA0FF)
+
+    /** The glow halfway out, [Link] @ 22 %. */
+    val TunnelGlowMid = Color(0x386FA0FF)
+
+    /** The glow's edge, fully clear. */
+    val TunnelGlowEdge = Color(0x006FA0FF)
+
+    /** The rushing rings; their alpha is animated, not baked in. */
+    val TunnelRing = Link
+
+    /** The one amber ring and the amber streaks. */
+    val TunnelAmber = Spark
+
+    /** The pale streaks. */
+    val TunnelStreakBlue = Color(0xFF9FC0FF)
+    val TunnelStreakWhite = Color(0xFFFFFFFF)
+
+    /** The bezel round the porthole while the film plays in it. */
+    val TunnelWindow = Color(0xFFEAF0FF)
+
+    /** The porthole's pane before the film shows through it: a deep blue, lit from its centre. */
+    val TunnelPortholeBase = Color(0xFF17297A)
+    val TunnelPortholeLight = Color(0xE69FC0FF)
+    val TunnelPortholeLightEdge = Color(0x009FC0FF)
+
+    /** The flash as the window takes the screen. */
+    val TunnelFlash = Color(0xFFFFFFFF)
 
     // ── Gradients ───────────────────────────────────────────────────────────
 

@@ -5,9 +5,12 @@ import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.ui.theme.warmBundledTypefaces
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.LocalWindowEntrance
+import com.flick.receiver.util.WindowEntrance
 
 /**
  * Single leanback Activity for the Phase 0 receiver spike. Hosts the entire
@@ -19,6 +22,7 @@ import com.flick.receiver.util.FlickLog
  */
 class MainActivity : ComponentActivity() {
     private val remoteKeys = TvRemoteKeyDispatcher()
+    private val entrance = WindowEntrance()
 
     // `RestrictedApi` is a false positive on this override, and unavoidable for any
     // app: `dispatchKeyEvent` is `android.app.Activity`'s own public method, but the
@@ -53,7 +57,25 @@ class MainActivity : ComponentActivity() {
             .start()
 
         setContent {
-            ReceiverApp(window = window, remoteKeys = remoteKeys)
+            CompositionLocalProvider(LocalWindowEntrance provides entrance) {
+                ReceiverApp(window = window, remoteKeys = remoteKeys)
+            }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        entrance.onStart()
+    }
+
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        FlickLog.i("stage", "window entered")
+        entrance.onEnterAnimationComplete()
+    }
+
+    override fun onStop() {
+        entrance.onStop()
+        super.onStop()
     }
 }
