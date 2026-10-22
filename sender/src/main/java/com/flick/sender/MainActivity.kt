@@ -132,6 +132,12 @@ class MainActivity : ComponentActivity() {
             window.isNavigationBarContrastEnforced = false
         }
         acceptPairIntent(intent)
+        // Before the first composition, not from an effect inside it: a fresh process holds
+        // MediaAccess.NONE until told otherwise, the library reads that as "nothing to show",
+        // and its empty face then stays up for the whole first MediaStore read before the
+        // grid replaces it — the cold-start snap. Told here, that first frame already knows a
+        // read is in flight and draws the grid with its loading line instead.
+        (application as FlickApplication).coordinator.onMediaAccess(currentVideoAccess(this))
         setContent {
             // Provided outside the theme because the theme is what reads it. Nothing
             // else may: FlickCinematicTheme is reached directly by the screens that are
@@ -272,7 +278,6 @@ private fun FlickRoot(
 
     LaunchedEffect(Unit) {
         controller.onStart()
-        controller.onMediaAccess(currentVideoAccess(context))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context, Manifest.permission.POST_NOTIFICATIONS,
