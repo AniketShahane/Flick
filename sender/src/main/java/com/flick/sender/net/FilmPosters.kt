@@ -46,6 +46,8 @@ object FilmPosters {
 
     private const val PREFS = "flick_film_posters"
     private const val MISS = ""
+    private const val KIND_TV = "tv"
+    private const val KIND_MOVIE = "movie"
     private const val MISS_TTL_MS = 7L * 24 * 60 * 60 * 1000
     private const val FAILURE_BACKOFF_MS = 10L * 60 * 1000
     private const val TIMEOUT_MS = 8_000
@@ -94,10 +96,10 @@ object FilmPosters {
     }
 
     private fun lookUp(context: Context, query: FilmPosterQuery): FilmArt? = try {
-        val match = get(FilmPosterPolicy.searchUrl(query, key))?.let { FilmPosterPolicy.pickMatch(query, it) }
+        val match = FilmPosterPolicy.findMatch(query, key, ::get)
         // The images call can fail on its own; the search's own art is still worth keeping,
         // so only a failed search is a failure.
-        val art = match?.let { FilmPosterPolicy.pickArt(it, runCatching { get(FilmPosterPolicy.imagesUrl(query, it.id, key)) }.getOrNull()) }
+        val art = match?.let { FilmPosterPolicy.pickArt(it, runCatching { get(FilmPosterPolicy.imagesUrl(it, key)) }.getOrNull()) }
             ?.takeUnless { it.isEmpty }
         writeEntry(context, query, art)
         art
@@ -108,8 +110,8 @@ object FilmPosters {
         null
     }
 
-    /** The body of a 200, or an exception naming why not. Null only once the key is refused. */
-    private fun get(url: String): String? {
+    /** The body of a 200, or an exception naming why not. */
+    private fun get(url: String): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = false
@@ -172,28 +174,38 @@ object FilmPosters {
 
     private class Entry(val art: FilmArt?, val atMs: Long)
 
-    // Stored as "<poster>|<backdrop>|<logo>|<epoch ms>|<tmdb id>", empty fields for missing
-    // art and all three empty for a miss. The four-field form written before the id was kept
-    // still reads, with no id: its art is as good as ever, and the detail page searches for
-    // itself instead. Anything else, including the older two-field form, reads as unknown and
-    // is looked up again.
+    // Stored as "<poster>|<backdrop>|<logo>|<epoch ms>|<tmdb id>|<tv or movie>", empty fields
+    // for missing art and all three empty for a miss. The shorter forms written before the id
+    // and the kind were kept still read, with neither: the query's own kind is then the
+    // match's. Anything else, including the older two-field form, reads as unknown and is
+    // looked up again.
     private fun readEntry(context: Context, query: FilmPosterQuery): Entry? {
         val fields = prefs(context).getString(query.cacheKey, null)?.split('|') ?: return null
-        if (fields.size != 4 && fields.size != 5) return null
+        if (fields.size !in 4..6) return null
         val atMs = fields[3].toLongOrNull() ?: return null
         val art = FilmArt(
             poster = fields[0].takeIf { it != MISS },
             backdrop = fields[1].takeIf { it != MISS },
             logo = fields[2].takeIf { it != MISS },
             tmdbId = fields.getOrNull(4)?.toLongOrNull()?.takeIf { it > 0L },
+            show = when (fields.getOrNull(5)) {
+                KIND_TV -> true
+                KIND_MOVIE -> false
+                else -> null
+            },
         )
         return Entry(art.takeUnless { it.isEmpty }, atMs)
     }
 
     private fun writeEntry(context: Context, query: FilmPosterQuery, art: FilmArt?) {
         val value = listOf(art?.poster, art?.backdrop, art?.logo).joinToString("|") { it ?: MISS }
+        val kind = when (art?.show) {
+            true -> KIND_TV
+            false -> KIND_MOVIE
+            null -> ""
+        }
         prefs(context).edit()
-            .putString(query.cacheKey, "$value|${System.currentTimeMillis()}|${art?.tmdbId ?: ""}")
+            .putString(query.cacheKey, "$value|${System.currentTimeMillis()}|${art?.tmdbId ?: ""}|$kind")
             .apply()
     }
 

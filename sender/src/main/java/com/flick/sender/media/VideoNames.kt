@@ -95,10 +95,11 @@ object VideoNames {
         val episodeIndex = segments.indexOfFirst { SeasonEpisode.matches(it) }.takeIf { it >= 0 }
         val episodeMarker = episodeIndex?.let { SeasonEpisode.matchEntire(segments[it]) }
         // Quality tags can sit between the show and its episode marker
-        // (`Show (2026) 4k S01E02`); they belong to neither the title nor the year.
+        // (`Show (2026) 4k S01E02`), and so can a bare dash (`Show (2022) - S02E01`, the
+        // Sonarr layout); they belong to neither the title nor the year.
         val episodeTitleEnd = episodeIndex?.let { ep ->
             var end = ep
-            while (end > 1 && isReleaseNoise(lowered[end - 1])) end--
+            while (end > 1 && (isReleaseNoise(lowered[end - 1]) || isDash(segments[end - 1]))) end--
             end
         }
         val nearestEpisodeYear = episodeTitleEnd?.let { end ->
@@ -127,7 +128,13 @@ object VideoNames {
             }
         } else null
 
-        val titleEnd = nearestEpisodeYear ?: episodeTitleEnd ?: releaseYear ?: technicalIndex
+        val markerEnd = nearestEpisodeYear ?: episodeTitleEnd ?: releaseYear ?: technicalIndex
+        // `Show - 2022 - S01E01`: the dash before the year is no more the title's than the one after it.
+        val titleEnd = markerEnd?.let { end ->
+            var trimmed = end
+            while (trimmed > 1 && isDash(segments[trimmed - 1])) trimmed--
+            trimmed
+        }
         val structured = titleEnd != null && titleEnd > 0
         if (structured) {
             val title = segments.take(titleEnd).joinToString(" ").cleanSpacing()
@@ -204,6 +211,8 @@ object VideoNames {
         if (dot <= 0 || dot == name.lastIndex) return name
         return if (name.substring(dot + 1).lowercase() in VideoExtensions) name.substring(0, dot) else name
     }
+
+    private fun isDash(segment: String): Boolean = segment.all { it == '-' || it == '–' || it == '—' }
 
     private fun isOpaque(base: String): Boolean = OpaquePatterns.any { it.matches(base) }
 

@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmDetails
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
@@ -16,15 +17,18 @@ import com.flick.sender.net.FilmDetailsStore
  * is off (it is the user's word on asking TMDB anything), the build has no key, the name is
  * not a title, or TMDB has nothing that matches it. Only a detail page calls this.
  *
- * [tmdbId] is the match the film's art came from, when it is known, so the synopsis is that
- * same film's.
+ * [art] is what the film's art came from, when it is known, so the synopsis is that same
+ * film's — asked of the catalogue it was found in, which for a film-shaped name can be TV.
  */
 @Composable
-fun MediaItem.rememberFilmDetails(tmdbId: Long?): FilmDetails? {
+fun MediaItem.rememberFilmDetails(art: FilmArt?): FilmDetails? {
     val enabled = LocalFilmPosters.current && FilmDetailsStore.available
     val context = LocalContext.current.applicationContext
-    val query = remember(name, enabled) {
-        if (enabled) FilmPosterPolicy.queryFor(VideoNames.parse(name)) else null
+    val tmdbId = art?.tmdbId
+    val show = art?.show.takeIf { tmdbId != null }
+    val query = remember(name, enabled, show) {
+        val parsed = if (enabled) FilmPosterPolicy.queryFor(VideoNames.parse(name)) else null
+        if (show != null) parsed?.copy(show = show) else parsed
     }
     // Remembered: a prefs read and a JSON decode are not for every recomposition.
     val stored = remember(query, tmdbId) { query?.let { FilmDetailsStore.cached(context, it, tmdbId) } }

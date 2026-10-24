@@ -48,6 +48,21 @@ class VideoNamesTest {
         assertEquals(2, parsed.episode)
     }
 
+    @Test fun dashBetweenShowAndEpisodeIsNotTitle() {
+        val parsed = VideoNames.parse("Example Show (2022) - S02E01 - Pilot [AMZN WEBDL-1080p][EAC3 5.1][h264]-GROUP.mkv")
+        assertEquals("Example Show (2022) S02E01", parsed.displayName)
+        assertEquals("Example Show", parsed.searchQuery)
+        assertEquals(2022, parsed.year)
+        assertEquals(2, parsed.season)
+        assertEquals(1, parsed.episode)
+        val bare = VideoNames.parse("Example Show - S01E06 - Part Two.mkv")
+        assertEquals("Example Show S01E06", bare.displayName)
+        assertEquals("Example Show", bare.searchQuery)
+        val dashedYear = VideoNames.parse("Example Show - 2022 - S01E01.mkv")
+        assertEquals("Example Show", dashedYear.searchQuery)
+        assertEquals(2022, dashedYear.year)
+    }
+
     @Test fun episodeWithoutYearIsStillStructured() {
         val parsed = VideoNames.parse("Example.Show.S1E3.1080p.WEB.mkv")
         assertEquals("Example Show S01E03", parsed.displayName)
