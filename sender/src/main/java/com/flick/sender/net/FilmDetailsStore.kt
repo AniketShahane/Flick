@@ -83,8 +83,11 @@ object FilmDetailsStore {
     }
 
     private fun lookUpDetails(context: Context, query: FilmPosterQuery, tmdbId: Long?, key: String): FilmDetails? = try {
-        val id = tmdbId ?: FilmPosterPolicy.pickMatch(query, get(FilmPosterPolicy.searchUrl(query, tmdbKey)))?.id
-        val details = id?.let { FilmDetailsPolicy.parse(query, get(FilmDetailsPolicy.detailsUrl(query, it, tmdbKey))) }
+        // Without an id, the same lookup the art uses — which may land in the other catalogue.
+        val match = if (tmdbId != null) null else FilmPosterPolicy.findMatch(query, tmdbKey, ::get)
+        val id = tmdbId ?: match?.id
+        val asked = match?.let { query.copy(show = it.show) } ?: query
+        val details = id?.let { FilmDetailsPolicy.parse(asked, get(FilmDetailsPolicy.detailsUrl(asked, it, tmdbKey))) }
         // A match whose details came back unreadable is a failure, not a film with nothing to say.
         if (id != null && details == null) throw IllegalStateException("unreadable details")
         writeDetails(context, key, details)

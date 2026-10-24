@@ -98,13 +98,193 @@ class FilmPosterPolicyTest {
                 {"file_path":"/logo.png","iso_639_1":"en","vote_average":5.0}
             ]
         }"""
-        assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png", match.id), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", "/logo.png", match.id, show = false), FilmPosterPolicy.pickArt(match, images))
     }
 
     @Test fun withoutALogoTheTextlessBackdropStandsAlone() {
         val match = FilmMatch(1, "/p.jpg", "/keyart.jpg")
         val images = """{"backdrops":[{"file_path":"/plain.jpg","iso_639_1":null,"aspect_ratio":1.778}],"logos":[]}"""
-        assertEquals(FilmArt("/p.jpg", "/plain.jpg", null, match.id), FilmPosterPolicy.pickArt(match, images))
-        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null, match.id), FilmPosterPolicy.pickArt(match, null))
+        assertEquals(FilmArt("/p.jpg", "/plain.jpg", null, match.id, show = false), FilmPosterPolicy.pickArt(match, images))
+        assertEquals(FilmArt("/p.jpg", "/keyart.jpg", null, match.id, show = false), FilmPosterPolicy.pickArt(match, null))
+    }
+
+    /** A fake TMDB: each URL fragment answers with its body; anything else is a test failure. */
+    private fun tmdb(vararg answers: Pair<String, String>): (String) -> String = { url ->
+        answers.firstOrNull { (fragment, _) -> fragment in url }?.second ?: error("unexpected request $url")
+    }
+
+    @Test fun filmShapedNameOfAShowFallsBackToTv() {
+        val query = FilmPosterPolicy.queryFor(VideoNames.parse("Example Show (2022).mkv"))!!
+        assertFalse(query.show)
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb(
+                "/search/movie?" to """{"results":[]}""",
+                "/search/tv?" to """{"results":[{"name":"Example Show","id":9,"poster_path":"/s.jpg"}]}""",
+            ),
+        )
+        assertEquals(FilmMatch(9, "/s.jpg", null, show = true), match)
+        assertTrue(FilmPosterPolicy.imagesUrl(match!!, "k").contains("/tv/9/images"))
+        assertEquals(true, FilmPosterPolicy.pickArt(match, null).show)
+    }
+
+    @Test fun anEpisodeIsNeverAskedAsAFilm() {
+        val query = FilmPosterPolicy.queryFor(VideoNames.parse("Example.Show.S01E02.1080p.mkv"))!!
+        assertNull(FilmPosterPolicy.findMatch(query, "k", tmdb("/search/tv?" to """{"results":[]}""")))
+    }
+
+    @Test fun anEpisodeNeedsNoVotes() {
+        val body = """{"results":[{"name":"Example Show","id":1,"poster_path":"/s.jpg","vote_count":3}]}"""
+        assertEquals("/s.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Example Show", null, true), body)?.poster)
+        // The same show found by a film-shaped name, with no year to vouch for it, still needs them.
+        assertNull(FilmPosterPolicy.pickMatch(FilmPosterQuery("Example Show", null, true), body, episodic = false))
+    }
+
+    @Test fun anApostropheTheReleaseNameDroppedStillMatches() {
+        val body = """{"results":[{"title":"There's Something Odd","id":1,"poster_path":"/t.jpg"}]}"""
+        assertEquals("/t.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Theres Something Odd", 2011, false), body)?.poster)
+        val spaced = """{"results":[{"title":"Rock'n'Roll","id":2,"poster_path":"/r.jpg"}]}"""
+        assertEquals("/r.jpg", FilmPosterPolicy.pickMatch(FilmPosterQuery("Rock n Roll", 2017, false), spaced)?.poster)
+    }
+
+    @Test fun withAYearAMissingSubtitleStillMatches() {
+        val body = """{"results":[
+            {"title":"Into the Sea Again","id":1,"poster_path":"/no.jpg","vote_count":900},
+            {"title":"Into the Sea: The Long Story","id":2,"poster_path":"/yes.jpg","vote_count":900}
+        ]}"""
+        assertEquals(2L, FilmPosterPolicy.pickMatch(FilmPosterQuery("Into The Sea", 2020, false), body)?.id)
+        assertNull(FilmPosterPolicy.pickMatch(FilmPosterQuery("Into The Sea", null, false), body))
+    }
+
+    @Test fun anExactTitleBeatsAnEarlierSubtitledOne() {
+        val body = """{"results":[
+            {"title":"Example: The Return","id":1,"poster_path":"/sub.jpg"},
+            {"title":"Example","id":2,"poster_path":"/exact.jpg"}
+        ]}"""
+        assertEquals(2L, FilmPosterPolicy.pickMatch(FilmPosterQuery("Example", 2020, false), body)?.id)
+    }
+
+    @Test fun aTransliterationIsFoundThroughTheAliases() {
+        val query = FilmPosterQuery("Raatchasen", 2018, false)
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb(
+                "/search/movie?" to """{"results":[{"title":"Ratsasen","original_title":"ராட்சசன்","id":41,"poster_path":"/r.jpg","vote_count":212}]}""",
+                "/movie/41/alternative_titles" to """{"id":41,"titles":[{"title":"Demon"},{"title":"Raatchasen"}]}""",
+                "/search/tv?" to """{"results":[]}""",
+            ),
+        )
+        assertEquals(41L, match?.id)
+    }
+
+    @Test fun aliasesThatDisagreeAreNoPoster() {
+        val query = FilmPosterQuery("Beach Day", 2020, false)
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb(
+                "/search/movie?" to """{"results":[{"title":"Beach Day Massacre","id":5,"poster_path":"/x.jpg","vote_count":900}]}""",
+                "/movie/5/alternative_titles" to """{"id":5,"titles":[{"title":"Massacre at the Beach"}]}""",
+                "/search/tv?" to """{"results":[]}""",
+            ),
+        )
+        assertNull(match)
+    }
+
+    @Test fun showAliasesAreReadFromResults() {
+        val query = FilmPosterQuery("El Ensayo", null, true)
+        assertTrue(FilmPosterPolicy.aliasMatches(query, """{"id":1,"results":[{"iso_3166_1":"MX","title":"El Ensayo"}]}"""))
+        assertTrue(FilmPosterPolicy.alternativeTitlesUrl(FilmMatch(1, null, null, show = true), "k").contains("/tv/1/alternative_titles"))
+    }
+
+    @Test fun aFailedRequestIsAFailureNotAMiss() {
+        val query = FilmPosterQuery("Example", 2020, false)
+        val thrown = runCatching {
+            FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to """{"results":[]}"""))
+        }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+    }
+
+    @Test fun aSpacedTrailingYearIsTriedAsAYear() {
+        val query = FilmPosterPolicy.queryFor(VideoNames.parse("Example Show 2022.mkv"))!!
+        assertNull(query.year)
+        assertEquals(FilmPosterQuery("Example Show", 2022, false), FilmPosterPolicy.trailingYear(query))
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb(
+                "/search/movie?query=Example%20Show%202022&" to """{"results":[]}""",
+                "/search/movie?query=Example%20Show&include_adult=false&year=2022&" to """{"results":[]}""",
+                "/search/tv?query=Example%20Show&include_adult=false&first_air_date_year=2022&" to
+                    """{"results":[{"name":"Example Show","id":3,"poster_path":"/s.jpg","vote_count":289}]}""",
+            ),
+        )
+        assertEquals(3L, match?.id)
+    }
+
+    @Test fun aGuessedYearVouchesForNothing() {
+        val body = """{"results":[{"title":"Wedding","id":1,"poster_path":"/w.jpg","vote_count":4}]}"""
+        val guessed = FilmPosterQuery("Wedding", 2019, false)
+        assertNull(FilmPosterPolicy.pickMatch(guessed, body, yearGuessed = true))
+        assertEquals(1L, FilmPosterPolicy.pickMatch(guessed, body)?.id)
+        assertNull(FilmPosterPolicy.trailingYear(FilmPosterQuery("Blade Runner 2049", null, false)))
+        assertNull(FilmPosterPolicy.trailingYear(FilmPosterQuery("1917", null, false)))
+        assertNull(FilmPosterPolicy.trailingYear(FilmPosterQuery("Halloween 2018", null, false)))
+    }
+
+    @Test fun aYearlessNameIsNotAskedAsAShow() {
+        val query = FilmPosterPolicy.queryFor(VideoNames.parse("Friends.mp4"))!!
+        assertNull(FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to """{"results":[]}""")))
+    }
+
+    @Test fun anAmpersandTheReleaseNameDroppedStillMatches() {
+        val body = """{"results":[{"title":"Fast & Furious 6","id":6,"poster_path":"/f.jpg"}]}"""
+        assertEquals(6L, FilmPosterPolicy.pickMatch(FilmPosterQuery("Fast Furious 6", 2013, false), body)?.id)
+        assertEquals(6L, FilmPosterPolicy.pickMatch(FilmPosterQuery("Fast and Furious 6", 2013, false), body)?.id)
+    }
+
+    @Test fun anExactShowBeatsASubtitledFilm() {
+        val query = FilmPosterQuery("Example Show", 2022, false)
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb(
+                "/search/movie?" to """{"results":[{"title":"Example Show: Behind It","id":1,"poster_path":"/m.jpg"}]}""",
+                "/search/tv?" to """{"results":[{"name":"Example Show","id":2,"poster_path":"/s.jpg"}]}""",
+            ),
+        )
+        assertEquals(FilmMatch(2, "/s.jpg", null, show = true), match)
+    }
+
+    @Test fun anObscureAliasIsNoPosterEvenWithAYear() {
+        val body = """{"results":[{"title":"Something Else","id":8,"poster_path":"/x.jpg","vote_count":3}]}"""
+        assertTrue(FilmPosterPolicy.aliasCandidates(FilmPosterQuery("Birthday", 2019, false), body).isEmpty())
+    }
+
+    @Test fun aYearlessNameReadsNoAliases() {
+        val query = FilmPosterQuery("Example 2018", null, false)
+        val match = FilmPosterPolicy.findMatch(
+            query, "k",
+            tmdb("/search/movie?" to """{"results":[{"title":"Example","id":4,"poster_path":"/e.jpg","vote_count":900}]}"""),
+        )
+        assertNull(match)
+    }
+
+    @Test fun theFilmAndTheShowOfOneNameAreToldApartByVotes() {
+        val query = FilmPosterQuery("Example", 2022, false)
+        val films = """{"results":[{"title":"Example","id":1,"poster_path":"/f.jpg","release_date":"2022-03-01","vote_count":40}]}"""
+        val shows = """{"results":[{"name":"Example","id":2,"poster_path":"/s.jpg","first_air_date":"2022-02-18","vote_count":2600}]}"""
+        assertEquals(2L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to shows))?.id)
+        val quietShow = shows.replace("2600", "12")
+        assertEquals(1L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to quietShow))?.id)
+    }
+
+    @Test fun theNamesYearBeatsVotes() {
+        val query = FilmPosterQuery("Example", 2022, false)
+        val films = """{"results":[{"title":"Example","id":1,"poster_path":"/f.jpg","release_date":"1999-03-01","vote_count":9000}]}"""
+        val shows = """{"results":[{"name":"Example","id":2,"poster_path":"/s.jpg","first_air_date":"2022-02-18","vote_count":50}]}"""
+        assertEquals(2L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to shows))?.id)
+        val both = """{"results":[
+            {"title":"Example","id":3,"poster_path":"/old.jpg","release_date":"1999-01-01","vote_count":9000},
+            {"title":"Example","id":4,"poster_path":"/new.jpg","release_date":"2022-01-01","vote_count":10}
+        ]}"""
+        assertEquals(4L, FilmPosterPolicy.pickMatch(query, both)?.id)
     }
 }

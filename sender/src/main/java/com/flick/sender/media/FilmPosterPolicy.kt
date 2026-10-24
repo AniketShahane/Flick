@@ -10,21 +10,28 @@ data class FilmPosterQuery(val title: String, val year: Int?, val show: Boolean)
      * leading version retires every entry chosen under an older art rule.
      */
     val cacheKey: String
-        get() = "v2|${if (show) "tv" else "movie"}|${FoldedText.fold(title)}|${year ?: ""}"
+        get() = "v3|${if (show) "tv" else "movie"}|${FoldedText.fold(title)}|${year ?: ""}"
 }
 
 /**
  * The art TMDB has for one title. Any field may be missing; all missing is a miss. [tmdbId] is
  * the match the art was chosen from, so the detail page asks for that very film's synopsis
  * rather than searching again and trusting TMDB's ranking to hold still; null for an entry
- * cached before it was recorded.
+ * cached before it was recorded. [show] is which catalogue that id belongs to — a film-shaped
+ * name can match a show — and null when the entry predates it, meaning the query's own kind.
  */
-data class FilmArt(val poster: String?, val backdrop: String?, val logo: String?, val tmdbId: Long? = null) {
+data class FilmArt(
+    val poster: String?,
+    val backdrop: String?,
+    val logo: String?,
+    val tmdbId: Long? = null,
+    val show: Boolean? = null,
+) {
     val isEmpty: Boolean get() = poster == null && backdrop == null
 }
 
-/** The matched search result: its TMDB id and the art the search itself carried. */
-data class FilmMatch(val id: Long, val poster: String?, val backdrop: String?)
+/** The matched search result: its TMDB id, its catalogue, and the art the search itself carried. */
+data class FilmMatch(val id: Long, val poster: String?, val backdrop: String?, val show: Boolean = false)
 
 /**
  * Which file gets a poster, what is asked for it, and which answer is believed.
@@ -95,33 +102,202 @@ object FilmPosterPolicy {
      */
     const val MIN_VOTES_WITHOUT_YEAR = 100
 
+    /** Results whose alternative titles are read when none of the titles agreed. */
+    const val MAX_ALTERNATIVE_CHECKS = 2
+
     /**
-     * The first result whose title is the filename's title, word for word once case, accents
-     * and punctuation are folded away, and that has a poster. TMDB ranks fuzzily — a search
-     * for `Beach Day` returns whatever it can — so a near miss is no poster at all, and the
-     * file keeps its own frame. Returns the poster path (`/abc.jpg`), or null.
+     * Every request one title's lookup makes, in order, stopping at the first match believed.
+     * [fetch] returns a 200's body or throws; a throw is a failure, never a miss, so nothing
+     * half-asked is cached as "TMDB has nothing".
+     *
+     * A name with an episode marker is a show and is asked only as one. A name with a year is
+     * asked as both a film and a show, and when both have the exact title the one released
+     * that year, then the one with more votes, wins: `The Rehearsal (2022).mkv` names a
+     * series, and `Severance (2022)` is the series far more often than the film. A name with neither is asked only as a film —
+     * `Friends.mp4` is far more often a home video than the series.
+     *
+     * Exact titles are compared across every catalogue asked before anything looser is
+     * believed: a 2022 film called `The Rehearsal: Something` must not beat the series of
+     * exactly that name. Then a dropped subtitle, then — for a name with a year or an episode
+     * marker — the top candidates' alternative titles, because TMDB finds `Raatchasan`
+     * through an alias its listing does not show.
+     *
+     * Last, a spaced name of two words or more ending in a year (`The Rehearsal 2022.mkv`) —
+     * which the parser keeps whole, since `Wedding 2019` is as likely a home video — is asked
+     * again as that title in that year. The year was only guessed, so it vouches for nothing:
+     * the match needs the votes a yearless name does, and no subtitle counts.
      */
-    fun pickMatch(query: FilmPosterQuery, body: String): FilmMatch? {
-        val results = JSONObject(body).optJSONArray("results") ?: return null
-        val wanted = FoldedText.fold(query.title)
-        val titleFields = if (query.show) listOf("name", "original_name") else listOf("title", "original_title")
-        for (i in 0 until results.length()) {
-            val result = results.optJSONObject(i) ?: continue
-            val poster = result.path("poster_path")
-            val backdrop = result.path("backdrop_path")
-            if (poster == null && backdrop == null) continue
-            if (query.year == null && result.optInt("vote_count", 0) < MIN_VOTES_WITHOUT_YEAR) continue
-            val id = result.optLong("id", 0L).takeIf { it > 0L } ?: continue
-            if (titleFields.any { FoldedText.fold(result.optString(it)) == wanted }) return FilmMatch(id, poster, backdrop)
+    fun findMatch(query: FilmPosterQuery, key: String, fetch: (String) -> String): FilmMatch? {
+        search(query, key, fetch, yearGuessed = false)?.let { return it }
+        val guess = trailingYear(query) ?: return null
+        return search(guess, key, fetch, yearGuessed = true)
+    }
+
+    private fun search(query: FilmPosterQuery, key: String, fetch: (String) -> String, yearGuessed: Boolean): FilmMatch? {
+        val episodic = query.show
+        val kinds = when {
+            episodic -> listOf(true)
+            query.year != null -> listOf(false, true)
+            else -> listOf(false)
+        }
+        val answers = kinds.map { show -> query.copy(show = show).let { it to fetch(searchUrl(it, key)) } }
+        // The film and the show of one name in one year — `Severance (2022)` — are told apart
+        // by which of them people actually watch.
+        answers.mapNotNull { (asked, body) -> exactCandidate(asked, body, episodic, yearGuessed) }
+            .maxWithOrNull(compareBy<Candidate> { it.yearAgrees }.thenBy { it.votes })
+            ?.let { return it.match }
+        if (!yearGuessed) {
+            for ((asked, body) in answers) subtitledMatch(asked, body, episodic)?.let { return it }
+        }
+        // Aliases only for a name something vouches for: `Halloween 2018` is an alias of the
+        // 2018 film, and a home video's name all the same.
+        if (!episodic && (query.year == null || yearGuessed)) return null
+        for ((asked, body) in answers) {
+            for (candidate in aliasCandidates(asked, body, episodic)) {
+                if (aliasMatches(asked, fetch(alternativeTitlesUrl(candidate, key)))) return candidate
+            }
         }
         return null
     }
 
+    private val TrailingYear = Regex("^(.*\\S)\\s+((?:18[7-9]\\d|19\\d{2}|20[0-3]\\d))$")
+
+    /**
+     * `Title Words 2022` as `Title Words` in 2022, for a film-shaped name the parser gave no
+     * year. One word before the year is left alone: `Halloween 2018` and `Vacation 2015` are
+     * the home videos this would otherwise hand a famous film's poster.
+     */
+    fun trailingYear(query: FilmPosterQuery): FilmPosterQuery? {
+        if (query.show || query.year != null) return null
+        val marker = TrailingYear.matchEntire(query.title.trim()) ?: return null
+        val title = marker.groupValues[1].trim()
+        val words = FoldedText.words(title)
+        if (words.size < 2 || words.none { word -> word.any(Char::isLetter) }) return null
+        return FilmPosterQuery(title, marker.groupValues[2].toInt(), show = false)
+    }
+
+    /**
+     * The first result whose title is the filename's title, word for word once case, accents
+     * and punctuation are folded away, and that has a poster. TMDB ranks fuzzily — a search
+     * for `Beach Day` returns whatever it can — so a near miss is no poster at all, and the
+     * file keeps its own frame.
+     *
+     * With a year, and only then, a result titled `<the filename's title>: <subtitle>` also
+     * counts once no exact title does: the year has already narrowed TMDB to that one year,
+     * and release names drop the subtitle far more often than a stranger's film shares both.
+     *
+     * [episodic] is a name that carried an episode marker. A home video does not come named
+     * `S01E03`, so such a name needs no vote count to be believed.
+     */
+    fun pickMatch(
+        query: FilmPosterQuery,
+        body: String,
+        episodic: Boolean = query.show,
+        yearGuessed: Boolean = false,
+    ): FilmMatch? = exactCandidate(query, body, episodic, yearGuessed)?.match
+        ?: if (yearGuessed) null else subtitledMatch(query, body, episodic)
+
+    /**
+     * The best-ranked exact title, preferring one first released in the name's year: TMDB's
+     * film `year` filter also admits a film merely re-released that year.
+     */
+    private fun exactCandidate(query: FilmPosterQuery, body: String, episodic: Boolean, yearGuessed: Boolean): Candidate? {
+        val wanted = matchKeys(query.title)
+        val exact = candidates(query, body, episodic, yearGuessed).filter { c -> c.titles.any { agree(wanted, it) } }
+        return exact.firstOrNull { it.yearAgrees } ?: exact.firstOrNull()
+    }
+
+    private fun subtitledMatch(query: FilmPosterQuery, body: String, episodic: Boolean): FilmMatch? {
+        if (query.year == null) return null
+        val wanted = matchKeys(query.title)
+        return candidates(query, body, episodic, yearGuessed = false)
+            .firstOrNull { c -> c.titles.any { ':' in it && agree(wanted, it.substringBefore(':')) } }?.match
+    }
+
+    /**
+     * Believable results, best ranked first, for their aliases to be read. Always with the
+     * votes a yearless name needs, unless the name was an episode: TMDB ranks by aliases in
+     * every country, so a year alone would let `Birthday (2019).mp4` match any 2019 film
+     * some market retitled `Birthday`.
+     */
+    fun aliasCandidates(query: FilmPosterQuery, body: String, episodic: Boolean = query.show): List<FilmMatch> =
+        candidates(query, body, episodic, yearGuessed = true).map { it.match }.take(MAX_ALTERNATIVE_CHECKS).toList()
+
+    /**
+     * One believable result: the titles it goes by in its catalogue, its vote count, and
+     * whether it first came out in the year the name gave (false when the name gave none).
+     */
+    private class Candidate(val match: FilmMatch, val titles: List<String>, val votes: Int, val yearAgrees: Boolean)
+
+    private fun candidates(
+        query: FilmPosterQuery,
+        body: String,
+        episodic: Boolean,
+        yearGuessed: Boolean,
+    ): Sequence<Candidate> {
+        val results = JSONObject(body).optJSONArray("results") ?: return emptySequence()
+        val fields = titleFields(query)
+        val dateField = if (query.show) "first_air_date" else "release_date"
+        return (0 until results.length()).asSequence()
+            .mapNotNull { results.optJSONObject(it) }
+            .mapNotNull { result ->
+                believable(query, result, episodic, yearGuessed)?.let { match ->
+                    val year = result.optString(dateField).take(4).toIntOrNull()
+                    Candidate(match, fields.map(result::optString), result.optInt("vote_count", 0), query.year != null && year == query.year)
+                }
+            }
+    }
+
+    fun alternativeTitlesUrl(match: FilmMatch, key: String): String {
+        val auth = if (isBearerToken(key)) "" else "?api_key=${encode(key)}"
+        return "$API/${kindPath(match.show)}/${match.id}/alternative_titles$auth"
+    }
+
+    /** Films list their aliases under `titles`, shows under `results`; both carry `title`. */
+    fun aliasMatches(query: FilmPosterQuery, body: String): Boolean {
+        val json = runCatching { JSONObject(body) }.getOrNull() ?: return false
+        val aliases = json.optJSONArray(if (query.show) "results" else "titles") ?: return false
+        val wanted = matchKeys(query.title)
+        return (0 until aliases.length()).any { i ->
+            aliases.optJSONObject(i)?.optString("title")?.let { agree(wanted, it) } == true
+        }
+    }
+
+    /** A result with art, an id, and — without a year or an episode marker to vouch for it — enough votes. */
+    private fun believable(query: FilmPosterQuery, result: JSONObject, episodic: Boolean, yearGuessed: Boolean): FilmMatch? {
+        val poster = result.path("poster_path")
+        val backdrop = result.path("backdrop_path")
+        if (poster == null && backdrop == null) return null
+        val vouched = episodic || (query.year != null && !yearGuessed)
+        if (!vouched && result.optInt("vote_count", 0) < MIN_VOTES_WITHOUT_YEAR) return null
+        val id = result.optLong("id", 0L).takeIf { it > 0L } ?: return null
+        return FilmMatch(id, poster, backdrop, query.show)
+    }
+
+    private fun titleFields(query: FilmPosterQuery) =
+        if (query.show) listOf("name", "original_name") else listOf("title", "original_title")
+
+    /**
+     * The [FoldedText] spellings two titles agree on when they share any: `&` both dropped
+     * and read as `and`, the apostrophe both spaced and dropped. A release name spells
+     * `Fast & Furious` as `Fast Furious` or `Fast and Furious`, `There's` as `Theres` and
+     * `Rock'n'Roll` as `Rock n Roll`; one rule for each would lose the other spelling.
+     */
+    private fun matchKeys(title: String): Set<String> =
+        listOf(title, title.replace("&", " and ")).flatMap { spelling ->
+            listOf(FoldedText.fold(spelling), FoldedText.fold(spelling.replace(Apostrophes, "")))
+        }.filterTo(mutableSetOf()) { it.isNotEmpty() }
+
+    private fun agree(wanted: Set<String>, title: String) = matchKeys(title).any { it in wanted }
+
+    private val Apostrophes = Regex("['’ʼ`]")
+
+    private fun kindPath(show: Boolean) = if (show) "tv" else "movie"
+
     /** Backdrops and logos for one match, in English and textless only. */
-    fun imagesUrl(query: FilmPosterQuery, id: Long, key: String): String {
-        val path = if (query.show) "tv" else "movie"
+    fun imagesUrl(match: FilmMatch, key: String): String {
         val auth = if (isBearerToken(key)) "" else "&api_key=${encode(key)}"
-        return "$API/$path/$id/images?include_image_language=en,null$auth"
+        return "$API/${kindPath(match.show)}/${match.id}/images?include_image_language=en,null$auth"
     }
 
     /**
@@ -140,11 +316,11 @@ object FilmPosterPolicy {
             image.isNull("iso_639_1") && image.optDouble("aspect_ratio", 0.0) >= 1.5
         }
         return when {
-            logo != null && textless != null -> FilmArt(match.poster, textless, logo, match.id)
+            logo != null && textless != null -> FilmArt(match.poster, textless, logo, match.id, match.show)
             // Textless first even without a logo: the tile crops to its own shape, and a
             // titled backdrop cropped loses the ends of its title.
-            textless != null -> FilmArt(match.poster, textless, null, match.id)
-            else -> FilmArt(match.poster, match.backdrop, null, match.id)
+            textless != null -> FilmArt(match.poster, textless, null, match.id, match.show)
+            else -> FilmArt(match.poster, match.backdrop, null, match.id, match.show)
         }
     }
 

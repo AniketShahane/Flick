@@ -199,7 +199,7 @@ fun DetailScreen(
     val request = rememberDetailVideoFrameRequest(item)
     val art = item.rememberFilmArt()
     val posterPath = art?.poster
-    val details = item.rememberFilmDetails(art?.tmdbId)
+    val details = item.rememberFilmDetails(art)
     val heading = item.simplifiedName()
     val synopsisTitle = item.titleWithoutYear()
     // The card is still flying to its seat until this turns true; nothing new is composed under
