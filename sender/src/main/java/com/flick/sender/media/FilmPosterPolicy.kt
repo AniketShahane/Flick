@@ -111,8 +111,9 @@ object FilmPosterPolicy {
      * half-asked is cached as "TMDB has nothing".
      *
      * A name with an episode marker is a show and is asked only as one. A name with a year is
-     * asked as a film and then as a show: `The Rehearsal (2022).mkv` names a series, and a
-     * film-only search answers it with nothing. A name with neither is asked only as a film —
+     * asked as both a film and a show, and when both have the exact title the one released
+     * that year, then the one with more votes, wins: `The Rehearsal (2022).mkv` names a
+     * series, and `Severance (2022)` is the series far more often than the film. A name with neither is asked only as a film —
      * `Friends.mp4` is far more often a home video than the series.
      *
      * Exact titles are compared across every catalogue asked before anything looser is
@@ -139,13 +140,12 @@ object FilmPosterPolicy {
             query.year != null -> listOf(false, true)
             else -> listOf(false)
         }
-        val answers = mutableListOf<Pair<FilmPosterQuery, String>>()
-        for (show in kinds) {
-            val asked = query.copy(show = show)
-            val body = fetch(searchUrl(asked, key))
-            exactMatch(asked, body, episodic, yearGuessed)?.let { return it }
-            answers += asked to body
-        }
+        val answers = kinds.map { show -> query.copy(show = show).let { it to fetch(searchUrl(it, key)) } }
+        // The film and the show of one name in one year — `Severance (2022)` — are told apart
+        // by which of them people actually watch.
+        answers.mapNotNull { (asked, body) -> exactCandidate(asked, body, episodic, yearGuessed) }
+            .maxWithOrNull(compareBy<Candidate> { it.yearAgrees }.thenBy { it.votes })
+            ?.let { return it.match }
         if (!yearGuessed) {
             for ((asked, body) in answers) subtitledMatch(asked, body, episodic)?.let { return it }
         }
@@ -194,20 +194,24 @@ object FilmPosterPolicy {
         body: String,
         episodic: Boolean = query.show,
         yearGuessed: Boolean = false,
-    ): FilmMatch? = exactMatch(query, body, episodic, yearGuessed)
+    ): FilmMatch? = exactCandidate(query, body, episodic, yearGuessed)?.match
         ?: if (yearGuessed) null else subtitledMatch(query, body, episodic)
 
-    private fun exactMatch(query: FilmPosterQuery, body: String, episodic: Boolean, yearGuessed: Boolean): FilmMatch? {
+    /**
+     * The best-ranked exact title, preferring one first released in the name's year: TMDB's
+     * film `year` filter also admits a film merely re-released that year.
+     */
+    private fun exactCandidate(query: FilmPosterQuery, body: String, episodic: Boolean, yearGuessed: Boolean): Candidate? {
         val wanted = matchKeys(query.title)
-        return candidates(query, body, episodic, yearGuessed)
-            .firstOrNull { (_, titles) -> titles.any { agree(wanted, it) } }?.first
+        val exact = candidates(query, body, episodic, yearGuessed).filter { c -> c.titles.any { agree(wanted, it) } }
+        return exact.firstOrNull { it.yearAgrees } ?: exact.firstOrNull()
     }
 
     private fun subtitledMatch(query: FilmPosterQuery, body: String, episodic: Boolean): FilmMatch? {
         if (query.year == null) return null
         val wanted = matchKeys(query.title)
         return candidates(query, body, episodic, yearGuessed = false)
-            .firstOrNull { (_, titles) -> titles.any { ':' in it && agree(wanted, it.substringBefore(':')) } }?.first
+            .firstOrNull { c -> c.titles.any { ':' in it && agree(wanted, it.substringBefore(':')) } }?.match
     }
 
     /**
@@ -217,21 +221,30 @@ object FilmPosterPolicy {
      * some market retitled `Birthday`.
      */
     fun aliasCandidates(query: FilmPosterQuery, body: String, episodic: Boolean = query.show): List<FilmMatch> =
-        candidates(query, body, episodic, yearGuessed = true).map { it.first }.take(MAX_ALTERNATIVE_CHECKS).toList()
+        candidates(query, body, episodic, yearGuessed = true).map { it.match }.take(MAX_ALTERNATIVE_CHECKS).toList()
 
-    /** Each believable result with the titles it goes by in [query]'s catalogue. */
+    /**
+     * One believable result: the titles it goes by in its catalogue, its vote count, and
+     * whether it first came out in the year the name gave (false when the name gave none).
+     */
+    private class Candidate(val match: FilmMatch, val titles: List<String>, val votes: Int, val yearAgrees: Boolean)
+
     private fun candidates(
         query: FilmPosterQuery,
         body: String,
         episodic: Boolean,
         yearGuessed: Boolean,
-    ): Sequence<Pair<FilmMatch, List<String>>> {
+    ): Sequence<Candidate> {
         val results = JSONObject(body).optJSONArray("results") ?: return emptySequence()
         val fields = titleFields(query)
+        val dateField = if (query.show) "first_air_date" else "release_date"
         return (0 until results.length()).asSequence()
             .mapNotNull { results.optJSONObject(it) }
             .mapNotNull { result ->
-                believable(query, result, episodic, yearGuessed)?.let { it to fields.map(result::optString) }
+                believable(query, result, episodic, yearGuessed)?.let { match ->
+                    val year = result.optString(dateField).take(4).toIntOrNull()
+                    Candidate(match, fields.map(result::optString), result.optInt("vote_count", 0), query.year != null && year == query.year)
+                }
             }
     }
 

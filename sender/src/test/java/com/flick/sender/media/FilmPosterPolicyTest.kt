@@ -266,4 +266,25 @@ class FilmPosterPolicyTest {
         )
         assertNull(match)
     }
+
+    @Test fun theFilmAndTheShowOfOneNameAreToldApartByVotes() {
+        val query = FilmPosterQuery("Example", 2022, false)
+        val films = """{"results":[{"title":"Example","id":1,"poster_path":"/f.jpg","release_date":"2022-03-01","vote_count":40}]}"""
+        val shows = """{"results":[{"name":"Example","id":2,"poster_path":"/s.jpg","first_air_date":"2022-02-18","vote_count":2600}]}"""
+        assertEquals(2L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to shows))?.id)
+        val quietShow = shows.replace("2600", "12")
+        assertEquals(1L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to quietShow))?.id)
+    }
+
+    @Test fun theNamesYearBeatsVotes() {
+        val query = FilmPosterQuery("Example", 2022, false)
+        val films = """{"results":[{"title":"Example","id":1,"poster_path":"/f.jpg","release_date":"1999-03-01","vote_count":9000}]}"""
+        val shows = """{"results":[{"name":"Example","id":2,"poster_path":"/s.jpg","first_air_date":"2022-02-18","vote_count":50}]}"""
+        assertEquals(2L, FilmPosterPolicy.findMatch(query, "k", tmdb("/search/movie?" to films, "/search/tv?" to shows))?.id)
+        val both = """{"results":[
+            {"title":"Example","id":3,"poster_path":"/old.jpg","release_date":"1999-01-01","vote_count":9000},
+            {"title":"Example","id":4,"poster_path":"/new.jpg","release_date":"2022-01-01","vote_count":10}
+        ]}"""
+        assertEquals(4L, FilmPosterPolicy.pickMatch(query, both)?.id)
+    }
 }
