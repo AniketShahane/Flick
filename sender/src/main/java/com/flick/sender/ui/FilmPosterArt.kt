@@ -31,14 +31,19 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.DataSource
 import coil.decode.DecodeResult
 import coil.decode.Decoder
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.request.ImageResult
 import coil.request.SuccessResult
 import coil.size.Precision
 import coil.size.Scale
+import coil.transition.CrossfadeTransition
+import coil.transition.Transition
+import coil.transition.TransitionTarget
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.VideoNames
@@ -92,7 +97,7 @@ private fun rememberArtRequest(path: String, width: String, sizePx: IntSize? = n
         FilmPosterPolicy.imageUrl(path, width)?.let { url ->
             ImageRequest.Builder(context)
                 .data(url)
-                .crossfade(true)
+                .transitionFactory(FetchedArtFade)
                 .placeholderMemoryCacheKey(MemoryCache.Key(url))
                 .sizedTo(sizePx)
                 .build()
@@ -177,7 +182,13 @@ fun FilmTileArt(
 
 @Composable
 private fun rememberPosterRequest(posterPath: String, width: String, sizePx: IntSize? = null): ImageRequest? =
-    rememberHeroRequest(posterPath, width, FilmPosterPolicy.TILE_WIDTH, sizePx)
+    rememberHeroRequest(
+        posterPath,
+        width,
+        FilmPosterPolicy.TILE_WIDTH,
+        sizePx,
+        fade = if (width == FilmPosterPolicy.TILE_WIDTH) FetchedArtFade else HeroFade,
+    )
 
 @Composable
 private fun rememberHeroRequest(
@@ -185,9 +196,10 @@ private fun rememberHeroRequest(
     width: String,
     tileWidth: String,
     sizePx: IntSize? = null,
+    fade: Transition.Factory = HeroFade,
 ): ImageRequest? {
     val context = LocalContext.current
-    return remember(path, width, tileWidth, sizePx) {
+    return remember(path, width, tileWidth, sizePx, fade) {
         val url = FilmPosterPolicy.imageUrl(path, width) ?: return@remember null
         // The tile's smaller copy stands in while the larger one arrives, so art that flies
         // from the grid into the detail page never flashes empty on landing. At the tile's
@@ -195,7 +207,7 @@ private fun rememberHeroRequest(
         val tileUrl = FilmPosterPolicy.imageUrl(path, tileWidth) ?: url
         ImageRequest.Builder(context)
             .data(url)
-            .crossfade(true)
+            .transitionFactory(fade)
             .placeholderMemoryCacheKey(MemoryCache.Key(tileUrl))
             .sizedTo(sizePx)
             .build()
@@ -273,11 +285,30 @@ internal fun rememberSoftArtRequest(
             ImageRequest.Builder(context)
                 .data(url)
                 .softBlur(boxWidthPx, boxHeightPx, radiusPx, biasY)
-                .crossfade(crossfade)
+                .apply { if (crossfade) transitionFactory(FetchedArtFade) else crossfade(false) }
                 .build()
         }
     }
 }
+
+/**
+ * The grid's fade, for art that has just arrived over the network. Art read back from disk — a
+ * tile scrolled back to after the memory cache let it go — lands without one: it decodes in a
+ * frame or two, and fading it in again makes a picture already seen look as if it were loading.
+ */
+internal object FetchedArtFade : Transition.Factory {
+    private val crossfade = CrossfadeTransition.Factory()
+
+    override fun create(target: TransitionTarget, result: ImageResult): Transition =
+        if (result is SuccessResult && result.dataSource != DataSource.NETWORK) {
+            Transition.Factory.NONE.create(target, result)
+        } else {
+            crossfade.create(target, result)
+        }
+}
+
+// Shared, because the request is remembered by it.
+private val HeroFade = CrossfadeTransition.Factory()
 
 /** The size, scale and transformation every soft-blurred request shares. */
 internal fun ImageRequest.Builder.softBlur(

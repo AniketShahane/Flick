@@ -230,8 +230,11 @@ GPU work per frame was over the 8.3 ms budget, so the costly effects are bounded
 - **Gradients are built once per size** (`drawWithCache`), not per frame: the pad poster's glow
   and the warp's rings, which share one stroke paint.
 - **No warm is unsized.** The image loader's memory cache is shared with the grid and capped
-  (a quarter of the heap up to 48 MB, 8 MB on low-RAM phones): enough for a screen of tiles
-  and the detail page over them, so neither evicts the other. Decodes run two at a time; the
+  (a third of the heap up to 96 MB, 8 MB on low-RAM phones): enough for the 2.5 screens of
+  tiles the grid keeps composed — a backdrop tile holds about 1.4 MB — and the detail page over
+  them, so neither evicts the other. TMDB art fades in only when it came over the network
+  (`FetchedArtFade`); read back from disk after an eviction it lands without a fade, so a tile
+  scrolled back to never looks as if it were loading again. Decodes run two at a time; the
   soft blur runs one at a time on a dispatcher of its own, so it never queues behind them. The card flip's small poster (w342) is warmed into memory at
   114 × 171 px while its tile is on screen and at 228 × 342 px at the tap; the full-size poster
   is warmed at the tap to disk only, and the detail card decodes it at its own size. The card's

@@ -168,8 +168,10 @@ private val ArtTransformDispatcher = Dispatchers.Default.limitedParallelism(1)
  *
  * Sized to hold a screen of tiles AND the detail page opened over them (its poster at the
  * seat's size, the blurred ground, the logo, the hero frame): any less and every open evicted
- * the grid it closes back onto, and every close and scroll decoded it again. A quarter, above
- * Coil's 0.2 default, for that reason. Hardware bitmaps count against it without being Java heap.
+ * the grid it closes back onto, and every close and scroll decoded it again. A third, above
+ * Coil's 0.2 default, for that reason: a film's backdrop tile holds about 1.4 MB, and a quarter
+ * capped at 48 MB held barely the 2.5 screens the grid keeps composed, so every scroll back up
+ * decoded again. Hardware bitmaps count against it without being Java heap.
  */
 private fun frameCacheBudgetBytes(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -188,9 +190,9 @@ internal fun frameCacheBudgetBytes(memoryClassMb: Int, lowRam: Boolean): Int {
 
 private const val BytesPerMiB = 1_048_576L
 private const val DefaultMemoryClassMb = 96
-private const val FrameBudgetDivisor = 4L
+private const val FrameBudgetDivisor = 3L
 private const val LowRamBudgetDivisor = 12L
-private const val FrameCacheCapBytes = 48 * 1_048_576
+private const val FrameCacheCapBytes = 96 * 1_048_576
 private const val LowRamFrameCacheCapBytes = 8 * 1_048_576
 
 // Library and Detail ask at their own sizes; the cast surfaces take the larger box because
