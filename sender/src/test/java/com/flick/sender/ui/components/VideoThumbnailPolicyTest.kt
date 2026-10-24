@@ -7,13 +7,13 @@ import org.junit.Test
 class VideoThumbnailPolicyTest {
 
     @Test
-    fun `normal cache uses a quarter of a small heap`() {
-        assertEquals(24 * MIB, frameCacheBudgetBytes(memoryClassMb = 96, lowRam = false))
+    fun `normal cache uses a third of a small heap`() {
+        assertEquals(32 * MIB, frameCacheBudgetBytes(memoryClassMb = 96, lowRam = false))
     }
 
     @Test
     fun `normal cache is capped on large heaps`() {
-        assertEquals(48 * MIB, frameCacheBudgetBytes(memoryClassMb = 512, lowRam = false))
+        assertEquals(96 * MIB, frameCacheBudgetBytes(memoryClassMb = 512, lowRam = false))
     }
 
     @Test
