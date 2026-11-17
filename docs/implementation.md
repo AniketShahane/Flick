@@ -48,6 +48,17 @@ and both instrumentation-test APKs assembled. Lint was **not** re-run for the me
 error counts above remain the last measured figures and still stand as a pre-existing `main`
 failure rather than a merged-tree measurement.
 
+For the mid-film link repairs, the echo watch, the transfer eviction and the incident journal,
+the gate run on 2026-11-17 was `:sender:testDebugUnitTest :receiver:testDebugUnitTest` with both
+debug and both **release** APKs assembled: **1,193 sender and 1,084 receiver JVM tests, 0
+failures and 0 errors**. Lint was not run. **None of those repair paths has run on hardware.**
+Four things only a device can settle are open: whether the TV answers a TCP connect to port 7
+with a reset (without it the phone's echo watch never gains trust and only observes), which
+echo mode the phone gets with its VPN up (`echo_mode` in the journal; `none` leaves the ping
+paths alone), whether the phone answers the TV's echo with its screen off (without it the
+TV's mid-film guard stays unarmed), and how long the TV takes to recover after its own
+teardown.
+
 ### Connected instrumentation and TV smoke
 
 On a connected, awake Google TV Streamer running API 34 at 1920×1080, the receiver Compose
