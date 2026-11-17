@@ -52,20 +52,91 @@ class DirectLinkEchoPolicyTest {
         assertEquals(Decision.Release(toRelease, 1), miss())
     }
 
-    /** No information: neither a miss nor an answer, and the streak survives it. */
+    /** No information: neither a miss nor an answer, and the streak survives a short run of it. */
     @Test fun anUnknownOutcomeChangesNothing() {
         misses(toRelease - 1)
-        assertTrue(List(10) { probe(EchoOutcome.UNKNOWN) }.all { it == Decision.Wait })
+        assertTrue(List(2) { probe(EchoOutcome.UNKNOWN) }.all { it == Decision.Wait })
         assertEquals(Decision.Release(toRelease, 1), miss())
+    }
+
+    private fun unknowns(count: Int) = List(count) { probe(EchoOutcome.UNKNOWN) }
+
+    /** Misses on either side of a long gap are not one outage. */
+    @Test fun aLongRunOfUnknownEndsTheStreak() {
+        miss()
+        assertTrue(unknowns(600).all { it == Decision.Wait })
+        assertEquals(List(toRelease - 1) { Decision.Wait }, misses(toRelease - 1))
+        val firstMissAtMs = nowMs
+        assertEquals(Decision.Release(toRelease, 1), miss())
+        miss()
+        val answeredAtMs = nowMs
+        assertEquals(Decision.Repaired(answeredAtMs - firstMissAtMs + (toRelease - 1) * 1_000L), answer())
+    }
+
+    @Test fun twoUnknownInsideAStreakStillReleaseAtTheFourthMiss() {
+        miss()
+        unknowns(2)
+        miss()
+        unknowns(2)
+        miss()
+        assertEquals(Decision.Release(toRelease, 1), miss())
+    }
+
+    @Test fun exactlyThreeUnknownEndTheStreak() {
+        misses(toRelease - 1)
+        unknowns(DirectLinkEchoPolicy.UNKNOWN_RUN_TO_FORGET)
+        assertEquals(List(toRelease - 1) { Decision.Wait }, misses(toRelease - 1))
+        assertEquals(Decision.Release(toRelease, 1), miss())
+    }
+
+    /** A gap during verification ends it with no verdict from stale state. */
+    @Test fun aLongRunOfUnknownDuringVerificationEndsItWithoutAVerdict() {
+        misses(toRelease)
+        unknowns(10)
+        assertEquals(Decision.Wait, answer())
+        // And after a fresh gap the same way, misses start a new episode, not an Unrepaired.
+        misses(toRelease)
+        unknowns(10)
+        val after = misses(toRelease)
+        assertEquals(List(toRelease - 1) { Decision.Wait }, after.take(toRelease - 1))
+        assertEquals(Decision.Release(toRelease, 1), after.last())
+    }
+
+    /** The per-cast budget survives a gap. */
+    @Test fun aLongRunOfUnknownKeepsTheCap() {
+        var released = 0
+        repeat(10) {
+            for (decision in misses(toRelease)) if (decision is Decision.Release) released++
+            unknowns(DirectLinkEchoPolicy.UNKNOWN_RUN_TO_FORGET)
+        }
+        assertEquals(DirectLinkEchoPolicy.RELEASES_PER_CAST, released)
+    }
+
+    /** Before, because a tunnel's route can reach another host; after, because the default can move. */
+    @Test fun aRoutedProbeCountsOnlyWhenBothSourceReadingsAreTheServingAddress() {
+        val local = "192.0.2.20"
+        assertEquals(EchoOutcome.MISSED, EchoProbeRules.routedOutcome(local, EchoOutcome.MISSED, local, local))
+        assertEquals(EchoOutcome.ANSWERED, EchoProbeRules.routedOutcome(local, EchoOutcome.ANSWERED, local, local))
+        assertEquals(EchoOutcome.UNKNOWN, EchoProbeRules.routedOutcome("198.51.100.7", EchoOutcome.ANSWERED, local, local))
+        assertEquals(EchoOutcome.UNKNOWN, EchoProbeRules.routedOutcome(local, EchoOutcome.MISSED, "198.51.100.7", local))
+        assertEquals(EchoOutcome.UNKNOWN, EchoProbeRules.routedOutcome(local, EchoOutcome.ANSWERED, null, local))
+        assertEquals(EchoOutcome.UNKNOWN, EchoProbeRules.routedOutcome(null, EchoOutcome.MISSED, local, local))
+        assertTrue(EchoProbeRules.routedPossible(local, local))
+        assertFalse(EchoProbeRules.routedPossible("198.51.100.7", local))
+        assertFalse(EchoProbeRules.routedPossible(null, local))
+    }
+
+    @Test fun echoModesJournalUnderStableNames() {
+        assertEquals(listOf("bound", "routed", "none"), EchoMode.entries.map { it.journalName })
     }
 
     @Test fun unknownOutcomesAloneNeverRelease() {
         assertTrue(List(30) { probe(EchoOutcome.UNKNOWN) }.all { it == Decision.Wait })
     }
 
-    @Test fun anUnknownOutcomeEndsNoVerification() {
+    @Test fun aShortRunOfUnknownEndsNoVerification() {
         misses(toRelease)
-        assertTrue(List(3) { probe(EchoOutcome.UNKNOWN) }.all { it == Decision.Wait })
+        assertTrue(List(2) { probe(EchoOutcome.UNKNOWN) }.all { it == Decision.Wait })
         assertTrue(answer() is Decision.Repaired)
     }
 

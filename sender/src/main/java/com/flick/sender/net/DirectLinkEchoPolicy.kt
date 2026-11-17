@@ -1,15 +1,43 @@
 package com.flick.sender.net
 
 /**
- * What one echo probe — a TCP connect to the TV's port 7 over the cast's Wi-Fi network —
- * says about the path to the TV. A refusal is an answer: the TV heard the SYN.
+ * What one echo probe — a TCP connect to the TV's port 7 that provably left over the Wi-Fi
+ * network holding the cast's serving address — says about the path to the TV. A refusal is
+ * an answer: the TV heard the SYN.
  */
 internal enum class EchoOutcome {
     ANSWERED,
     MISSED,
 
-    /** No information: no Wi-Fi network to probe on, a local refusal, or an unclassified error. */
+    /** No information: no path to probe that is provably the cast's Wi-Fi, or an unclassified error. */
     UNKNOWN,
+}
+
+/** How a probe reached the TV, as the journal names it. */
+internal enum class EchoMode(val journalName: String) {
+    /** A socket bound to the Wi-Fi network itself. */
+    BOUND("bound"),
+
+    /** An unbound socket whose kernel-chosen source was the serving address before and after. */
+    ROUTED("routed"),
+
+    /** Neither could be made to leave over the cast's Wi-Fi. */
+    NONE("none"),
+}
+
+internal object EchoProbeRules {
+    /**
+     * A routed probe's outcome. [sourceBefore] and [sourceAfter] are the source address the
+     * kernel would pick toward the TV, read before and after the connect: before, because
+     * a route through a tunnel or mobile data could be answered by another host with the
+     * same private address, or by nobody; after, because the default network can move
+     * during the probe.
+     */
+    fun routedOutcome(sourceBefore: String?, raw: EchoOutcome, sourceAfter: String?, localIp: String): EchoOutcome =
+        if (sourceBefore == localIp && sourceAfter == localIp) raw else EchoOutcome.UNKNOWN
+
+    /** Whether a routed probe may be attempted at all, from the source read before it. */
+    fun routedPossible(sourceBefore: String?, localIp: String): Boolean = sourceBefore == localIp
 }
 
 /**
@@ -61,14 +89,29 @@ internal class DirectLinkEchoPolicy {
     private var halted = false
     private var releases = 0
     private var capped = false
+    private var unknownRun = 0
 
     /**
      * One probe's outcome. [lastReleaseAtMs] is the cast's shared stamp of the last release
-     * from any path, 0 for none. [EchoOutcome.UNKNOWN] changes nothing: it is neither a miss
-     * nor an answer, and it neither breaks a streak nor ends one.
+     * from any path, 0 for none.
+     *
+     * [EchoOutcome.UNKNOWN] is neither a miss nor an answer. One or two in a row change
+     * nothing; a run of [UNKNOWN_RUN_TO_FORGET] ends the current streak and any verification
+     * without a verdict, since misses on either side of a gap that long (a Wi-Fi drop, a
+     * VPN coming up) are not one outage. The per-cast budget and the halt are kept.
      */
     fun onProbe(outcome: EchoOutcome, trusted: Boolean, nowMs: Long, lastReleaseAtMs: Long): Decision {
-        if (outcome == EchoOutcome.UNKNOWN) return Decision.Wait
+        if (outcome == EchoOutcome.UNKNOWN) {
+            unknownRun += 1
+            if (unknownRun == UNKNOWN_RUN_TO_FORGET) {
+                misses = 0
+                firstMissAtMs = 0L
+                verifying = false
+                attempts = 0
+            }
+            return Decision.Wait
+        }
+        unknownRun = 0
         if (outcome == EchoOutcome.ANSWERED) {
             val repaired = verifying
             val outageMs = nowMs - firstMissAtMs
@@ -118,6 +161,7 @@ internal class DirectLinkEchoPolicy {
         const val PROBE_TIMEOUT_MS = 700
 
         const val MISSES_TO_RELEASE = 4
+        const val UNKNOWN_RUN_TO_FORGET = 3
         const val RELEASES_PER_EPISODE = 2
         const val RELEASES_PER_CAST = 6
 
@@ -134,8 +178,7 @@ internal class DirectLinkEchoPolicy {
          * A failed connect's errno, as an echo outcome. The constants are passed in because
          * they are the platform's (`OsConstants`). A refusal is the TV's own RST; a timeout or
          * an unreachable host is the SYN or the neighbour lookup going unanswered. Anything
-         * else — a local refusal under a VPN lockdown, no route at all — says nothing about
-         * the TV.
+         * else — a local refusal such as `EPERM`, no route at all — says nothing about the TV.
          */
         fun outcomeForErrno(errno: Int, errnos: ConnectErrnos): EchoOutcome = when (errno) {
             errnos.refused -> EchoOutcome.ANSWERED

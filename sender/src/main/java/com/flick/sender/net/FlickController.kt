@@ -8,6 +8,7 @@ import com.flick.sender.CastServerService
 import com.flick.sender.CastTransportCommands
 import com.flick.sender.CastTransportSnapshot
 import com.flick.sender.CastTransportState
+import com.flick.sender.ChangeLatch
 import com.flick.sender.MediaMeta
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
@@ -513,6 +514,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     // Every release path stamps and checks this one clock, so no combination of them
     // releases twice inside [DirectLinkEchoPolicy.RELEASE_DEDUPE_MS].
     private var lastDirectLinkReleaseAtMs = 0L
+
+    // The last answered echo, on the clock pings are stamped with: a ping sent before it
+    // proves nothing the echo has not since disproved. See [DirectLinkWatchPolicy.releasesFor].
+    private var lastEchoAnsweredAtMs = 0L
+    private var echoSkippedFor: ControlClient.OutstandingPing? = null
 
     // When the current startup began: a release at or after it earns the startup's one retry.
     private var castStartedAtMs = 0L
@@ -2659,11 +2665,17 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     if (line.pongTimedOut && ping != null && ping !== directLinkReleasedFor) {
                         val waitedMs = SystemClock.elapsedRealtime() - ping.sentAtMs
                         delay((DirectLinkWatchPolicy.UNANSWERED_PROOF_MS - waitedMs).coerceAtLeast(0L))
-                        // Marked only once released: a release the dedupe refused is tried again
-                        // for the same ping next period, since no second ping goes out behind it.
-                        if (currentCastId == castId && control.line() === line && line.outstanding === ping &&
-                            releaseDirectLink(host, "cast_unanswered")
-                        ) {
+                        // Marked only once released: a release the dedupe refused, or one held back
+                        // by an echo answered after the ping was sent, is weighed again for the
+                        // same ping next period, since no second ping goes out behind it.
+                        val current = currentCastId == castId && control.line() === line && line.outstanding === ping
+                        if (current && !DirectLinkWatchPolicy.releasesFor(ping.sentAtMs, lastEchoAnsweredAtMs, SystemClock.elapsedRealtime())) {
+                            if (echoSkippedFor !== ping) {
+                                echoSkippedFor = ping
+                                FlickLog.i("lan", "tdls teardown skipped reason=cast_unanswered echoAnswered=true")
+                                IncidentJournal.record("link_release_skipped", "reason" to "cast_unanswered", "echo_answered" to true)
+                            }
+                        } else if (current && releaseDirectLink(host, "cast_unanswered")) {
                             directLinkReleasedFor = ping
                         }
                     }
@@ -2683,12 +2695,18 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         echoWatch?.cancel()
         val tvId = _connectedTv.value?.tvId ?: return
         val policy = DirectLinkEchoPolicy()
+        val mode = ChangeLatch<EchoMode>()
         echoWatch = scope.launch {
             while (currentCastId == castId) {
                 val startedAtMs = SystemClock.elapsedRealtime()
                 val host = _connectedTv.value?.takeIf { it.tvId == tvId }?.host ?: return@launch
-                val outcome = echoProbe(host, servingState(castId)?.lanIp)
+                val probe = echoProbe(host, servingState(castId)?.lanIp)
+                val outcome = probe.outcome
                 if (currentCastId != castId) return@launch
+                if (mode.changed(probe.mode)) {
+                    FlickLog.i("lan", "echo mode=${probe.mode.journalName}")
+                    IncidentJournal.record("echo_mode", "mode" to probe.mode.journalName)
+                }
                 if (outcome == EchoOutcome.ANSWERED) noteEchoAnswered(tvId, "cast")
                 val nowMs = SystemClock.elapsedRealtime()
                 val decision = policy.onProbe(outcome, echoTrust.isTrusted(tvId), nowMs, lastDirectLinkReleaseAtMs)
@@ -2729,7 +2747,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     /** One probe of [tv] after a handshake, so a TV that answers echoes is trusted before a cast needs it. */
     private fun seedEchoTrust(tv: PairedTv) {
         if (echoTrust.isTrusted(tv.tvId)) return
-        scope.launch { if (echoProbe(tv.host, ownLanIpv4()) == EchoOutcome.ANSWERED) noteEchoAnswered(tv.tvId, "seed") }
+        scope.launch { if (echoProbe(tv.host, ownLanIpv4()).outcome == EchoOutcome.ANSWERED) noteEchoAnswered(tv.tvId, "seed") }
     }
 
     private fun noteEchoAnswered(tvId: String, source: String) {
@@ -2738,8 +2756,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         IncidentJournal.record("echo_trust", "gained" to true, "source" to source)
     }
 
-    private suspend fun echoProbe(host: String, localIp: String?): EchoOutcome =
-        WifiEchoProbe.probe(appContext, host, localIp, DirectLinkEchoPolicy.PROBE_TIMEOUT_MS)
+    private suspend fun echoProbe(host: String, localIp: String?): WifiEchoProbe.Result {
+        val result = WifiEchoProbe.probe(appContext, host, localIp, DirectLinkEchoPolicy.PROBE_TIMEOUT_MS)
+        if (result.outcome == EchoOutcome.ANSWERED) lastEchoAnsweredAtMs = SystemClock.elapsedRealtime()
+        return result
+    }
 
     /**
      * Every path's way to drop the phone's direct link, refused within

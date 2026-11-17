@@ -78,4 +78,33 @@ class MediaStarvationTest {
         assertNull(streak.closeIfRecovered(5_000L, 5_000L))
         assertTrue(streak.onError(6_000L))
     }
+
+    @Test fun onlyASubtitleRoutesFirstAttemptIsHeld() {
+        val loads = SubtitleLoads()
+        assertFalse(loads.started(1L, subtitleRoute = false, retryCount = 0))
+        assertTrue(loads.isEmpty)
+        assertTrue(loads.started(2L, subtitleRoute = true, retryCount = 0))
+        assertFalse(loads.isEmpty)
+        assertFalse(loads.started(2L, subtitleRoute = true, retryCount = 0))
+    }
+
+    @Test fun aRetryingSubtitleIsNeverHeldAgain() {
+        val loads = SubtitleLoads()
+        loads.started(7L, subtitleRoute = true, retryCount = 0)
+        assertTrue(loads.ended(7L))
+        assertFalse(loads.started(7L, subtitleRoute = true, retryCount = 1))
+        assertTrue(loads.isEmpty)
+    }
+
+    @Test fun endingOrClearingReleasesTheHold() {
+        val loads = SubtitleLoads()
+        loads.started(1L, subtitleRoute = true, retryCount = 0)
+        loads.started(2L, subtitleRoute = true, retryCount = 0)
+        assertTrue(loads.ended(1L))
+        assertFalse(loads.ended(1L))
+        assertFalse(loads.isEmpty)
+        loads.clear()
+        assertTrue(loads.isEmpty)
+        assertFalse(loads.ended(2L))
+    }
 }

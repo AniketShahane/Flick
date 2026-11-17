@@ -437,6 +437,7 @@ class SessionController(
                             if (clock() >= startupDeadlineElapsedMs) break
                             probeStarted = clock()
                             result = probe(url)
+                            if (!gate.isCurrent(castId, generation)) return@launch
                             IncidentJournal.record(
                                 "preflight_retry",
                                 "cast" to journalId(castId),

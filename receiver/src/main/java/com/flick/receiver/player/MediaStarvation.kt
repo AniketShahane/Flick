@@ -77,3 +77,26 @@ internal class LoadErrorStreak {
         errors = 0
     }
 }
+
+/**
+ * Subtitle-route loads whose bytes the starvation stamp ignores while `isLoading`
+ * still reports them, keyed by load task id. Main thread.
+ *
+ * Only a first attempt is held: a subtitle retrying on a dead link must not hide the
+ * film's starvation, and a first attempt ends by itself at the connect timeout or
+ * the subtitle read timeout.
+ */
+internal class SubtitleLoads {
+    private val inFlight = HashSet<Long>()
+
+    /** True when the set changed. */
+    fun started(taskId: Long, subtitleRoute: Boolean, retryCount: Int): Boolean =
+        subtitleRoute && retryCount == 0 && inFlight.add(taskId)
+
+    /** True when the set changed. */
+    fun ended(taskId: Long): Boolean = inFlight.remove(taskId)
+
+    fun clear() = inFlight.clear()
+
+    val isEmpty: Boolean get() = inFlight.isEmpty()
+}

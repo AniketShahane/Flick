@@ -314,6 +314,63 @@ class MidFilmLinkPolicyTest {
         assertTrue("probes=$probes", probes in 4..7)
     }
 
+    @Test fun aLostFirstEchoIsRetriedTenSecondsLaterAndArms() {
+        val w = World()
+        var baselines = 0
+        w.answers = { kind -> kind != ProbeKind.BASELINE || ++baselines > 1 }
+        w.runUntil(START_MS + MidFilmLinkPolicy.UNARMED_BASELINE_INTERVAL_MS - 1L)
+        assertFalse(w.policy.isArmed(w.nowMs))
+        assertEquals(1, w.count(ProbeKind.BASELINE))
+        w.runUntil(START_MS + MidFilmLinkPolicy.UNARMED_BASELINE_INTERVAL_MS + 100L)
+        assertEquals(2, w.count(ProbeKind.BASELINE))
+        assertTrue(w.policy.isArmed(w.nowMs))
+    }
+
+    @Test fun aPhoneThatNeverAnswersIsProbedEveryTenSecondsAndNeverArms() {
+        val w = World()
+        w.answers = { false }
+        w.runUntil(START_MS + 60_000L)
+        // 0, 10, 20, 30, 40, 50 s
+        assertEquals(6, w.count(ProbeKind.BASELINE))
+        assertFalse(w.policy.isArmed(w.nowMs))
+        assertEquals(emptyList<Event>(), w.events)
+    }
+
+    @Test fun anArmedCastKeepsTheThirtySecondCadence() {
+        val w = World()
+        w.runUntil(START_MS + 60_000L - 1L)
+        // 0 and 30 s
+        assertEquals(2, w.count(ProbeKind.BASELINE))
+    }
+
+    @Test fun anUnarmedCrawlingStreamReportsNoEpisodes() {
+        val w = World()
+        w.answers = { false }
+        w.runUntil(START_MS + 10_000L)
+        assertFalse(w.policy.isArmed(w.nowMs))
+        val end = w.nowMs + 120_000L
+        while (w.nowMs < end) {
+            w.starvedSinceMs = w.nowMs
+            w.runUntil(w.nowMs + 4_000L)
+            w.starvedSinceMs = null
+            w.runUntil(w.nowMs + 1L)
+        }
+        assertTrue(w.count(ProbeKind.STARVED) >= 20)
+        assertEquals(emptyList<Event>(), w.events)
+        assertEquals(emptyList<Step.TearDown>(), w.teardowns)
+    }
+
+    @Test fun anUnarmedEpisodeIsReportedOnceItReachesFiveSeconds() {
+        val w = World()
+        w.answers = { false }
+        w.runUntil(START_MS + 10_000L)
+        w.starvedSinceMs = w.nowMs
+        w.runUntil(w.nowMs + MidFilmLinkPolicy.TEARDOWN_STARVED_MS - 100L)
+        assertEquals(emptyList<Event>(), w.events)
+        w.runUntil(w.nowMs + 1_000L)
+        assertEquals(false, w.events.filterIsInstance<Event.EpisodeBegan>().single().armed)
+    }
+
     @Test fun sleepsNeverOutlastThePoll() {
         val p = MidFilmLinkPolicy(START_MS)
         p.onProbed(ProbeKind.BASELINE, answered = true, startedAtMs = START_MS, starvedAfterMs = 0L, bytesDuringProbe = true)

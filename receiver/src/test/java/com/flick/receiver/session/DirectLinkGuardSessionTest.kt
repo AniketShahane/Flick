@@ -19,8 +19,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The cast transaction's use of [DirectLinkGuard]: one link repair and one more
- * pre-flight when the phone that sent the cast cannot be reached, and a mid-film
+ * The cast transaction's use of [DirectLinkGuard]: one link repair and up to two more
+ * pre-flights when the phone that sent the cast cannot be reached, and a mid-film
  * watch that lives exactly as long as a playing cast.
  */
 class DirectLinkGuardSessionTest {
