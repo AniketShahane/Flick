@@ -8,13 +8,14 @@ import java.time.format.DateTimeFormatter
  * One line of [IncidentJournal]: `<UTC ISO-8601 millis> <event> k=v k=v`.
  *
  * The journal outlives the process and is read out of release builds, so what it can hold
- * is fixed by shape rather than by each caller's care: a value is a Boolean, an Int, a
- * Long, an enum name, or a String token of letters, digits and underscores starting with a
- * letter. An address, a URL, a MAC or a session token cannot match, and is written as
- * [INVALID] instead.
+ * is limited by shape: a value is a Boolean, an Int, a Long, an enum name, or a String
+ * token of letters, digits and underscores starting with a letter. An IP address, a URL or
+ * a MAC cannot match, and is written as [INVALID] instead.
  *
- * NEVER pass an SSID, a BSSID, a hostname, a device or TV name, or a file name, even where
- * one would happen to fit the token shape.
+ * The shape does not stop a secret or a name: many base64url tokens (the session token, a
+ * cast id) and many network, host and device names fit it. For those the protection is the
+ * call sites, which must NEVER pass an SSID, a BSSID, a hostname, a device or TV name, a
+ * file name, a token or an id.
  */
 internal object IncidentLine {
 

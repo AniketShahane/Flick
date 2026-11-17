@@ -7,7 +7,10 @@ package com.flick.sender
  * full socket buffer for many minutes. Four blips used to hold every slot and answer the
  * TV's next request `503`, which ends the film. A newcomer that finds every slot taken
  * now evicts the transfer with the oldest progress, if that one has moved nothing for
- * [EVICT_IDLE_MS]; a live stream moves bytes many times a second and is never that idle.
+ * [EVICT_IDLE_MS]. A live stream can sit that idle too — a full buffer leaves its
+ * connection unread for seconds, a pause for minutes — but with one TV every stranded
+ * transfer stopped before the live one did, so the oldest is never the live one; and were
+ * it ever evicted, the TV's read fails and its player reconnects within its retry delay.
  *
  * The newcomer takes the slot at once. The evicted transfer's [Lease.cancel] is run, but
  * how long its thread takes to unwind is not this ledger's concern: its own [release]

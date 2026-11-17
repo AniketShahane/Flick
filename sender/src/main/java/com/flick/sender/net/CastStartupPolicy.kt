@@ -112,7 +112,7 @@ internal object CastStartupPolicy {
     const val FIRST_FRAME_TIMEOUT_CODE = "startup_timeout"
 
     /** Receiver codes for a startup that never got the film from this phone. */
-    private val LINK_STARVED_CODES = setOf(FIRST_FRAME_TIMEOUT_CODE, "media_unreachable", "sender_not_serving")
+    private val LINK_STARVED_CODES = setOf(FIRST_FRAME_TIMEOUT_CODE, "media_unreachable")
 
     /**
      * What a control socket lost under a cast indicts. A cast that reached Active is
@@ -152,8 +152,9 @@ internal object CastStartupPolicy {
      * reads the load first and holds the TV for up to its own adoption budget (4 s) before
      * it reaches the stop; a resume that lands inside that window is answered `busy` over
      * this phone's own abandoned load. A lost socket needs no hold: the receiver closes it
-     * only after its adoption has already let go. Nor does a released link: the TV accepted,
-     * so the line is kept, and the stop goes out on it ahead of the second load.
+     * only after its adoption has already let go. Nor does a released link: the TV has just
+     * answered on the line — with an accept, or with the failure itself — so the line is
+     * kept, and the stop goes out on it ahead of the second load.
      */
     fun redialHoldMs(reason: StartupRetryReason): Long = when (reason) {
         StartupRetryReason.ACCEPT_SILENT -> REDIAL_HOLD_MS
@@ -175,10 +176,11 @@ internal object CastStartupPolicy {
      * The code a `busy` answer is shown as. During a retry's dial the session the TV is
      * busy with is, as far as this phone can know, its own abandoned load — and "another
      * phone is casting" would be the false sentence the retry exists to avoid. The original
-     * failure is what the viewer is owed.
+     * failure is what the viewer is owed: [retryFaceCode] where the retry was started by a
+     * failure the reason alone does not name.
      */
-    fun busyFaceCode(retrying: StartupRetryReason?): String =
-        retrying?.let(::faceCode) ?: "active_cast_busy"
+    fun busyFaceCode(retrying: StartupRetryReason?, retryFaceCode: String? = null): String =
+        retrying?.let { retryFaceCode ?: faceCode(it) } ?: "active_cast_busy"
 
     /**
      * Whether [state] is a startup face left behind by a cast that no longer exists. A

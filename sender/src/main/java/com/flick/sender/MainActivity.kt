@@ -17,8 +17,6 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
-import java.io.FileDescriptor
-import java.io.PrintWriter
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -63,6 +61,8 @@ import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.ThemeStore
 import com.flick.sender.util.FlickLog
 import com.flick.sender.util.IncidentJournal
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import java.util.concurrent.atomic.AtomicLong
 
 /**

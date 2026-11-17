@@ -1,12 +1,25 @@
 package com.flick.sender.net
 
 /**
+ * What one echo probe — a TCP connect to the TV's port 7 over the cast's Wi-Fi network —
+ * says about the path to the TV. A refusal is an answer: the TV heard the SYN.
+ */
+internal enum class EchoOutcome {
+    ANSWERED,
+    MISSED,
+
+    /** No information: no Wi-Fi network to probe on, a local refusal, or an unclassified error. */
+    UNKNOWN,
+}
+
+/**
  * When a cast's network echoes prove this phone holds a direct link the TV never finished.
  *
  * The ping watch ([DirectLinkWatchPolicy]) needs a ping to sit unanswered for six seconds
  * every ten, so a link that breaks mid-film is released 6–16 s after the break, close to
  * the TV's ~14 s buffer. An echo costs nothing on the control socket and goes every second,
- * so three unanswered in a row release in about three to four seconds.
+ * so four unanswered in a row release about four to five seconds after the break; fewer
+ * would release a link that is only busy for three seconds.
  *
  * Misses mean something only for a TV that answers echoes at all, so they act only while
  * that TV is trusted ([DirectLinkEchoTrust]). A release is verified by the echoes that
@@ -51,10 +64,12 @@ internal class DirectLinkEchoPolicy {
 
     /**
      * One probe's outcome. [lastReleaseAtMs] is the cast's shared stamp of the last release
-     * from any path, 0 for none.
+     * from any path, 0 for none. [EchoOutcome.UNKNOWN] changes nothing: it is neither a miss
+     * nor an answer, and it neither breaks a streak nor ends one.
      */
-    fun onProbe(answered: Boolean, trusted: Boolean, nowMs: Long, lastReleaseAtMs: Long): Decision {
-        if (answered) {
+    fun onProbe(outcome: EchoOutcome, trusted: Boolean, nowMs: Long, lastReleaseAtMs: Long): Decision {
+        if (outcome == EchoOutcome.UNKNOWN) return Decision.Wait
+        if (outcome == EchoOutcome.ANSWERED) {
             val repaired = verifying
             val outageMs = nowMs - firstMissAtMs
             misses = 0
@@ -76,7 +91,7 @@ internal class DirectLinkEchoPolicy {
 
     private fun release(nowMs: Long, lastReleaseAtMs: Long): Decision {
         if (!releaseAllowed(lastReleaseAtMs, nowMs)) {
-            // Mid-episode, the release being waited out is usually this episode's own.
+            // Mid-episode, another path's recent release is waited out, not adopted.
             if (verifying) return Decision.Wait
             attempts += 1
             verifying = true
@@ -99,20 +114,38 @@ internal class DirectLinkEchoPolicy {
         /** About once a second: the next probe starts this long after the previous one started. */
         const val PROBE_PERIOD_MS = 1_000L
 
-        /** `InetAddress.isReachable`; an unanswered call can take twice this (ICMP, then TCP 7). */
-        const val PROBE_TIMEOUT_MS = 600
+        /** The connect timeout; an unanswered probe takes this long. */
+        const val PROBE_TIMEOUT_MS = 700
 
-        const val MISSES_TO_RELEASE = 3
-        const val VERIFY_MS = 4_000L
+        const val MISSES_TO_RELEASE = 4
         const val RELEASES_PER_EPISODE = 2
         const val RELEASES_PER_CAST = 6
 
         /** No two releases from any combination of paths closer than this. */
         const val RELEASE_DEDUPE_MS = 5_000L
 
+        /** A release's verification lasts exactly as long as the dedupe holds the next one back. */
+        const val VERIFY_MS = RELEASE_DEDUPE_MS
+
         fun releaseAllowed(lastReleaseAtMs: Long, nowMs: Long): Boolean =
             lastReleaseAtMs <= 0L || nowMs - lastReleaseAtMs >= RELEASE_DEDUPE_MS
+
+        /**
+         * A failed connect's errno, as an echo outcome. The constants are passed in because
+         * they are the platform's (`OsConstants`). A refusal is the TV's own RST; a timeout or
+         * an unreachable host is the SYN or the neighbour lookup going unanswered. Anything
+         * else — a local refusal under a VPN lockdown, no route at all — says nothing about
+         * the TV.
+         */
+        fun outcomeForErrno(errno: Int, errnos: ConnectErrnos): EchoOutcome = when (errno) {
+            errnos.refused -> EchoOutcome.ANSWERED
+            errnos.timedOut, errnos.hostUnreachable -> EchoOutcome.MISSED
+            else -> EchoOutcome.UNKNOWN
+        }
     }
+
+    /** The platform's `ECONNREFUSED`, `ETIMEDOUT` and `EHOSTUNREACH`. */
+    data class ConnectErrnos(val refused: Int, val timedOut: Int, val hostUnreachable: Int)
 }
 
 /**

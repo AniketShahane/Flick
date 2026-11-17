@@ -7,7 +7,6 @@ import com.flick.receiver.session.DirectLinkGuard
 import com.flick.receiver.util.FlickLog
 import com.flick.receiver.util.IncidentJournal
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.net.InetAddress
 import java.net.URL
@@ -55,15 +54,21 @@ class MidFilmLinkGuard(
     override suspend fun repairUnreachablePeer(mediaUrl: String): Boolean = withContext(Dispatchers.IO) {
         val host = peerOf(mediaUrl) ?: return@withContext false
         val wifi = appContext.getSystemService(WifiManager::class.java) ?: return@withContext false
+        if (!runCatching { wifi.isTdlsSupported }.getOrDefault(false)) return@withContext false
         val address = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return@withContext false
-        if (DirectLinkReset.answers(address, PREFLIGHT_PROBE_TIMEOUT_MS)) {
-            FlickLog.i("lan", "preflight repair skipped peer=answered")
-            IncidentJournal.record("tdls_teardown_skipped", "site" to TeardownSite.PREFLIGHT, "peer" to "answered")
-            return@withContext false
-        }
-        DirectLinkReset.tearDown(wifi, address, TeardownSite.PREFLIGHT, "at=preflight peer=unanswered")
-        delay(PREFLIGHT_SETTLE_MS)
-        true
+        // Cancelled by SessionController (`probeJob`) when the cast is stopped,
+        // replaced or fails, which is what the repair's own check after the probe reads.
+        PreflightLinkRepair.run(
+            answers = {
+                DirectLinkReset.answers(address, PREFLIGHT_PROBE_TIMEOUT_MS).also { answered ->
+                    if (answered) {
+                        FlickLog.i("lan", "preflight repair skipped peer=answered")
+                        IncidentJournal.record("tdls_teardown_skipped", "site" to TeardownSite.PREFLIGHT, "peer" to "answered")
+                    }
+                }
+            },
+            tearDown = { DirectLinkReset.tearDown(wifi, address, TeardownSite.PREFLIGHT, "at=preflight peer=unanswered") },
+        )
     }
 
     private inner class Watch(val castId: String, private val host: String) : Runnable {
@@ -84,6 +89,16 @@ class MidFilmLinkGuard(
                         return
                     }
                     is MidFilmLinkPolicy.Step.Probe -> {
+                        // With no address of its own this TV cannot send a probe, and
+                        // isReachable reports that as unanswered: no miss may come of it.
+                        if (step.kind == MidFilmLinkPolicy.ProbeKind.STARVED && LanAddress.current() == null) {
+                            try {
+                                Thread.sleep(MidFilmLinkPolicy.POLL_MS)
+                            } catch (_: InterruptedException) {
+                                return
+                            }
+                            continue
+                        }
                         val startedAtMs = SystemClock.elapsedRealtime()
                         val answered = DirectLinkReset.answers(address, step.timeoutMs)
                         if (cancelled) return
@@ -149,6 +164,5 @@ class MidFilmLinkGuard(
 
     private companion object {
         const val PREFLIGHT_PROBE_TIMEOUT_MS = 1_000
-        const val PREFLIGHT_SETTLE_MS = 500L
     }
 }

@@ -4,13 +4,16 @@ import androidx.media3.common.PlaybackException
 import com.flick.receiver.net.CastFailureCode
 import com.flick.receiver.net.ControlCastResult
 import com.flick.receiver.net.ControlLossReason
+import com.flick.receiver.net.PreflightLinkRepair
 import com.flick.receiver.net.ProbeResult
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,15 +99,47 @@ class DirectLinkGuardSessionTest {
         assertEquals(true, failure.beforeReady)
     }
 
-    @Test fun aSecondUnreachablePreflightFailsWithoutAnotherRepair() = runTest {
-        val h = harness(FakeGuard(), ProbeResult.Unreachable, ProbeResult.Unreachable)
+    @Test fun aLinkSlowToComeBackIsCaughtByTheSecondRecheck() = runTest {
+        val h = harness(FakeGuard(), ProbeResult.Unreachable, ProbeResult.Unreachable, ProbeResult.Ok(PROBE_MS))
 
         h.session.load()
         runCurrent()
+        assertEquals(2, h.probes())
+        advanceTimeBy(1_499L)
+        runCurrent()
+        assertEquals(2, h.probes())
+        advanceTimeBy(1L)
+        runCurrent()
 
         assertEquals(1, h.guard.repairCalls)
-        assertEquals(2, h.probes())
+        assertEquals(3, h.probes())
+        assertTrue(h.session.stage is MediaStage.Preparing)
+        assertEquals(emptyList<ControlCastResult.Failed>(), h.terminals)
+    }
+
+    @Test fun threeUnreachablePreflightsFailWithoutAnotherRepair() = runTest {
+        val h = harness(FakeGuard(), ProbeResult.Unreachable)
+
+        h.session.load()
+        runCurrent()
+        advanceTimeBy(1_500L)
+        runCurrent()
+
+        assertEquals(1, h.guard.repairCalls)
+        assertEquals(3, h.probes())
         assertEquals(CastFailureCode.MEDIA_UNREACHABLE, h.terminals.single().code)
+    }
+
+    @Test fun anyOtherRecheckResultIsHandledAsBefore() = runTest {
+        val h = harness(FakeGuard(), ProbeResult.Unreachable, ProbeResult.ConnectionRefused, ProbeResult.Ok(PROBE_MS))
+
+        h.session.load()
+        runCurrent()
+        advanceTimeBy(5_000L)
+        runCurrent()
+
+        assertEquals(2, h.probes())
+        assertEquals(CastFailureCode.SENDER_NOT_SERVING, h.terminals.single().code)
     }
 
     @Test fun onlyAnUnreachablePhoneIsRepaired() = runTest {
@@ -118,16 +153,34 @@ class DirectLinkGuardSessionTest {
         }
     }
 
-    @Test fun aCastStoppedDuringTheRepairIsNotProbedAgain() = runTest {
-        val gate = CompletableDeferred<Boolean>()
-        val h = harness(FakeGuard { gate.await() }, ProbeResult.Unreachable, ProbeResult.Ok(PROBE_MS))
+    /**
+     * The phone probe is the real repair's, made uncancellable the way `isReachable`
+     * is: the stop lands while it runs, and only the repair's own cancellation check
+     * after it keeps the teardown from happening.
+     */
+    @Test fun aCastStoppedDuringTheRepairProbeIsNeitherTornDownNorProbedAgain() = runTest {
+        val probeReturns = CompletableDeferred<Unit>()
+        var teardowns = 0
+        val guard = FakeGuard {
+            PreflightLinkRepair.run(
+                answers = {
+                    withContext(NonCancellable) { probeReturns.await() }
+                    false
+                },
+                tearDown = { teardowns++ },
+            )
+        }
+        val h = harness(guard, ProbeResult.Unreachable, ProbeResult.Ok(PROBE_MS))
 
         h.session.load()
         runCurrent()
         assertTrue(h.session.onStop(CAST))
-        gate.complete(true)
+        probeReturns.complete(Unit)
+        runCurrent()
+        advanceTimeBy(5_000L)
         runCurrent()
 
+        assertEquals(0, teardowns)
         assertEquals(1, h.probes())
         assertEquals(0, h.player.startups)
         assertEquals(emptyList<ControlCastResult.Failed>(), h.terminals)

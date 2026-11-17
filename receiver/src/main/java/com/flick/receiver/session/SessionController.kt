@@ -422,16 +422,28 @@ class SessionController(
                 var result = probe(url)
                 // The phone reached this TV to send the cast and this TV cannot reach
                 // the phone: the fingerprint of a direct link only this TV still holds.
-                // One repair and one more pre-flight, inside the same startup deadline.
+                // One repair, then up to two more pre-flights — the link can take a
+                // couple of seconds to come back — inside the same startup deadline.
                 if (result == ProbeResult.Unreachable && gate.isCurrent(castId, generation)) {
                     FlickLog.i("probe", "link repair start latencyMs=${clock() - probeStarted}")
                     val repaired = directLink.repairUnreachablePeer(url)
                     if (!gate.isCurrent(castId, generation)) return@launch
                     IncidentJournal.record("preflight_repair", "cast" to journalId(castId), "torn_down" to repaired)
-                    if (repaired && clock() < startupDeadlineElapsedMs) {
-                        probeStarted = clock()
-                        result = probe(url)
-                        IncidentJournal.record("preflight_retry", "cast" to journalId(castId), "ok" to (result is ProbeResult.Ok))
+                    if (repaired) {
+                        for ((attempt, waitMs) in PREFLIGHT_RECHECK_DELAYS_MS.withIndex()) {
+                            if (result != ProbeResult.Unreachable) break
+                            delay(waitMs)
+                            if (!gate.isCurrent(castId, generation)) return@launch
+                            if (clock() >= startupDeadlineElapsedMs) break
+                            probeStarted = clock()
+                            result = probe(url)
+                            IncidentJournal.record(
+                                "preflight_retry",
+                                "cast" to journalId(castId),
+                                "attempt" to attempt + 1,
+                                "ok" to (result is ProbeResult.Ok),
+                            )
+                        }
                     }
                 }
                 when (result) {
@@ -846,6 +858,7 @@ class SessionController(
         }
         val explains = reason.announces && id != null && stage !is MediaStage.None
         if (!explains) {
+            id?.let { IncidentJournal.record("cast_end", "cast" to journalId(it), "reason" to "control_lost", "lost" to reason) }
             invalidateToNone(clearRetained = true)
             return
         }
@@ -1054,6 +1067,12 @@ class SessionController(
 
     private companion object {
         const val STARTUP_DEADLINE_MS = 18_000L
+
+        /**
+         * Waits before each pre-flight after a cast-start link repair, on top of the
+         * repair's own settle; a second check catches a link slower to come back.
+         */
+        val PREFLIGHT_RECHECK_DELAYS_MS = longArrayOf(0L, 1_500L)
 
         /**
          * How long a dropped control socket is given to be rescued before this TV says

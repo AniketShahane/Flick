@@ -34,7 +34,7 @@ object IncidentJournal {
     private const val KEEP_LINES = 600
     private const val REWRITE_ABOVE_LINES = 800
     private const val REPLAY_LINES = 100
-    private const val DUMP_WAIT_MS = 2_000L
+    private const val DUMP_WAIT_MS = 500L
 
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "flick-journal").apply { isDaemon = true } }
     private val installed = AtomicBoolean(false)
@@ -65,7 +65,11 @@ object IncidentJournal {
         }
     }
 
-    /** Every stored line, oldest first; called from a binder thread by `dumpsys`. */
+    /**
+     * Every stored line, oldest first. `dumpsys` reaches Activity and Service `dump` on
+     * the app's main thread, so the wait for the writer is kept short; a writer busy
+     * past it dumps nothing rather than stalling the UI.
+     */
     fun dump(out: PrintWriter) {
         val lines = runCatching {
             writer.submit(Callable { file?.let { storedLines(it) }.orEmpty() }).get(DUMP_WAIT_MS, TimeUnit.MILLISECONDS)

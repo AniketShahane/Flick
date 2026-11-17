@@ -11,13 +11,19 @@ package com.flick.receiver.net
  * unanswered probe is required, and an unanswered probe means something only for
  * a phone that is known to answer when healthy. That is what [isArmed] tracks:
  *
- * - Baseline probes run while media flows. An answered one arms; an unanswered one
- *   during proven flow (bytes arrived during the probe, so the link carried data
- *   both ways) disarms, which is how a phone that ignores pings is learned. An
- *   unanswered probe without that proof says nothing and is discarded: a paused
- *   film with a full buffer moves no bytes whether or not the link is broken.
+ * - Baseline probes run while media is not starved, the first as the watch starts
+ *   (the first frame has just arrived, so the link is proven). An answered one
+ *   arms; an unanswered one during proven flow (bytes arrived during the probe, so
+ *   the link carried data both ways) disarms, which is how a phone that ignores
+ *   pings is learned. An unanswered probe without that proof is inconclusive — a
+ *   paused film with a full buffer moves no bytes whether or not the link is
+ *   broken — so it keeps the previous verdict and restarts its age: the age limit
+ *   counts only time in which no baseline could run at all.
  * - Arming is judged as of the moment starvation began, because no healthy probe
  *   can happen inside an episode and a long one must not disarm itself.
+ * - An episode is reported only once it has an unanswered probe or has starved for
+ *   [TEARDOWN_STARVED_MS]: a crawling stream starves past [STARVED_MS] every few
+ *   seconds, and reporting each would flood the journal.
  *
  * Probe timeouts are what `InetAddress.isReachable` is given; on Android one
  * unanswered call can take twice that (ICMP echo, then TCP port 7).
@@ -41,6 +47,7 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
     }
 
     private class Episode(val startedAtMs: Long, val armed: Boolean) {
+        var reported = false
         var probes = 0
         var unanswered = 0
         var misses = 0
@@ -73,7 +80,9 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
         if (starvedMs >= STARVED_MS) return starvedStep(nowMs, starvedMs)
         episode?.let { ended ->
             episode = null
-            events += Event.EpisodeEnded(nowMs - ended.startedAtMs, ended.probes, ended.unanswered, ended.teardowns)
+            if (ended.reported) {
+                events += Event.EpisodeEnded(nowMs - ended.startedAtMs, ended.probes, ended.unanswered, ended.teardowns)
+            }
         }
         val baselineDueAtMs = if (lastBaselineStartedAtMs == NEVER) {
             castStartedAtMs + FIRST_BASELINE_DELAY_MS
@@ -87,10 +96,8 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
     }
 
     private fun starvedStep(nowMs: Long, starvedMs: Long): Step {
-        val current = episode ?: Episode(nowMs - starvedMs, isArmed(nowMs - starvedMs)).also {
-            episode = it
-            events += Event.EpisodeBegan(starvedMs, it.armed)
-        }
+        val current = episode ?: Episode(nowMs - starvedMs, isArmed(nowMs - starvedMs)).also { episode = it }
+        if (starvedMs >= TEARDOWN_STARVED_MS) report(current, starvedMs)
         val mayTearDown = current.armed && teardowns < MAX_TEARDOWNS_PER_CAST
         val cooled = lastTeardownAtMs == NEVER || nowMs - lastTeardownAtMs >= TEARDOWN_COOLDOWN_MS
         if (mayTearDown && cooled && starvedMs >= TEARDOWN_STARVED_MS && current.misses >= TEARDOWN_MISSES) {
@@ -122,6 +129,8 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
                 } else if (bytesDuringProbe && starvedAfterMs < HEALTHY_MAX_STARVED_MS) {
                     lastHealthyProbeAtMs = startedAtMs
                     lastHealthyAnswered = false
+                } else if (lastHealthyProbeAtMs != NEVER) {
+                    lastHealthyProbeAtMs = startedAtMs
                 }
             }
             ProbeKind.STARVED -> episode?.let {
@@ -132,6 +141,7 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
                 } else {
                     it.misses++
                     it.unanswered++
+                    report(it, starvedAfterMs)
                 }
             }
             ProbeKind.FOLLOW_UP -> Unit
@@ -156,6 +166,12 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
         return drained
     }
 
+    private fun report(episode: Episode, starvedMs: Long) {
+        if (episode.reported) return
+        episode.reported = true
+        events += Event.EpisodeBegan(starvedMs, episode.armed)
+    }
+
     private fun noteArmed(nowMs: Long) {
         val armed = isArmed(nowMs)
         if (armed == reportedArmed) return
@@ -176,7 +192,7 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
         const val POLL_MS = 500L
         const val MIN_SLEEP_MS = 50L
 
-        const val FIRST_BASELINE_DELAY_MS = 5_000L
+        const val FIRST_BASELINE_DELAY_MS = 0L
         const val BASELINE_INTERVAL_MS = 30_000L
         const val BASELINE_PROBE_TIMEOUT_MS = 1_000
         const val ARMED_MAX_AGE_MS = 90_000L

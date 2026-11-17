@@ -93,8 +93,10 @@ object DirectLinkReset {
     }
 
     /**
-     * Whether the phone answers `isReachable`. A probe that cannot be sent counts as
-     * answered, which is the side that never tears a link down.
+     * Whether the phone answers `isReachable`. Android's `isReachable` catches its own
+     * send and connect failures (no route, network unreachable) and returns false, so
+     * a probe this TV cannot send reads as unanswered; only an exception it lets
+     * escape counts as answered here.
      */
     internal fun answers(address: InetAddress, timeoutMs: Int): Boolean =
         runCatching { address.isReachable(timeoutMs) }.getOrDefault(true)

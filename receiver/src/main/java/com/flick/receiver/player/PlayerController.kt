@@ -168,6 +168,13 @@ class PlayerController(context: Context) : SessionPlayer {
     /** Read off the main thread by the mid-film link guard; see [mediaStarvedMs]. */
     private val mediaStarvation = MediaStarvation()
     private val loadErrorStreak = LoadErrorStreak()
+
+    /**
+     * Text-track loads in flight, by load task id. `isLoading` covers the whole merged
+     * period, and the byte stamp ignores subtitle bytes, so a slow subtitle over a full
+     * video buffer would otherwise read as starvation. Main thread.
+     */
+    private val textLoadsInFlight = HashSet<Long>()
     private val wifiLinkJournal = WifiLinkJournal()
 
     /** Stamps media-route bytes only: a subtitle fetch is not the film arriving. Loader thread. */
@@ -909,6 +916,25 @@ class PlayerController(context: Context) : SessionPlayer {
          * fact is all that happens here: Media3 recovers from most of these on
          * its own, and re-preparing eagerly would stall a film that is fine.
          */
+        override fun onLoadStarted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            retryCount: Int,
+        ) {
+            if (mediaLoadData.trackType == C.TRACK_TYPE_TEXT && textLoadsInFlight.add(loadEventInfo.loadTaskId)) {
+                updateWantsData()
+            }
+        }
+
+        override fun onLoadCanceled(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+        ) {
+            textLoadEnded(loadEventInfo)
+        }
+
         override fun onLoadError(
             eventTime: AnalyticsListener.EventTime,
             loadEventInfo: LoadEventInfo,
@@ -916,6 +942,7 @@ class PlayerController(context: Context) : SessionPlayer {
             error: IOException,
             wasCanceled: Boolean,
         ) {
+            textLoadEnded(loadEventInfo)
             if (wasCanceled) return
             if (isCurrentExternalSubtitleLoad(loadEventInfo)) {
                 subtitleFailureState.recordLoadFailure()
@@ -935,6 +962,7 @@ class PlayerController(context: Context) : SessionPlayer {
             loadEventInfo: LoadEventInfo,
             mediaLoadData: MediaLoadData,
         ) {
+            textLoadEnded(loadEventInfo)
             // The one short text retry may succeed; don't let its earlier error
             // make a later, unrelated media error drop a now-healthy subtitle.
             if (isCurrentExternalSubtitleLoad(loadEventInfo)) {
@@ -999,9 +1027,14 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     private fun updateWantsData() {
         val exo = player
+        val state = exo?.playbackState
         val wants = exo != null && exo.isLoading &&
-            (exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_READY)
+            (state == Player.STATE_BUFFERING || (state == Player.STATE_READY && textLoadsInFlight.isEmpty()))
         mediaStarvation.setWantsData(wants, SystemClock.elapsedRealtime())
+    }
+
+    private fun textLoadEnded(loadEventInfo: LoadEventInfo) {
+        if (textLoadsInFlight.remove(loadEventInfo.loadTaskId)) updateWantsData()
     }
 
     /**
@@ -2133,6 +2166,7 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        textLoadsInFlight.clear()
         updateWantsData()
     }
 
@@ -2153,6 +2187,7 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        textLoadsInFlight.clear()
         updateWantsData()
     }
 
@@ -2175,6 +2210,7 @@ class PlayerController(context: Context) : SessionPlayer {
         probeLatencyMs = 0L
         instrumentation.reset()
         loadErrorStreak.clear()
+        textLoadsInFlight.clear()
         resetPictureProgress()
         audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
@@ -2223,6 +2259,7 @@ class PlayerController(context: Context) : SessionPlayer {
         recoveryGateCount = 0
         instrumentation.reset()
         loadErrorStreak.clear()
+        textLoadsInFlight.clear()
         resetPictureProgress()
         audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
@@ -2390,6 +2427,7 @@ class PlayerController(context: Context) : SessionPlayer {
             exo.clearMediaItems()
         }
         loadErrorStreak.clear()
+        textLoadsInFlight.clear()
         updateWantsData()
     }
 

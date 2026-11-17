@@ -36,7 +36,8 @@ object IncidentJournal {
 
     /** Lines recorded before [install] wait here, on the writer thread only. */
     private const val EARLY_LINES = 100
-    private const val DUMP_WAIT_MS = 2_000L
+    // `dump` runs on the main thread for both the activity and the service.
+    private const val DUMP_WAIT_MS = 500L
 
     private val writer = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "flick-journal").apply { isDaemon = true }

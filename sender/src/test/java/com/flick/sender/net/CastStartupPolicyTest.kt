@@ -92,6 +92,8 @@ class CastStartupPolicyTest {
             "media_start_refused", "no_lan_address", "no_compatible_lan", "control_unreachable",
             "unsupported_video_codec", "unsupported_container", "decoder_init", "http_rejected",
             "tv_backgrounded", "active_cast_busy", "unknown",
+            // The TV reached this phone and was refused, or read past the end of a file that changed.
+            "sender_not_serving",
         )) {
             for (stage in StartupStage.entries) {
                 assertNull("$code/$stage", CastStartupPolicy.reasonForFailure(code, stage, heardSinceLoad = true, linkReleased = true))
@@ -101,7 +103,7 @@ class CastStartupPolicyTest {
     }
 
     @Test fun aTvThatCouldNotReachTheMediaAfterAReleaseIsRetried() {
-        for (code in listOf("startup_timeout", "media_unreachable", "sender_not_serving")) {
+        for (code in listOf("startup_timeout", "media_unreachable")) {
             assertEquals(code, StartupRetryReason.LINK_RELEASED, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = true, phoneRecordedFault = false))
             assertNull(code, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = false, phoneRecordedFault = false))
             // This phone knows why the body stopped, and it was not the link.
@@ -205,6 +207,9 @@ class CastStartupPolicyTest {
         assertEquals("control_disconnected", CastStartupPolicy.busyFaceCode(StartupRetryReason.CONTROL_LOST))
         assertEquals("startup_timeout", CastStartupPolicy.busyFaceCode(StartupRetryReason.LINK_RELEASED))
         assertEquals("active_cast_busy", CastStartupPolicy.busyFaceCode(null))
+        // A retry a receiver's verdict started keeps that verdict's face.
+        assertEquals("media_unreachable", CastStartupPolicy.busyFaceCode(StartupRetryReason.LINK_RELEASED, "media_unreachable"))
+        assertEquals("active_cast_busy", CastStartupPolicy.busyFaceCode(null, "media_unreachable"))
     }
 
     /** A dial that ended with no cast releases the connecting face, and nothing else does. */

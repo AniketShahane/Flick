@@ -7,10 +7,11 @@ import java.time.format.DateTimeFormatter
 /**
  * One [IncidentJournal] line: `<UTC ISO-8601 millis> <event> k=v k=v`.
  *
- * The grammar is the redaction contract. A value is a Boolean, an Int, a Long, an
- * enum name or a short identifier-shaped token, and anything else is written as
- * [INVALID]: an IP, a MAC, a URL, a token or a free-text message has no spelling
- * that passes, so none can reach the file however a call site is written.
+ * A value is a Boolean, an Int, a Long, an enum name or a short identifier-shaped
+ * token, and anything else is written as [INVALID]. That makes IP addresses, MACs,
+ * URLs and free text unrepresentable. It does not cover tokens and names: a session
+ * token that starts with a letter, and many network names and hostnames, fit the
+ * token shape, so the protection for those is the call sites, which must never pass one.
  */
 internal object JournalLine {
     const val INVALID = "invalid"

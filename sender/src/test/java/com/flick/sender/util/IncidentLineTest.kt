@@ -28,7 +28,8 @@ class IncidentLineTest {
         )
     }
 
-    @Test fun addressesUrlsMacsAndTokensAreUnrepresentable() {
+    /** Shape alone; a token or a name that happens to fit is kept out by the call sites. */
+    @Test fun addressesUrlsMacsAndMisshapenStringsAreUnrepresentable() {
         for (value in listOf(
             "192.0.2.10", "http://192.0.2.10:8080/v/abc", "02:00:00:00:00:01", "fe80::1",
             "_leading", "9starts_with_digit", "has space", "", "a".repeat(41), "dash-ed",

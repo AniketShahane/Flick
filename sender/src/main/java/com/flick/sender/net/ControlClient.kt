@@ -749,9 +749,10 @@ class ControlClient(private val scope: CoroutineScope) {
          * user the film; the 45-second detection ceiling is the price paid for that.
          * No idle timeout constrains it: CIO's connection-idle timeout applies only
          * between HTTP requests on a connection, never to an established WebSocket.
-         * The receiver is unaffected in both directions: it installs no pinger of its own (the server plugin's
-         * pingPeriod defaults to zero) and the pong is answered by Ktor's own ponger
-         * rather than by ControlServer, so single-controller ownership never sees it.
+         * The receiver is unaffected in both directions: it installs no pinger of its
+         * own (the server plugin's pingPeriod defaults to zero) and the pong is answered
+         * by Ktor's own ponger rather than by ControlServer, so single-controller
+         * ownership never sees it.
          */
         const val PING_INTERVAL_MS = 15_000L
     }
