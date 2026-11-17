@@ -82,21 +82,31 @@ internal class LoadErrorStreak {
  * Subtitle-route loads whose bytes the starvation stamp ignores while `isLoading`
  * still reports them, keyed by load task id. Main thread.
  *
- * Only a first attempt is held: a subtitle retrying on a dead link must not hide the
- * film's starvation, and a first attempt ends by itself at the connect timeout or
- * the subtitle read timeout.
+ * Only a first attempt holds, and only for [HOLD_MS] from its start. A subtitle
+ * retrying on a dead link must not hide the film's starvation, and neither may a
+ * first attempt that trickles: its read timeout restarts on every read, so it bounds
+ * nothing. [HOLD_MS] is the media route's own read timeout — the film's loads give
+ * up after that long without a byte, and a subtitle gets no more patience before the
+ * film's starvation counts.
  */
 internal class SubtitleLoads {
-    private val inFlight = HashSet<Long>()
+    private val startedAtMs = HashMap<Long, Long>()
 
-    /** True when the set changed. */
-    fun started(taskId: Long, subtitleRoute: Boolean, retryCount: Int): Boolean =
-        subtitleRoute && retryCount == 0 && inFlight.add(taskId)
+    /** True when a new hold began. */
+    fun started(taskId: Long, subtitleRoute: Boolean, retryCount: Int, nowMs: Long): Boolean {
+        if (!subtitleRoute || retryCount != 0 || startedAtMs.containsKey(taskId)) return false
+        startedAtMs[taskId] = nowMs
+        return true
+    }
 
-    /** True when the set changed. */
-    fun ended(taskId: Long): Boolean = inFlight.remove(taskId)
+    /** True when the load was held. */
+    fun ended(taskId: Long): Boolean = startedAtMs.remove(taskId) != null
 
-    fun clear() = inFlight.clear()
+    fun clear() = startedAtMs.clear()
 
-    val isEmpty: Boolean get() = inFlight.isEmpty()
+    fun holds(nowMs: Long): Boolean = startedAtMs.values.any { nowMs - it < HOLD_MS }
+
+    companion object {
+        const val HOLD_MS = 8_000L
+    }
 }

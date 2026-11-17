@@ -98,7 +98,10 @@ internal class DirectLinkEchoPolicy {
      * [EchoOutcome.UNKNOWN] is neither a miss nor an answer. One or two in a row change
      * nothing; a run of [UNKNOWN_RUN_TO_FORGET] ends the current streak and any verification
      * without a verdict, since misses on either side of a gap that long (a Wi-Fi drop, a
-     * VPN coming up) are not one outage. The per-cast budget and the halt are kept.
+     * VPN coming up) are not one outage. The episode's releases still count: one nothing
+     * has answered since is not undone by a gap, so flapping Wi-Fi spends
+     * [RELEASES_PER_EPISODE] and ends unrepaired like any other outage. Only an answer
+     * resets the episode; the per-cast budget and the halt are kept.
      */
     fun onProbe(outcome: EchoOutcome, trusted: Boolean, nowMs: Long, lastReleaseAtMs: Long): Decision {
         if (outcome == EchoOutcome.UNKNOWN) {
@@ -107,7 +110,6 @@ internal class DirectLinkEchoPolicy {
                 misses = 0
                 firstMissAtMs = 0L
                 verifying = false
-                attempts = 0
             }
             return Decision.Wait
         }
@@ -124,7 +126,12 @@ internal class DirectLinkEchoPolicy {
         if (misses == 0) firstMissAtMs = nowMs
         misses += 1
         if (halted || capped || !trusted) return Decision.Wait
-        if (!verifying) return if (misses >= MISSES_TO_RELEASE) release(nowMs, lastReleaseAtMs) else Decision.Wait
+        if (!verifying) {
+            if (misses < MISSES_TO_RELEASE) return Decision.Wait
+            if (attempts < RELEASES_PER_EPISODE) return release(nowMs, lastReleaseAtMs)
+            halted = true
+            return Decision.Unrepaired(misses)
+        }
         if (nowMs - verifyStartedAtMs < VERIFY_MS) return Decision.Wait
         if (attempts < RELEASES_PER_EPISODE) return release(nowMs, lastReleaseAtMs)
         verifying = false

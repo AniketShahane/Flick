@@ -2672,8 +2672,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                         if (current && !DirectLinkWatchPolicy.releasesFor(ping.sentAtMs, lastEchoAnsweredAtMs, SystemClock.elapsedRealtime())) {
                             if (echoSkippedFor !== ping) {
                                 echoSkippedFor = ping
-                                FlickLog.i("lan", "tdls teardown skipped reason=cast_unanswered echoAnswered=true")
-                                IncidentJournal.record("link_release_skipped", "reason" to "cast_unanswered", "echo_answered" to true)
+                                FlickLog.i("lan", "tdls teardown held reason=cast_unanswered")
+                                IncidentJournal.record("link_release_held", "reason" to "cast_unanswered")
                             }
                         } else if (current && releaseDirectLink(host, "cast_unanswered")) {
                             directLinkReleasedFor = ping

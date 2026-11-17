@@ -92,24 +92,47 @@ class DirectLinkEchoPolicyTest {
     /** A gap during verification ends it with no verdict from stale state. */
     @Test fun aLongRunOfUnknownDuringVerificationEndsItWithoutAVerdict() {
         misses(toRelease)
+        // A gap mid-verification yields no Repaired and no Unrepaired from stale state...
+        assertTrue(unknowns(10).all { it == Decision.Wait })
+        // ...but the release nothing has answered since still counts against the episode.
+        val second = misses(toRelease)
+        assertEquals(List(toRelease - 1) { Decision.Wait }, second.take(toRelease - 1))
+        assertEquals(Decision.Release(toRelease, 2), second.last())
         unknowns(10)
-        assertEquals(Decision.Wait, answer())
-        // And after a fresh gap the same way, misses start a new episode, not an Unrepaired.
-        misses(toRelease)
-        unknowns(10)
-        val after = misses(toRelease)
-        assertEquals(List(toRelease - 1) { Decision.Wait }, after.take(toRelease - 1))
-        assertEquals(Decision.Release(toRelease, 1), after.last())
+        val third = misses(toRelease)
+        assertEquals(List(toRelease - 1) { Decision.Wait }, third.take(toRelease - 1))
+        assertEquals(Decision.Unrepaired(toRelease), third.last())
+        assertTrue(misses(20).all { it == Decision.Wait })
     }
 
-    /** The per-cast budget survives a gap. */
-    @Test fun aLongRunOfUnknownKeepsTheCap() {
-        var released = 0
+    @Test fun anAnswerAfterAGapStillClearsTheEpisode() {
+        misses(toRelease)
+        unknowns(10)
+        assertEquals(Decision.Wait, answer())
+        assertEquals(Decision.Release(toRelease, 1), misses(toRelease).last())
+    }
+
+    /** Flapping Wi-Fi is one outage: two releases, then unrepaired, as without the gaps. */
+    @Test fun flappingWifiSpendsOneEpisodeAndEndsUnrepaired() {
+        val released = mutableListOf<Long>()
+        var unrepairedAtMs = -1L
+        val startMs = nowMs
         repeat(10) {
-            for (decision in misses(toRelease)) if (decision is Decision.Release) released++
+            repeat(toRelease) {
+                val at = nowMs
+                when (miss()) {
+                    is Decision.Release -> released += at - startMs
+                    is Decision.Unrepaired -> if (unrepairedAtMs < 0) unrepairedAtMs = at - startMs
+                    Decision.Wait -> Unit
+                    else -> throw AssertionError("unexpected decision")
+                }
+            }
             unknowns(DirectLinkEchoPolicy.UNKNOWN_RUN_TO_FORGET)
         }
-        assertEquals(DirectLinkEchoPolicy.RELEASES_PER_CAST, released)
+        assertEquals(listOf(3_000L, 10_000L), released)
+        assertEquals(17_000L, unrepairedAtMs)
+        assertEquals(Decision.Wait, answer())
+        assertEquals(Decision.Release(toRelease, 1), misses(toRelease).last())
     }
 
     /** Before, because a tunnel's route can reach another host; after, because the default can move. */

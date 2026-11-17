@@ -79,32 +79,47 @@ class MediaStarvationTest {
         assertTrue(streak.onError(6_000L))
     }
 
-    @Test fun onlyASubtitleRoutesFirstAttemptIsHeld() {
+    @Test fun onlyASubtitleRoutesFirstAttemptHolds() {
         val loads = SubtitleLoads()
-        assertFalse(loads.started(1L, subtitleRoute = false, retryCount = 0))
-        assertTrue(loads.isEmpty)
-        assertTrue(loads.started(2L, subtitleRoute = true, retryCount = 0))
-        assertFalse(loads.isEmpty)
-        assertFalse(loads.started(2L, subtitleRoute = true, retryCount = 0))
+        assertFalse(loads.started(1L, subtitleRoute = false, retryCount = 0, nowMs = 1_000L))
+        assertFalse(loads.holds(1_000L))
+        assertTrue(loads.started(2L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L))
+        assertTrue(loads.holds(1_000L))
+        assertFalse(loads.started(2L, subtitleRoute = true, retryCount = 0, nowMs = 2_000L))
     }
 
-    @Test fun aRetryingSubtitleIsNeverHeldAgain() {
+    @Test fun aHoldEndsAfterEightSecondsWithoutAnEnd() {
         val loads = SubtitleLoads()
-        loads.started(7L, subtitleRoute = true, retryCount = 0)
+        loads.started(1L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L)
+        assertTrue(loads.holds(1_000L + SubtitleLoads.HOLD_MS - 1L))
+        assertFalse(loads.holds(1_000L + SubtitleLoads.HOLD_MS))
+    }
+
+    @Test fun aLaterFirstAttemptExtendsTheHold() {
+        val loads = SubtitleLoads()
+        loads.started(1L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L)
+        loads.started(2L, subtitleRoute = true, retryCount = 0, nowMs = 5_000L)
+        assertTrue(loads.holds(1_000L + SubtitleLoads.HOLD_MS))
+        assertFalse(loads.holds(5_000L + SubtitleLoads.HOLD_MS))
+    }
+
+    @Test fun aRetryingSubtitleNeverHolds() {
+        val loads = SubtitleLoads()
+        loads.started(7L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L)
         assertTrue(loads.ended(7L))
-        assertFalse(loads.started(7L, subtitleRoute = true, retryCount = 1))
-        assertTrue(loads.isEmpty)
+        assertFalse(loads.started(7L, subtitleRoute = true, retryCount = 1, nowMs = 1_500L))
+        assertFalse(loads.holds(1_500L))
     }
 
-    @Test fun endingOrClearingReleasesTheHold() {
+    @Test fun endingOrClearingReleasesTheHoldEarly() {
         val loads = SubtitleLoads()
-        loads.started(1L, subtitleRoute = true, retryCount = 0)
-        loads.started(2L, subtitleRoute = true, retryCount = 0)
+        loads.started(1L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L)
+        loads.started(2L, subtitleRoute = true, retryCount = 0, nowMs = 1_000L)
         assertTrue(loads.ended(1L))
         assertFalse(loads.ended(1L))
-        assertFalse(loads.isEmpty)
+        assertTrue(loads.holds(2_000L))
         loads.clear()
-        assertTrue(loads.isEmpty)
+        assertFalse(loads.holds(2_000L))
         assertFalse(loads.ended(2L))
     }
 }

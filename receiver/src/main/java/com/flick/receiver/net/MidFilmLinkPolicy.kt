@@ -21,9 +21,6 @@ package com.flick.receiver.net
  *   counts only time in which no baseline could run at all.
  * - Arming is judged as of the moment starvation began, because no healthy probe
  *   can happen inside an episode and a long one must not disarm itself.
- * - While unarmed, baselines come every [UNARMED_BASELINE_INTERVAL_MS]: the first one
- *   lands in the start-up burst, where one lost echo is a conclusive disarm, and a
- *   30 s wait after it would reopen the window the immediate first baseline closes.
  * - An episode is reported once it has starved for [TEARDOWN_STARVED_MS], or, when
  *   armed, once a probe goes unanswered: a crawling stream starves past [STARVED_MS]
  *   every few seconds, and a phone that ignores echoes would otherwise report each.
@@ -90,7 +87,7 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
         val baselineDueAtMs = if (lastBaselineStartedAtMs == NEVER) {
             castStartedAtMs + FIRST_BASELINE_DELAY_MS
         } else {
-            lastBaselineStartedAtMs + if (isArmed(nowMs)) BASELINE_INTERVAL_MS else UNARMED_BASELINE_INTERVAL_MS
+            lastBaselineStartedAtMs + BASELINE_INTERVAL_MS
         }
         if (nowMs >= baselineDueAtMs && starvedMs < HEALTHY_MAX_STARVED_MS) {
             return Step.Probe(ProbeKind.BASELINE, BASELINE_PROBE_TIMEOUT_MS)
@@ -197,7 +194,6 @@ internal class MidFilmLinkPolicy(private val castStartedAtMs: Long) {
 
         const val FIRST_BASELINE_DELAY_MS = 0L
         const val BASELINE_INTERVAL_MS = 30_000L
-        const val UNARMED_BASELINE_INTERVAL_MS = 10_000L
         const val BASELINE_PROBE_TIMEOUT_MS = 1_000
         const val ARMED_MAX_AGE_MS = 90_000L
 

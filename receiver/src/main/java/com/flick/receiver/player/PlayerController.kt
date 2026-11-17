@@ -176,6 +176,9 @@ class PlayerController(context: Context) : SessionPlayer {
      * `TRACK_TYPE_UNKNOWN`, not TEXT.
      */
     private val subtitleLoads = SubtitleLoads()
+
+    /** Re-reads the want once a subtitle hold has run out, since nothing else may. */
+    private val subtitleHoldExpiry = Runnable { updateWantsData() }
     private val wifiLinkJournal = WifiLinkJournal()
 
     /** Stamps media-route bytes only: a subtitle fetch is not the film arriving. Loader thread. */
@@ -923,8 +926,10 @@ class PlayerController(context: Context) : SessionPlayer {
             mediaLoadData: MediaLoadData,
             retryCount: Int,
         ) {
-            if (subtitleLoads.started(loadEventInfo.loadTaskId, isSubtitleRoute(loadEventInfo.dataSpec.uri.path), retryCount)) {
+            val subtitleRoute = isSubtitleRoute(loadEventInfo.dataSpec.uri.path)
+            if (subtitleLoads.started(loadEventInfo.loadTaskId, subtitleRoute, retryCount, SystemClock.elapsedRealtime())) {
                 updateWantsData()
+                recoveryHandler.postDelayed(subtitleHoldExpiry, SubtitleLoads.HOLD_MS)
             }
         }
 
@@ -1029,9 +1034,10 @@ class PlayerController(context: Context) : SessionPlayer {
     private fun updateWantsData() {
         val exo = player
         val state = exo?.playbackState
+        val nowMs = SystemClock.elapsedRealtime()
         val wants = exo != null && exo.isLoading &&
-            (state == Player.STATE_BUFFERING || (state == Player.STATE_READY && subtitleLoads.isEmpty))
-        mediaStarvation.setWantsData(wants, SystemClock.elapsedRealtime())
+            (state == Player.STATE_BUFFERING || (state == Player.STATE_READY && !subtitleLoads.holds(nowMs)))
+        mediaStarvation.setWantsData(wants, nowMs)
     }
 
     private fun subtitleLoadEnded(loadEventInfo: LoadEventInfo) {

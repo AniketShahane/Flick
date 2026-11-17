@@ -314,35 +314,6 @@ class MidFilmLinkPolicyTest {
         assertTrue("probes=$probes", probes in 4..7)
     }
 
-    @Test fun aLostFirstEchoIsRetriedTenSecondsLaterAndArms() {
-        val w = World()
-        var baselines = 0
-        w.answers = { kind -> kind != ProbeKind.BASELINE || ++baselines > 1 }
-        w.runUntil(START_MS + MidFilmLinkPolicy.UNARMED_BASELINE_INTERVAL_MS - 1L)
-        assertFalse(w.policy.isArmed(w.nowMs))
-        assertEquals(1, w.count(ProbeKind.BASELINE))
-        w.runUntil(START_MS + MidFilmLinkPolicy.UNARMED_BASELINE_INTERVAL_MS + 100L)
-        assertEquals(2, w.count(ProbeKind.BASELINE))
-        assertTrue(w.policy.isArmed(w.nowMs))
-    }
-
-    @Test fun aPhoneThatNeverAnswersIsProbedEveryTenSecondsAndNeverArms() {
-        val w = World()
-        w.answers = { false }
-        w.runUntil(START_MS + 60_000L)
-        // 0, 10, 20, 30, 40, 50 s
-        assertEquals(6, w.count(ProbeKind.BASELINE))
-        assertFalse(w.policy.isArmed(w.nowMs))
-        assertEquals(emptyList<Event>(), w.events)
-    }
-
-    @Test fun anArmedCastKeepsTheThirtySecondCadence() {
-        val w = World()
-        w.runUntil(START_MS + 60_000L - 1L)
-        // 0 and 30 s
-        assertEquals(2, w.count(ProbeKind.BASELINE))
-    }
-
     @Test fun anUnarmedCrawlingStreamReportsNoEpisodes() {
         val w = World()
         w.answers = { false }

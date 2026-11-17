@@ -30,6 +30,6 @@ internal object DirectLinkWatchPolicy {
     fun releasesFor(pingSentAtMs: Long, lastEchoAnsweredAtMs: Long, nowMs: Long): Boolean =
         lastEchoAnsweredAtMs <= pingSentAtMs || nowMs - lastEchoAnsweredAtMs > ECHO_PROOF_FRESH_MS
 
-    /** Two echo periods and a probe timeout: the path answered within the last couple of probes. */
+    /** Two and a half echo periods: the path answered within the last couple of probes. */
     const val ECHO_PROOF_FRESH_MS = 2_500L
 }

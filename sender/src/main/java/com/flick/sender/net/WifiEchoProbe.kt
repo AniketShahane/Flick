@@ -24,9 +24,10 @@ import java.net.SocketTimeoutException
  *
  * [EchoMode.BOUND] binds the socket to the Wi-Fi network. Under a secure VPN netd refuses
  * that to an app that cannot protect sockets (`EPERM`), while the cast itself still works:
- * the VPN leaves the LAN out of its routes and netd falls through to Wi-Fi. So
- * [EchoMode.ROUTED] connects unbound, and counts only when the kernel's source address
- * toward the TV is the serving address both before and after (see [EchoProbeRules]).
+ * the VPN leaves the LAN out of its routes and netd falls through to Wi-Fi. So when that
+ * bind is refused, [EchoMode.ROUTED] connects unbound, and counts only when the kernel's
+ * source address toward the TV is the serving address both before and after (see
+ * [EchoProbeRules]). With no Wi-Fi network holding the serving address there is no probe.
  *
  * Libcore reports a connect that failed after it was started as a `ConnectException` (or,
  * for `ETIMEDOUT`, a `SocketTimeoutException`) whose cause is the `ErrnoException`; a
@@ -51,10 +52,11 @@ internal object WifiEchoProbe {
         withContext(Dispatchers.IO) {
             if (localIp == null) return@withContext unknown
             val target = InetSocketAddress(tvHost, ECHO_PORT)
+            // Serving from no Wi-Fi network — the phone's own hotspot, for one — leaves no
+            // direct link to watch.
+            val network = wifiNetworkHolding(context, localIp) ?: return@withContext unknown
             // Creating the socket is where the bind is refused; only connect() is classified.
-            val bound = wifiNetworkHolding(context, localIp)?.let { network ->
-                runCatching { network.socketFactory.createSocket() }.getOrNull()
-            }
+            val bound = runCatching { network.socketFactory.createSocket() }.getOrNull()
             if (bound != null) return@withContext Result(connectOutcome(bound, target, timeoutMs), EchoMode.BOUND)
             val before = sourceToward(target)
             if (!EchoProbeRules.routedPossible(before, localIp)) return@withContext unknown
