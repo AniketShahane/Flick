@@ -69,7 +69,7 @@ data class DiagnosticsSnapshot(
      * Media load errors Media3 retried through, excluding the sideloaded subtitle's.
      *
      * They were dropped outright, so nothing recorded how close a stall came to fatal:
-     * ~20 retries over ~100 s can be spent behind a plate that says the quality is being
+     * ~34 retries over ~100 s can be spent behind a plate that says the quality is being
      * held, and this is the count that says how much of that budget was actually used.
      */
     val mediaLoadErrorCount: Int = 0,

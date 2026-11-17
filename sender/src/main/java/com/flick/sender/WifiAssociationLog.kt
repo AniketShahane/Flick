@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.SystemClock
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
 
 /**
  * Every Wi-Fi association this phone makes, as edges on the monotonic clock.
@@ -30,6 +31,8 @@ class WifiAssociationMonitor(context: Context) {
 
     private val appContext = context.applicationContext
     private val ledger = WifiAssociationLedger()
+    private val frequency = ChangeLatch<Int>()
+    private val defaultTransport = ChangeLatch<String>()
 
     /**
      * Registered for the life of the process and deliberately never unregistered: this is
@@ -49,20 +52,75 @@ class WifiAssociationMonitor(context: Context) {
             override fun onLost(network: Network) {
                 ledger.lost(network.networkHandle)?.let { record(WIFI_EDGE_LOST, it) }
             }
+
+            // Fires on every signal step; only a frequency move is written, as a roam hint.
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val link = NetworkUtils.getWifiLinkInfo(appContext) ?: return
+                if (!frequency.moved(link.frequencyMhz)) return
+                FlickLog.i("lan", "wifi-roam freqMhz=${link.frequencyMhz} linkMbps=${link.linkSpeedMbps} rssiDbm=${link.rssiDbm}")
+                IncidentJournal.record(
+                    "wifi_roam",
+                    "freq_mhz" to link.frequencyMhz,
+                    "rssi_dbm" to link.rssiDbm,
+                    "link_mbps" to link.linkSpeedMbps,
+                )
+            }
         }
         runCatching { manager.registerNetworkCallback(request, callback) }
             .onFailure { FlickLog.w("lan", "wifi-assoc unavailable err=${it.javaClass.simpleName}") }
+        watchDefaultNetwork(manager)
+    }
+
+    /**
+     * The transport the process's default network rides, journaled on change. The control
+     * connection is deliberately not bound to Wi-Fi — binding could break a working VPN
+     * setup — so this is what says, after the fact, where it was actually going.
+     */
+    private fun watchDefaultNetwork(manager: ConnectivityManager) {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                recordDefault(
+                    defaultNetworkTransport(
+                        wifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+                        vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+                        cellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                    ),
+                )
+            }
+
+            override fun onLost(network: Network) {
+                recordDefault("none")
+            }
+        }
+        runCatching { manager.registerDefaultNetworkCallback(callback) }
+            .onFailure { FlickLog.w("lan", "default-network watch unavailable err=${it.javaClass.simpleName}") }
+    }
+
+    private fun recordDefault(transport: String) {
+        if (!defaultTransport.changed(transport)) return
+        FlickLog.i("lan", "default-network transport=$transport")
+        IncidentJournal.record("default_network", "transport" to transport)
     }
 
     private fun record(edge: String, epoch: Int) {
+        val link = NetworkUtils.getWifiLinkInfo(appContext)
+        frequency.reset(link?.frequencyMhz)
         FlickLog.i(
             "lan",
             wifiAssociationLine(
                 edge = edge,
                 epoch = epoch,
                 atMs = SystemClock.elapsedRealtime(),
-                link = NetworkUtils.getWifiLinkInfo(appContext),
+                link = link,
             ),
+        )
+        IncidentJournal.record(
+            "wifi_assoc",
+            "edge" to edge,
+            "epoch" to epoch,
+            "freq_mhz" to (link?.frequencyMhz ?: 0),
+            "rssi_dbm" to (link?.rssiDbm ?: 0),
+            "link_mbps" to (link?.linkSpeedMbps ?: 0),
         )
     }
 }

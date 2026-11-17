@@ -23,6 +23,9 @@ import com.flick.sender.media.CastArtwork
 import com.flick.sender.media.castArtwork
 import com.flick.sender.net.ControlProtocolV2
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -264,6 +267,10 @@ class CastServerService : Service() {
         }
     }
 
+    override fun dump(fd: FileDescriptor?, writer: PrintWriter?, args: Array<out String>?) {
+        IncidentJournal.dump(writer ?: return)
+    }
+
     override fun onDestroy() {
         synchronized(teardownGuard) {
             startGate.clear()
@@ -318,9 +325,10 @@ class CastServerService : Service() {
             synchronized(lockGuard) {
                 if (!startGate.isLatest(session)) return@launch
                 try {
-                    httpServer.relisten()
+                    IncidentJournal.record("media_relisten", "listening" to httpServer.relisten())
                 } catch (e: Exception) {
                     FlickLog.w("bind", "media server relisten failed ${e.javaClass.simpleName}")
+                    IncidentJournal.record("media_relisten", "listening" to false, "error" to e.javaClass.simpleName)
                 }
             }
         }
@@ -467,8 +475,8 @@ class CastServerService : Service() {
 
     /**
      * Take the Wi-Fi and CPU locks that keep the server serving at full rate with
-     * the screen off. Idempotent: re-arming while already held (the re-target
-     * case) is a no-op, so acquire/release stay balanced.
+     * the screen off. Both are non-reference-counted, so re-arming while already held
+     * (the re-target case) never needs a second release.
      */
     private fun acquireLocks() {
         synchronized(lockGuard) {
@@ -476,8 +484,11 @@ class CastServerService : Service() {
             if (wakeLock == null) wakeLock = newWakeLock()
             wifiLock?.let { if (!it.isHeld) it.acquire() }
             // Generous safety timeout so a lifecycle bug can never pin the CPU
-            // forever; a healthy session releases long before it elapses.
-            wakeLock?.let { if (!it.isHeld) it.acquire(WAKE_LOCK_TIMEOUT_MS) }
+            // forever; a healthy session releases long before it elapses. Re-acquired
+            // on every start even when held: on a non-reference-counted lock that
+            // replaces the pending timed release, so a film started hours into a
+            // session gets the whole timeout rather than what the first film left.
+            wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
     }
 

@@ -6,6 +6,7 @@ import android.os.SystemClock
 import com.flick.receiver.player.AudioDelayPolicy
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import io.ktor.http.HttpHeaders
 import io.ktor.http.RequestConnectionPoint
 import io.ktor.server.application.install
@@ -652,6 +653,7 @@ class ControlServer(
                     }
                 }
                 FlickLog.i("ws", "close gen=${connection.generation} peer=$peer released=$released")
+                IncidentJournal.record("control_close", "gen" to connection.generation, "released" to released)
                 // Reached only when this socket still HELD the lease when it ended —
                 // every revoke above clears ownership first, so `released` is false
                 // there. That is what makes DROPPED provable rather than assumed.
@@ -1206,6 +1208,7 @@ class ControlServer(
         connection.session.launch { if (active?.token === connection.token && generation == connection.generation) connection.emit(payload) }
     }
     private fun notifyControlLost(lostGeneration: Long, reason: ControlLossReason, keyId: String?) {
+        IncidentJournal.record("control_lost", "gen" to lostGeneration, "reason" to reason)
         main.post { commands.onControlLost(lostGeneration, reason, keyId) }
     }
     /**

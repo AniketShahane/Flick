@@ -7,6 +7,12 @@ internal enum class StartupRetryReason(val logName: String) {
 
     /** The control socket went down before the cast reached Active. */
     CONTROL_LOST("control_lost"),
+
+    /**
+     * A direct link was released during this startup, and the startup then failed the
+     * way a TV that never heard this phone fails.
+     */
+    LINK_RELEASED("link_released"),
 }
 
 /**
@@ -64,19 +70,49 @@ internal object CastStartupPolicy {
      * What a startup that failed with [code] at [stage] indicts, where it is worth a second
      * dial at all.
      *
-     * Only the accept wait, and only a silent one. Any frame after the load is a receiver
+     * The accept wait, and only a silent one. Any frame after the load is a receiver
      * that is present and chose not to answer, and every receiver-reported failure arrives
      * as `loadFailed` or `error` with a verdict a second attempt would only repeat — codec,
      * HTTP, a TV app in the background, another session holding the TV. Faults this phone
      * raised about its own server or file never reach this either: nothing a re-dial does
      * changes them.
+     *
+     * And the first-frame wait, only when [linkReleased]: this startup released a direct
+     * link the TV may never have completed, so the film it waited for may never have
+     * reached it, and the release has since given the TV a path a second attempt can use.
      */
-    fun reasonForFailure(code: String, stage: StartupStage, heardSinceLoad: Boolean): StartupRetryReason? =
-        if (code == ACCEPT_TIMEOUT_CODE && stage == StartupStage.AWAITING_ACCEPTANCE && !heardSinceLoad) {
+    fun reasonForFailure(
+        code: String,
+        stage: StartupStage,
+        heardSinceLoad: Boolean,
+        linkReleased: Boolean = false,
+    ): StartupRetryReason? = when {
+        code == ACCEPT_TIMEOUT_CODE && stage == StartupStage.AWAITING_ACCEPTANCE && !heardSinceLoad ->
             StartupRetryReason.ACCEPT_SILENT
-        } else {
-            null
-        }
+        linkReleased && code == FIRST_FRAME_TIMEOUT_CODE && stage == StartupStage.AWAITING_FIRST_FRAME ->
+            StartupRetryReason.LINK_RELEASED
+        else -> null
+    }
+
+    /**
+     * What a receiver's `loadFailed` indicts, where it is worth a second dial: only a TV
+     * that could not get the film's bytes from this phone, and only after this startup
+     * released a direct link — a release that came after the TV gave up on a dead link has
+     * left a path the second attempt can use. [phoneRecordedFault] is this phone's own
+     * record of why the body stopped; one means the file, not the link, ended it.
+     */
+    fun reasonForReportedFailure(
+        code: String,
+        linkReleased: Boolean,
+        phoneRecordedFault: Boolean,
+    ): StartupRetryReason? =
+        if (linkReleased && !phoneRecordedFault && code in LINK_STARVED_CODES) StartupRetryReason.LINK_RELEASED else null
+
+    /** The first-frame wait expiring, raised by this phone or by the receiver. */
+    const val FIRST_FRAME_TIMEOUT_CODE = "startup_timeout"
+
+    /** Receiver codes for a startup that never got the film from this phone. */
+    private val LINK_STARVED_CODES = setOf(FIRST_FRAME_TIMEOUT_CODE, "media_unreachable")
 
     /**
      * What a control socket lost under a cast indicts. A cast that reached Active is
@@ -116,11 +152,14 @@ internal object CastStartupPolicy {
      * reads the load first and holds the TV for up to its own adoption budget (4 s) before
      * it reaches the stop; a resume that lands inside that window is answered `busy` over
      * this phone's own abandoned load. A lost socket needs no hold: the receiver closes it
-     * only after its adoption has already let go.
+     * only after its adoption has already let go. Nor does a released link: the TV has just
+     * answered on the line — with an accept, or with the failure itself — so the line is
+     * kept, and the stop goes out on it ahead of the second load.
      */
     fun redialHoldMs(reason: StartupRetryReason): Long = when (reason) {
         StartupRetryReason.ACCEPT_SILENT -> REDIAL_HOLD_MS
         StartupRetryReason.CONTROL_LOST -> 0L
+        StartupRetryReason.LINK_RELEASED -> 0L
     }
 
     /** The receiver's 4 s adoption budget, plus a margin for the TV that is only now waking. */
@@ -130,16 +169,18 @@ internal object CastStartupPolicy {
     fun faceCode(reason: StartupRetryReason): String = when (reason) {
         StartupRetryReason.ACCEPT_SILENT -> ACCEPT_TIMEOUT_CODE
         StartupRetryReason.CONTROL_LOST -> "control_disconnected"
+        StartupRetryReason.LINK_RELEASED -> FIRST_FRAME_TIMEOUT_CODE
     }
 
     /**
      * The code a `busy` answer is shown as. During a retry's dial the session the TV is
      * busy with is, as far as this phone can know, its own abandoned load — and "another
      * phone is casting" would be the false sentence the retry exists to avoid. The original
-     * failure is what the viewer is owed.
+     * failure is what the viewer is owed: [retryFaceCode] where the retry was started by a
+     * failure the reason alone does not name.
      */
-    fun busyFaceCode(retrying: StartupRetryReason?): String =
-        retrying?.let(::faceCode) ?: "active_cast_busy"
+    fun busyFaceCode(retrying: StartupRetryReason?, retryFaceCode: String? = null): String =
+        retrying?.let { retryFaceCode ?: faceCode(it) } ?: "active_cast_busy"
 
     /**
      * Whether [state] is a startup face left behind by a cast that no longer exists. A

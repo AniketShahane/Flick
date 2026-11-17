@@ -60,6 +60,9 @@ import com.flick.sender.ui.theme.LocalThemePreference
 import com.flick.sender.ui.theme.ThemePreference
 import com.flick.sender.ui.theme.ThemeStore
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -76,6 +79,11 @@ object PairLaunchEventIds {
 class MainActivity : ComponentActivity() {
     private val pairEvents = kotlinx.coroutines.flow.MutableStateFlow<IncomingPairEvent?>(null)
     private lateinit var appearance: AppearanceController
+
+    override fun dump(prefix: String, fd: FileDescriptor?, writer: PrintWriter, args: Array<out String>?) {
+        super.dump(prefix, fd, writer, args)
+        IncidentJournal.dump(writer)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

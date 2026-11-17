@@ -18,4 +18,18 @@ internal object DirectLinkWatchPolicy {
 
     /** Longer than the receiver's 4 s main-thread adoption of a mid-film `loadMedia`. */
     const val UNANSWERED_PROOF_MS = 6_000L
+
+    /**
+     * Whether a ping still unanswered proves the link one-sided. An echo answered after the
+     * ping was sent proves the path both ways — after a long outage TCP's back-off can hold
+     * the pong past the echo watch's repair — so that pong is only late. That proof holds
+     * only while it is fresh: a link can turn one-sided after the echo and the echo then
+     * stop being usable, and no second ping goes out behind this one. All stamps are on the
+     * monotonic clock; [lastEchoAnsweredAtMs] is 0 for none.
+     */
+    fun releasesFor(pingSentAtMs: Long, lastEchoAnsweredAtMs: Long, nowMs: Long): Boolean =
+        lastEchoAnsweredAtMs <= pingSentAtMs || nowMs - lastEchoAnsweredAtMs > ECHO_PROOF_FRESH_MS
+
+    /** Two and a half echo periods: the path answered within the last couple of probes. */
+    const val ECHO_PROOF_FRESH_MS = 2_500L
 }

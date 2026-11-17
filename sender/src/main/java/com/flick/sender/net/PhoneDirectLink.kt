@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
 import java.net.InetAddress
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -22,8 +23,9 @@ import java.util.concurrent.TimeUnit
  * teardown about fifty seconds later: measured as a cast that never started.
  *
  * Constraint: only on evidence that the TV stopped hearing this phone — a ping that timed
- * out on a line still open, or a dial with no SYN-ACK or no route while nothing is being
- * served. A teardown of a link both sides hold can leave the
+ * out on a line still open, a dial with no SYN-ACK or no route while nothing is being
+ * served, or network echoes a TV known to answer them left unanswered
+ * ([DirectLinkEchoPolicy]). A teardown of a link both sides hold can leave the
  * TV holding it alone, which is the blackout the receiver's own reset exists to clear.
  * On a phone with no link to that address it is a no-op.
  */
@@ -48,12 +50,17 @@ internal object PhoneDirectLink {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     wifi.setTdlsEnabled(address, false, Runnable::run) { ok ->
                         FlickLog.i("lan", "tdls teardown reason=$reason accepted=$ok")
+                        IncidentJournal.record("link_release", "reason" to reason, "accepted" to ok)
                     }
                 } else {
                     wifi.setTdlsEnabled(address, false)
                     FlickLog.i("lan", "tdls teardown reason=$reason")
+                    IncidentJournal.record("link_release", "reason" to reason, "accepted" to "unknown")
                 }
-            }.onFailure { FlickLog.w("lan", "tdls teardown failed reason=$reason", it) }
+            }.onFailure {
+                FlickLog.w("lan", "tdls teardown failed reason=$reason", it)
+                IncidentJournal.record("link_release", "reason" to reason, "accepted" to false, "error" to it.javaClass.simpleName)
+            }
         }
     }
 }
