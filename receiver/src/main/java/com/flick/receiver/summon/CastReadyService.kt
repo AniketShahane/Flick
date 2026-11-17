@@ -14,8 +14,11 @@ import androidx.core.app.ServiceCompat
 import com.flick.receiver.MainActivity
 import com.flick.receiver.R
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.io.FileDescriptor
+import java.io.PrintWriter
 
 /**
  * Keeps the paired phone's control connection (the Ktor listener in this process)
@@ -27,6 +30,11 @@ import kotlinx.coroutines.flow.StateFlow
  * control server to keep reachable.
  */
 class CastReadyService : Service() {
+
+    override fun onCreate() {
+        super.onCreate()
+        IncidentJournal.install(this)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val result = runCatching {
@@ -47,6 +55,11 @@ class CastReadyService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** `adb shell dumpsys activity service com.flick.receiver/.summon.CastReadyService` prints the incident journal. */
+    override fun dump(fd: FileDescriptor?, writer: PrintWriter?, args: Array<out String>?) {
+        IncidentJournal.dump(writer ?: return)
+    }
 
     override fun onDestroy() {
         _running.value = false

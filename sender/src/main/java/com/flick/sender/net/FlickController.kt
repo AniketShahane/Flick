@@ -68,6 +68,8 @@ import com.flick.sender.model.VideoRotation
 import com.flick.sender.support.SupportCatalog
 import com.flick.sender.support.SupportPromptStore
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
+import java.net.InetAddress
 import kotlin.random.Random
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -506,6 +508,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var castJob: Job? = null
     private var directLinkWatch: Job? = null
     private var directLinkReleasedFor: ControlClient.OutstandingPing? = null
+    private var echoWatch: Job? = null
+    private val echoTrust = DirectLinkEchoTrust()
+
+    // Every release path stamps and checks this one clock, so no combination of them
+    // releases twice inside [DirectLinkEchoPolicy.RELEASE_DEDUPE_MS].
+    private var lastDirectLinkReleaseAtMs = 0L
+
+    // When the current startup began: a release at or after it earns the startup's one retry.
+    private var castStartedAtMs = 0L
     private var libraryJob: Job? = null
     private var subtitleJob: Job? = null
     private var progressResolutionJob: Job? = null
@@ -962,6 +973,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             attempt = attempt,
         )
         FlickLog.w("cast", "control lost castIdFp=${FlickLog.fp(castId)} serving=$serving attempt=$attempt recovering=$recovers")
+        IncidentJournal.record("control_lost", "serving" to serving, "attempt" to attempt, "recovering" to recovers, "reattach" to false)
         // A startup whose socket dropped under it is the other half of a stalled TV: one
         // that missed its own adoption budget answers the load by closing this socket. It
         // gets the one quiet re-dial before any face, from where it started.
@@ -1056,6 +1068,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             "control lost castIdFp=${FlickLog.fp(castId)} serving=$servingAtLoss reattach=true attempt=$attempt " +
                 "address=${address.name.lowercase()} atMs=$nowMs",
         )
+        IncidentJournal.record("control_lost", "serving" to servingAtLoss, "attempt" to attempt, "reattach" to true, "address" to address)
         publishTransport()
         reattachJob = scope.launch {
             runReattach(castId, servingAtLoss, nowMs)
@@ -1110,7 +1123,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             if (currentCastId != castId) return
             FlickLog.i("ws", "reattach dial=$dials ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
             if (PhoneDirectLink.provesUnheard(result) && !servedWithin(PhoneDirectLink.SERVING_PROOF_MS)) {
-                PhoneDirectLink.release(appContext, candidate.host, "reattach_unanswered")
+                releaseDirectLink(candidate.host, "reattach_unanswered")
             }
             when (ControlReattachPolicy.classify(result)) {
                 ReattachDial.RETRY -> Unit
@@ -1227,6 +1240,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // A write that failed costs the next resume a sweep, never the film being played.
         if (!committed) FlickLog.w("pair", "reattach endpoint not saved tvId=${pairing.tvId}")
         _connectedTv.value = PairedTv(endpoint.tv, host, port, pairing.tvId)
+        _connectedTv.value?.let(::seedEchoTrust)
     }
 
     /** The film is back under a live link; the cast never left Active. */
@@ -1237,6 +1251,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             "cast",
             "reattached castIdFp=${FlickLog.fp(castId)} dials=$dials restarted=$restarted " +
                 "subtitleOwed=$subtitleOwed atMs=${SystemClock.elapsedRealtime()}",
+        )
+        IncidentJournal.record(
+            "control_reattached",
+            "dials" to dials,
+            "restarted" to restarted,
+            "since_loss_ms" to SystemClock.elapsedRealtime() - lastReattachAtMs,
         )
         val rotation = session.state.value.rotation
         if (restarted) session.onRestartedByReload()
@@ -1263,6 +1283,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (currentCastId != castId) return
         val servingNow = ControlRecoveryPolicy.mediaPathServing(lastServedByteAtMs, SystemClock.elapsedRealtime())
         FlickLog.w("cast", "reattach gave up castIdFp=${FlickLog.fp(castId)} reason=$reason dials=$dials")
+        IncidentJournal.record("reattach_gave_up", "reason" to reason, "dials" to dials)
         // The window may end on a socket that authenticated and then sat silent over the
         // load; a re-cast checks a held line before trusting it, so it is left for that.
         recoverOrFail(castId, ControlReattachPolicy.fallbackServing(servingAtLoss, servingNow))
@@ -2178,6 +2199,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             is ControlClient.Result.Paired -> {
                 persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)?.let { pairing ->
                     _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
+                    _connectedTv.value?.let(::seedEchoTrust)
                     clearPendingLaunch(); _pairTarget.value = null; _route.value = Route.Library
                 }
                 finishManualPairAttempt(manualGeneration)
@@ -2186,6 +2208,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val pairing = persistPaired(result.key, result.endpoint, host, result.endpoint.port, legacyAtExactHost?.host)
                 if (pairing != null) {
                     _connectedTv.value = PairedTv(pairing.name, host, pairing.port, pairing.tvId)
+                    _connectedTv.value?.let(::seedEchoTrust)
                     clearPendingLaunch(); _pairTarget.value = null
                     if (PairResultPolicy.clearCode(result)) clearEnteredCode()
                     publishBusyFailure()
@@ -2317,6 +2340,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                                 return@launch
                             }
                             _connectedTv.value = PairedTv(result.endpoint.tv, candidate.host, candidate.port, pairing.tvId)
+                            _connectedTv.value?.let(::seedEchoTrust)
+                            IncidentJournal.record("redial", "outcome" to "resumed", "sweep" to sweep)
                             _route.value = Route.Library
                             afterResume?.invoke()
                             return@launch
@@ -2346,7 +2371,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (sawUntrustedFailure || !sawTransportFailure) break@sweeps
                 val onWifi = com.flick.sender.NetworkUtils.getWifiLinkInfo(appContext) != null
                 if (!ResumeRetryPolicy.sweepsAgain(sweep, userDial, onWifi)) break@sweeps
-                if (lastDialUnheard) dialedHost?.let { PhoneDirectLink.release(appContext, it.host, "dial_unanswered") }
+                if (lastDialUnheard) dialedHost?.let { releaseDirectLink(it.host, "dial_unanswered") }
                 sweep++
                 FlickLog.i("ws", "resume sweep=$sweep after fault=${lastFault?.name?.lowercase() ?: "denied"}")
                 delay(ResumeRetryPolicy.RETRY_DELAY_MS)
@@ -2452,6 +2477,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             }
             if (!committed) return@launch
             _connectedTv.value = PairedTv(endpoint.tv, pairing.host, pairing.port, pairing.tvId)
+            _connectedTv.value?.let(::seedEchoTrust)
             publishTransport()
         }
     }
@@ -2579,7 +2605,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 return@launch
             }
             FlickLog.w("cast", "control line unusable before cast verdict=${verdict.name.lowercase()} held=$held redial=true")
-            if (line.pongTimedOut) _connectedTv.value?.let { PhoneDirectLink.release(appContext, it.host, "ping_unanswered") }
+            if (line.pongTimedOut) _connectedTv.value?.let { releaseDirectLink(it.host, "ping_unanswered") }
             pendingCast = null
             currentCastId?.let { live ->
                 castJob?.cancel()
@@ -2603,7 +2629,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val held = line ?: return
         val host = _connectedTv.value?.host ?: return
         control.confirmAlive(held, roundTrip = true)
-        if (held.pongTimedOut && ready?.isCompleted != true) PhoneDirectLink.release(appContext, host, reason)
+        if (held.pongTimedOut && ready?.isCompleted != true) releaseDirectLink(host, reason)
     }
 
     /**
@@ -2633,7 +2659,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                         delay((DirectLinkWatchPolicy.UNANSWERED_PROOF_MS - waitedMs).coerceAtLeast(0L))
                         if (currentCastId == castId && control.line() === line && line.outstanding === ping) {
                             directLinkReleasedFor = ping
-                            PhoneDirectLink.release(appContext, host, "cast_unanswered")
+                            releaseDirectLink(host, "cast_unanswered")
                         }
                     }
                 }
@@ -2642,6 +2668,95 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
+    /**
+     * Network echoes to the TV for as long as [castId] lasts, from its load on: a one-sided
+     * link released on three missed echoes rather than on a ping left unanswered for six
+     * seconds. See [DirectLinkEchoPolicy]; the ping paths above stay the actors for a TV
+     * that does not answer echoes.
+     */
+    private fun watchEcho(castId: String) {
+        echoWatch?.cancel()
+        val tvId = _connectedTv.value?.tvId ?: return
+        val policy = DirectLinkEchoPolicy()
+        echoWatch = scope.launch {
+            while (currentCastId == castId) {
+                val startedAtMs = SystemClock.elapsedRealtime()
+                val host = _connectedTv.value?.takeIf { it.tvId == tvId }?.host ?: return@launch
+                val answered = echoAnswered(host)
+                if (currentCastId != castId) return@launch
+                if (answered) noteEchoAnswered(tvId, "cast")
+                val nowMs = SystemClock.elapsedRealtime()
+                val decision = policy.onProbe(answered, echoTrust.isTrusted(tvId), nowMs, lastDirectLinkReleaseAtMs)
+                actOnEcho(decision, tvId, host)
+                delay((DirectLinkEchoPolicy.PROBE_PERIOD_MS - (SystemClock.elapsedRealtime() - startedAtMs)).coerceAtLeast(0L))
+            }
+        }
+    }
+
+    private fun actOnEcho(decision: DirectLinkEchoPolicy.Decision, tvId: String, host: String) {
+        when (decision) {
+            DirectLinkEchoPolicy.Decision.Wait -> Unit
+            is DirectLinkEchoPolicy.Decision.Release -> {
+                FlickLog.w("lan", "echo unanswered misses=${decision.misses} attempt=${decision.attempt} release=true")
+                IncidentJournal.record("echo_release", "misses" to decision.misses, "attempt" to decision.attempt)
+                releaseDirectLink(host, "echo_unanswered")
+            }
+            is DirectLinkEchoPolicy.Decision.Deduped -> {
+                FlickLog.i("lan", "echo unanswered misses=${decision.misses} attempt=${decision.attempt} release=recent")
+                IncidentJournal.record("echo_release_recent", "misses" to decision.misses, "attempt" to decision.attempt)
+            }
+            is DirectLinkEchoPolicy.Decision.Repaired -> {
+                FlickLog.i("lan", "echo answered after release outageMs=${decision.sinceFirstMissMs}")
+                IncidentJournal.record("echo_repaired", "outage_ms" to decision.sinceFirstMissMs)
+            }
+            is DirectLinkEchoPolicy.Decision.Unrepaired -> {
+                val withdrawn = echoTrust.withdraw(tvId)
+                FlickLog.w("lan", "echo unrepaired misses=${decision.misses} trustWithdrawn=$withdrawn")
+                IncidentJournal.record("echo_unrepaired", "misses" to decision.misses, "trust_withdrawn" to withdrawn)
+            }
+            DirectLinkEchoPolicy.Decision.Capped -> {
+                FlickLog.w("lan", "echo releases capped perCast=${DirectLinkEchoPolicy.RELEASES_PER_CAST}")
+                IncidentJournal.record("echo_capped", "per_cast" to DirectLinkEchoPolicy.RELEASES_PER_CAST)
+            }
+        }
+    }
+
+    /** One probe of [tv] after a handshake, so a TV that answers echoes is trusted before a cast needs it. */
+    private fun seedEchoTrust(tv: PairedTv) {
+        if (echoTrust.isTrusted(tv.tvId)) return
+        scope.launch { if (echoAnswered(tv.host)) noteEchoAnswered(tv.tvId, "seed") }
+    }
+
+    private fun noteEchoAnswered(tvId: String, source: String) {
+        if (!echoTrust.answered(tvId)) return
+        FlickLog.i("lan", "echo trust gained tvId=$tvId source=$source")
+        IncidentJournal.record("echo_trust", "gained" to true, "source" to source)
+    }
+
+    private suspend fun echoAnswered(host: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching { InetAddress.getByName(host).isReachable(DirectLinkEchoPolicy.PROBE_TIMEOUT_MS) }.getOrDefault(false)
+    }
+
+    /**
+     * Every path's way to drop the phone's direct link, refused within
+     * [DirectLinkEchoPolicy.RELEASE_DEDUPE_MS] of the last release from any of them.
+     */
+    private fun releaseDirectLink(host: String, reason: String): Boolean {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!DirectLinkEchoPolicy.releaseAllowed(lastDirectLinkReleaseAtMs, nowMs)) {
+            val sinceMs = nowMs - lastDirectLinkReleaseAtMs
+            FlickLog.i("lan", "tdls teardown skipped reason=$reason sinceLastMs=$sinceMs")
+            IncidentJournal.record("link_release_skipped", "reason" to reason, "since_last_ms" to sinceMs)
+            return false
+        }
+        lastDirectLinkReleaseAtMs = nowMs
+        PhoneDirectLink.release(appContext, host, reason)
+        return true
+    }
+
+    private fun linkReleasedThisStartup(): Boolean =
+        castStartedAtMs > 0L && lastDirectLinkReleaseAtMs >= castStartedAtMs
+
     private fun servedWithin(windowMs: Long): Boolean =
         lastServedByteAtMs > 0L && SystemClock.elapsedRealtime() - lastServedByteAtMs <= windowMs
     private fun startCast(request: CastRequest) {
@@ -2649,6 +2764,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
         currentRequest = request
+        castStartedAtMs = SystemClock.elapsedRealtime()
+        IncidentJournal.record("cast_start", "retry" to (startupRetrying?.logName ?: "none"))
         _castFailure.value = null
         _failureItem.value = null
         _failureLinkVerdict.value = LinkVerdict.Unknown
@@ -2759,6 +2876,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (!session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)) {
                     throw CastStartupFailure("load_not_sent")
                 }
+                watchEcho(castId)
                 // Back in force before the first frame is decoded, and in one frame rather
                 // than a walk — see PlaybackSession.applyRememberedAudioDelay for why a
                 // cast with nothing on screen yet is the one move that needs no walking.
@@ -2789,6 +2907,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     ?: throw CastStartupFailure("startup_timeout")
                 if (!castGate.isCurrent(castId, thisGeneration) || currentCastId != castId) return@launch
                 readyCommit = true
+                IncidentJournal.record("cast_ready", "startup_ms" to SystemClock.elapsedRealtime() - castStartedAtMs)
                 supportPromptStore.recordSuccess()
                 publishCastStart(CastStartState.Active(castId))
                 watchDirectLink(castId)
@@ -2810,7 +2929,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 val owned = currentCastId == castId
                 val silentLine = loadLine
                 val heardSinceLoad = silentLine != null && silentLine.heard != heardBeforeLoad
-                val retry = CastStartupPolicy.reasonForFailure(failure.code, stage, heardSinceLoad)
+                val retry = CastStartupPolicy.reasonForFailure(failure.code, stage, heardSinceLoad, linkReleasedThisStartup())
                     ?.takeIf { owned && startupRetryAllowed(it) }
                 if (retry != null) {
                     beginStartupRetry(castId, retry, stopRemoteIfLoaded = true)
@@ -2882,6 +3001,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun beginStartupRetry(castId: String, reason: StartupRetryReason, stopRemoteIfLoaded: Boolean) {
         startupRetries += 1
         FlickLog.w("cast", "startup retry reason=${reason.logName} castIdFp=${FlickLog.fp(castId)}")
+        IncidentJournal.record("startup_retry", "reason" to reason.logName)
         val item = _castingItem.value
         publishCastStart(CastStartState.ConnectingControl(castId))
         _route.value = Route.Connecting
@@ -2970,7 +3090,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // Stop, Cancel, a new film and every terminal reach here, and each of them ends the
         // reattach with the cast it was putting back.
         if (reattachCastId == castId) endReattach()
-        if (currentCastId == castId) { directLinkWatch?.cancel(); directLinkWatch = null }
+        if (currentCastId == castId) { directLinkWatch?.cancel(); directLinkWatch = null; echoWatch?.cancel(); echoWatch = null }
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
@@ -2999,6 +3119,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
     /** Normal terminals deliberately capture their Active ownership before [cleanup] clears it. */
     private fun completeCastToLibrary(castId: String) {
+        if (currentCastId == castId) {
+            IncidentJournal.record("cast_end", "active" to ((_castStart.value as? CastStartState.Active)?.castId == castId))
+        }
         val eligibleForInvitation = supportInvitationEligibleForNormalCompletion(
             castId = castId,
             currentCastId = currentCastId,
@@ -3106,6 +3229,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // Active record is what proves a frame ever reached the screen.
         val beforeStart = reportedBeforeStart || !reachedActive
         FlickLog.w("cast", "terminal castIdFp=${FlickLog.fp(castId)} code=$code origin=$resolvedOrigin retryable=$offerRetry beforeStart=$beforeStart httpStatus=$httpStatus")
+        IncidentJournal.record("cast_failed", "code" to code, "origin" to resolvedOrigin, "before_start" to beforeStart, "http_status" to (httpStatus ?: 0))
         _castFailure.value = CastFailure(code, offerRetry, httpStatus, resolvedOrigin, beforeStart)
         publishCastStart(CastStartState.Failed(castId, code))
         cleanup(castId, clearStart = false, stopRemoteIfLoaded = true)
@@ -3141,14 +3265,17 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // twice over meaning two different things about when it happened. Read here
             // rather than inferred, because a mid-film code that degrades to the generic
             // face would otherwise be described as a cast that never started.
-            "loadFailed", "error" -> terminal(
-                id,
-                frame.getString("code"),
-                frame.getBoolean("retryable"),
-                if (frame.has("httpStatus")) frame.getInt("httpStatus") else null,
-                TerminalOrigin.RECEIVER,
-                reportedBeforeStart = frame.optString("t") == "loadFailed",
-            )
+            "loadFailed", "error" -> {
+                if (frame.optString("t") == "loadFailed" && retryReportedStartupFailure(id, frame.getString("code"))) return
+                terminal(
+                    id,
+                    frame.getString("code"),
+                    frame.getBoolean("retryable"),
+                    if (frame.has("httpStatus")) frame.getInt("httpStatus") else null,
+                    TerminalOrigin.RECEIVER,
+                    reportedBeforeStart = frame.optString("t") == "loadFailed",
+                )
+            }
             // The film is playing and stays playing: this ends no cast and fails nothing.
             // It is filed against the item the cast is serving, which the id check above
             // has already proven is this one.
@@ -3158,6 +3285,24 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             "stopped" -> completeCastToLibrary(id)
         }
     }
+    /**
+     * A receiver's startup failure that a direct link released during this startup may
+     * have caused, re-dialed once behind the connecting face as [startCast]'s own are.
+     */
+    private fun retryReportedStartupFailure(castId: String, code: String): Boolean {
+        val request = currentRequest ?: return false
+        if ((_castStart.value as? CastStartState.Active)?.castId == castId) return false
+        val reason = CastStartupPolicy.reasonForReportedFailure(
+            code,
+            linkReleased = linkReleasedThisStartup(),
+            phoneRecordedFault = ServerStateHolder.sourceFault.value?.castId == castId,
+        )?.takeIf(::startupRetryAllowed) ?: return false
+        castJob?.cancel()
+        beginStartupRetry(castId, reason, stopRemoteIfLoaded = true)
+        redialStartup(request, CastStartupPolicy.redialHoldMs(reason))
+        return true
+    }
+
     private fun onSourceTerminal(event: com.flick.sender.SourceServerEvent) {
         val id = event.castId
         requestRemoteStop(id)
@@ -3229,6 +3374,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         pairError: PairErrorKind? = null,
         placesTv: Boolean = true,
     ) {
+        IncidentJournal.record("redial", "outcome" to "failed", "code" to code, "fault" to (fault?.name ?: "none"))
         val request = pendingCast
         pendingCast = null
         // Frozen here for the same reason `terminal` freezes it: the addresses are gone by

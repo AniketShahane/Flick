@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -97,19 +98,28 @@ class NoRedirectRequestGate {
  */
 class NoRedirectHttpDataSourceFactory(
     private val connectTimeoutMs: Int,
-    private val readTimeoutMs: Int,
+    private val mediaReadTimeoutMs: Int,
+    /**
+     * The subtitle route's own, longer read timeout: the phone may spend up to 20 s
+     * reading a subtitle from a slow document provider before the first byte, and a
+     * media-route timeout there would drop a subtitle that was on its way.
+     */
+    private val subtitleReadTimeoutMs: Int,
     private val userAgent: String,
+    private val transferListener: TransferListener? = null,
 ) : DataSource.Factory {
     override fun createDataSource(): DataSource = NoRedirectHttpDataSource(
         connectTimeoutMs = connectTimeoutMs,
-        readTimeoutMs = readTimeoutMs,
+        mediaReadTimeoutMs = mediaReadTimeoutMs,
+        subtitleReadTimeoutMs = subtitleReadTimeoutMs,
         userAgent = userAgent,
-    )
+    ).also { source -> transferListener?.let(source::addTransferListener) }
 }
 
 private class NoRedirectHttpDataSource(
     private val connectTimeoutMs: Int,
-    private val readTimeoutMs: Int,
+    private val mediaReadTimeoutMs: Int,
+    private val subtitleReadTimeoutMs: Int,
     private val userAgent: String,
 ) : BaseDataSource(true) {
     private var connection: HttpURLConnection? = null
@@ -131,11 +141,12 @@ private class NoRedirectHttpDataSource(
         val openedConnection = (url.openConnection() as? HttpURLConnection)
             ?: throw IOException("not an HTTP connection")
         connection = openedConnection
-        bodyGate = SubtitleBodyGate(if (isSubtitleRoute(dataSpec.uri.path)) SUBTITLE_BODY_MAX_BYTES else null)
+        val subtitleRoute = isSubtitleRoute(dataSpec.uri.path)
+        bodyGate = SubtitleBodyGate(if (subtitleRoute) SUBTITLE_BODY_MAX_BYTES else null)
         try {
             openedConnection.instanceFollowRedirects = false
             openedConnection.connectTimeout = connectTimeoutMs
-            openedConnection.readTimeout = readTimeoutMs
+            openedConnection.readTimeout = if (subtitleRoute) subtitleReadTimeoutMs else mediaReadTimeoutMs
             openedConnection.requestMethod = "GET"
             openedConnection.setRequestProperty("User-Agent", userAgent)
             for ((name, value) in dataSpec.httpRequestHeaders) {

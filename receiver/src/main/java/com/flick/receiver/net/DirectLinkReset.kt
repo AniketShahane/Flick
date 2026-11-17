@@ -4,9 +4,11 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import java.net.InetAddress
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -31,7 +33,6 @@ import java.util.concurrent.atomic.AtomicLong
  *   while the link is stuck.
  */
 object DirectLinkReset {
-    private val CHECKS_MS = longArrayOf(45_000L, 90_000L, 180_000L, 300_000L)
     private const val REACH_TIMEOUT_MS = 1_500
 
     private val scheduler = ScheduledThreadPoolExecutor(1) { Thread(it, "flick-tdls-reset").apply { isDaemon = true } }.apply {
@@ -55,26 +56,81 @@ object DirectLinkReset {
         val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return
         val address = runCatching { InetAddress.getByName(peerIp) }.getOrNull() ?: return
         val mine = epoch.incrementAndGet()
-        val current = { epoch.get() == mine && stillQuiet() }
-        for (delayMs in CHECKS_MS) {
-            scheduler.schedule({ check(wifi, address, "$trigger+${delayMs / 1000}s", current) }, delayMs, TimeUnit.MILLISECONDS)
+        val tornDown = AtomicBoolean(false)
+        val done = AtomicBoolean(false)
+        val current = { epoch.get() == mine && !done.get() && stillQuiet() }
+        for (delayMs in IdleLinkChecks.DELAYS_MS) {
+            scheduler.schedule(
+                { check(wifi, address, trigger, delayMs / 1000, current, tornDown, done) },
+                delayMs,
+                TimeUnit.MILLISECONDS,
+            )
         }
     }
 
-    private fun check(wifi: WifiManager, address: InetAddress, label: String, current: () -> Boolean) {
+    private fun check(
+        wifi: WifiManager,
+        address: InetAddress,
+        trigger: String,
+        afterSec: Long,
+        current: () -> Boolean,
+        tornDown: AtomicBoolean,
+        done: AtomicBoolean,
+    ) {
         if (!current()) return
-        if (runCatching { address.isReachable(REACH_TIMEOUT_MS) }.getOrDefault(true)) return
+        if (answers(address, REACH_TIMEOUT_MS)) {
+            if (IdleLinkChecks.seriesDone(tornDown.get(), phoneAnswered = true)) {
+                done.set(true)
+                FlickLog.i("lan", "tdls watch done at=$trigger+${afterSec}s peer=answered")
+            }
+            return
+        }
         // The probe can take ~3 s; a cast adopted inside it must not lose its link.
         if (!current()) return
+        tearDown(wifi, address, TeardownSite.IDLE, "at=$trigger+${afterSec}s peer=unanswered") { accepted ->
+            if (accepted != false) tornDown.set(true)
+        }
+    }
+
+    /**
+     * Whether the phone answers `isReachable`. A probe that cannot be sent counts as
+     * answered, which is the side that never tears a link down.
+     */
+    internal fun answers(address: InetAddress, timeoutMs: Int): Boolean =
+        runCatching { address.isReachable(timeoutMs) }.getOrDefault(true)
+
+    /**
+     * Asks the platform to tear the direct link to [address] down. [onResult] gets
+     * whether it was accepted, or null below API 34, where the platform does not say.
+     * Never call it on the main thread, nor for a phone that answered.
+     */
+    internal fun tearDown(
+        wifi: WifiManager,
+        address: InetAddress,
+        site: TeardownSite,
+        detail: String,
+        onResult: (Boolean?) -> Unit = {},
+    ) {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 wifi.setTdlsEnabled(address, false, Runnable::run) { ok ->
-                    FlickLog.i("lan", "tdls teardown at=$label peer=unanswered accepted=$ok")
+                    FlickLog.i("lan", "tdls teardown $detail accepted=$ok")
+                    IncidentJournal.record("tdls_teardown", "site" to site, "accepted" to ok)
+                    onResult(ok)
                 }
             } else {
                 wifi.setTdlsEnabled(address, false)
-                FlickLog.i("lan", "tdls teardown at=$label peer=unanswered")
+                FlickLog.i("lan", "tdls teardown $detail")
+                IncidentJournal.record("tdls_teardown", "site" to site, "accepted" to "unknown")
+                onResult(null)
             }
-        }.onFailure { FlickLog.w("lan", "tdls teardown failed at=$label", it) }
+        }.onFailure {
+            FlickLog.w("lan", "tdls teardown failed ${detail.substringBefore(' ')}", it)
+            IncidentJournal.record("tdls_teardown_failed", "site" to site, "error" to it.javaClass.simpleName)
+            onResult(false)
+        }
     }
 }
+
+/** Where a teardown was decided; journaled by name. */
+internal enum class TeardownSite { IDLE, MIDFILM, PREFLIGHT }

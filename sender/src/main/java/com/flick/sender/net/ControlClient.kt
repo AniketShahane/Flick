@@ -747,10 +747,9 @@ class ControlClient(private val scope: CoroutineScope) {
          * tolerated 10 seconds, which an ordinary home-Wi-Fi stall under a 4K VBR
          * peak exceeds, and crossing it releases the receiver's lease and costs the
          * user the film; the 45-second detection ceiling is the price paid for that.
-         * 15_000 also keeps a ping on the wire about every 15 seconds, inside Ktor
-         * CIO's 45-second server connection-idle timeout, so an authenticated but
-         * idle session is never reaped for silence either. The receiver is unaffected
-         * in both directions: it installs no pinger of its own (the server plugin's
+         * No idle timeout constrains it: CIO's connection-idle timeout applies only
+         * between HTTP requests on a connection, never to an established WebSocket.
+         * The receiver is unaffected in both directions: it installs no pinger of its own (the server plugin's
          * pingPeriod defaults to zero) and the pong is answered by Ktor's own ponger
          * rather than by ControlServer, so single-controller ownership never sees it.
          */

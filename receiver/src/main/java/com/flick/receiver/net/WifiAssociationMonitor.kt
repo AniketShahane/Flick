@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.SystemClock
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import com.flick.receiver.util.WifiTelemetry
 
 /**
@@ -93,15 +94,28 @@ class WifiAssociationMonitor(context: Context) {
         // reading is of the radio as it stands rather than of the [Network] named
         // here: the framework exposes no per-network frequency without transport
         // info, so across the width of a roam the two can disagree.
+        val link = WifiTelemetry.read(appContext)
         FlickLog.i(
             "lan",
             wifiAssociationLine(
                 edge = edge,
                 epoch = epoch,
                 atMs = SystemClock.elapsedRealtime(),
-                link = WifiTelemetry.read(appContext),
+                link = link,
             ),
         )
+        if (link == null) {
+            IncidentJournal.record("wifi_assoc", "edge" to edge, "epoch" to epoch)
+        } else {
+            IncidentJournal.record(
+                "wifi_assoc",
+                "edge" to edge,
+                "epoch" to epoch,
+                "freq_mhz" to link.frequencyMhz,
+                "rssi_dbm" to link.rssiDbm,
+                "link_mbps" to link.linkSpeedMbps,
+            )
+        }
     }
 }
 

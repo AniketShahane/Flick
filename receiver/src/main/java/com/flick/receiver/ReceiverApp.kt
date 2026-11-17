@@ -82,6 +82,7 @@ import com.flick.receiver.net.LanAddress
 import com.flick.receiver.net.LanBindingMonitor
 import com.flick.receiver.net.LanBlipPolicy
 import com.flick.receiver.net.LanBlipVerdict
+import com.flick.receiver.net.MidFilmLinkGuard
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.net.PairingManager
 import com.flick.receiver.net.PairingSurface
@@ -433,6 +434,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 lifecycleStarted
             },
             foreground = summoner,
+            directLink = MidFilmLinkGuard(context, controller::mediaStarvedMs, controller::lastMediaByteAtMs),
         )
     }
     val server = remember {

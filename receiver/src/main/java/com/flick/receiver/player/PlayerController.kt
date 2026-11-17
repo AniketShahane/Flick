@@ -24,7 +24,10 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.StuckPlayerException
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -44,6 +47,8 @@ import androidx.media3.session.SessionResult
 import com.flick.receiver.net.ExternalSubtitle
 import com.flick.receiver.session.ReceiverFaultDetail
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
+import com.flick.receiver.util.WifiLinkJournal
 import com.flick.receiver.util.WifiTelemetry
 import java.io.IOException
 
@@ -159,6 +164,23 @@ class PlayerController(context: Context) : SessionPlayer {
     val bandwidthMeter: DefaultBandwidthMeter = DefaultBandwidthMeter.Builder(appContext).build()
 
     private val instrumentation = InstrumentationState()
+
+    /** Read off the main thread by the mid-film link guard; see [mediaStarvedMs]. */
+    private val mediaStarvation = MediaStarvation()
+    private val loadErrorStreak = LoadErrorStreak()
+    private val wifiLinkJournal = WifiLinkJournal()
+
+    /** Stamps media-route bytes only: a subtitle fetch is not the film arriving. Loader thread. */
+    private val mediaByteListener = object : TransferListener {
+        override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+            if (bytesTransferred > 0 && !isSubtitleRoute(dataSpec.uri.path)) {
+                mediaStarvation.onMediaBytes(SystemClock.elapsedRealtime())
+            }
+        }
+        override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+    }
 
     /** Compose-observable current player instance (null while released/stopped). */
     var player by mutableStateOf<ExoPlayer?>(null)
@@ -487,6 +509,7 @@ class PlayerController(context: Context) : SessionPlayer {
                         // `-s FlickTV:W` is a stall filter, and it costs nothing in the
                         // zero-stall case this is supposed to be.
                         FlickLog.w("player", "rebuffer start n=${instrumentation.rebufferCount}")
+                        IncidentJournal.record("rebuffer_start", "n" to instrumentation.rebufferCount)
                     }
                 }
                 Player.STATE_READY -> {
@@ -505,6 +528,7 @@ class PlayerController(context: Context) : SessionPlayer {
                 }
             }
             instrumentation.playbackState = playbackState
+            updateWantsData()
             val livePlayer = player
             val attemptToken = livePlayer?.currentMediaItem?.subtitleReloadAttemptToken()
             if (livePlayer != null && attemptToken != null &&
@@ -624,6 +648,10 @@ class PlayerController(context: Context) : SessionPlayer {
             }
         }
 
+        override fun onIsLoadingChanged(isLoading: Boolean) {
+            updateWantsData()
+        }
+
         override fun onCues(cueGroup: CueGroup) {
             instrumentation.subtitleCueKind = subtitleCueKind(
                 hasText = cueGroup.cues.any { it.text != null },
@@ -661,6 +689,7 @@ class PlayerController(context: Context) : SessionPlayer {
                 // player. Byte-range makes the resume seamless, and the buffer hides it.
                 recoveryGateCount++
                 instrumentation.autoRecoveryCount++
+                IncidentJournal.record("player_recovery", "attempt" to recoveryGateCount, "code" to error.errorCode)
                 scheduleRecovery(recoveryGateCount)
                 return
             }
@@ -896,6 +925,9 @@ class PlayerController(context: Context) : SessionPlayer {
             // say how much of the ~100 s retry budget a stall had spent. Counting is all
             // that happens — re-preparing eagerly would stall a film that is fine.
             instrumentation.mediaLoadErrorCount++
+            if (loadErrorStreak.onError(SystemClock.elapsedRealtime())) {
+                IncidentJournal.record("load_error", "error" to error.javaClass.simpleName)
+            }
         }
 
         override fun onLoadCompleted(
@@ -960,6 +992,27 @@ class PlayerController(context: Context) : SessionPlayer {
         }
     }
 
+    /**
+     * Whether the player is asking for media right now. `isLoading` stays true through
+     * a load's retry back-off, and READY/BUFFERING exclude a player that is idle or
+     * ended with a loader still winding down. Application thread.
+     */
+    private fun updateWantsData() {
+        val exo = player
+        val wants = exo != null && exo.isLoading &&
+            (exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_READY)
+        mediaStarvation.setWantsData(wants, SystemClock.elapsedRealtime())
+    }
+
+    /**
+     * How long the player has wanted media and received none, in ms; 0 while it wants
+     * nothing (paused on a full buffer, ended, idle, released). Safe from any thread.
+     */
+    fun mediaStarvedMs(nowMs: Long): Long = mediaStarvation.starvedMs(nowMs)
+
+    /** `elapsedRealtime` of the last media-route byte, [Long.MIN_VALUE] before any. Safe from any thread. */
+    fun lastMediaByteAtMs(): Long = mediaStarvation.lastMediaByteAtMs()
+
     private fun closeRebufferWindow() {
         if (instrumentation.currentRebufferStartMs != 0L) {
             val heldMs = SystemClock.elapsedRealtime() - instrumentation.currentRebufferStartMs
@@ -972,6 +1025,7 @@ class PlayerController(context: Context) : SessionPlayer {
                 "rebuffer end heldMs=$heldMs n=${instrumentation.rebufferCount} " +
                     "cumulativeMs=${instrumentation.cumulativeRebufferMs}",
             )
+            IncidentJournal.record("rebuffer_end", "held_ms" to heldMs, "n" to instrumentation.rebufferCount)
         }
     }
 
@@ -1832,24 +1886,27 @@ class PlayerController(context: Context) : SessionPlayer {
         // a dead sender surfaces as an error instead of hanging forever.
         val httpDataSourceFactory = NoRedirectHttpDataSourceFactory(
             connectTimeoutMs = CONNECT_TIMEOUT_MS,
-            readTimeoutMs = READ_TIMEOUT_MS,
+            mediaReadTimeoutMs = READ_TIMEOUT_MS,
+            subtitleReadTimeoutMs = SUBTITLE_READ_TIMEOUT_MS,
             userAgent = USER_AGENT,
+            transferListener = mediaByteListener,
         )
 
         // Generous LAN direct-play retry policy replacing Media3's default (3
-        // tries). ~100s of quiet capped-backoff retrying rides out router blips,
-        // phone roams and brief peer-block episodes, and every video byte-range
-        // retry is a perfect resume. A sideloaded text file is optional and gets
-        // one short retry instead; making it share this ~100s budget can hold the
-        // merged source in prepare long after the video itself is healthy. 4xx
-        // (except 416 Range-Not-Satisfiable) still fail fast.
+        // tries). ~100s of quiet capped-backoff retrying (34 tries: 0.5, 1, 2 s, then
+        // 3 s each) rides out router blips, phone roams and brief peer-block
+        // episodes, and every video byte-range retry is a perfect resume. A
+        // sideloaded text file is optional and gets one short retry instead; making
+        // it share this ~100s budget can hold the merged source in prepare long
+        // after the video itself is healthy. 4xx (except 416 Range-Not-Satisfiable)
+        // still fail fast.
         val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy(MAX_LOAD_RETRY_COUNT) {
             override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
                 // Preserve the default policy's fail-fast classification for non-HTTP
                 // fatal errors (ParserException, FileNotFoundException,
                 // CleartextNotPermittedException, position-out-of-range
                 // DataSourceExceptions): it returns TIME_UNSET for those. Retrying
-                // unplayable content ~20x behind the buffer would only delay the
+                // unplayable content ~34x behind the buffer would only delay the
                 // diagnosis by ~100s (e.g. the URL points at an HTML page → sniffing
                 // throws ParserException). InvalidResponseCodeException stays retriable
                 // in the default, so the 4xx check below still governs HTTP codes.
@@ -1865,12 +1922,14 @@ class PlayerController(context: Context) : SessionPlayer {
                 // subtitle SingleSampleMediaSource, so without it a single over-cap
                 // sidecar cost ~20 fetches — on the order of 100 MB and 100 s of TV-side
                 // downloading — to reach a conclusion already known on the first attempt.
-                if (exception is RedirectRejectedException ||
+                //
+                // A 503 is the one exception: the phone is busy for a moment, not
+                // refusing, and ending the film over it costs more than a retry.
+                val busy = exception is PlaybackHttpStatusException && isRetriableHttpStatus(exception.statusCode)
+                val refused = exception is RedirectRejectedException ||
                     exception is PlaybackHttpStatusException ||
                     exception is SubtitleTooLargeException
-                ) {
-                    return C.TIME_UNSET
-                }
+                if (refused && !busy) return C.TIME_UNSET
                 if (exception is HttpDataSource.InvalidResponseCodeException) {
                     val code = exception.responseCode
                     if (code in 400..499 && code != 416) return C.TIME_UNSET
@@ -2074,6 +2133,7 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        updateWantsData()
     }
 
     /** Terminal teardown (onDestroy / Compose onDispose). */
@@ -2093,6 +2153,7 @@ class PlayerController(context: Context) : SessionPlayer {
         exo.removeAnalyticsListener(analyticsListener)
         exo.release()
         player = null
+        updateWantsData()
     }
 
     // --- Playback control ----------------------------------------------------
@@ -2113,6 +2174,7 @@ class PlayerController(context: Context) : SessionPlayer {
         stableReadySinceMs = 0L
         probeLatencyMs = 0L
         instrumentation.reset()
+        loadErrorStreak.clear()
         resetPictureProgress()
         audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
@@ -2160,6 +2222,7 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingRecovery.cancel()
         recoveryGateCount = 0
         instrumentation.reset()
+        loadErrorStreak.clear()
         resetPictureProgress()
         audioRestarted = false
         // [decodeCompressedAudio] is deliberately NOT reset here. What it records is
@@ -2326,6 +2389,8 @@ class PlayerController(context: Context) : SessionPlayer {
             exo.stop()
             exo.clearMediaItems()
         }
+        loadErrorStreak.clear()
+        updateWantsData()
     }
 
     /** Record the pre-flight probe round-trip so the overlay can surface it. */
@@ -2605,7 +2670,13 @@ class PlayerController(context: Context) : SessionPlayer {
         val rendered = renderedFrames(exo)
         watchPictureProgress(exo, rendered, position)
 
+        updateWantsData()
+        loadErrorStreak.closeIfRecovered(mediaStarvation.lastMediaByteAtMs(), SystemClock.elapsedRealtime())?.let {
+            IncidentJournal.record("load_recovered", "streak_ms" to it.streakMs, "errors" to it.errors)
+        }
+
         val wifi = WifiTelemetry.read(appContext)
+        wifiLinkJournal.observe(wifi)
 
         return DiagnosticsSnapshot(
             playbackState = instrumentation.playbackState,
@@ -2667,15 +2738,21 @@ class PlayerController(context: Context) : SessionPlayer {
         // same main-loop burst as the discontinuity — always arrives first).
         const val SEEK_SETTLE_MS = 700L
 
-        const val CONNECT_TIMEOUT_MS = 15_000
-        const val READ_TIMEOUT_MS = 30_000
+        // A stalled media read or a dead connect fails fast so the retry policy and the
+        // mid-film link repair get to act while the buffer still covers the gap. The
+        // subtitle route keeps 30 s: the phone may take up to 20 s to read a subtitle
+        // from a slow document provider before its first byte.
+        const val CONNECT_TIMEOUT_MS = 4_000
+        const val READ_TIMEOUT_MS = 8_000
+        const val SUBTITLE_READ_TIMEOUT_MS = 30_000
         const val USER_AGENT = "FlickReceiver/0.1 (Media3 direct-play)"
 
-        // Load-error retry policy: ~20 tries with capped backoff (min(1000*(n+1), 5000)ms)
-        // ≈ 100s of quiet retrying. Whether that is hidden depends on the device's
-        // own budget: it is covered outright at 40 Mbps and below on the verified
-        // hardware, and only partly on a TV whose heap forced the budget down.
-        const val MAX_LOAD_RETRY_COUNT = 20
+        // Load-error retry policy: 34 tries with capped backoff (0.5, 1, 2 s, then 3 s;
+        // see [lanLoadRetryDelayMs]) ≈ 100s of quiet retrying. Whether that is hidden
+        // depends on the device's own budget: it is covered outright at 40 Mbps and
+        // below on the verified hardware, and only partly on a TV whose heap forced
+        // the budget down.
+        const val MAX_LOAD_RETRY_COUNT = 34
         // Bounded fatal-error auto-recovery: backoff per attempt (1-4), then give up.
         private val RECOVERY_BACKOFF_MS = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L)
         val MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.size

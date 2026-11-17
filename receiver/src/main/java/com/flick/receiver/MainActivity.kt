@@ -9,8 +9,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import com.flick.receiver.net.NsdAdvertiser
 import com.flick.receiver.ui.theme.warmBundledTypefaces
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import com.flick.receiver.util.LocalWindowEntrance
 import com.flick.receiver.util.WindowEntrance
+import java.io.FileDescriptor
+import java.io.PrintWriter
 
 /**
  * Single leanback Activity for the Phase 0 receiver spike. Hosts the entire
@@ -42,6 +45,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        IncidentJournal.install(this)
         FlickLog.i(
             "bind",
             "app start version=${BuildConfig.VERSION_NAME} code=${BuildConfig.VERSION_CODE} " +
@@ -77,5 +81,13 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         entrance.onStop()
         super.onStop()
+    }
+
+    /** `adb shell dumpsys activity top` prints the incident journal, release builds included. */
+    override fun dump(prefix: String, fd: FileDescriptor?, writer: PrintWriter, args: Array<out String>?) {
+        super.dump(prefix, fd, writer, args)
+        // The platform's own `--autofill`-style requests are answered by super alone.
+        if (args?.firstOrNull()?.startsWith("--") == true) return
+        IncidentJournal.dump(writer)
     }
 }

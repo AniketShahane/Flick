@@ -5,6 +5,7 @@ import com.flick.sender.media.releaseInheritedUriGrants
 import com.flick.sender.media.releaseRetiredSubtitleFolder
 import com.flick.sender.net.CastCoordinator
 import com.flick.sender.net.FilmDetailsStore
+import com.flick.sender.util.IncidentJournal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +25,8 @@ class FlickApplication : Application() {
         private set
     override fun onCreate() {
         super.onCreate()
+        IncidentJournal.install(applicationContext)
+        IncidentJournal.record("process_start", "release" to !BuildConfig.DEBUG)
         coordinator = CastCoordinator(applicationContext, applicationScope)
         // Here rather than on the one screen that knows about it: the grant a retired
         // subtitles source took is invisible from every surface, so no surface can be the

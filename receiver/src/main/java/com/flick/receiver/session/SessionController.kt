@@ -16,6 +16,7 @@ import com.flick.receiver.player.PlaybackFailureClassifier
 import com.flick.receiver.player.SessionPlayer
 import com.flick.receiver.summon.SummonWaitPolicy
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -190,6 +191,8 @@ class SessionController(
     private val probe: suspend (String) -> ProbeResult = { url -> PreflightProbe.probe(url) },
     private val foreground: ForegroundRequest = ForegroundRequest.None,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
+    /** Injectable for the reason [probe] is: it probes the phone and asks the radio to act. */
+    private val directLink: DirectLinkGuard = DirectLinkGuard.None,
 ) : ControlCommands {
     var stage by mutableStateOf<MediaStage>(MediaStage.None)
         private set
@@ -391,6 +394,9 @@ class SessionController(
         startMs: Long,
         subtitle: ExternalSubtitle?,
     ): ControlCastResult {
+        this.castId?.takeIf { it != castId }?.let {
+            IncidentJournal.record("cast_end", "cast" to journalId(it), "reason" to "replaced")
+        }
         invalidate(clearRetained = true)
         val accepted = ControlCastResult.Accepted(castId)
         retainedResult = accepted
@@ -407,12 +413,28 @@ class SessionController(
         startupDeadlineExtended = false
         armStartupDeadline(castId, generation, STARTUP_DEADLINE_MS)
         FlickLog.i("cast", "stage=checking castIdFp=${FlickLog.fp(castId)} src=${FlickLog.endpoint(url)} startMs=$startMs durationMs=$durationMs")
+        IncidentJournal.record("cast_start", "cast" to journalId(castId), "subtitle" to (subtitle != null))
         val started = clock()
         probeJob = scope.launch {
             val hold = if (!lifecycleStarted()) foreground.holdAwake() else 0L
             try {
-                val probeStarted = clock()
-                when (val result = probe(url)) {
+                var probeStarted = clock()
+                var result = probe(url)
+                // The phone reached this TV to send the cast and this TV cannot reach
+                // the phone: the fingerprint of a direct link only this TV still holds.
+                // One repair and one more pre-flight, inside the same startup deadline.
+                if (result == ProbeResult.Unreachable && gate.isCurrent(castId, generation)) {
+                    FlickLog.i("probe", "link repair start latencyMs=${clock() - probeStarted}")
+                    val repaired = directLink.repairUnreachablePeer(url)
+                    if (!gate.isCurrent(castId, generation)) return@launch
+                    IncidentJournal.record("preflight_repair", "cast" to journalId(castId), "torn_down" to repaired)
+                    if (repaired && clock() < startupDeadlineElapsedMs) {
+                        probeStarted = clock()
+                        result = probe(url)
+                        IncidentJournal.record("preflight_retry", "cast" to journalId(castId), "ok" to (result is ProbeResult.Ok))
+                    }
+                }
+                when (result) {
                     is ProbeResult.Ok -> {
                         FlickLog.i("probe", "result=Ok latencyMs=${result.latencyMs}")
                         if (!gate.isCurrent(castId, generation)) return@launch
@@ -559,6 +581,7 @@ class SessionController(
         val held = orphan ?: return
         if (keyId != null && held.keyId != keyId) return
         FlickLog.i("cast", "orphan forgotten castIdFp=${FlickLog.fp(held.castId)}")
+        IncidentJournal.record("cast_end", "cast" to journalId(held.castId), "reason" to "forgotten")
         invalidateToNone(clearRetained = true)
     }
 
@@ -586,6 +609,8 @@ class SessionController(
                 // moved the cast to the phone's new socket while it was still starting.
                 stage = MediaStage.Active(castId, controlLeaseGeneration ?: lease)
                 FlickLog.i("cast", "stage=active castIdFp=${FlickLog.fp(castId)} startupMs=${clock() - startedElapsedMs}")
+                IncidentJournal.record("cast_ready", "cast" to journalId(castId), "startup_ms" to clock() - startedElapsedMs)
+                directLink.watchCast(castId, castUrl ?: url)
                 val outcome = ControlCastResult.Ready(
                     castId = castId,
                     probeLatencyMs = probeLatencyMs,
@@ -696,7 +721,16 @@ class SessionController(
     ) {
         if (!gate.isCurrent(id, generation)) return
         clearOrphan()
+        directLink.releaseCast()
         FlickLog.w("cast", "fail code=${code.wire} detail=$detail retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
+        IncidentJournal.record(
+            "cast_fail",
+            "cast" to journalId(id),
+            "code" to code,
+            "retryable" to retryable,
+            "before_ready" to beforeReady,
+            "status" to (status ?: -1),
+        )
         // Safe from inside the probe coroutine itself: nothing suspends after fail() there,
         // and its finally still releases the hold.
         probeJob?.cancel(); probeJob = null
@@ -760,11 +794,13 @@ class SessionController(
 
     override fun onCancelLoad(castId: String): Boolean {
         if (!current(castId)) return false
+        IncidentJournal.record("cast_end", "cast" to journalId(castId), "reason" to "cancelled")
         invalidateToNone()
         return true
     }
     override fun onStop(castId: String): Boolean {
         if (!current(castId)) return false
+        IncidentJournal.record("cast_end", "cast" to journalId(castId), "reason" to "stopped")
         retainedResult = ControlCastResult.Stopped(castId)
         invalidateToNone(clearRetained = false)
         return true
@@ -832,6 +868,7 @@ class SessionController(
             "controlLost reason=dropped held graceMs=${CastReattachPolicy.ORPHAN_GRACE_MS} " +
                 "keyIdFp=${held.keyId?.let(FlickLog::fp) ?: "none"} castIdFp=${FlickLog.fp(held.castId)}",
         )
+        IncidentJournal.record("cast_orphaned", "cast" to journalId(held.castId))
         orphanJob = scope.launch {
             delay(CastReattachPolicy.ORPHAN_GRACE_MS)
             if (orphan !== held || castId != held.castId) return@launch
@@ -859,6 +896,7 @@ class SessionController(
         seekTargetMs = 0L
         stage = MediaStage.None
         FlickLog.w("cast", "controlLost reason=dropped beforeReady=$beforeReady castIdFp=${FlickLog.fp(id)}")
+        IncidentJournal.record("cast_end", "cast" to journalId(id), "reason" to "control_lost", "before_ready" to beforeReady)
         controlLossAnnounceJob = scope.launch {
             delay(CONTROL_LOSS_ANNOUNCE_DELAY_MS)
             // Anything at all having happened in the meantime — a re-cast, a Back, a new
@@ -883,6 +921,7 @@ class SessionController(
     /** Unconditional local authority for lifecycle, LAN loss and endpoint rebind. */
     fun forceLocalTeardown(): LocalTeardown {
         val result = LocalTeardown(castId, TerminalPhase.beforeReady(stage))
+        result.castId?.let { IncidentJournal.record("cast_end", "cast" to journalId(it), "reason" to "local_teardown") }
         invalidateToNone(clearRetained = true)
         return result
     }
@@ -912,6 +951,7 @@ class SessionController(
     }
 
     private fun invalidate(clearRetained: Boolean) {
+        directLink.releaseCast()
         gate.forceInvalidate()
         pendingSeek = null
         probeJob?.cancel(); probeJob = null
@@ -1000,6 +1040,9 @@ class SessionController(
     }
 
     private fun mediaIdFor(castId: String, generation: Long) = "flick:$castId:$generation"
+
+    /** The cast's log fingerprint, spelled so the journal's token grammar accepts it. */
+    private fun journalId(castId: String) = "c" + FlickLog.fp(castId)
 
     private fun stageLeaseGeneration(): Long? = when (val value = stage) {
         is MediaStage.Checking -> value.controlLeaseGeneration

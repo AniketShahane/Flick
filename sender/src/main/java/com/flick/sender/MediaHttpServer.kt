@@ -4,7 +4,9 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -20,22 +22,25 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
-import io.ktor.server.response.respondOutputStream
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.head
 import io.ktor.server.routing.routing
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.IOException
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -74,9 +79,9 @@ class MediaHttpServer(context: Context) {
     private var server: EmbeddedServer<*, *>? = null
 
     // Caps concurrent GET *body* transfers so a LAN flood can't exhaust the CIO
-    // engine (HEAD/404/403/416 are cheap and stay ungated). Fair so a burst of
-    // clients can't starve an earlier waiter. Process-wide: one server at a time.
-    private val transferPermits = Semaphore(MAX_CONCURRENT_TRANSFERS, true)
+    // engine (HEAD/404/403/416 are cheap and stay ungated). Process-wide: one server
+    // at a time.
+    private val transfers = TransferSlots(MAX_CONCURRENT_TRANSFERS)
 
     // Subtitles get their own pool: their source is an arbitrary DocumentsProvider whose
     // read can block far longer than a local file, and that must not consume a permit the
@@ -428,24 +433,44 @@ class MediaHttpServer(context: Context) {
             return
         }
 
-        // GET body: bound concurrent transfers. tryAcquire() is non-blocking, so a
-        // flood is shed with 503 rather than queued. The permit is released in a
-        // finally so it survives a client disconnect or streaming exception.
-        if (!transferPermits.tryAcquire()) {
-            FlickLog.w("http", "reject reason=busy status=503")
-            call.respondText("Server busy", status = HttpStatusCode.ServiceUnavailable)
-            return
+        // GET body: bound concurrent transfers. Non-blocking, so a flood is shed with
+        // 503 rather than queued. The slot is released in a finally so it survives a
+        // client disconnect or streaming exception.
+        //
+        // Eviction has to end a write blocked on a TV that is gone. Ktor's blocking
+        // OutputStream adapter writes through its own runBlocking, which no cancellation
+        // of this call reaches, so the body writes the response channel directly: its
+        // suspended write is cancellable, and cancelling the channel wakes it as well.
+        val transferJob = currentCoroutineContext().job
+        val channelRef = AtomicReference<ByteWriteChannel?>(null)
+        val admission = transfers.acquire(SystemClock.elapsedRealtime()) {
+            channelRef.get()?.cancel(IOException("transfer evicted"))
+            transferJob.cancel(CancellationException("transfer evicted"))
+        }
+        val lease = when (admission) {
+            is TransferSlots.Admission.Refused -> {
+                FlickLog.w("http", "reject reason=busy status=503 active=${admission.active}")
+                IncidentJournal.record("http_busy", "active" to admission.active)
+                call.respondText("Server busy", status = HttpStatusCode.ServiceUnavailable)
+                return
+            }
+            is TransferSlots.Admission.Admitted -> {
+                admission.evictedIdleMs?.let { idleMs ->
+                    FlickLog.w("http", "evict idleMs=$idleMs active=${admission.active}")
+                    IncidentJournal.record("http_evict", "idle_ms" to idleMs, "active" to admission.active)
+                }
+                admission.lease
+            }
         }
         try {
-            call.respondOutputStream(
-                contentType = contentType,
-                status = status,
-                contentLength = bodyLength,
-            ) {
-                streamSlice(uri, start = streamStart, maxLength = streamMax, out = this)
-            }
+            call.respond(
+                VideoBody(contentType, status, bodyLength) { channel ->
+                    channelRef.set(channel)
+                    streamSlice(uri, start = streamStart, maxLength = streamMax, out = channel, lease = lease)
+                },
+            )
         } finally {
-            transferPermits.release()
+            transfers.release(lease)
         }
     }
 
@@ -471,11 +496,17 @@ class MediaHttpServer(context: Context) {
 
     /**
      * Copies exactly [maxLength] bytes (or up to EOF) starting at byte [start]
-     * from the content URI into [out]. Streams straight off the file descriptor
-     * — never buffers the whole file. Client disconnects and revoked grants are
-     * swallowed so the server stays up.
+     * from the content URI into [out], stamping [lease] with each write. Streams
+     * straight off the file descriptor — never buffers the whole file. Client
+     * disconnects and revoked grants are swallowed so the server stays up.
      */
-    private suspend fun streamSlice(uri: Uri, start: Long, maxLength: Long, out: OutputStream) {
+    private suspend fun streamSlice(
+        uri: Uri,
+        start: Long,
+        maxLength: Long,
+        out: ByteWriteChannel,
+        lease: TransferSlots.Lease,
+    ) {
         TransferTelemetry.enterTransfer()
         try {
             // The fd seek + read/write loop is blocking; run it on Dispatchers.IO so
@@ -497,8 +528,9 @@ class MediaHttpServer(context: Context) {
                         val toRead = if (remaining < buffer.size) remaining.toInt() else buffer.size
                         val read = input.read(buffer, 0, toRead)
                         if (read == -1) break
-                        out.write(buffer, 0, read)
+                        out.writeFully(buffer, 0, read)
                         TransferTelemetry.recordBytes(read)
+                        lease.progress(SystemClock.elapsedRealtime())
                         remaining -= read
                     }
                     out.flush()
@@ -521,6 +553,11 @@ class MediaHttpServer(context: Context) {
             // Typically the TV closed the connection mid-transfer (seek/stop).
             FlickLog.d("http", "stream stopped ${e.javaClass.simpleName}")
         } catch (e: Exception) {
+            // An evicted transfer was ended by this server, not by its file.
+            if (lease.evicted) {
+                FlickLog.d("http", "stream evicted ${e.javaClass.simpleName}")
+                return
+            }
             // Revoked URI grant, etc. Never let it take down the server.
             FlickLog.w("http", "stream failed ${e.javaClass.simpleName}")
             // Raised here and NOT in the IOException arm above: that one is the TV
@@ -545,6 +582,15 @@ class MediaHttpServer(context: Context) {
         override val contentType: ContentType,
         override val contentLength: Long?,
     ) : OutgoingContent.NoContent()
+
+    private class VideoBody(
+        override val contentType: ContentType,
+        override val status: HttpStatusCode,
+        override val contentLength: Long?,
+        private val body: suspend (ByteWriteChannel) -> Unit,
+    ) : OutgoingContent.WriteChannelContent() {
+        override suspend fun writeTo(channel: ByteWriteChannel) = body(channel)
+    }
 
     companion object {
         private const val BUFFER_SIZE = 256 * 1024

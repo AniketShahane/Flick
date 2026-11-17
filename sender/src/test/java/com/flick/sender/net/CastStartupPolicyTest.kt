@@ -68,6 +68,47 @@ class CastStartupPolicyTest {
         }
     }
 
+    /**
+     * A startup that released a direct link and then never reached its first frame may
+     * have been starved by that very link: one quiet re-dial over the repaired path.
+     */
+    @Test fun aFirstFrameTimeoutAfterALinkReleaseIsRetried() {
+        assertEquals(
+            StartupRetryReason.LINK_RELEASED,
+            CastStartupPolicy.reasonForFailure("startup_timeout", StartupStage.AWAITING_FIRST_FRAME, heardSinceLoad = true, linkReleased = true),
+        )
+        assertNull(CastStartupPolicy.reasonForFailure("startup_timeout", StartupStage.AWAITING_FIRST_FRAME, heardSinceLoad = true, linkReleased = false))
+        // The silent accept keeps its own reason and hold.
+        assertEquals(
+            StartupRetryReason.ACCEPT_SILENT,
+            CastStartupPolicy.reasonForFailure(accept, StartupStage.AWAITING_ACCEPTANCE, heardSinceLoad = false, linkReleased = true),
+        )
+    }
+
+    /** A release says nothing about this phone's own server, its file, or the format. */
+    @Test fun aLinkReleaseRetriesNothingAboutTheFileOrThisPhone() {
+        for (code in listOf(
+            "load_not_sent", "source_start_timeout", "source_unavailable", "media_bind_failed",
+            "media_start_refused", "no_lan_address", "no_compatible_lan", "control_unreachable",
+            "unsupported_video_codec", "unsupported_container", "decoder_init", "http_rejected",
+            "tv_backgrounded", "active_cast_busy", "unknown",
+        )) {
+            for (stage in StartupStage.entries) {
+                assertNull("$code/$stage", CastStartupPolicy.reasonForFailure(code, stage, heardSinceLoad = true, linkReleased = true))
+            }
+            assertNull(code, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = true, phoneRecordedFault = false))
+        }
+    }
+
+    @Test fun aTvThatCouldNotReachTheMediaAfterAReleaseIsRetried() {
+        for (code in listOf("startup_timeout", "media_unreachable", "sender_not_serving")) {
+            assertEquals(code, StartupRetryReason.LINK_RELEASED, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = true, phoneRecordedFault = false))
+            assertNull(code, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = false, phoneRecordedFault = false))
+            // This phone knows why the body stopped, and it was not the link.
+            assertNull(code, CastStartupPolicy.reasonForReportedFailure(code, linkReleased = true, phoneRecordedFault = true))
+        }
+    }
+
     /** A loss after Active is [ControlRecoveryPolicy]'s, weighed against the media path. */
     @Test fun aControlLossIsAStartupRetryOnlyBeforeActive() {
         assertEquals(StartupRetryReason.CONTROL_LOST, CastStartupPolicy.reasonForControlLoss(reachedActive = false))
@@ -104,10 +145,11 @@ class CastStartupPolicyTest {
         }
     }
 
-    /** The two names the log line carries, which the diagnostics doc quotes. */
+    /** The names the log line carries, which the diagnostics doc quotes. */
     @Test fun retryReasonsLogUnderStableNames() {
         assertEquals("accept_silent", StartupRetryReason.ACCEPT_SILENT.logName)
         assertEquals("control_lost", StartupRetryReason.CONTROL_LOST.logName)
+        assertEquals("link_released", StartupRetryReason.LINK_RELEASED.logName)
     }
 
     /** Never on the wire: the inbound vocabulary may not learn a code only this phone raises. */
@@ -154,12 +196,14 @@ class CastStartupPolicyTest {
         val receiverAdoptionBudgetMs = 4_000L
         assertTrue(CastStartupPolicy.redialHoldMs(StartupRetryReason.ACCEPT_SILENT) > receiverAdoptionBudgetMs)
         assertEquals(0L, CastStartupPolicy.redialHoldMs(StartupRetryReason.CONTROL_LOST))
+        assertEquals(0L, CastStartupPolicy.redialHoldMs(StartupRetryReason.LINK_RELEASED))
     }
 
     /** A busy met by the retry's own dial is the original failure, never another phone. */
     @Test fun aBusyDuringTheRetryWearsTheOriginalFace() {
         assertEquals(accept, CastStartupPolicy.busyFaceCode(StartupRetryReason.ACCEPT_SILENT))
         assertEquals("control_disconnected", CastStartupPolicy.busyFaceCode(StartupRetryReason.CONTROL_LOST))
+        assertEquals("startup_timeout", CastStartupPolicy.busyFaceCode(StartupRetryReason.LINK_RELEASED))
         assertEquals("active_cast_busy", CastStartupPolicy.busyFaceCode(null))
     }
 
