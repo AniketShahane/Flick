@@ -59,6 +59,18 @@ paths alone), whether the phone answers the TV's echo with its screen off (witho
 TV's mid-film guard stays unarmed), and how long the TV takes to recover after its own
 teardown.
 
+For the battery changes (the two-rate state feed and the phone's playhead, the resting echo
+watch, the discovery lifecycle, the echo probe's network cache and the renewed wake lock), the
+gate run on 2026-11-18 was `:sender:testDebugUnitTest :receiver:testDebugUnitTest` with both
+debug and both **release** APKs assembled: **1,280 sender and 1,105 receiver JVM tests, 0
+failures and 0 errors**. Lint was not run beyond `lintVitalRelease`. **None of it has run on
+hardware, and no battery figure has been measured.** What only a device can settle: how much
+the phone actually saves over a playing and a paused cast with its screen off
+(`dumpsys batterystats`), whether the scrubber and both time labels read as smooth at the
+once-a-second rhythm, that a cast still re-attaches after a Wi-Fi blip now that discovery is
+stopped behind a screen-off cast, and that the Connect screen drops a TV that left while Flick
+was in the background.
+
 ### Connected instrumentation and TV smoke
 
 On a connected, awake Google TV Streamer running API 34 at 1920×1080, the receiver Compose
