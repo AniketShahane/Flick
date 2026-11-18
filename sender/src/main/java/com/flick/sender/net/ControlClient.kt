@@ -29,6 +29,9 @@ import org.json.JSONObject
 
 /** Strict v2 sender endpoint. Keys are accepted only in the single paired response. */
 class ControlClient(private val scope: CoroutineScope) {
+
+    /** What this phone's own sends prove about the TV's `state` rhythm; see [TvFrameRhythm]. */
+    internal val frameRhythm = TvFrameRhythm()
     data class AuthenticatedEndpoint(val tvId: String, val keyId: String, val tv: String, val peerIp: String, val host: String, val port: Int)
     sealed interface Result {
         data class Paired(val key: String, val endpoint: AuthenticatedEndpoint) : Result
@@ -360,6 +363,8 @@ class ControlClient(private val scope: CoroutineScope) {
                 FlickLog.w("ws", "send slow t=$verb queuedMs=$queuedMs atMs=$handedAtMs")
             }
         }
+        // A ping is the one frame the receiver does not answer by sending `state` faster.
+        if (verb != "ping") frameRhythm.onCommandSent(SystemClock.elapsedRealtime())
         return true
     }
 

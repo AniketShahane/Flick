@@ -82,6 +82,10 @@ class CastServerService : Service() {
     private val lockGuard = Any()
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // Re-arms the CPU lock's timeout for as long as one generation owns the locks. Started
+    // and cancelled only under [lockGuard], beside the acquire and release it extends.
+    private var wakeRenewJob: Job? = null
     private val resourceOwnership = GenerationResourceOwnership()
 
     // The throughput sampler. It belongs to the service and not to a screen because the
@@ -236,7 +240,7 @@ class CastServerService : Service() {
                                 TransferTelemetry.reset()
                                 startSampler()
                                 resourceOwnership.claimLocks(session)
-                                acquireLocks()
+                                acquireLocks(session)
                                 servedHost = bindHost
                                 if (!startGate.runIfLatest(session) {
                                         // Published BEFORE RUNNING: the coordinator waits on
@@ -478,23 +482,43 @@ class CastServerService : Service() {
      * the screen off. Both are non-reference-counted, so re-arming while already held
      * (the re-target case) never needs a second release.
      */
-    private fun acquireLocks() {
+    private fun acquireLocks(session: CastGeneration) {
         synchronized(lockGuard) {
             if (wifiLock == null) wifiLock = newWifiLock()
             if (wakeLock == null) wakeLock = newWakeLock()
             wifiLock?.let { if (!it.isHeld) it.acquire() }
-            // Generous safety timeout so a lifecycle bug can never pin the CPU
-            // forever; a healthy session releases long before it elapses. Re-acquired
-            // on every start even when held: on a non-reference-counted lock that
-            // replaces the pending timed release, so a film started hours into a
-            // session gets the whole timeout rather than what the first film left.
+            // A safety timeout so a lifecycle bug can never pin the CPU forever, renewed
+            // below for as long as [session] owns the locks, so a long cast never outlives
+            // it. Re-acquired on every start even when held: on a non-reference-counted
+            // lock that replaces the pending timed release.
             wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+            startWakeRenewal(session)
+        }
+    }
+
+    /**
+     * Re-arms the CPU lock every [WAKE_LOCK_RENEW_MS] while [session] owns the locks. The
+     * check runs under [lockGuard], where [releaseLocks] cancels this job: a renewal that
+     * woke beside a release finds itself cancelled and never re-acquires behind it.
+     */
+    private fun startWakeRenewal(session: CastGeneration) {
+        wakeRenewJob?.cancel()
+        wakeRenewJob = serviceScope.launch {
+            while (true) {
+                delay(WAKE_LOCK_RENEW_MS)
+                synchronized(lockGuard) {
+                    if (!isActive || !resourceOwnership.ownsLocks(session)) return@launch
+                    wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+                }
+            }
         }
     }
 
     /** Release both locks. Safe to call when they were never acquired. */
     private fun releaseLocks() {
         synchronized(lockGuard) {
+            wakeRenewJob?.cancel()
+            wakeRenewJob = null
             wifiLock?.let { if (it.isHeld) it.release() }
             wakeLock?.let { if (it.isHeld) it.release() }
         }
@@ -674,7 +698,10 @@ class CastServerService : Service() {
 
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
-        private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L // 6 hours
+        private const val WAKE_LOCK_TIMEOUT_MS = 2L * 60L * 60L * 1000L
+
+        // Half the timeout, so one missed or late renewal still leaves the lock held.
+        private const val WAKE_LOCK_RENEW_MS = 60L * 60L * 1000L
         private const val SAMPLE_INTERVAL_MS = 1_000L
 
         // 16 bytes = 128 bits of SecureRandom entropy per session token.

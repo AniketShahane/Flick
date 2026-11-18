@@ -247,7 +247,8 @@ class PlaybackSession(
             haptics.tryEmit(HapticCue.DETENT)
         }
         val now = SystemClock.elapsedRealtime()
-        val syncing = (now - lastConfirmedAtMs) > SYNC_GRACE_MS
+        // Read before this move's seek is sent: the TV has not answered that one yet.
+        val syncing = control.frameRhythm.syncing(now, lastConfirmedAtMs)
         _state.update { it.copy(targetMs = next, syncing = syncing) }
         if (now - lastSeekAtMs >= SEEK_THROTTLE_MS) {
             lastSeekAtMs = now
@@ -478,7 +479,7 @@ class PlaybackSession(
                 // scrubTo raises it when frames actually dry up.
                 newTarget = prev.targetMs
                 newPlaying = prev.playing
-                newSyncing = (SystemClock.elapsedRealtime() - lastConfirmedAtMs) > SYNC_GRACE_MS
+                newSyncing = control.frameRhythm.syncing(SystemClock.elapsedRealtime(), lastConfirmedAtMs)
                 reconcileNow = false
             }
             prev.skipping -> {
@@ -491,7 +492,7 @@ class PlaybackSession(
                 // and lastConfirmedAtMs was just stamped, so a fresh frame reads not-stale.
                 newTarget = prev.targetMs
                 newPlaying = prev.playing
-                newSyncing = (SystemClock.elapsedRealtime() - lastConfirmedAtMs) > SYNC_GRACE_MS
+                newSyncing = control.frameRhythm.syncing(SystemClock.elapsedRealtime(), lastConfirmedAtMs)
                 reconcileNow = false
             }
             seekPending -> {
@@ -572,7 +573,6 @@ class PlaybackSession(
     private companion object {
         const val DETENT_MS = 10_000L        // haptic tick every 10s of film
         const val SEEK_THROTTLE_MS = 50L      // ≤ ~20 seeks/s (control-channel §4)
-        const val SYNC_GRACE_MS = 250L        // hiccup threshold
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
         const val GENERIC_TITLE = "Video"
     }

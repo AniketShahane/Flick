@@ -1,5 +1,7 @@
 package com.flick.sender.net
 
+import com.flick.sender.model.PlaybackPhase
+
 /**
  * What one echo probe — a TCP connect to the TV's port 7 that provably left over the Wi-Fi
  * network holding the cast's serving address — says about the path to the TV. A refusal is
@@ -90,6 +92,9 @@ internal class DirectLinkEchoPolicy {
     private var releases = 0
     private var capped = false
     private var unknownRun = 0
+
+    /** No miss streak in progress and no release being verified. */
+    val quiet: Boolean get() = misses == 0 && !verifying
 
     /**
      * One probe's outcome. [lastReleaseAtMs] is the cast's shared stamp of the last release
@@ -196,6 +201,39 @@ internal class DirectLinkEchoPolicy {
 
     /** The platform's `ECONNREFUSED`, `ETIMEDOUT` and `EHOSTUNREACH`. */
     data class ConnectErrnos(val refused: Int, val timedOut: Int, val hostUnreachable: Int)
+}
+
+/**
+ * How often the echo watch probes. A playing or buffering film is probed every
+ * [DirectLinkEchoPolicy.PROBE_PERIOD_MS], always: that is where a broken link costs the
+ * film. A film that has sat paused or ended for [IDLE_SETTLE_MS], on a path whose last
+ * probe was answered, has no buffer to run out, so it is probed every [IDLE_PROBE_PERIOD_MS].
+ * Anything that is not that — a miss, an unclassified probe, a release being verified,
+ * the phase leaving pause — is back to the fast period at once; the caller makes the slow
+ * wait interruptible so pressing play does not wait out the rest of it.
+ *
+ * The ping watch reads its "late, not lost" proof off these echoes, and a slow echo is
+ * usually older than that proof allows; [DirectLinkWatchPolicy.echoProofSparse] is how
+ * it knows to ask for a fresh one instead.
+ */
+internal object DirectLinkEchoCadence {
+    const val IDLE_PROBE_PERIOD_MS = 5_000L
+
+    /** Long enough that a pause to fetch a drink settles, and a pause-play nudge never does. */
+    const val IDLE_SETTLE_MS = 10_000L
+
+    fun idlePhase(phase: PlaybackPhase): Boolean = phase == PlaybackPhase.PAUSED || phase == PlaybackPhase.ENDED
+
+    /**
+     * The period before the next probe. [idleSinceMs] is when the phase last entered pause
+     * or ended without leaving since, 0 while it is anything else; [lastOutcome] is the last
+     * probe's; [quiet] is [DirectLinkEchoPolicy.quiet].
+     */
+    fun periodMs(idleSinceMs: Long, lastOutcome: EchoOutcome, quiet: Boolean, nowMs: Long): Long =
+        if (slow(idleSinceMs, lastOutcome, quiet, nowMs)) IDLE_PROBE_PERIOD_MS else DirectLinkEchoPolicy.PROBE_PERIOD_MS
+
+    fun slow(idleSinceMs: Long, lastOutcome: EchoOutcome, quiet: Boolean, nowMs: Long): Boolean =
+        idleSinceMs > 0L && nowMs - idleSinceMs >= IDLE_SETTLE_MS && lastOutcome == EchoOutcome.ANSWERED && quiet
 }
 
 /**

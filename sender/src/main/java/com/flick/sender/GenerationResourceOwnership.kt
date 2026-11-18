@@ -17,6 +17,8 @@ internal class GenerationResourceOwnership {
         locksOwner = session
     }
 
+    fun ownsLocks(session: CastGeneration): Boolean = locksOwner == session
+
     fun release(session: CastGeneration): Release {
         val result = Release(
             locks = locksOwner == session,

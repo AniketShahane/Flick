@@ -413,6 +413,7 @@ private fun DockBar(
     val imageLoader = rememberVideoImageLoader()
     val request = rememberVideoFrameRequest(item.uri, item.durationMs)
     val playing by remember(playback) { derivedStateOf { playback.value.playing } }
+    val head = rememberPlayhead(playback, confirmed = true)
     val description = stringResource(R.string.a11y_now_playing_dock, displayName, tvName)
     val openLabel = stringResource(R.string.a11y_open_remote)
     val track = colors.fillTrack
@@ -506,7 +507,7 @@ private fun DockBar(
                     val height = DockHairline.toPx()
                     val top = size.height - height
                     drawRect(track, topLeft = Offset(0f, top), size = Size(size.width, height))
-                    val fraction = playback.value.confirmedFraction
+                    val fraction = head.fraction()
                     if (fraction > 0f) {
                         drawRect(played, topLeft = Offset(0f, top), size = Size(size.width * fraction, height))
                     }

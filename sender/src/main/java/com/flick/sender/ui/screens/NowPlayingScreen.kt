@@ -109,6 +109,7 @@ import com.flick.sender.ui.components.SignalChip
 import com.flick.sender.ui.components.TransportCluster
 import com.flick.sender.ui.components.VolumeSlider
 import com.flick.sender.ui.components.flickSharedFrame
+import com.flick.sender.ui.components.rememberPlayhead
 import com.flick.sender.ui.components.rememberVideoFrameRequest
 import com.flick.sender.ui.components.rememberVideoImageLoader
 import com.flick.sender.ui.components.revealOrigin
@@ -595,8 +596,10 @@ private fun ColumnScope.RemoteContent(
         sink = preview,
     )
 
+    // Runs on between the TV's once-a-second frames while the film plays.
+    val head = rememberPlayhead(playbackState)
     PhoneScrubBar(
-        targetFraction = { playbackState.value.targetFraction },
+        targetFraction = { head.fraction() },
         ghostFraction = { playbackState.value.confirmedFraction },
         syncing = syncing,
         framePreview = { preview.value },
@@ -605,7 +608,7 @@ private fun ColumnScope.RemoteContent(
         onScrub = { controller.scrubTo(it) },
         onScrubEnd = { controller.scrubEnd() },
         bufferedFraction = { playbackState.value.bufferedFraction() },
-        positionMs = { playbackState.value.targetMs },
+        positionMs = { head.positionMs() },
         durationMs = { playbackState.value.durationMs },
         targetLabel = seekTargetDescription,
         confirmedLabel = confirmedDescription,

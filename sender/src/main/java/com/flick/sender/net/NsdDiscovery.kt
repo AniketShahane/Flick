@@ -89,6 +89,10 @@ class NsdDiscovery(context: Context) {
     private var sweepsLeft = 0
     private val retryGate = NsdRetryGate()
 
+    // Between a start() and the next stop(): this app wants a browse, whether or not the
+    // platform has granted one yet. See [ensureBrowsing].
+    private var requested = false
+
     // serviceName -> the browse record last seen for it, so a loss (or a pre-connect
     // freshness check) can re-enqueue a resolve instead of guessing.
     private val lastInfoByName = HashMap<String, NsdServiceInfo>()
@@ -100,6 +104,7 @@ class NsdDiscovery(context: Context) {
 
     fun start() {
         synchronized(lock) {
+            requested = true
             // Every caller of start() is a moment of attention — the app coming up, the
             // device list being opened, a rescan — which is what the sweep budget is
             // spent on. Nobody is reading a row hours later, so nothing is re-queried then.
@@ -115,17 +120,21 @@ class NsdDiscovery(context: Context) {
             val listener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
                     FlickLog.w("nsd", "discovery failed code=$errorCode")
-                    discoveryFailed { retryGate.startFailed() }
+                    discoveryFailed(this) { retryGate.startFailed() }
                 }
                 override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {
                     FlickLog.w("nsd", "discovery failed code=$errorCode")
-                    discoveryFailed { retryGate.stopFailed() }
+                    discoveryFailed(this) { retryGate.stopFailed() }
                 }
                 override fun onDiscoveryStarted(serviceType: String?) {
-                    FlickLog.i("nsd", "discovery started")
-                    _browse.value = BrowseState.RUNNING
+                    synchronized(lock) {
+                        // A browse already stopped can still report its start late.
+                        if (discoveryListener !== this) return
+                        FlickLog.i("nsd", "discovery started")
+                        _browse.value = BrowseState.RUNNING
+                    }
                 }
-                override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed { retryGate.stopped() }
+                override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed(this) { retryGate.stopped() }
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                     if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
                         enqueueResolve(serviceInfo)
@@ -150,8 +159,29 @@ class NsdDiscovery(context: Context) {
         }
     }
 
+    /**
+     * Starts a browse unless one was asked for since the last [stop]: unlike [start], a browse
+     * already open spends no re-resolve sweep, so a dial that calls this before reading the
+     * device list never queues its own resolve behind one. A browse the platform refused for
+     * good stays refused until the next [start].
+     */
+    fun ensureBrowsing() {
+        synchronized(lock) {
+            if (requested) return
+            start()
+        }
+    }
+
+    /**
+     * Ends the browse and every query it keeps running. The device records stay: a dial
+     * reads them while stopped, and [refresh] and [advertisedNow] re-resolve a held record
+     * without a browse. A no-op when nothing was asked for since the last stop, so a
+     * re-resolve queued meanwhile is not dropped.
+     */
     fun stop() {
         synchronized(lock) {
+            if (!requested) return
+            requested = false
             discoveryListener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
             discoveryListener = null
             pending.clear()
@@ -403,11 +433,12 @@ class NsdDiscovery(context: Context) {
         }
     }
 
-    private fun discoveryFailed(retry: () -> Boolean) {
+    private fun discoveryFailed(listener: NsdManager.DiscoveryListener, retry: () -> Boolean) {
         synchronized(lock) {
             // Intentional stop clears the listener first, so its asynchronous callback
-            // cannot resurrect discovery behind the UI's back.
-            if (discoveryListener == null) return
+            // cannot resurrect discovery behind the UI's back — nor, once a start() has
+            // opened a new browse since, tear that one down and orphan it with the platform.
+            if (discoveryListener !== listener) return
             discoveryListener = null
             // Only an exhausted retry budget may say the search is unavailable: a browse
             // that will be reopened in a second is still, from the user's side, pending.

@@ -32,4 +32,20 @@ internal object DirectLinkWatchPolicy {
 
     /** Two and a half echo periods: the path answered within the last couple of probes. */
     const val ECHO_PROOF_FRESH_MS = 2_500L
+
+    /**
+     * Whether the echoes [releasesFor] would weigh were taken at the paused cadence
+     * ([DirectLinkEchoCadence]), so their absence of a fresh answer is a gap in sampling
+     * rather than evidence. True while the slow cadence holds ([slowNow]) and for
+     * [ECHO_PROOF_FRESH_MS] after it ended at [slowEndedAtMs] (0 for never): only then does
+     * the window [releasesFor] reads hold as many probes as it does at the fast cadence.
+     *
+     * While sparse, the caller asks for one immediate probe and releases on nothing it
+     * says: an answer is the proof [releasesFor] holds on, and a miss or no information
+     * puts the echo watch back at the fast cadence, under which the next check decides
+     * exactly as it always has. No release happens here that would not have happened
+     * with echoes every second.
+     */
+    fun echoProofSparse(slowNow: Boolean, slowEndedAtMs: Long, nowMs: Long): Boolean =
+        slowNow || (slowEndedAtMs > 0L && nowMs - slowEndedAtMs < ECHO_PROOF_FRESH_MS)
 }

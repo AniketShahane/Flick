@@ -393,7 +393,8 @@ private val SUBTITLE_SIZES = SubtitleSize.values()
 /**
  * The whole TV app: fixed cinematic dark, D-pad driven. It advertises the control
  * server over NSD, gates pairing, drives the player from control-channel commands,
- * and streams the confirmed position back at ~10 Hz — while preserving the
+ * and streams the confirmed position back (~10 Hz around a change, ~1 Hz when steady,
+ * see [com.flick.receiver.net.StateFeedCadence]) — while preserving the
  * hardened media path (pre-flight probe, terminal-stop, hardware-only decode).
  */
 @Composable

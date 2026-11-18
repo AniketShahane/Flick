@@ -308,6 +308,7 @@ private fun FlickRoot(
             // to 45 s. Coming back is the moment the Connect screen and the next cast both
             // need the truth.
             if (event == Lifecycle.Event.ON_START) controller.onForeground()
+            if (event == Lifecycle.Event.ON_STOP) controller.onBackground()
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryExempt = isIgnoringBatteryOptimizations(context)
                 // Both permissions are settable from outside the app, so both are re-read
