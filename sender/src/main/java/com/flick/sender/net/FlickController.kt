@@ -77,6 +77,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -504,12 +505,19 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         FilmPosterPreferenceController(filmPosterStore.enabled(), filmPosterStore::save)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
+    // Whether the activity is started; main-confined, like the rest of this class.
+    private var foreground = false
+    // Every dial, resume and name refresh runs here; its run keeps discovery wanted.
     private var pairingJob: Job? = null
+        set(value) { field = value; trackDiscoveryDemand(value) }
     private var castJob: Job? = null
     private var directLinkWatch: Job? = null
     private var directLinkReleasedFor: ControlClient.OutstandingPing? = null
     private var echoWatch: Job? = null
     private val echoTrust = DirectLinkEchoTrust()
+
+    // The running echo watch's cadence, for the ping watch to weigh its proof against.
+    private var echoCadence: EchoCadenceState? = null
 
     // Every release path stamps and checks this one clock, so no combination of them
     // releases twice inside [DirectLinkEchoPolicy.RELEASE_DEDUPE_MS].
@@ -627,6 +635,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * inside it.
      */
     private var blockJob: Job? = null
+        set(value) { field = value; trackDiscoveryDemand(value) }
     private var blockRequest: CastRequest? = null
     private var blockArmedAtMs = 0L
     private var blockVerdict: DialFault? = null
@@ -646,6 +655,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * makes reports DISCONNECTED to [onControlLost], which reads it to stay out of the way.
      */
     private var reattachJob: Job? = null
+        set(value) { field = value; trackDiscoveryDemand(value) }
     private var reattachCastId: String? = null
     private var reattaches = 0
     private var lastReattachAtMs = 0L
@@ -906,6 +916,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             if (status == ConnectionStatus.CONNECTED) session.onConnected()
             if (status == ConnectionStatus.DISCONNECTED) currentCastId?.let(::onControlLost)
             publishTransport()
+            requestDiscoveryReconcile()
         } }
         // A rename on the TV is the one fact about the receiver that reaches this phone
         // over neither channel it holds: the control wire is frozen and carries no name
@@ -1097,6 +1108,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * TV's player is already retrying the URL that names it.
      */
     private suspend fun runReattach(castId: String, servingAtLoss: Boolean, armedAtMs: Long) {
+        // Each dial picks from the advertised records, which a moved TV refreshes.
+        nsd.ensureBrowsing()
         var dials = 0
         var absent = false
         var sawGap = false
@@ -1616,7 +1629,46 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     /** The app came back in front of the viewer; the socket held while it was away may not have survived that. */
-    fun onForeground() = checkHeldLine()
+    fun onForeground() {
+        foreground = true
+        reconcileDiscovery()
+        checkHeldLine()
+    }
+
+    /** The app left the viewer's sight: discovery runs on only for what still needs it. */
+    fun onBackground() {
+        foreground = false
+        reconcileDiscovery()
+    }
+
+    /**
+     * Keeps the mDNS browse running exactly while [DiscoveryDemand.wanted] says so. Cheap
+     * and idempotent, so every edge that can change the answer asks again rather than
+     * each deciding whether it did.
+     */
+    private fun reconcileDiscovery() {
+        val wanted = DiscoveryDemand.wanted(
+            foreground = foreground,
+            attemptInFlight = pairingJob?.isCompleted == false || reattachJob?.isCompleted == false,
+            blockWaitArmed = blockJob?.isCompleted == false,
+            castLive = currentCastId != null,
+            connection = control.connection.value,
+        )
+        if (wanted) nsd.ensureBrowsing() else nsd.stop()
+    }
+
+    /**
+     * Posted rather than run inline: a job is replaced by first clearing the field, and a
+     * reconcile in that gap would stop the browse the replacement is about to want.
+     */
+    private fun requestDiscoveryReconcile() {
+        scope.launch(Dispatchers.Main) { reconcileDiscovery() }
+    }
+
+    private fun trackDiscoveryDemand(job: Job?) {
+        requestDiscoveryReconcile()
+        job?.invokeOnCompletion { requestDiscoveryReconcile() }
+    }
 
     /**
      * Ask the held control socket whether anything still answers on it, and hang it up
@@ -2133,6 +2185,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             return
         }
         val attempt = beginPairingAttempt(); _pairError.value = null
+        nsd.ensureBrowsing()
         pairingJob = scope.launch {
             val fresh = nsd.refresh(tvId)
             if (fresh != null && fresh.host != tv.host) {
@@ -2148,7 +2201,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // Only a record still at the confirmed host may supply a rebound port.
             val port = fresh?.port?.takeIf { it in 1..65535 } ?: tv.port
             FlickLog.i("pair", "submit host=${tv.host} port=$port codeLen=${code.length}")
-            runPairing(attempt, tv.host, port, code)
+            runPairing(attempt, tv.host, port, code, liveVerified = nsd.confirmedAt(tvId, tv.host))
         }
     }
 
@@ -2187,12 +2240,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         port: Int,
         code: String,
         manualGeneration: Long? = null,
+        liveVerified: Boolean = true,
     ) {
         val legacyAtExactHost = store.legacyForHost(host)
-        // Live either way: a first pair reaches here off an advertisement this phone just
-        // re-resolved, or off an address a person is reading from the TV's own screen as
-        // they spend it. Neither is a memory of where the TV used to be.
-        dialedHost = DialedHost(host, liveVerified = true)
+        // Live by default: an address a person is reading from the TV's own screen as they
+        // spend it is no memory of where the TV used to be. An advertisement is live only
+        // once resolved since discovery last stopped ([NsdDiscovery.confirmedAt]).
+        dialedHost = DialedHost(host, liveVerified)
         val sameSubnet = sameSubnetAs(dialedHost) == true
         val first = control.pair(host, port, deviceLabel, code)
         // Refused before a single byte of the code left the phone is the dead-port
@@ -2268,6 +2322,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val deadlineMs = System.nanoTime() / 1_000_000L + PAIR_REBIND_BUDGET_MS
         var ports = rebindPorts(host, typedPort)
         if (ports.isEmpty()) {
+            nsd.ensureBrowsing()
             withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
                 devices.first { list -> list.any { it.host == host && it.port != typedPort } }
             }
@@ -2324,13 +2379,15 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     var candidate = candidates.next(devices.value)
                     if (candidate == null && sawTransportFailure && candidates.hasCapacity() && !awaitedNsd) {
                         awaitedNsd = true
+                        nsd.ensureBrowsing()
                         withTimeoutOrNull(NSD_RESNAPSHOT_MS) {
                             devices.first(candidates::hasNext)
                         }
                         candidate = candidates.next(devices.value)
                     }
                     if (candidate == null) break
-                    dialedHost = DialedHost(candidate.host, candidate.discovered)
+                    // A record held across a discovery stop is a memory until re-confirmed.
+                    dialedHost = DialedHost(candidate.host, candidate.discovered && nsd.confirmedAt(pairing.tvId, candidate.host))
                     val result = control.resume(pairing, candidate.host, candidate.port)
                     lastDialUnheard = PhoneDirectLink.provesUnheard(result)
                     FlickLog.i("ws", "resume candidate ${candidate.host}:${candidate.port} -> ${result.javaClass.simpleName}")
@@ -2406,8 +2463,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     // The window weighs the same answer, for the same reason: at socket
                     // level a router that will not forward and a TV that has gone are one
                     // errno apiece and the same one. See [ControlRecoveryPolicy.waitsOn].
+                    if (fault == DialFault.NO_ROUTE) nsd.ensureBrowsing()
                     val advertised = fault == DialFault.NO_ROUTE && nsd.advertisedNow(pairing.tvId)
                     if (!pairingGate.isCurrent(attempt)) return@launch
+                    // The re-resolve just confirmed a record the dial could only remember;
+                    // the copy `failPendingResume` freezes must weigh that proof.
+                    if (advertised) {
+                        dialedHost = dialedHost?.let { it.copy(liveVerified = it.liveVerified || nsd.confirmedAt(pairing.tvId, it.host)) }
+                    }
                     // Read before `failPendingResume`, which moves it into the retry slot.
                     val queued = pendingCast
                     if (fault != null) {
@@ -2656,31 +2719,69 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         directLinkWatch?.cancel()
         directLinkWatch = scope.launch {
             delay(DirectLinkWatchPolicy.FIRST_CHECK_MS)
+            // The ping this watch already held once for sparse echoes; never twice.
+            var sparseHeldFor: ControlClient.OutstandingPing? = null
+            var recheck = false
             while (currentCastId == castId) {
+                var verdict: DirectLinkWatchPolicy.Verdict? = null
                 val line = control.line()
                 val host = _connectedTv.value?.host
+                if (recheck && (line == null || line.outstanding !== sparseHeldFor)) {
+                    // The held ping was answered or its line went: the next ping keeps the
+                    // period the watch always kept.
+                    recheck = false
+                    delay(DirectLinkWatchPolicy.PERIOD_MS - DirectLinkWatchPolicy.SPARSE_RECHECK_MS)
+                    continue
+                }
                 if (line != null && host != null) {
                     control.confirmAlive(line, roundTrip = true)
                     val ping = line.outstanding
                     if (line.pongTimedOut && ping != null && ping !== directLinkReleasedFor) {
+                        // From here the overdue ping holds the echo watch at the fast cadence,
+                        // so the proof below is weighed on echoes at the usual density.
+                        echoCadence?.wake(SystemClock.elapsedRealtime())
                         val waitedMs = SystemClock.elapsedRealtime() - ping.sentAtMs
                         delay((DirectLinkWatchPolicy.UNANSWERED_PROOF_MS - waitedMs).coerceAtLeast(0L))
                         // Marked only once released: a release the dedupe refused, or one held back
                         // by an echo answered after the ping was sent, is weighed again for the
                         // same ping next period, since no second ping goes out behind it.
                         val current = currentCastId == castId && control.line() === line && line.outstanding === ping
-                        if (current && !DirectLinkWatchPolicy.releasesFor(ping.sentAtMs, lastEchoAnsweredAtMs, SystemClock.elapsedRealtime())) {
-                            if (echoSkippedFor !== ping) {
-                                echoSkippedFor = ping
-                                FlickLog.i("lan", "tdls teardown held reason=cast_unanswered")
-                                IncidentJournal.record("link_release_held", "reason" to "cast_unanswered")
+                        if (current) {
+                            val cadence = echoCadence
+                            val nowMs = SystemClock.elapsedRealtime()
+                            val decided = DirectLinkWatchPolicy.verdict(
+                                pingSentAtMs = ping.sentAtMs,
+                                lastEchoAnsweredAtMs = lastEchoAnsweredAtMs,
+                                echoSparse = cadence != null &&
+                                    DirectLinkWatchPolicy.echoProofSparse(cadence.slow, cadence.slowEndedAtMs, nowMs),
+                                echoCanRelease = cadence?.canRelease == true,
+                                sparseHeldAlready = sparseHeldFor === ping,
+                                nowMs = nowMs,
+                            )
+                            verdict = decided
+                            when (decided) {
+                                DirectLinkWatchPolicy.Verdict.HOLD_SPARSE -> {
+                                    sparseHeldFor = ping
+                                    cadence?.wake(nowMs)
+                                    if (echoSkippedFor !== ping) {
+                                        echoSkippedFor = ping
+                                        FlickLog.i("lan", "tdls teardown held reason=cast_unanswered echo=sparse")
+                                        IncidentJournal.record("link_release_held", "reason" to "cast_unanswered", "echo" to "sparse")
+                                    }
+                                }
+                                DirectLinkWatchPolicy.Verdict.HOLD_ECHO -> if (echoSkippedFor !== ping) {
+                                    echoSkippedFor = ping
+                                    FlickLog.i("lan", "tdls teardown held reason=cast_unanswered")
+                                    IncidentJournal.record("link_release_held", "reason" to "cast_unanswered")
+                                }
+                                DirectLinkWatchPolicy.Verdict.RELEASE ->
+                                    if (releaseDirectLink(host, "cast_unanswered")) directLinkReleasedFor = ping
                             }
-                        } else if (current && releaseDirectLink(host, "cast_unanswered")) {
-                            directLinkReleasedFor = ping
                         }
                     }
                 }
-                delay(DirectLinkWatchPolicy.PERIOD_MS)
+                recheck = verdict == DirectLinkWatchPolicy.Verdict.HOLD_SPARSE
+                delay(DirectLinkWatchPolicy.nextCheckMs(verdict))
             }
         }
     }
@@ -2690,29 +2791,125 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * link released on four missed echoes rather than on a ping left unanswered for six
      * seconds. See [DirectLinkEchoPolicy]; the ping paths above stay the actors for a TV
      * that does not answer echoes.
+     *
+     * Probed every second, except on a film settled in pause ([DirectLinkEchoCadence]):
+     * there the wait is cut short by the phase leaving pause, by any command this phone
+     * sends, and by the ping watch asking for dense echoes ([EchoCadenceState.wake]).
      */
     private fun watchEcho(castId: String) {
         echoWatch?.cancel()
         val tvId = _connectedTv.value?.tvId ?: return
         val policy = DirectLinkEchoPolicy()
         val mode = ChangeLatch<EchoMode>()
+        val cadence = EchoCadenceState()
+        echoCadence = cadence
         echoWatch = scope.launch {
-            while (currentCastId == castId) {
-                val startedAtMs = SystemClock.elapsedRealtime()
-                val host = _connectedTv.value?.takeIf { it.tvId == tvId }?.host ?: return@launch
-                val probe = echoProbe(host, servingState(castId)?.lanIp)
-                val outcome = probe.outcome
-                if (currentCastId != castId) return@launch
-                if (mode.changed(probe.mode)) {
-                    FlickLog.i("lan", "echo mode=${probe.mode.journalName}")
-                    IncidentJournal.record("echo_mode", "mode" to probe.mode.journalName)
+            // Remembers the probe's Wi-Fi network for as long as this watch runs.
+            val networks = WifiEchoProbe.watchNetworks(appContext)
+            var idleSinceMs = 0L
+            val idleWatch = launch {
+                session.state.collect { state ->
+                    if (!DirectLinkEchoCadence.idlePhase(state.phase)) {
+                        idleSinceMs = 0L
+                        if (cadence.slow) cadence.interrupt.trySend(Unit)
+                    } else if (idleSinceMs == 0L) {
+                        idleSinceMs = SystemClock.elapsedRealtime()
+                    }
                 }
-                if (outcome == EchoOutcome.ANSWERED) noteEchoAnswered(tvId, "cast")
-                val nowMs = SystemClock.elapsedRealtime()
-                val decision = policy.onProbe(outcome, echoTrust.isTrusted(tvId), nowMs, lastDirectLinkReleaseAtMs)
-                actOnEcho(decision, tvId, host)
-                delay((DirectLinkEchoPolicy.PROBE_PERIOD_MS - (SystemClock.elapsedRealtime() - startedAtMs)).coerceAtLeast(0L))
             }
+            // A command the TV never hears changes no phase: the phone-held one-sided fault
+            // leaves the film paused on the TV with this phone's controls dead.
+            val commandWatch = launch {
+                control.commandAttemptAtMs.collect { atMs -> if (atMs > 0L) cadence.wake(atMs) }
+            }
+            try {
+                while (currentCastId == castId) {
+                    val startedAtMs = SystemClock.elapsedRealtime()
+                    val host = _connectedTv.value?.takeIf { it.tvId == tvId }?.host ?: return@launch
+                    val probe = echoProbe(host, servingState(castId)?.lanIp)
+                    val outcome = probe.outcome
+                    if (currentCastId != castId) return@launch
+                    if (mode.changed(probe.mode)) {
+                        FlickLog.i("lan", "echo mode=${probe.mode.journalName}")
+                        IncidentJournal.record("echo_mode", "mode" to probe.mode.journalName)
+                    }
+                    if (outcome == EchoOutcome.ANSWERED) noteEchoAnswered(tvId, "cast")
+                    val nowMs = SystemClock.elapsedRealtime()
+                    val decision = policy.onProbe(outcome, echoTrust.isTrusted(tvId), nowMs, lastDirectLinkReleaseAtMs)
+                    actOnEcho(decision, tvId, host)
+                    cadence.canRelease = policy.canRelease(echoTrust.isTrusted(tvId))
+                    // An interrupt left over from the fast cadence is spent here: nothing below
+                    // suspends before the slow wait starts, so no live one can be lost, and
+                    // a wake that came during the probe is already in [EchoCadenceState.wokeAtMs].
+                    cadence.interrupt.tryReceive()
+                    val afterMs = SystemClock.elapsedRealtime()
+                    val line = control.line()
+                    val periodMs = DirectLinkEchoCadence.periodMs(
+                        phaseIdleNow = DirectLinkEchoCadence.idlePhase(session.state.value.phase),
+                        idleSinceMs = idleSinceMs,
+                        wokeAtMs = cadence.wokeAtMs,
+                        lastOutcome = outcome,
+                        quiet = policy.quiet,
+                        canRelease = cadence.canRelease,
+                        pingOverdue = line != null && line.pongTimedOut && line.outstanding != null,
+                        nowMs = afterMs,
+                    )
+                    val slow = periodMs == DirectLinkEchoCadence.IDLE_PROBE_PERIOD_MS
+                    cadence.switchTo(slow, afterMs)
+                    val waitMs = (periodMs - (afterMs - startedAtMs)).coerceAtLeast(0L)
+                    if (!slow) {
+                        delay(waitMs)
+                        continue
+                    }
+                    if (withTimeoutOrNull(waitMs) { cadence.interrupt.receive() } == null) continue
+                    val wokenAtMs = SystemClock.elapsedRealtime()
+                    cadence.switchTo(false, wokenAtMs)
+                    // Never closer than the fast cadence to the probe before.
+                    delay((DirectLinkEchoPolicy.PROBE_PERIOD_MS - (wokenAtMs - startedAtMs)).coerceAtLeast(0L))
+                }
+            } finally {
+                idleWatch.cancel()
+                commandWatch.cancel()
+                networks?.close()
+                cadence.slow = false
+                if (echoCadence === cadence) echoCadence = null
+            }
+        }
+    }
+
+    /**
+     * The echo watch's cadence as the ping watch sees it; main-confined, like the watch.
+     * [slowEndedAtMs] is when the paused cadence last gave way to the fast one, 0 for never;
+     * [wokeAtMs] the last [wake], 0 for none; [canRelease] is
+     * [DirectLinkEchoPolicy.canRelease] as of the last probe.
+     */
+    private class EchoCadenceState {
+        var slow = false
+        var slowEndedAtMs = 0L
+        var wokeAtMs = 0L
+        var canRelease = false
+        val interrupt = Channel<Unit>(Channel.CONFLATED)
+        private val journal = EchoCadenceJournalGate()
+
+        /** Called on every probe as well as every change, so a change the journal held back is written once it persists. */
+        fun switchTo(slow: Boolean, nowMs: Long) {
+            if (slow != this.slow) {
+                this.slow = slow
+                if (!slow) slowEndedAtMs = nowMs
+            }
+            if (journal.journals(this.slow, nowMs)) {
+                FlickLog.i("lan", "echo cadence slow=${this.slow}")
+                IncidentJournal.record("echo_cadence", "slow" to this.slow)
+            }
+        }
+
+        /**
+         * Back to the fast cadence now, no sooner than a second after the last probe began,
+         * and for a fresh settle period from [atMs].
+         */
+        fun wake(atMs: Long) {
+            if (atMs > wokeAtMs) wokeAtMs = atMs
+            if (slow) interrupt.trySend(Unit)
         }
     }
 
@@ -2788,6 +2985,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val item = request.item
         pendingCast = null
         cancelCast(silent = true); val castId = ControlProtocolV2.randomId(); val thisGeneration = castGate.begin(castId); currentCastId = castId
+        requestDiscoveryReconcile()
         currentRequest = request
         castStartedAtMs = SystemClock.elapsedRealtime()
         IncidentJournal.record("cast_start", "retry" to (startupRetrying?.logName ?: "none"))
@@ -3135,6 +3333,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             // viewer cancelling the nudge on the one that just ended.
             audioDelayRecorder.finish(castId, session.audioDelayTargetMs)?.let(::enqueueAudioDelay)
             subtitleJob?.cancel(); subtitleJob = null; control.disarmLoadSubtitle(); currentCastId = null
+            requestDiscoveryReconcile()
             currentRequest = null; _castingItem.value = null; session.clear(); linkMonitor.reset()
             // Whatever ended this cast, a retry of it is over: a later busy is not its own.
             startupRetrying = null; _startupRetryItem.value = null

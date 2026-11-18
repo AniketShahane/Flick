@@ -85,6 +85,11 @@ class ControlServer(
          * later repeat keeps the ordinary duplicate meaning.
          */
         val inheritedCast: AtomicReference<String?> = AtomicReference(null),
+        /**
+         * When the phone last sent a command other than `ping`, on the monotonic clock.
+         * Written by the read loop, read by the state feed's coroutine.
+         */
+        val lastCommandAtMs: AtomicLong = AtomicLong(StateFeedCadence.NEVER),
     )
 
     /** One immutable tuple so a reader can never see a host from one bind and a port from another. */
@@ -626,6 +631,9 @@ class ControlServer(
                     val objectValue = StrictJson.objectOnly(text)
                     if (objectValue == null) { rejectMalformed(connection, null, null); return }
                     val type = objectValue.string("t")?.value
+                    // Stamped before dispatch so the feed is already hot on the tick that
+                    // reports the command's effect.
+                    if (StateFeedCadence.heats(type)) connection.lastCommandAtMs.set(rxAtMs)
                     val command = controlCommandLabel(type)
                     // Info and not verbose, which is the whole difference between a
                     // diagnostic and a decoration: [FlickLog.v] reaches logcat only under
@@ -1135,14 +1143,23 @@ class ControlServer(
     }
 
     private fun DefaultWebSocketServerSession.stateFeed(connection: Connection) = launch {
+        val cadence = StateFeedCadence()
         while (isActive && generation == connection.generation) {
             val cast = ownership.currentCast(connection.token, connection.generation)
             if (cast != null && speaksUnprompted(connection.inheritedCast.get())) {
+                val nowMs = SystemClock.elapsedRealtime()
                 val frame = stateProvider()
                 val phase = frame.phase.wire.takeIf { it in PHASES } ?: "buffering"
-                emit(connection, json(linkedMapOf("t" to "state", "v" to 2, "castId" to cast, "posMs" to frame.posMs.coerceIn(0, MAX_MS), "durationMs" to frame.durationMs.coerceIn(0, MAX_MS), "playing" to frame.playing, "bufferedMs" to frame.bufferedMs.coerceIn(0, MAX_MS), "phase" to phase, "volume" to frame.volume.toDouble().coerceIn(0.0, 1.0), "seq" to sequence.incrementAndGet())))
+                val posMs = frame.posMs.coerceIn(0, MAX_MS)
+                val durationMs = frame.durationMs.coerceIn(0, MAX_MS)
+                val volume = frame.volume.toDouble().coerceIn(0.0, 1.0)
+                if (cadence.onTick(nowMs, cast, posMs, durationMs, frame.playing, phase, volume, connection.lastCommandAtMs.get())) {
+                    emit(connection, json(linkedMapOf("t" to "state", "v" to 2, "castId" to cast, "posMs" to posMs, "durationMs" to durationMs, "playing" to frame.playing, "bufferedMs" to frame.bufferedMs.coerceIn(0, MAX_MS), "phase" to phase, "volume" to volume, "seq" to sequence.incrementAndGet())))
+                }
+            } else {
+                cadence.reset()
             }
-            delay(100)
+            delay(STATE_TICK_MS)
         }
     }
 
@@ -1297,6 +1314,8 @@ class ControlServer(
         private val CODE = Regex("^[0-9]{4}$")
         private val CAP = listOf("cast-ack", "first-frame-ready", "structured-errors", "resume-hmac", "audio-delay")
         private val PHASES = setOf("buffering", "playing", "paused", "ended")
+        /** How often the state feed samples the player; [StateFeedCadence] decides which samples are sent. */
+        private const val STATE_TICK_MS = 100L
         private val NEGOTIATE_FIELDS = setOf("t", "v", "minV", "maxV", "clientNonce")
         private val PAIR_FIELDS = setOf("t", "v", "clientNonce", "serverNonce", "code", "device")
         private val RESUME_INIT_FIELDS = setOf("t", "v", "tvId", "keyId", "clientNonce")

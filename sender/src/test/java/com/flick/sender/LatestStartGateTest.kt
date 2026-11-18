@@ -48,6 +48,37 @@ class LatestStartGateTest {
         assertTrue(bRelease.locks)
     }
 
+    @Test fun wakeRenewalOwnershipEndsWithReleaseAndWithASuccessor() {
+        val gate = LatestStartGate()
+        val ownership = GenerationResourceOwnership()
+        val a = gate.begin(castA)
+        ownership.claimLocks(a)
+        assertTrue(ownership.ownsLocks(a))
+
+        val b = gate.begin(castB)
+        ownership.claimLocks(b)
+        assertFalse(ownership.ownsLocks(a))
+        assertTrue(ownership.ownsLocks(b))
+
+        ownership.release(b)
+        assertFalse(ownership.ownsLocks(b))
+    }
+
+    @Test fun theLocksHolderIsTheLatestClaimantUntilReleased() {
+        val gate = LatestStartGate()
+        val ownership = GenerationResourceOwnership()
+        assertNull(ownership.locksHolder())
+        val a = gate.begin(castA)
+        ownership.claimLocks(a)
+        val b = gate.begin(castB)
+        ownership.claimLocks(b)
+        assertEquals(b, ownership.locksHolder())
+        ownership.release(a)
+        assertEquals(b, ownership.locksHolder())
+        ownership.release(b)
+        assertNull(ownership.locksHolder())
+    }
+
     @Test fun delayedStopForAIsIgnoredAfterBSupersedesIt() {
         val gate = LatestStartGate()
         gate.begin(castA)

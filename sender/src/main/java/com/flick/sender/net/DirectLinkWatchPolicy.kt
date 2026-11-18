@@ -32,4 +32,57 @@ internal object DirectLinkWatchPolicy {
 
     /** Two and a half echo periods: the path answered within the last couple of probes. */
     const val ECHO_PROOF_FRESH_MS = 2_500L
+
+    /**
+     * Whether the echoes [releasesFor] would weigh were taken at the paused cadence
+     * ([DirectLinkEchoCadence]), so their absence of a fresh answer is a gap in sampling
+     * rather than evidence. True while the slow cadence holds ([slowNow]) and for
+     * [ECHO_PROOF_FRESH_MS] after it ended at [slowEndedAtMs] (0 for never): only then does
+     * the window [releasesFor] reads hold as many probes as it does at the fast cadence.
+     *
+     * See [verdict] for what the caller does about it.
+     */
+    fun echoProofSparse(slowNow: Boolean, slowEndedAtMs: Long, nowMs: Long): Boolean =
+        slowNow || (slowEndedAtMs > 0L && nowMs - slowEndedAtMs < ECHO_PROOF_FRESH_MS)
+
+    enum class Verdict {
+        RELEASE,
+
+        /** An echo answered after the ping, and fresh: the pong is only late. */
+        HOLD_ECHO,
+
+        /** Echoes too sparse to weigh: the echo watch is woken and the ping weighed again after [SPARSE_RECHECK_MS]. */
+        HOLD_SPARSE,
+    }
+
+    /**
+     * What the check does about a ping unanswered past [UNANSWERED_PROOF_MS].
+     *
+     * Held as sparse only while the echo path can still release by itself ([echoCanRelease]),
+     * and once per ping ([sparseHeldAlready]): the caller wakes the echo watch to the fast
+     * cadence, which an overdue ping then keeps it at, so the recheck weighs this ping on
+     * echoes at the usual density, by [releasesFor] exactly as it always has. When the echo
+     * path cannot act, nothing is held for density: the ping watch is the only actor.
+     */
+    fun verdict(
+        pingSentAtMs: Long,
+        lastEchoAnsweredAtMs: Long,
+        echoSparse: Boolean,
+        echoCanRelease: Boolean,
+        sparseHeldAlready: Boolean,
+        nowMs: Long,
+    ): Verdict = when {
+        echoSparse && echoCanRelease && !sparseHeldAlready -> Verdict.HOLD_SPARSE
+        releasesFor(pingSentAtMs, lastEchoAnsweredAtMs, nowMs) -> Verdict.RELEASE
+        else -> Verdict.HOLD_ECHO
+    }
+
+    /** How long until the next check after one that reached [verdict]; null when it did not. */
+    fun nextCheckMs(verdict: Verdict?): Long = if (verdict == Verdict.HOLD_SPARSE) SPARSE_RECHECK_MS else PERIOD_MS
+
+    /**
+     * After a sparse hold: the freshness window refilled at the fast cadence, plus one probe's
+     * timeout so the probe that closes it has had time to answer.
+     */
+    const val SPARSE_RECHECK_MS = ECHO_PROOF_FRESH_MS + DirectLinkEchoPolicy.PROBE_TIMEOUT_MS
 }

@@ -32,8 +32,9 @@ internal object ControlLiveness {
     /**
      * How recently an inbound frame proves the socket without asking.
      *
-     * A live cast carries `state` at 10 Hz, so a replacing cast never pays a round trip;
-     * two seconds is twenty of those frames missing, which a healthy feed does not do.
+     * A live cast carries `state` every 100 ms around a change or a command and about once a
+     * second otherwise, so two seconds spans two of the slow frames with about 0.9 s to
+     * spare. A miss is not a failure: it costs the replacing cast one ping round trip.
      */
     const val FRESH_MS = 2_000L
 

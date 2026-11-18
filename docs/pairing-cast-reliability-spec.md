@@ -541,7 +541,7 @@ Frame meanings:
 - `loadReady`: preflight succeeded and the TV reported its first rendered video frame for this cast. This is the only success boundary that permits sender Now Playing.
 - `loadFailed`: exactly one terminal startup result before readiness.
 - `error`: terminal active-playback failure after readiness.
-- `state`: immediate on phase transitions and approximately 10 Hz while active.
+- `state`: immediate on phase transitions; approximately 10 Hz for three seconds after a transition, a position jump or any command other than `ping`, and while buffering; approximately 1 Hz otherwise.
 - `stopped`: exact cast-correlated, replayable confirmation of canonical stop for the current Checking/Preparing or Active cast; local cleanup never waits indefinitely for it.
 - `commandRejected`: a command was well-formed but cannot target the current cast, or a safe generic malformed indication before closure. It never changes player state.
 
