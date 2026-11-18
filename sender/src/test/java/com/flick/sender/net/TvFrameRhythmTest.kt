@@ -1,6 +1,6 @@
 package com.flick.sender.net
 
-import org.junit.Assert.assertEquals
+import com.flick.sender.ui.components.PlayheadExtrapolator
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,11 +14,30 @@ class TvFrameRhythmTest {
     private val rhythm = TvFrameRhythm()
     private val t0 = 1_000_000L
 
-    @Test fun theTuning() {
-        assertEquals(250L, TvFrameRhythm.HOT_SYNC_GRACE_MS)
-        assertEquals(1_500L, TvFrameRhythm.COLD_SYNC_GRACE_MS)
-        assertEquals(400L, TvFrameRhythm.ROUND_TRIP_ALLOWANCE_MS)
-        assertEquals(2_500L, TvFrameRhythm.HOT_TRUST_MS)
+    /**
+     * The phone trusts the fast rhythm only inside the TV's hot window: the tight grace can
+     * convict a gap at the last moment of trust, so fast frames must still be due through
+     * that grace and one more tick of the TV's loop.
+     */
+    @Test fun hotTrustEndsInsideTheReceiversHotWindow() {
+        assertTrue(
+            TvFrameRhythm.HOT_TRUST_MS + TvFrameRhythm.HOT_SYNC_GRACE_MS + RECEIVER_TICK_MS < RECEIVER_HOT_WINDOW_MS,
+        )
+    }
+
+    /** A slow frame is due a cold interval after the last, late by up to a tick, then the trip. */
+    @Test fun theColdGraceCoversTheReceiversSlowRhythm() {
+        assertTrue(TvFrameRhythm.COLD_SYNC_GRACE_MS > RECEIVER_COLD_INTERVAL_MS + RECEIVER_TICK_MS + JITTER_ALLOWANCE_MS)
+    }
+
+    /** A replacing cast skips its ping only on a frame; the slow rhythm alone must keep one inside the window. */
+    @Test fun aSlowFrameKeepsTheSocketFresh() {
+        assertTrue(ControlLiveness.FRESH_MS > RECEIVER_COLD_INTERVAL_MS + RECEIVER_TICK_MS + JITTER_ALLOWANCE_MS)
+    }
+
+    /** The local playhead must not reach its lead cap between two healthy slow frames. */
+    @Test fun thePlayheadOutrunsNoHealthySlowGap() {
+        assertTrue(PlayheadExtrapolator.MAX_LEAD_MS > RECEIVER_COLD_INTERVAL_MS + RECEIVER_TICK_MS + JITTER_ALLOWANCE_MS)
     }
 
     @Test fun aColdFeedAtItsSlowRhythmIsNotSyncing() {
@@ -85,5 +104,20 @@ class TvFrameRhythmTest {
         rhythm.onCommandSent(t0)
         assertTrue(rhythm.provablyHot(t0 + 2_499L))
         assertFalse(rhythm.provablyHot(t0 + 2_500L))
+    }
+
+    private companion object {
+        /**
+         * The receiver's `StateFeedCadence.HOT_WINDOW_MS` and `COLD_INTERVAL_MS`
+         * (receiver/src/main/java/com/flick/receiver/net/StateFeedCadence.kt) and the loop
+         * they gate, `ControlServer.STATE_TICK_MS` (ControlServer.kt in the same package).
+         * Mirrored rather than imported — the two apps share no code.
+         */
+        const val RECEIVER_HOT_WINDOW_MS = 3_000L
+        const val RECEIVER_COLD_INTERVAL_MS = 1_000L
+        const val RECEIVER_TICK_MS = 100L
+
+        /** Wi-Fi delivery jitter a healthy home link adds to a frame's trip. */
+        const val JITTER_ALLOWANCE_MS = 250L
     }
 }

@@ -94,9 +94,17 @@ class StateFeedCadenceTest {
     }
 
     @Test
-    fun `a command that is never stamped, like a ping, leaves it cold`() {
+    fun `a ping never heats the feed and every other command does`() {
+        assertFalse(StateFeedCadence.heats("ping"))
+        assertFalse(StateFeedCadence.heats(null))
+        for (verb in listOf("seek", "play", "pause", "setVolume", "setAudioDelay", "loadMedia", "stop")) {
+            assertTrue(verb, StateFeedCadence.heats(verb))
+        }
+    }
+
+    @Test
+    fun `a feed whose commands are never stamped stays cold`() {
         val feed = Feed().settle()
-        // The read loop does not stamp `ping`, so the cadence sees nothing change.
         assertEquals(5, feed.run(5_000L).size)
     }
 

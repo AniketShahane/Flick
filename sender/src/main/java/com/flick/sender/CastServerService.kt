@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Base64
 import androidx.core.app.ServiceCompat
 import androidx.media3.common.util.UnstableApi
@@ -83,9 +84,12 @@ class CastServerService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // Re-arms the CPU lock's timeout for as long as one generation owns the locks. Started
-    // and cancelled only under [lockGuard], beside the acquire and release it extends.
+    // Re-arms the CPU lock's timeout while one generation owns the locks and serves
+    // ([WakeLockCeiling]). These three are read and written only under [lockGuard], beside
+    // the acquire and release they extend. [lastServedAtMs] is on the monotonic clock.
     private var wakeRenewJob: Job? = null
+    private var wakeRenewing = false
+    private var lastServedAtMs = 0L
     private val resourceOwnership = GenerationResourceOwnership()
 
     // The throughput sampler. It belongs to the service and not to a screen because the
@@ -421,7 +425,7 @@ class CastServerService : Service() {
         samplerJob = serviceScope.launch {
             while (isActive) {
                 delay(SAMPLE_INTERVAL_MS)
-                TransferTelemetry.sampleNow()
+                if (TransferTelemetry.sampleNow().bytes > 0L) onBytesServed()
             }
         }
     }
@@ -488,29 +492,55 @@ class CastServerService : Service() {
             if (wakeLock == null) wakeLock = newWakeLock()
             wifiLock?.let { if (!it.isHeld) it.acquire() }
             // A safety timeout so a lifecycle bug can never pin the CPU forever, renewed
-            // below for as long as [session] owns the locks, so a long cast never outlives
-            // it. Re-acquired on every start even when held: on a non-reference-counted
-            // lock that replaces the pending timed release.
-            wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+            // below only while the cast serves, so a cast left idle still lapses. Re-acquired
+            // on every start even when held: on a non-reference-counted lock that replaces
+            // the pending timed release.
+            lastServedAtMs = SystemClock.elapsedRealtime()
+            wakeLock?.acquire(WakeLockCeiling.TIMEOUT_MS)
             startWakeRenewal(session)
         }
     }
 
     /**
-     * Re-arms the CPU lock every [WAKE_LOCK_RENEW_MS] while [session] owns the locks. The
-     * check runs under [lockGuard], where [releaseLocks] cancels this job: a renewal that
-     * woke beside a release finds itself cancelled and never re-acquires behind it.
+     * Re-arms the CPU lock every [WakeLockCeiling.RENEW_MS] while [session] owns the locks
+     * and [WakeLockCeiling.renews] says the cast still serves; otherwise it ends and leaves
+     * the lock to lapse. The check runs under [lockGuard], where [releaseLocks] cancels this
+     * job: a renewal that woke beside a release finds itself cancelled and never re-acquires
+     * behind it. Callers hold [lockGuard].
      */
     private fun startWakeRenewal(session: CastGeneration) {
         wakeRenewJob?.cancel()
+        wakeRenewing = true
         wakeRenewJob = serviceScope.launch {
             while (true) {
-                delay(WAKE_LOCK_RENEW_MS)
+                delay(WakeLockCeiling.RENEW_MS)
                 synchronized(lockGuard) {
                     if (!isActive || !resourceOwnership.ownsLocks(session)) return@launch
-                    wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (!WakeLockCeiling.renews(lastServedAtMs, nowMs)) {
+                        wakeRenewing = false
+                        FlickLog.i("cast", "wake lock lapsing idleMs=${nowMs - lastServedAtMs}")
+                        return@launch
+                    }
+                    wakeLock?.acquire(WakeLockCeiling.TIMEOUT_MS)
                 }
             }
+        }
+    }
+
+    /**
+     * The sampler saw video bytes leave: the cast is active, and a CPU lock left to lapse
+     * is taken again for the generation that owns the locks, never for one that does not.
+     */
+    private fun onBytesServed() {
+        synchronized(lockGuard) {
+            lastServedAtMs = SystemClock.elapsedRealtime()
+            val owner = resourceOwnership.locksHolder()
+            if (!WakeLockCeiling.reacquires(owned = owner != null, renewing = wakeRenewing) || owner == null) return
+            if (wakeLock == null) wakeLock = newWakeLock()
+            wakeLock?.acquire(WakeLockCeiling.TIMEOUT_MS)
+            startWakeRenewal(owner)
+            FlickLog.i("cast", "wake lock reacquired reason=serving")
         }
     }
 
@@ -519,6 +549,7 @@ class CastServerService : Service() {
         synchronized(lockGuard) {
             wakeRenewJob?.cancel()
             wakeRenewJob = null
+            wakeRenewing = false
             wifiLock?.let { if (it.isHeld) it.release() }
             wakeLock?.let { if (it.isHeld) it.release() }
         }
@@ -698,10 +729,6 @@ class CastServerService : Service() {
 
         private const val WIFI_LOCK_TAG = "flick:cast-wifi"
         private const val WAKE_LOCK_TAG = "flick:cast-wake"
-        private const val WAKE_LOCK_TIMEOUT_MS = 2L * 60L * 60L * 1000L
-
-        // Half the timeout, so one missed or late renewal still leaves the lock held.
-        private const val WAKE_LOCK_RENEW_MS = 60L * 60L * 1000L
         private const val SAMPLE_INTERVAL_MS = 1_000L
 
         // 16 bytes = 128 bits of SecureRandom entropy per session token.

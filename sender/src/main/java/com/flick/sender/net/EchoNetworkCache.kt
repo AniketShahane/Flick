@@ -16,7 +16,8 @@ package com.flick.sender.net
  * [WifiEchoProbe]). An invalidation that lands while a lookup is in flight wins: the
  * generation stamp keeps that lookup's answer out of the cache. No answer (null) is never
  * cached, so a network that comes to hold the address is found on the next probe whether
- * or not a callback saw it arrive.
+ * or not a callback saw it arrive; nor is a network outside what the callbacks cover
+ * ([lookup]'s `cacheable`), which is resolved afresh on every probe.
  *
  * [N] is the platform's `Network` in production; anything with value equality in tests.
  */
@@ -55,27 +56,32 @@ internal class EchoNetworkCache<N : Any> {
         if (network == cached && !qualifies) forget()
     }
 
-    /** The network for [localIp], from the cache while armed and holding it, else from [resolve]. */
-    fun lookup(localIp: String, resolve: (String) -> N?): Lookup<N>? {
+    /**
+     * The network for [localIp], from the cache while armed and holding it, else from
+     * [resolve]. A resolved network is kept only when [cacheable] says the callbacks that
+     * invalidate the cache are reported for it, asked right after [resolve] returns it.
+     */
+    fun lookup(localIp: String, resolve: (String) -> N?, cacheable: (N) -> Boolean = { true }): Lookup<N>? {
         val stamp = synchronized(this) {
             val held = cached
             if (arms > 0 && held != null && cachedFor == localIp) return Lookup(held, cached = true)
             generation
         }
-        return store(localIp, stamp, resolve(localIp))
+        return store(localIp, stamp, resolve(localIp), cacheable)
     }
 
     /** Resolves [localIp] afresh, replacing whatever was cached; never answers from the cache. */
-    fun refresh(localIp: String, resolve: (String) -> N?): Lookup<N>? {
+    fun refresh(localIp: String, resolve: (String) -> N?, cacheable: (N) -> Boolean = { true }): Lookup<N>? {
         val stamp = synchronized(this) { generation }
-        return store(localIp, stamp, resolve(localIp))
+        return store(localIp, stamp, resolve(localIp), cacheable)
     }
 
-    private fun store(localIp: String, stamp: Long, fresh: N?): Lookup<N>? {
+    private fun store(localIp: String, stamp: Long, fresh: N?, cacheable: (N) -> Boolean): Lookup<N>? {
+        val keep = fresh?.takeIf(cacheable)
         synchronized(this) {
             if (stamp == generation) {
-                cached = fresh
-                cachedFor = fresh?.let { localIp }
+                cached = keep
+                cachedFor = keep?.let { localIp }
             }
         }
         return fresh?.let { Lookup(it, cached = false) }

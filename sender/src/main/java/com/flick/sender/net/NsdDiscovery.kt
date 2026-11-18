@@ -102,19 +102,32 @@ class NsdDiscovery(context: Context) {
     private val monitors = HashMap<String, NsdManager.ServiceInfoCallback>()
     private val _resolveRevision = MutableStateFlow(0L)
 
-    fun start() {
+    // Records held across a stop, until a resolve issued since confirms them.
+    private val confirmation = HeldRecordConfirmation()
+    private var reconfirmJob: Job? = null
+    // Counts stops; a resolve issued before the latest one confirms nothing.
+    private var stops = 0L
+
+    fun start() = startBrowse(attention = true)
+
+    /**
+     * [attention]: the caller is a moment of attention — the app coming up, the device
+     * list being opened, a rescan — which is what the sweep budget is spent on. Nobody is
+     * reading a row hours later, so nothing is re-queried then; and a browse reopened
+     * for a dial or a return to the foreground re-arms nothing a running browse did not.
+     */
+    private fun startBrowse(attention: Boolean) {
         synchronized(lock) {
             requested = true
-            // Every caller of start() is a moment of attention — the app coming up, the
-            // device list being opened, a rescan — which is what the sweep budget is
-            // spent on. Nobody is reading a row hours later, so nothing is re-queried then.
-            sweepsLeft = SWEEP_BUDGET
+            if (attention) sweepsLeft = SWEEP_BUDGET
             if (!retryGate.begin()) {
                 // Already browsing, so there is no second discovery to open — but the
                 // caller asked to look again, and what the browse cannot notice on its
                 // own is a TXT `state` that changed under a record already held.
-                sweepStale()
-                startSweep()
+                if (attention) {
+                    sweepStale()
+                    startSweep()
+                }
                 return
             }
             val listener = object : NsdManager.DiscoveryListener {
@@ -132,16 +145,23 @@ class NsdDiscovery(context: Context) {
                         if (discoveryListener !== this) return
                         FlickLog.i("nsd", "discovery started")
                         _browse.value = BrowseState.RUNNING
+                        scheduleReconfirm(this)
                     }
                 }
                 override fun onDiscoveryStopped(serviceType: String?) = discoveryFailed(this) { retryGate.stopped() }
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                    if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
-                        enqueueResolve(serviceInfo)
+                    synchronized(lock) {
+                        if (discoveryListener !== this) return
+                        if (serviceInfo.serviceType?.contains(SERVICE_TYPE_MATCH) == true) {
+                            enqueueResolve(serviceInfo)
+                        }
                     }
                 }
                 override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                    onLost(serviceInfo.serviceName)
+                    synchronized(lock) {
+                        if (discoveryListener !== this) return
+                        onLost(serviceInfo.serviceName)
+                    }
                 }
             }
             discoveryListener = listener
@@ -155,7 +175,7 @@ class NsdDiscovery(context: Context) {
                 discoveryListener = null
                 if (retryGate.startFailed()) scheduleRetry() else _browse.value = BrowseState.UNAVAILABLE
             }
-            if (discoveryListener != null) startSweep()
+            if (discoveryListener != null && sweepsLeft > 0) startSweep()
         }
     }
 
@@ -168,24 +188,30 @@ class NsdDiscovery(context: Context) {
     fun ensureBrowsing() {
         synchronized(lock) {
             if (requested) return
-            start()
+            startBrowse(attention = false)
         }
     }
 
     /**
      * Ends the browse and every query it keeps running. The device records stay: a dial
      * reads them while stopped, and [refresh] and [advertisedNow] re-resolve a held record
-     * without a browse. A no-op when nothing was asked for since the last stop, so a
-     * re-resolve queued meanwhile is not dropped.
+     * without a browse. Nothing reports their loss from here on, so each is unconfirmed
+     * ([HeldRecordConfirmation]) until a resolve lands for it. A no-op when nothing was
+     * asked for since the last stop, so a re-resolve queued meanwhile is not dropped.
+     *
+     * A resolve already handed to the platform keeps [resolving] until its callback: the
+     * legacy service allows one per client and fails any other meanwhile.
      */
     fun stop() {
         synchronized(lock) {
             if (!requested) return
             requested = false
+            stops += 1
+            confirmation.onStopped(_devices.value.map { it.name })
+            reconfirmJob?.cancel(); reconfirmJob = null
             discoveryListener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
             discoveryListener = null
             pending.clear()
-            resolving = false
             retryJob?.cancel(); retryJob = null
             sweepJob?.cancel(); sweepJob = null
             monitors.keys.toList().forEach(::dropMonitor)
@@ -229,6 +255,15 @@ class NsdDiscovery(context: Context) {
         return reresolve(cached.name, timeoutMs)
     }
 
+    /**
+     * Whether a record for [tvId] at [host] is held and has been resolved since discovery
+     * last stopped — an advertisement on the network this phone is on now, rather than one
+     * held over from before a stop that nothing has re-confirmed since.
+     */
+    fun confirmedAt(tvId: String, host: String): Boolean = synchronized(lock) {
+        _devices.value.any { it.tvId == tvId && it.host == host && confirmation.confirmed(it.name) }
+    }
+
     /** Re-queries one held record, answering whether a newer resolve for it landed. */
     private suspend fun reresolve(name: String, timeoutMs: Long): Boolean {
         val before = synchronized(lock) {
@@ -265,13 +300,14 @@ class NsdDiscovery(context: Context) {
             if (resolving) return
             val next = pending.pollFirst() ?: return
             resolving = true
+            val issuedAfterStops = stops
             val listener = object : NsdManager.ResolveListener {
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
                     FlickLog.w("nsd", "resolve failed code=$errorCode")
                     synchronized(lock) { resolving = false; pumpResolve() }
                 }
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                    onResolved(serviceInfo)
+                    onResolved(serviceInfo, confirms = synchronized(lock) { issuedAfterStops == stops })
                     synchronized(lock) { resolving = false; pumpResolve() }
                 }
             }
@@ -344,8 +380,12 @@ class NsdDiscovery(context: Context) {
         runCatching { nsd.unregisterServiceInfoCallback(monitor) }
     }
 
+    /**
+     * Writes a resolve. [confirms]: it was issued since discovery last stopped (or came from
+     * a live subscription), so it also re-confirms a record held across that stop.
+     */
     @Suppress("DEPRECATION")
-    private fun onResolved(info: NsdServiceInfo) {
+    private fun onResolved(info: NsdServiceInfo, confirms: Boolean) {
         val host = info.host?.hostAddress ?: return
         val attrs = info.attributes ?: emptyMap()
         fun attr(key: String): String? = attrs[key]?.let { String(it) }
@@ -376,6 +416,7 @@ class NsdDiscovery(context: Context) {
             _devices.value = (_devices.value.filter { it.name != name && it.host != tv.host } + tv)
                 .sortedByDescending { it.state == TvAvailability.READY }
             _resolveRevision.value = stamp
+            if (confirms) confirmation.onResolved(name)
             if (awaitingResolve.remove(name)) _unresolvedNames.value = awaitingResolve.size
             // A renamed TV retires its old name HERE and nowhere else: the line above is
             // the only place that name leaves [_devices], and [onLost] — the one path that
@@ -386,10 +427,12 @@ class NsdDiscovery(context: Context) {
             retired.forEach { gone ->
                 resolvedAt.remove(gone)
                 lastInfoByName.remove(gone)
+                confirmation.onForgotten(gone)
                 dropMonitor(gone)
                 if (awaitingResolve.remove(gone)) _unresolvedNames.value = awaitingResolve.size
             }
-            ensureMonitor(name)
+            // Not while stopped: a subscription is a query the stop was meant to end.
+            if (requested) ensureMonitor(name)
         }
     }
 
@@ -413,6 +456,7 @@ class NsdDiscovery(context: Context) {
                         FlickLog.i("nsd", "dropped name=$name")
                         resolvedAt.remove(name)
                         lastInfoByName.remove(name)
+                        confirmation.onForgotten(name)
                         dropMonitor(name)
                         if (awaitingResolve.remove(name)) _unresolvedNames.value = awaitingResolve.size
                         _devices.value = _devices.value.filter { it.name != name }
@@ -428,7 +472,27 @@ class NsdDiscovery(context: Context) {
             delay(1_000)
             synchronized(lock) {
                 retryJob = null
-                if (discoveryListener == null && retryGate.retryFired()) start()
+                if (discoveryListener == null && retryGate.retryFired()) startBrowse(attention = false)
+            }
+        }
+    }
+
+    /**
+     * Once [listener]'s browse has had [HeldRecordConfirmation.RECONFIRM_GRACE_MS] to report,
+     * every record held across the last stop that no resolve has re-confirmed goes through
+     * [onLost]: re-resolved, and dropped only if nothing newer lands. Callers hold [lock].
+     */
+    private fun scheduleReconfirm(listener: NsdManager.DiscoveryListener) {
+        if (!confirmation.anyUnconfirmed) return
+        reconfirmJob?.cancel()
+        reconfirmJob = retryScope.launch {
+            delay(HeldRecordConfirmation.RECONFIRM_GRACE_MS)
+            synchronized(lock) {
+                if (discoveryListener !== listener) return@launch
+                reconfirmJob = null
+                val due = confirmation.dueForLoss(_devices.value.map { it.name })
+                if (due.isNotEmpty()) FlickLog.i("nsd", "reconfirm unseen=${due.size}")
+                due.forEach { onLost(it) }
             }
         }
     }
@@ -458,7 +522,8 @@ class NsdDiscovery(context: Context) {
      */
     @RequiresExtension(extension = Build.VERSION_CODES.TIRAMISU, version = MONITOR_EXT)
     private inner class ServiceMonitor(private val name: String) : NsdManager.ServiceInfoCallback {
-        override fun onServiceUpdated(serviceInfo: NsdServiceInfo) = onResolved(serviceInfo)
+        override fun onServiceUpdated(serviceInfo: NsdServiceInfo) =
+            onResolved(serviceInfo, confirms = synchronized(lock) { monitors[name] === this })
 
         override fun onServiceLost() = onLost(name)
 

@@ -632,9 +632,8 @@ class ControlServer(
                     if (objectValue == null) { rejectMalformed(connection, null, null); return }
                     val type = objectValue.string("t")?.value
                     // Stamped before dispatch so the feed is already hot on the tick that
-                    // reports the command's effect. `ping` is excluded: it arrives every few
-                    // seconds for the link check alone and would keep the feed hot.
-                    if (type != null && type != "ping") connection.lastCommandAtMs.set(rxAtMs)
+                    // reports the command's effect.
+                    if (StateFeedCadence.heats(type)) connection.lastCommandAtMs.set(rxAtMs)
                     val command = controlCommandLabel(type)
                     // Info and not verbose, which is the whole difference between a
                     // diagnostic and a decoration: [FlickLog.v] reaches logcat only under

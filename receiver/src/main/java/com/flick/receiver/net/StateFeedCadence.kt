@@ -5,9 +5,11 @@ import kotlin.math.abs
 /**
  * Which ticks of the `state` feed actually go on the wire.
  *
- * Every frame wakes the phone's Wi-Fi radio and CPU, so a feed that never changes
- * pace drains the phone for the whole film, and worst of all while it sits paused or
- * finished. The feed is therefore sampled every tick but emitted only while "hot" —
+ * Every frame costs the phone a parse, a state fan-out and a media-session update, and
+ * with its screen off, where no Wi-Fi lock holds on current Android, a radio wake out of
+ * power save. A feed that never changes pace therefore drains the phone for the whole
+ * film, and worst of all while it sits paused or finished. The feed is sampled every
+ * tick but emitted only while "hot" —
  * for [HOT_WINDOW_MS] after something the phone has to see promptly — and otherwise
  * once every [COLD_INTERVAL_MS].
  *
@@ -96,6 +98,13 @@ internal class StateFeedCadence {
     companion object {
         const val NEVER = Long.MIN_VALUE
 
+        /**
+         * Whether an inbound frame of [type] heats the feed. `ping` does not: the phone
+         * sends one every few seconds for its link check alone, and counting it would
+         * keep the feed hot for a third of every film.
+         */
+        fun heats(type: String?): Boolean = type != null && type != PING
+
         /** How long the feed stays at the full tick rate after a trigger. */
         const val HOT_WINDOW_MS = 3_000L
 
@@ -105,6 +114,7 @@ internal class StateFeedCadence {
         /** A position move this far from the prediction is a seek, not sampling jitter. */
         const val JUMP_MS = 1_000L
 
+        private const val PING = "ping"
         private const val PHASE_PLAYING = "playing"
         private const val PHASE_BUFFERING = "buffering"
     }

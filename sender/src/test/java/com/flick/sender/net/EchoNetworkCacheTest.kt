@@ -103,4 +103,24 @@ class EchoNetworkCacheTest {
         network = "wifi-3"
         assertEquals(EchoNetworkCache.Lookup("wifi-3", cached = false), cache.lookup(ip, resolve))
     }
+
+    /** A network the invalidating callbacks never hear about is resolved on every probe, as an uncached probe always was. */
+    @Test fun aNetworkOutsideTheCallbacksIsNeverCached() {
+        cache.arm()
+        val coveredOnly = { candidate: String -> candidate != "wifi-restricted" }
+        network = "wifi-restricted"
+        repeat(3) {
+            assertEquals(EchoNetworkCache.Lookup("wifi-restricted", cached = false), cache.lookup(ip, resolve, coveredOnly))
+        }
+        assertEquals(3, resolves)
+        assertEquals(EchoNetworkCache.Lookup("wifi-restricted", cached = false), cache.refresh(ip, resolve, coveredOnly))
+        assertEquals(EchoNetworkCache.Lookup("wifi-restricted", cached = false), cache.lookup(ip, resolve, coveredOnly))
+        // A refresh landing on an uncovered network also forgets the covered one it replaced.
+        network = "wifi-1"
+        cache.lookup(ip, resolve, coveredOnly)
+        assertTrue(cache.lookup(ip, resolve, coveredOnly)!!.cached)
+        network = "wifi-restricted"
+        cache.refresh(ip, resolve, coveredOnly)
+        assertFalse(cache.lookup(ip, resolve, coveredOnly)!!.cached)
+    }
 }

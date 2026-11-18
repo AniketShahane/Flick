@@ -105,6 +105,7 @@ import com.flick.sender.ui.components.CastPosterKey
 import com.flick.sender.ui.components.LiveDot
 import com.flick.sender.ui.components.LocalQualityRevealOrigin
 import com.flick.sender.ui.components.PhoneScrubBar
+import com.flick.sender.ui.components.PlayheadTicker
 import com.flick.sender.ui.components.SignalChip
 import com.flick.sender.ui.components.TransportCluster
 import com.flick.sender.ui.components.VolumeSlider
@@ -596,8 +597,9 @@ private fun ColumnScope.RemoteContent(
         sink = preview,
     )
 
-    // Runs on between the TV's once-a-second frames while the film plays.
-    val head = rememberPlayhead(playbackState)
+    // Runs on between the TV's frames, which come about once a second while a film simply plays.
+    val head = rememberPlayhead(playbackState, controller.session.frames)
+    PlayheadTicker(head, labels = true)
     PhoneScrubBar(
         targetFraction = { head.fraction() },
         ghostFraction = { playbackState.value.confirmedFraction },
@@ -720,7 +722,7 @@ private fun ColumnScope.StopCastControl(onStop: () -> Unit) {
 
 /**
  * Isolated, and now inert: every reader of the level is a lambda consumed in the draw,
- * layout or semantics phase, so a volume drag — and the 10 Hz clock that shares its state
+ * layout or semantics phase, so a volume drag — and the session clock that shares its state
  * object — recomposes nothing here at all.
  */
 @Composable

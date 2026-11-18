@@ -112,7 +112,9 @@ import kotlin.math.sin
  * is exactly flat while paused or under a finger.
  *
  * Every moving value arrives as a lambda and is consumed inside a draw or layout
- * scope: the session clock ticks ~10Hz and must never recompose this tree.
+ * scope: the session clock moves with every TV frame — ten a second around a change or
+ * a command, about one a second otherwise — and at pointer rate under a drag, and must
+ * never recompose this tree.
  */
 @Composable
 fun PhoneScrubBar(
@@ -171,7 +173,7 @@ fun PhoneScrubBar(
     val currentReduceMotion by rememberUpdatedState(reduceMotion)
     LaunchedEffect(amplitude) {
         // playing() is read here rather than in composition: the caller's lambda reads
-        // the same state object the 10Hz clock lives in, and snapshotFlow emits only
+        // the same state object the session clock lives in, and snapshotFlow emits only
         // when the boolean itself changes. A flat bar is a claim about the TV, so a
         // paused or grabbed bar must reach exactly 0 and not merely approach it.
         snapshotFlow {

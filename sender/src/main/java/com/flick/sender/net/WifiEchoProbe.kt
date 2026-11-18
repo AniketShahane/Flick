@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.LinkProperties
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.system.ErrnoException
 import android.system.OsConstants
 import kotlinx.coroutines.Dispatchers
@@ -59,16 +60,24 @@ internal object WifiEchoProbe {
         withContext(Dispatchers.IO) {
             if (localIp == null) return@withContext unknown
             val target = InetSocketAddress(tvHost, ECHO_PORT)
-            val resolve = { ip: String -> wifiNetworkHolding(context, ip) }
+            // The last network [resolve] returned, when the callbacks cover it.
+            var covered: Network? = null
+            val resolve = { ip: String ->
+                wifiNetworkHolding(context, ip)?.let { (network, capabilities) ->
+                    covered = network.takeIf { coveredByCallbacks(capabilities) }
+                    network
+                }
+            }
+            val cacheable = { network: Network -> network == covered }
             // Serving from no Wi-Fi network — the phone's own hotspot, for one — leaves no
             // direct link to watch.
-            var lookup = networks.lookup(localIp, resolve) ?: return@withContext unknown
+            var lookup = networks.lookup(localIp, resolve, cacheable) ?: return@withContext unknown
             // Creating the socket is where the bind is refused; only connect() is classified.
             var bound = boundSocket(lookup.network)
             if (bound == null && lookup.cached) {
                 // A cached network may be one that has just gone, which a fresh lookup would
                 // not have offered; only a fresh one may send the probe down the routed path.
-                lookup = networks.refresh(localIp, resolve) ?: return@withContext unknown
+                lookup = networks.refresh(localIp, resolve, cacheable) ?: return@withContext unknown
                 bound = boundSocket(lookup.network)
             }
             if (bound != null) {
@@ -77,7 +86,7 @@ internal object WifiEchoProbe {
                 // that network: through one that went away in the meantime it says nothing
                 // about the TV.
                 if (outcome == EchoOutcome.MISSED && lookup.cached) {
-                    val fresh = networks.refresh(localIp, resolve) ?: return@withContext unknown
+                    val fresh = networks.refresh(localIp, resolve, cacheable) ?: return@withContext unknown
                     if (fresh.network != lookup.network) return@withContext Result(EchoOutcome.UNKNOWN, EchoMode.BOUND)
                 }
                 return@withContext Result(outcome, EchoMode.BOUND)
@@ -137,6 +146,20 @@ internal object WifiEchoProbe {
         capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
             !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
 
+    /**
+     * Whether [watchNetworks]' request reports this network's changes. Its builder's default
+     * capabilities are what a plain app can ask for, and a qualifying network outside them
+     * (restricted, untrusted, a VPN's, a VCN's) gets no callbacks, so it is never cached.
+     */
+    private fun coveredByCallbacks(capabilities: NetworkCapabilities): Boolean =
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+            (
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED)
+                )
+
     private fun connectOutcome(socket: Socket, target: InetSocketAddress, timeoutMs: Int): EchoOutcome = try {
         socket.use { it.connect(target, timeoutMs) }
         EchoOutcome.ANSWERED
@@ -155,14 +178,15 @@ internal object WifiEchoProbe {
         }
     }.getOrNull()
 
-    /** The non-VPN Wi-Fi network whose link addresses include [localIp], or null. */
+    /** The non-VPN Wi-Fi network whose link addresses include [localIp], with its capabilities, or null. */
     @Suppress("DEPRECATION")
-    private fun wifiNetworkHolding(context: Context, localIp: String): Network? = runCatching {
+    private fun wifiNetworkHolding(context: Context, localIp: String): Pair<Network, NetworkCapabilities>? = runCatching {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return null
-        manager.allNetworks.firstOrNull { network ->
-            val capabilities = manager.getNetworkCapabilities(network) ?: return@firstOrNull false
-            qualifies(capabilities) &&
+        manager.allNetworks.firstNotNullOfOrNull { network ->
+            val capabilities = manager.getNetworkCapabilities(network) ?: return@firstNotNullOfOrNull null
+            val holds = qualifies(capabilities) &&
                 manager.getLinkProperties(network)?.linkAddresses?.any { it.address.hostAddress == localIp } == true
+            if (holds) network to capabilities else null
         }
     }.getOrNull()
 }

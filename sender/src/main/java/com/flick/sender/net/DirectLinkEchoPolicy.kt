@@ -97,6 +97,13 @@ internal class DirectLinkEchoPolicy {
     val quiet: Boolean get() = misses == 0 && !verifying
 
     /**
+     * Whether a miss streak starting now could still end in a release for a TV whose trust
+     * is [trusted]. False once the cast's budget is spent or the episode is halted: from
+     * then on the ping watch is the only path that can act.
+     */
+    fun canRelease(trusted: Boolean): Boolean = trusted && !halted && !capped && releases < RELEASES_PER_CAST
+
+    /**
      * One probe's outcome. [lastReleaseAtMs] is the cast's shared stamp of the last release
      * from any path, 0 for none.
      *
@@ -206,15 +213,19 @@ internal class DirectLinkEchoPolicy {
 /**
  * How often the echo watch probes. A playing or buffering film is probed every
  * [DirectLinkEchoPolicy.PROBE_PERIOD_MS], always: that is where a broken link costs the
- * film. A film that has sat paused or ended for [IDLE_SETTLE_MS], on a path whose last
- * probe was answered, has no buffer to run out, so it is probed every [IDLE_PROBE_PERIOD_MS].
- * Anything that is not that — a miss, an unclassified probe, a release being verified,
- * the phase leaving pause — is back to the fast period at once; the caller makes the slow
- * wait interruptible so pressing play does not wait out the rest of it.
+ * film. A film that has sat paused or ended for [IDLE_SETTLE_MS], with no command from this
+ * phone for as long, on a path whose last probe was answered, has no buffer to run out, so
+ * it is probed every [IDLE_PROBE_PERIOD_MS]. Anything that is not that — a miss, an
+ * unclassified probe, a release being verified, the phase leaving pause, a command sent, a
+ * ping overdue — is back to the fast period at once; the caller makes the slow wait
+ * interruptible so none of those waits out the rest of it.
  *
- * The ping watch reads its "late, not lost" proof off these echoes, and a slow echo is
- * usually older than that proof allows; [DirectLinkWatchPolicy.echoProofSparse] is how
- * it knows to ask for a fresh one instead.
+ * Slow only while the echo policy can still release ([DirectLinkEchoPolicy.canRelease]):
+ * once it cannot, the ping watch is the only actor, and it weighs its "late, not lost"
+ * proof off these echoes at the density it always had.
+ *
+ * A slow echo is usually older than that proof allows; [DirectLinkWatchPolicy.echoProofSparse]
+ * is how the ping watch knows to ask for fresh ones instead.
  */
 internal object DirectLinkEchoCadence {
     const val IDLE_PROBE_PERIOD_MS = 5_000L
@@ -225,15 +236,56 @@ internal object DirectLinkEchoCadence {
     fun idlePhase(phase: PlaybackPhase): Boolean = phase == PlaybackPhase.PAUSED || phase == PlaybackPhase.ENDED
 
     /**
-     * The period before the next probe. [idleSinceMs] is when the phase last entered pause
-     * or ended without leaving since, 0 while it is anything else; [lastOutcome] is the last
-     * probe's; [quiet] is [DirectLinkEchoPolicy.quiet].
+     * The period before the next probe. [phaseIdleNow] is [idlePhase] of the phase as it
+     * stands; [idleSinceMs] is when the phase last entered pause or ended without leaving
+     * since, 0 while it is anything else; [wokeAtMs] is the last command this phone sent
+     * (or other wake), 0 for none; [lastOutcome] is the last probe's; [quiet] is
+     * [DirectLinkEchoPolicy.quiet]; [canRelease] is [DirectLinkEchoPolicy.canRelease];
+     * [pingOverdue] is a control ping on the cast's line past its answer deadline.
      */
-    fun periodMs(idleSinceMs: Long, lastOutcome: EchoOutcome, quiet: Boolean, nowMs: Long): Long =
-        if (slow(idleSinceMs, lastOutcome, quiet, nowMs)) IDLE_PROBE_PERIOD_MS else DirectLinkEchoPolicy.PROBE_PERIOD_MS
+    fun periodMs(
+        phaseIdleNow: Boolean,
+        idleSinceMs: Long,
+        wokeAtMs: Long,
+        lastOutcome: EchoOutcome,
+        quiet: Boolean,
+        canRelease: Boolean,
+        pingOverdue: Boolean,
+        nowMs: Long,
+    ): Long =
+        if (phaseIdleNow && idleSinceMs > 0L && nowMs - maxOf(idleSinceMs, wokeAtMs) >= IDLE_SETTLE_MS &&
+            lastOutcome == EchoOutcome.ANSWERED && quiet && canRelease && !pingOverdue
+        ) {
+            IDLE_PROBE_PERIOD_MS
+        } else {
+            DirectLinkEchoPolicy.PROBE_PERIOD_MS
+        }
+}
 
-    fun slow(idleSinceMs: Long, lastOutcome: EchoOutcome, quiet: Boolean, nowMs: Long): Boolean =
-        idleSinceMs > 0L && nowMs - idleSinceMs >= IDLE_SETTLE_MS && lastOutcome == EchoOutcome.ANSWERED && quiet
+/**
+ * Which cadence changes reach the journal, which keeps only its last few hundred lines: at
+ * most one per [MIN_GAP_MS], and the state that holds once a gap ends is written then, so a
+ * run of brief wakes costs one line and the cadence that persisted is always the last one
+ * recorded. Starts at the fast cadence, which a watch begins in and never journals.
+ */
+internal class EchoCadenceJournalGate {
+    private var journaledSlow = false
+    private var lastAtMs = 0L
+    private var any = false
+
+    /** Whether to journal the cadence, now [slow], at [nowMs]; asked on every probe and every change. */
+    fun journals(slow: Boolean, nowMs: Long): Boolean {
+        if (slow == journaledSlow) return false
+        if (any && nowMs - lastAtMs < MIN_GAP_MS) return false
+        journaledSlow = slow
+        lastAtMs = nowMs
+        any = true
+        return true
+    }
+
+    companion object {
+        const val MIN_GAP_MS = 30_000L
+    }
 }
 
 /**

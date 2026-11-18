@@ -75,6 +75,7 @@ import com.flick.sender.R
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackUiState
 import com.flick.sender.net.FlickController
+import com.flick.sender.net.StateFrameStamp
 import com.flick.sender.ui.displayName
 import com.flick.sender.ui.motion.ambientFrameRate
 import com.flick.sender.ui.motion.animatingFrameRate
@@ -95,6 +96,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
+import kotlinx.coroutines.flow.StateFlow
 
 /** The dock's own height and the air it keeps between itself and the nav pill. */
 private val DockHeight = 66.dp
@@ -161,8 +163,9 @@ internal fun NowPlayingDock(
     val reduceMotion = rememberReduceMotion()
     val item by controller.castingItem.collectAsState()
     val tv by controller.connectedTv.collectAsState()
-    // Kept as State: the session clock ticks ~10x/s and stops at the hairline's draw
-    // scope rather than reaching the library behind it.
+    // Kept as State: the session clock moves with every TV frame — ten a second around a
+    // change or a command — and stops at the hairline's draw scope rather than reaching
+    // the library behind it.
     val playback = controller.playback.collectAsState()
     val departing = rememberDeparting(item)
     val tvName = tv?.name ?: stringResource(R.string.np_tv_generic)
@@ -206,6 +209,7 @@ internal fun NowPlayingDock(
                 item = departing,
                 tvName = tvName,
                 playback = playback,
+                frames = controller.session.frames,
                 hazeState = hazeState,
                 morphing = morphing,
                 growth = growth,
@@ -398,6 +402,7 @@ private fun DockBar(
     item: MediaItem,
     tvName: String,
     playback: State<PlaybackUiState>,
+    frames: StateFlow<StateFrameStamp>,
     hazeState: HazeState,
     morphing: Boolean,
     growth: () -> Float,
@@ -413,7 +418,9 @@ private fun DockBar(
     val imageLoader = rememberVideoImageLoader()
     val request = rememberVideoFrameRequest(item.uri, item.durationMs)
     val playing by remember(playback) { derivedStateOf { playback.value.playing } }
-    val head = rememberPlayhead(playback, confirmed = true)
+    val head = rememberPlayhead(playback, frames, confirmed = true)
+    // No time printed here, so no second ticks: only the hairline's pixels move it.
+    PlayheadTicker(head, labels = false)
     val description = stringResource(R.string.a11y_now_playing_dock, displayName, tvName)
     val openLabel = stringResource(R.string.a11y_open_remote)
     val track = colors.fillTrack

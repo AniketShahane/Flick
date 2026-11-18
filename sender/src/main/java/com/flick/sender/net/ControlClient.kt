@@ -32,6 +32,14 @@ class ControlClient(private val scope: CoroutineScope) {
 
     /** What this phone's own sends prove about the TV's `state` rhythm; see [TvFrameRhythm]. */
     internal val frameRhythm = TvFrameRhythm()
+
+    /**
+     * When this phone last tried to send the TV anything but a ping, on the monotonic clock;
+     * 0 for never. Stamped whether or not the frame left, since a command that could not go
+     * is as much a reason to look at the link as one that did.
+     */
+    private val _commandAttemptAtMs = MutableStateFlow(0L)
+    internal val commandAttemptAtMs: StateFlow<Long> = _commandAttemptAtMs.asStateFlow()
     data class AuthenticatedEndpoint(val tvId: String, val keyId: String, val tv: String, val peerIp: String, val host: String, val port: Int)
     sealed interface Result {
         data class Paired(val key: String, val endpoint: AuthenticatedEndpoint) : Result
@@ -325,6 +333,7 @@ class ControlClient(private val scope: CoroutineScope) {
      */
     fun send(command: JSONObject): Boolean {
         val verb = command.optString("t")
+        if (verb != "ping") _commandAttemptAtMs.value = SystemClock.elapsedRealtime()
         val active = session ?: run {
             FlickLog.w("ws", "send drop t=$verb reason=no_session")
             return false

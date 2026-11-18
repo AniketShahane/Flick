@@ -44,11 +44,21 @@ class PlaybackSession(
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
     /**
+     * Republished on every accepted `state` frame, including one [state] swallows as equal:
+     * a TV repeating one position is exactly the evidence the phone's local playhead must
+     * stop on. Written before [state]: a playhead that sees the new stamp first holds for
+     * the moment until the position follows, while one that saw a late frame's position
+     * first would step back to it.
+     */
+    private val _frames = MutableStateFlow(StateFrameStamp())
+    val frames: StateFlow<StateFrameStamp> = _frames.asStateFlow()
+
+    /**
      * The A/V nudge in force for the cast being driven, in the sign [AudioDelayPolicy]
      * fixes. It is deliberately NOT part of [PlaybackUiState]: no `state` frame carries
      * it and the TV never reports it back, so this phone is the source of truth for what
-     * is displayed — and putting it in the clock's own value would republish it at 10 Hz
-     * to say nothing new.
+     * is displayed — and putting it in the clock's own value would republish it with every
+     * frame to say nothing new.
      */
     private val _audioDelayMs = MutableStateFlow(AudioDelayPolicy.IN_SYNC_MS)
     val audioDelayMs: StateFlow<Int> = _audioDelayMs.asStateFlow()
@@ -134,6 +144,7 @@ class PlaybackSession(
         // A queued seek belongs to the cast it was tapped on and must never land against
         // this one; the fresh state below drops the run's head with it.
         skipBurst.cancel()
+        _frames.value = StateFrameStamp()
         _state.value = PlaybackUiState(
             title = safeTitle,
             durationMs = durationMs,
@@ -159,7 +170,8 @@ class PlaybackSession(
      * replaced the one it started on.
      *
      * Unlike [loadMedia] nothing the viewer sees is reset: a receiver that re-adopts its
-     * orphaned cast never stopped playing, and the 10 Hz feed it resumes is what moves the
+     * orphaned cast never stopped playing, and the `state` feed it resumes — every 100 ms
+     * around a change or a command, about once a second otherwise — is what moves the
      * clock. Only the `seq` watermark goes, because a receiver that instead starts the film
      * afresh at [startMs] restarts that counter.
      */
@@ -429,6 +441,7 @@ class PlaybackSession(
         audioDelayWalk?.cancel()
         audioDelayWalk = null
         lastSeq = -1L
+        _frames.value = StateFrameStamp()
         _state.value = PlaybackUiState()
         _audioDelayMs.value = AudioDelayPolicy.IN_SYNC_MS
         audioDelayTarget = AudioDelayPolicy.IN_SYNC_MS
@@ -538,6 +551,7 @@ class PlaybackSession(
             }
         }
 
+        _frames.value = _frames.value.next(pos, lastConfirmedAtMs)
         _state.value = prev.copy(
             confirmedMs = pos,
             durationMs = if (dur > 0L) dur else prev.durationMs,
@@ -576,4 +590,19 @@ class PlaybackSession(
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
         const val GENERIC_TITLE = "Video"
     }
+}
+
+/**
+ * The position the last two accepted `state` frames reported and when each reached this
+ * phone, on the monotonic clock. An [atMs] or [previousAtMs] of 0 means no such frame yet
+ * in this cast.
+ */
+data class StateFrameStamp(
+    val posMs: Long = 0L,
+    val atMs: Long = 0L,
+    val previousPosMs: Long = 0L,
+    val previousAtMs: Long = 0L,
+) {
+    fun next(posMs: Long, atMs: Long): StateFrameStamp =
+        StateFrameStamp(posMs = posMs, atMs = atMs, previousPosMs = this.posMs, previousAtMs = this.atMs)
 }
