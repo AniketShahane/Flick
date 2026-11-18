@@ -46,6 +46,9 @@ internal object WifiEchoProbe {
 
     private const val ECHO_PORT = 7
 
+    // NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED: a system API absent from the public SDK.
+    private const val NET_CAPABILITY_NOT_VCN_MANAGED = 28
+
     private val errnos = DirectLinkEchoPolicy.ConnectErrnos(
         refused = OsConstants.ECONNREFUSED,
         timedOut = OsConstants.ETIMEDOUT,
@@ -157,7 +160,7 @@ internal object WifiEchoProbe {
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
             (
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED)
+                    capabilities.hasCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
                 )
 
     private fun connectOutcome(socket: Socket, target: InetSocketAddress, timeoutMs: Int): EchoOutcome = try {
