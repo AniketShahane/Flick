@@ -13,6 +13,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -105,6 +107,8 @@ class NsdDiscovery(context: Context) {
     // Records held across a stop, until a resolve issued since confirms them.
     private val confirmation = HeldRecordConfirmation()
     private var reconfirmJob: Job? = null
+    // [onLost]'s grace windows still running.
+    private val lossGraceJobs = HashSet<Job>()
     // Counts stops; a resolve issued before the latest one confirms nothing.
     private var stops = 0L
 
@@ -209,6 +213,11 @@ class NsdDiscovery(context: Context) {
             stops += 1
             confirmation.onStopped(_devices.value.map { it.name })
             reconfirmJob?.cancel(); reconfirmJob = null
+            // A grace window's re-resolve may sit in the `pending` cleared below; the next
+            // start's reconfirm judges those still-unconfirmed names instead.
+            val graces = lossGraceJobs.toList()
+            lossGraceJobs.clear()
+            graces.forEach { it.cancel() }
             discoveryListener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
             discoveryListener = null
             pending.clear()
@@ -448,9 +457,11 @@ class NsdDiscovery(context: Context) {
             val stampAtLoss = resolvedAt[name] ?: 0L
             FlickLog.i("nsd", "lost name=$name — re-resolving")
             lastInfoByName[name]?.let { pending.addLast(it); pumpResolve() }
-            retryScope.launch {
+            lossGraceJobs += retryScope.launch {
                 delay(LOSS_GRACE_MS)
                 synchronized(lock) {
+                    if (!isActive) return@launch
+                    lossGraceJobs.remove(coroutineContext.job)
                     // A newer stamp means the re-resolve landed: the loss was stale.
                     if ((resolvedAt[name] ?: 0L) <= stampAtLoss) {
                         FlickLog.i("nsd", "dropped name=$name")
@@ -525,7 +536,9 @@ class NsdDiscovery(context: Context) {
         override fun onServiceUpdated(serviceInfo: NsdServiceInfo) =
             onResolved(serviceInfo, confirms = synchronized(lock) { monitors[name] === this })
 
-        override fun onServiceLost() = onLost(name)
+        override fun onServiceLost() {
+            if (synchronized(lock) { monitors[name] === this }) onLost(name)
+        }
 
         override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
             FlickLog.w("nsd", "monitor failed name=$name code=$errorCode")

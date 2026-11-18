@@ -1,5 +1,6 @@
 package com.flick.sender.net
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -154,6 +155,7 @@ internal object WifiEchoProbe {
      * capabilities are what a plain app can ask for, and a qualifying network outside them
      * (restricted, untrusted, a VPN's, a VCN's) gets no callbacks, so it is never cached.
      */
+    @SuppressLint("WrongConstant")
     private fun coveredByCallbacks(capabilities: NetworkCapabilities): Boolean =
         capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) &&
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED) &&

@@ -69,6 +69,7 @@ internal class Playhead(
             nowMs = nowMs,
             runs = PlayheadExtrapolator.runs(state, frames.value, sourceMs),
             durationMs = state.durationMs,
+            extrapolates = PlayheadExtrapolator.extrapolates(state),
         )
     }
 
@@ -97,7 +98,7 @@ internal fun rememberPlayhead(
  * whether the head runs, the film's length — recomposes nothing around it.
  *
  * It wakes only while the head runs: once a pixel on a film short enough to need it, and
- * at each whole second of the head when [labels] (a surface printing the time), whichever
+ * at each flip of its position or remaining-time label when [labels] (a surface printing the time), whichever
  * is sooner, and not at all once the head has reached its lead cap. Every wake, including
  * the re-plan each new frame forces, waits on the frame clock, which Compose pauses while
  * the activity is stopped: nothing ticks with the screen off or the app in the background.

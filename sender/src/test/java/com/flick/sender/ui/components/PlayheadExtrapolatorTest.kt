@@ -38,7 +38,13 @@ class PlayheadExtrapolatorTest {
 
         fun draw(nowMs: Long): Long {
             val source = state.targetMs
-            return extrapolator.read(source, nowMs, PlayheadExtrapolator.runs(state, stamp, source), state.durationMs)
+            return extrapolator.read(
+                source,
+                nowMs,
+                PlayheadExtrapolator.runs(state, stamp, source),
+                state.durationMs,
+                PlayheadExtrapolator.extrapolates(state),
+            )
         }
     }
 
@@ -242,6 +248,67 @@ class PlayheadExtrapolatorTest {
         assertEquals(12_999L, lastDrawn)
     }
 
+    /**
+     * Plays [frames] (arrival time to reported position) through a surface drawn every
+     * millisecond except across [jank]: the head never steps back, never leads the latest
+     * report by more than the cap, and is running again by the end.
+     */
+    private fun playsWithoutSteppingBack(frames: List<Pair<Long, Long>>, until: Long, jank: LongRange = LongRange.EMPTY) {
+        val surface = Surface(playing.copy(durationMs = 7_200_000L))
+        var next = 0
+        var lastDrawn = Long.MIN_VALUE
+        for (t in 1L until until) {
+            while (next < frames.size && frames[next].first == t) {
+                surface.frame(frames[next].second, t)
+                next++
+            }
+            if (t in jank) continue
+            val drawn = surface.draw(t)
+            assertTrue("stepped back at $t: $drawn < $lastDrawn", drawn >= lastDrawn)
+            assertTrue("led the TV by more than the cap at $t", drawn - surface.state.targetMs <= PlayheadExtrapolator.MAX_LEAD_MS)
+            lastDrawn = drawn
+        }
+        val (lastAt, lastPos) = frames.last()
+        assertEquals("running at the end", lastPos + (until - lastAt), surface.draw(until))
+    }
+
+    private fun slowRhythm(count: Int, gap: Long = 1_050L) = (0 until count).map { 1_000L + it * gap to 600_000L + it * gap }
+
+    /** Finding E1a. A slow-rhythm frame 650 ms late proves no motion; the head waits for it. */
+    @Test fun aFrameTooLateToProveMotionDoesNotStepTheHeadBack() {
+        val frames = slowRhythm(8).toMutableList()
+        frames[4] = frames[4].first + 650L to frames[4].second
+        playsWithoutSteppingBack(frames, until = 9_000L)
+    }
+
+    /** Finding E1b. A TV main-thread stall: one frame carries a position 600 ms stale. */
+    @Test fun aStalePositionDoesNotStepTheHeadBack() {
+        val frames = slowRhythm(8).toMutableList()
+        frames[4] = frames[4].first to frames[4].second - 600L
+        playsWithoutSteppingBack(frames, until = 9_000L)
+    }
+
+    /**
+     * Finding E1c. Phone main-thread jank: a frame is stamped 600 ms after it arrived, and
+     * drawing resumes before the stamp lands.
+     */
+    @Test fun phoneJankDoesNotStepTheHeadBack() {
+        val frames = slowRhythm(8, gap = 1_000L).toMutableList()
+        frames[4] = frames[4].first + 600L to frames[4].second
+        playsWithoutSteppingBack(frames, until = 9_000L, jank = 5_000L until 5_400L)
+    }
+
+    /** The hold is for a playing film only: a pause on a frame behind the head still snaps to it. */
+    @Test fun aPausedFrameBehindTheHeadStillSnaps() {
+        val surface = Surface(playing)
+        surface.frame(9_000L, 1L)
+        surface.frame(10_000L, 1_000L)
+        assertEquals(10_800L, surface.draw(1_800L))
+        surface.state = surface.state.copy(playing = false, phase = PlaybackPhase.PAUSED)
+        surface.frame(10_500L, 1_900L)
+        assertEquals(10_500L, surface.draw(1_900L))
+    }
+
     /** A real discontinuity still snaps: a seek back from the TV's own remote. */
     @Test fun aSeekBackFromTheTvSnaps() {
         val surface = Surface(playing)
@@ -274,13 +341,14 @@ class PlayheadExtrapolatorTest {
 
     @Test fun theNextWakeIsTheSoonerOfAPixelAndASecond() {
         head.read(10_300L, nowMs = 0L, runs = true, durationMs = 7_200_000L)
-        assertEquals(700L, head.nextWakeMs(0L, pixelMs = null, labels = true))
+        // The remaining label flips 1 ms past the second on a whole-second film; one wake serves both.
+        assertEquals(701L, head.nextWakeMs(0L, pixelMs = null, labels = true))
         assertEquals(277L, head.nextWakeMs(0L, pixelMs = 277L, labels = true))
         assertEquals(277L, head.nextWakeMs(0L, pixelMs = 277L, labels = false))
         assertNull(head.nextWakeMs(0L, pixelMs = null, labels = false))
         // The next second lies past the lead cap: nothing to wake for until a frame.
-        head.read(10_300L, nowMs = 700L, runs = true, durationMs = 7_200_000L)
-        assertNull(head.nextWakeMs(700L, pixelMs = null, labels = true))
+        head.read(10_300L, nowMs = 701L, runs = true, durationMs = 7_200_000L)
+        assertNull(head.nextWakeMs(701L, pixelMs = null, labels = true))
         // A stopped head never wakes.
         head.read(10_300L, nowMs = 800L, runs = false, durationMs = 7_200_000L)
         assertNull(head.nextWakeMs(800L, pixelMs = 100L, labels = true))
@@ -292,7 +360,7 @@ class PlayheadExtrapolatorTest {
         // A frame 300 ms late: the head holds at 11_300 for 300 ms.
         head.read(11_000L, nowMs = 1_300L, runs = true, durationMs = duration)
         assertEquals(400L, head.nextWakeMs(1_300L, pixelMs = 100L, labels = false))
-        assertEquals(1_000L, head.nextWakeMs(1_300L, pixelMs = null, labels = true))
+        assertEquals(1_001L, head.nextWakeMs(1_300L, pixelMs = null, labels = true))
     }
 
     /**
@@ -302,7 +370,15 @@ class PlayheadExtrapolatorTest {
      * crosses the second plus the frame's trip, and costs about one wake a second.
      */
     @Test fun theTimeLabelFlipsOnTimeAndOneSecondAtATimeOnALongFilm() {
-        val film = 2L * 60L * 60_000L
+        labelsOnALongFilm(film = 2L * 60L * 60_000L, expectedWakes = 150..210)
+    }
+
+    /** Finding E2. Off a whole second, the remaining label flips between the position's flips. */
+    @Test fun theRemainingLabelFlipsOnTimeOnAFilmOffAWholeSecond() {
+        labelsOnALongFilm(film = 7_200_437L, expectedWakes = 300..420)
+    }
+
+    private fun labelsOnALongFilm(film: Long, expectedWakes: IntRange) {
         val surface = Surface(playing.copy(durationMs = film))
         val random = Random(7)
         val start = 600_000L
@@ -316,6 +392,7 @@ class PlayheadExtrapolatorTest {
         }
         var wakeAt: Long? = null
         var label = -1L
+        var remaining = -1L
         var wakes = 0
         var t = 0L
         val maxLatency = 80L
@@ -330,19 +407,29 @@ class PlayheadExtrapolatorTest {
                 event = true
             }
             if (event) {
-                val shown = surface.draw(t) / 1_000L
+                val drawn = surface.draw(t)
+                val shown = drawn / 1_000L
+                val left = (film - drawn).coerceAtLeast(0L) / 1_000L
                 if (label >= 0L) {
                     assertTrue("label went from $label to $shown at $t", shown == label || shown == label + 1L)
+                    // Before the head first runs, the first proven frame jumps it a second on.
+                    if (t >= 3_000L) {
+                        assertTrue("remaining went from $remaining to $left at $t", left == remaining || left == remaining - 1L)
+                    }
                 }
                 label = shown
+                remaining = left
                 wakeAt = surface.extrapolator.nextWakeMs(t, pixelMs = null, labels = true)?.let { t + it }
             }
             // The label already shows the second the TV crossed at least maxLatency ago.
             if (t >= 3_000L) {
-                assertTrue("label $label lags at $t", label >= (truth(t) - maxLatency) / 1_000L)
+                // On a whole-second film the position label waits 1 ms for the remaining label's flip.
+                assertTrue("label $label lags at $t", label >= (truth(t) - maxLatency - 1L) / 1_000L)
+                val truthLeft = (film - (truth(t) - maxLatency)).coerceAtLeast(0L) / 1_000L
+                assertTrue("remaining $remaining lags at $t", remaining <= truthLeft)
             }
             t += 1L
         }
-        assertTrue("$wakes wakes in 200 s", wakes in 150..210)
+        assertTrue("$wakes wakes in 200 s", wakes in expectedWakes)
     }
 }

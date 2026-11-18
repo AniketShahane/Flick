@@ -23,7 +23,8 @@ import kotlin.math.abs
  *   picture hold, a rebuffer at a seek target or a thumb held still is a frozen position,
  *   and a frozen position never runs.
  * - Never backwards during continuous play: a frame that lands slightly behind where the
- *   head has run to (a late frame) is waited for rather than snapped to. Anything that
+ *   head has run to (a late frame, or one too late or too stale to prove motion, while
+ *   the film still plays) is waited for rather than snapped to. Anything that
  *   stops the run — a pause, a seek, a skip, a scrub, a phase change — puts the head on
  *   the reported position exactly, as frames alone always did, except that a stop with
  *   no new position holds the head where it was drawn instead of jumping back.
@@ -38,15 +39,23 @@ internal class PlayheadExtrapolator {
     private var running = false
     private var durationMs = 0L
 
-    /** The head to draw for a reported [sourceMs] at [nowMs]; [runs] as [Companion.runs] answers it. */
-    fun read(sourceMs: Long, nowMs: Long, runs: Boolean, durationMs: Long): Long {
+    /**
+     * The head to draw for a reported [sourceMs] at [nowMs]; [runs] as [Companion.runs]
+     * answers it, [extrapolates] as [Companion.extrapolates] does.
+     */
+    fun read(sourceMs: Long, nowMs: Long, runs: Boolean, durationMs: Long, extrapolates: Boolean = runs): Long {
         this.durationMs = durationMs
         val moved = sourceMs != anchorMs
         if (!runs) {
             if (moved) {
+                // A playing film's frame whose motion went unproven only through a late
+                // arrival or a stale position lands a little behind the drawn head: wait
+                // for it, frozen, rather than step back.
+                val lead = shownMs - sourceMs
+                val holds = extrapolates && sourceMs > anchorMs && lead > 0L && lead <= MAX_LEAD_MS
                 anchorMs = sourceMs
                 anchorAtMs = nowMs
-                shownMs = sourceMs
+                if (!holds) shownMs = sourceMs
             }
             running = false
             return shownMs
@@ -65,7 +74,8 @@ internal class PlayheadExtrapolator {
     /**
      * How long after [nowMs] the head next moves far enough to be worth a redraw, or null
      * when it will not move again before the next frame. A move is a pixel every
-     * [pixelMs] when that is given, and the next whole second of the head when [labels].
+     * [pixelMs] when that is given, and the next flip of the position or remaining-time
+     * label when [labels].
      * Valid after a [read] at [nowMs].
      */
     fun nextWakeMs(nowMs: Long, pixelMs: Long?, labels: Boolean): Long? {
@@ -78,7 +88,19 @@ internal class PlayheadExtrapolator {
         val toPixel = pixelMs?.let { held + it }
         val toSecond = if (labels) {
             val head = maxOf(shownMs, ran)
-            (head / 1_000L + 1L) * 1_000L - ran
+            val nextSecond = (head / 1_000L + 1L) * 1_000L
+            // The remaining label floors durationMs − head, so it flips one past each
+            // position ≡ durationMs (mod 1 s).
+            val nextRemaining = if (durationMs > 0L) {
+                val flip = Math.floorMod(durationMs + 1L, 1_000L)
+                (head - Math.floorMod(head - flip, 1_000L) + 1_000L).takeIf { it <= durationMs }
+            } else {
+                null
+            }
+            // On a whole-second duration the two flips fall 1 ms apart: one wake serves both.
+            val remainingAt = nextRemaining ?: Long.MAX_VALUE
+            val next = if (remainingAt == nextSecond + 1L) remainingAt else minOf(nextSecond, remainingAt)
+            next - ran
         } else {
             null
         }

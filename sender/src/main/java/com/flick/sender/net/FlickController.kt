@@ -2466,6 +2466,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     if (fault == DialFault.NO_ROUTE) nsd.ensureBrowsing()
                     val advertised = fault == DialFault.NO_ROUTE && nsd.advertisedNow(pairing.tvId)
                     if (!pairingGate.isCurrent(attempt)) return@launch
+                    // The re-resolve just confirmed a record the dial could only remember;
+                    // the copy `failPendingResume` freezes must weigh that proof.
+                    if (advertised) {
+                        dialedHost = dialedHost?.let { it.copy(liveVerified = it.liveVerified || nsd.confirmedAt(pairing.tvId, it.host)) }
+                    }
                     // Read before `failPendingResume`, which moves it into the retry slot.
                     val queued = pendingCast
                     if (fault != null) {

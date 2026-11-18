@@ -77,7 +77,6 @@ internal class StateFeedCadence {
 
         val emit = triggered ||
             nowMs < hotUntilMs ||
-            emitted == null ||
             nowMs - emitted.atMs >= COLD_INTERVAL_MS
         if (emit) lastEmitted = Emitted(castId, durationMs, playing, phase, volume, nowMs)
         return emit
