@@ -1,6 +1,13 @@
 package com.flick.sender.library
 
 import com.flick.sender.model.HdrType
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,25 +39,68 @@ class LibraryLinkPolicyTest {
     }
 
     @Test
-    fun detailAndSeasonAnswersAreFourInFlightAndTwentyPer10Seconds() {
+    fun detailAndSeasonAnswersAreTwentyAdmittedPer10Seconds() {
         val gate = RequestGate(4, 20, 10_000L)
-        repeat(4) { assertTrue(gate.tryBegin(it.toLong())) }
-        assertFalse(gate.tryBegin(10L))
-        gate.end()
-        assertTrue(gate.tryBegin(11L))
-        repeat(4) { gate.end() }
-        // Five begun so far; fifteen more fit in the window, four at a time.
-        repeat(15) {
-            assertTrue(gate.tryBegin(100L + it))
-            gate.end()
+        repeat(20) { assertTrue(gate.tryAdmit(it.toLong())) }
+        assertFalse(gate.tryAdmit(100L))
+        // A refusal does not count against the window.
+        assertTrue(gate.tryAdmit(10_000L))
+        assertFalse(gate.tryAdmit(10_000L))
+    }
+
+    @Test
+    fun aFifthAdmittedAnswerWaitsForASlotInsteadOfBeingDropped() = runTest {
+        val gate = RequestGate(4, 20, 10_000L)
+        val release = List(5) { CompletableDeferred<Unit>() }
+        val started = ArrayList<Int>()
+        val answered = ArrayList<Int>()
+        val jobs = List(5) { n ->
+            assertTrue(gate.tryAdmit(n * 100L))
+            launch {
+                gate.run {
+                    started += n
+                    release[n].await()
+                }
+                answered += n
+            }
         }
-        assertFalse(gate.tryBegin(200L))
-        // A refusal does not hold a slot.
-        assertTrue(gate.tryBegin(10_000L))
-        // An extra end never opens a fifth slot.
-        repeat(10) { gate.end() }
-        repeat(4) { assertTrue(gate.tryBegin(30_000L + it)) }
-        assertFalse(gate.tryBegin(30_010L))
+        runCurrent()
+        assertEquals(listOf(0, 1, 2, 3), started)
+
+        release[0].complete(Unit)
+        runCurrent()
+        assertEquals(listOf(0, 1, 2, 3, 4), started)
+        release.drop(1).forEach { it.complete(Unit) }
+        jobs.joinAll()
+        assertEquals(setOf(0, 1, 2, 3, 4), answered.toSet())
+    }
+
+    @Test
+    fun cancelledAnswersGiveTheirSlotsToTheNextSocket() = runTest {
+        val gate = RequestGate(4, 20, 10_000L)
+        // The old socket's lookups hang, and one more of its asks is waiting behind them.
+        val old = Job()
+        repeat(5) { launch(old) { gate.run { awaitCancellation() } } }
+        runCurrent()
+
+        old.cancel()
+        runCurrent()
+        val next = ArrayList<Int>()
+        repeat(4) { n -> launch { gate.run { next += n } } }
+        runCurrent()
+        assertEquals(listOf(0, 1, 2, 3), next)
+    }
+
+    @Test
+    fun aCancelledDialsEndLeavesTheNextDialsEndpoint() {
+        val slot = AttemptSlot<String>()
+        val first = slot.begin("tv")
+        // The next dial, to an equal endpoint, begins before the cancelled one's finally runs.
+        val second = slot.begin("tv")
+        slot.end(first)
+        assertEquals("tv", slot.value)
+        slot.end(second)
+        assertNull(slot.value)
     }
 
     @Test

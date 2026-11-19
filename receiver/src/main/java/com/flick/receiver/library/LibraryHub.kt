@@ -58,6 +58,11 @@ data class LibraryState(
     /** Derived from [catalog] off the main thread; null exactly when [catalog] is. */
     val shelves: LibraryShelves? = null,
     val play: LibraryPlay = LibraryPlay.Idle,
+    /**
+     * Changes each time the shown phone's socket authenticates, a supersede included: what
+     * was asked on the socket before may never be answered, and is asked again.
+     */
+    val epoch: Long = 0L,
 )
 
 /** A `detail` frame's fields (§6.2). */

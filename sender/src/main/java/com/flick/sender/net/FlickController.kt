@@ -544,6 +544,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * the check, and a flag cleared by the check's own teardown would lag that by a dispatch.
      */
     private var castProbeAttempt: Long? = null
+        set(value) {
+            val cleared = field != null && value == null
+            field = value
+            if (cleared) tvLibrary.onCastQueueCleared()
+        }
     private val _subtitleOwnerKey = MutableStateFlow<String?>(null)
 
     /**
@@ -579,7 +584,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var currentCastId: String? = null
     private var accepted: CompletableDeferred<JSONObject>? = null
     private var ready: CompletableDeferred<JSONObject>? = null
+    // Both this and [castProbeAttempt] hold the TV library's catalog pushes back while set,
+    // and many paths clear them without a cast ever starting, so the library hears it here.
     private var pendingCast: CastRequest? = null
+        set(value) {
+            val cleared = field != null && value == null
+            field = value
+            if (cleared) tvLibrary.onCastQueueCleared()
+        }
     private var retryItem: CastRequest? = null
     private var currentRequest: CastRequest? = null
     private var loadSentCastId: String? = null

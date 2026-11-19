@@ -85,7 +85,7 @@ internal fun HomePane(state: LibraryState, catalog: LibraryCatalog, shelves: Lib
     val details by ui.hub.details.collectAsState()
     // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
     val connected = state.link == LibraryLink.CONNECTED
-    hero?.let { pick -> LaunchedEffect(pick.item.id, connected) { ui.hub.wantDetail(pick.item.id) } }
+    hero?.let { pick -> LaunchedEffect(pick.item.id, connected, state.epoch) { ui.hub.wantDetail(pick.item.id) } }
 
     Box(
         Modifier

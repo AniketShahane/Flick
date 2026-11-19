@@ -60,10 +60,10 @@ internal fun DetailPage(item: LibraryItem, state: LibraryState, pane: PaneContex
     val seasons by ui.hub.seasons.collectAsState()
     // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
     val connected = state.link == LibraryLink.CONNECTED
-    LaunchedEffect(item.id, connected) { ui.hub.wantDetail(item.id) }
+    LaunchedEffect(item.id, connected, state.epoch) { ui.hub.wantDetail(item.id) }
     val season = item.season
     if (item.isEpisode && hasSeasonData(item.showKey) && season != null) {
-        LaunchedEffect(item.showKey, season, connected) { ui.hub.wantSeason(item.showKey!!, season) }
+        LaunchedEffect(item.showKey, season, connected, state.epoch) { ui.hub.wantSeason(item.showKey!!, season) }
     }
     val episodeInfo = if (item.isEpisode && season != null) {
         seasons[LibrarySeasonKey(item.showKey!!, season)]?.firstOrNull { it.episode == item.episode }

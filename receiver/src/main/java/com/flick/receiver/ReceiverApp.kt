@@ -607,6 +607,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     lifecycleStarted = true
                     bindingGate.onForeground()
                     controller.onStart()
+                    // Its timers stopped during standby; a lost phone's age is re-read on the clock.
+                    library.onPhonesChanged()
                     // A code may only be minted for a screen that draws one. The
                     // live snapshot is read from the manager, not from
                     // `pairingSnapshot`, which is a frame behind this event — the

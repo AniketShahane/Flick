@@ -31,13 +31,14 @@ class TvLibraryTest {
     private val scope = TestScope(dispatcher)
     private var autoplay = true
     private var reqCounter = 0
+    private var suspendedMs = 0L
     private val labels = mutableMapOf(KEY_A to "Pixel", KEY_B to "Other")
 
     private val hub = TvLibrary(
         labelOf = { labels[it] },
         autoplayEnabled = { autoplay },
         decodeThumbnail = { null },
-        clock = { dispatcher.scheduler.currentTime },
+        clock = { dispatcher.scheduler.currentTime + suspendedMs },
         newRequestId = { "req" + (reqCounter++).toString().padStart(19, '0') },
         scope = scope,
         workDispatcher = dispatcher,
@@ -246,6 +247,49 @@ class TvLibraryTest {
     }
 
     @Test
+    fun anAskThePhoneNeverAnsweredIsSentAgainAfterThirtySeconds() {
+        val link = connect()
+        link.sent.clear()
+        hub.wantDetail(E1.id)
+        hub.wantSeason("tv:1", 1)
+        scope.advanceTimeBy(TvLibrary.WANT_RETRY_MS - 1)
+        hub.wantDetail(E1.id)
+        hub.wantSeason("tv:1", 1)
+        assertEquals(listOf("detailWant", "seasonWant"), link.types())
+        scope.advanceTimeBy(1L)
+        hub.wantDetail(E1.id)
+        hub.wantSeason("tv:1", 1)
+        assertEquals(listOf("detailWant", "seasonWant", "detailWant", "seasonWant"), link.types())
+        // Answered, it is never asked again.
+        hub.onFrame(link, PhoneFrame.Detail(E1.id, "Overview", null, null, null))
+        scope.advanceTimeBy(TvLibrary.WANT_RETRY_MS)
+        hub.wantDetail(E1.id)
+        assertEquals(4, link.sent.size)
+    }
+
+    @Test
+    fun theEpochChangesWithEachSocketOfTheShownPhone() {
+        val first = connect()
+        deliver(first, listOf(E1))
+        val before = hub.state.value.epoch
+        connect()
+        assertEquals(LibraryLink.CONNECTED, hub.state.value.link)
+        assertTrue(hub.state.value.epoch != before)
+    }
+
+    @Test
+    fun aStandbyLongerThanTheHideWindowIsJudgedOnTheClockAtWake() {
+        val first = connect()
+        deliver(first, listOf(E1, E2))
+        hub.onClosed(first)
+        // Coroutine time stops in suspend; the elapsed clock does not.
+        suspendedMs += TvLibrary.LOST_HIDE_MS + 1
+        assertEquals(LibraryLink.LOST, hub.state.value.link)
+        hub.onPhonesChanged()
+        assertEquals(LibraryLink.NONE, hub.state.value.link)
+    }
+
+    @Test
     fun refreshAndBrowsingAreRateLimited() {
         val link = connect()
         link.sent.clear()
@@ -433,6 +477,63 @@ class TvLibraryTest {
     }
 
     @Test
+    fun aCastingFrameReSentAfterALibraryBlipRestoresUpNext() {
+        val first = episodeEnded()
+        hub.onClosed(first)
+        assertNull(hub.upNext.value)
+        val second = connect()
+        hub.onFrame(second, PhoneFrame.Casting(CAST_1, E1.id))
+        assertEquals(E2, hub.upNext.value?.next)
+        // Once up, a further copy changes nothing; once dismissed, it does not bring it back.
+        val offer = hub.upNext.value
+        hub.onFrame(second, PhoneFrame.Casting(CAST_1, E1.id))
+        assertTrue(offer === hub.upNext.value)
+        hub.dismissUpNext()
+        hub.onFrame(second, PhoneFrame.Casting(CAST_1, E1.id))
+        assertNull(hub.upNext.value)
+    }
+
+    @Test
+    fun anEndSeenWhileTheLibraryWasDownIsOfferedAfterTheReconnect() {
+        val first = connect()
+        deliver(first, listOf(E1, E2))
+        hub.onFrame(first, PhoneFrame.Casting(CAST_1, E1.id))
+        hub.onCastStarted(CAST_1)
+        hub.onClosed(first)
+        hub.onCastEnded(CAST_1)
+        assertNull(hub.upNext.value)
+        val second = connect()
+        hub.onFrame(second, PhoneFrame.Casting(CAST_1, E1.id))
+        assertEquals(E2, hub.upNext.value?.next)
+    }
+
+    @Test
+    fun anOldRefusalForTheNextEpisodeDoesNotOpenOnTheCard() {
+        val link = connect()
+        deliver(link, listOf(E1, E2))
+        hub.play(E2.id, PlayFrom.START)
+        hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), false, PlayRefusal.BUSY))
+        assertEquals(LibraryPlay.Failed(E2.id, LibraryPlayFailure.BUSY), hub.state.value.play)
+        hub.onFrame(link, PhoneFrame.Casting(CAST_1, E1.id))
+        hub.onCastStarted(CAST_1)
+        hub.onCastEnded(CAST_1)
+        assertEquals(E2, hub.upNext.value?.next)
+        assertEquals(LibraryPlay.Idle, hub.state.value.play)
+    }
+
+    @Test
+    fun anUpNextRefusalGoesWithTheCardWhenThePhoneStopsTheCast() {
+        val link = episodeEnded()
+        hub.playUpNext()
+        hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), false, PlayRefusal.BACKGROUND))
+        assertEquals(LibraryPlay.Failed(E2.id, LibraryPlayFailure.BACKGROUND), hub.state.value.play)
+        hub.onCastNotEnded()
+        hub.onCastStopped()
+        assertNull(hub.upNext.value)
+        assertEquals(LibraryPlay.Idle, hub.state.value.play)
+    }
+
+    @Test
     fun aLateCastingFrameForAReplacedCastOffersNothing() {
         val link = connect()
         deliver(link, listOf(E1, E2))
@@ -587,6 +688,23 @@ class TvLibraryTest {
         scope.advanceTimeBy(15_001L)
         assertEquals(12, link.sent.size)
         assertTrue(link.types().all { it == "thumbWant" })
+    }
+
+    @Test
+    fun aThumbnailGivenUpOnIsSentAgainWhenTheTileAsksOnTheNextSocket() {
+        val old = connect()
+        val clip = video("clip0000001")
+        deliver(old, listOf(clip))
+        hub.wantThumbnail(clip.id)
+        scope.advanceTimeBy(60_000L)
+        assertEquals(3, old.sent.count { it == LibraryFrames.thumbWant(clip.id) })
+        // A supersede leaves the link CONNECTED; the tile's ask is keyed on the epoch instead.
+        val fresh = connect()
+        scope.advanceTimeBy(60_000L)
+        assertEquals(0, fresh.sent.count { it == LibraryFrames.thumbWant(clip.id) })
+        hub.wantThumbnail(clip.id)
+        scope.runCurrent()
+        assertEquals(1, fresh.sent.count { it == LibraryFrames.thumbWant(clip.id) })
     }
 
     @Test

@@ -124,12 +124,14 @@ private val TitleCardBrush = Brush.verticalGradient(listOf(FlickColor.SurfaceRai
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
-/** What every library composable reads: the hub, the image loader, and the thumbnails. */
+/** What every library composable reads: the hub, the image loader, the thumbnails and the link epoch. */
 @Stable
 internal class LibraryUi(
     val hub: LibraryHub,
     val imageLoader: ImageLoader,
     val thumbnails: State<Map<String, ImageBitmap>>,
+    /** [com.flick.receiver.library.LibraryState.epoch], on its own so a tile recomposes only when it changes. */
+    val epoch: State<Long>,
 )
 
 internal val LocalLibraryUi = staticCompositionLocalOf<LibraryUi> { error("LibraryUi is provided by LibraryScreen") }
@@ -150,6 +152,9 @@ internal class ScreenMemory {
     fun row(key: String): LazyListState = rows.getOrPut(key) { LazyListState() }
 
     var season by mutableStateOf<Int?>(null)
+
+    /** The season tabs have been scrolled to the selected season once. */
+    var seasonTabsPlaced = false
     var folder by mutableStateOf<String?>(null)
     var query by mutableStateOf("")
 }
@@ -322,8 +327,10 @@ internal fun PhoneThumbnail(id: String, title: String?, modifier: Modifier = Mod
     // Per tile, so one arriving thumbnail recomposes its own tile and not every tile on screen.
     val bitmap by remember(id, ui) { derivedStateOf { ui.thumbnails.value[id] } }
     val shown = bitmap
-    // Asked again whenever the still goes missing: the hub keeps only so many, oldest out first.
-    LaunchedEffect(id, shown == null) { if (shown == null) ui.hub.wantThumbnail(id) }
+    val epoch by ui.epoch
+    // Asked again whenever the still goes missing (the hub keeps only so many, oldest out
+    // first) and on each new socket. Asked when shown too: that keeps it in the hub's cache.
+    LaunchedEffect(id, shown == null, epoch) { ui.hub.wantThumbnail(id) }
     if (shown != null) {
         Image(bitmap = shown, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier)
     } else if (title != null) {

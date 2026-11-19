@@ -64,8 +64,8 @@ internal fun ShowPage(show: LibraryShow, state: LibraryState, pane: PaneContext)
     val details by ui.hub.details.collectAsState()
     // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
     val connected = state.link == LibraryLink.CONNECTED
-    LaunchedEffect(show.key, season, connected) { if (hasSeasonData(show.key)) ui.hub.wantSeason(show.key, season) }
-    pick?.let { LaunchedEffect(it.id, connected) { ui.hub.wantDetail(it.id) } }
+    LaunchedEffect(show.key, season, connected, state.epoch) { if (hasSeasonData(show.key)) ui.hub.wantSeason(show.key, season) }
+    pick?.let { LaunchedEffect(it.id, connected, state.epoch) { ui.hub.wantDetail(it.id) } }
     val info = remember(seasons, show.key, season) {
         seasons[LibrarySeasonKey(show.key, season)]?.associateBy { it.episode }.orEmpty()
     }
@@ -207,10 +207,20 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        val tabs = pane.memory.row("seasons")
+        // Opened on a later season, its tab would otherwise start past the screen edge.
+        LaunchedEffect(Unit) {
+            if (pane.memory.seasonTabsPlaced) return@LaunchedEffect
+            pane.memory.seasonTabsPlaced = true
+            val index = show.seasons.indexOf(season)
+            if (index > 0 && tabs.firstVisibleItemIndex == 0 && tabs.firstVisibleItemScrollOffset == 0) {
+                tabs.scrollToItem((index - 1).coerceAtLeast(0))
+            }
+        }
         // Lazy and scrolling, so a long-running show's tabs past the screen edge keep their width.
         FocusBeaconHost(Modifier.weight(1f, fill = false)) {
             LazyRow(
-                state = pane.memory.row("seasons"),
+                state = tabs,
                 contentPadding = PaddingValues(start = LibraryLayout.Gutter, end = LibraryLayout.RingRoom),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {

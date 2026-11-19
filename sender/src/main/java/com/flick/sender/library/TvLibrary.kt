@@ -29,6 +29,7 @@ import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -117,7 +118,7 @@ internal class TvLibrary(
     private val unsupported = HashSet<String>()
     private var dialJob: Job? = null
     private var dialFor: ControlClient.AuthenticatedEndpoint? = null
-    private var openingFor: ControlClient.AuthenticatedEndpoint? = null
+    private val opening = AttemptSlot<ControlClient.AuthenticatedEndpoint>()
     private var linkFor: ControlClient.AuthenticatedEndpoint? = null
     private var linkOpenedAtMs = 0L
 
@@ -145,6 +146,10 @@ internal class TvLibrary(
     private val detailGate = RequestGate(ANSWERS_IN_FLIGHT, ANSWERS_PER_WINDOW, ANSWER_WINDOW_MS)
     private val seasonGate = RequestGate(ANSWERS_IN_FLIGHT, ANSWERS_PER_WINDOW, ANSWER_WINDOW_MS)
     private var prefetchJob: Job? = null
+
+    // Detail and season lookups for the current socket, cancelled with it so a closed socket's
+    // lookups give up their slots to the next socket's asks.
+    private var answers: Job = SupervisorJob(scope.coroutineContext[Job])
 
     private val readyWindow = TvReadyWindowPolicy()
     private var readyDeadlineJob: Job? = null
@@ -226,11 +231,11 @@ internal class TvLibrary(
                 val target = LibraryLink.Target(
                     endpoint.tvId, endpoint.keyId, pairing.key, endpoint.peerIp, endpoint.host, endpoint.port,
                 )
-                openingFor = endpoint
+                val attempt = opening.begin(endpoint)
                 val outcome = try {
                     link.connect(target)
                 } finally {
-                    openingFor = null
+                    opening.end(attempt)
                 }
                 when (outcome) {
                     LibraryLink.Outcome.Ready -> {
@@ -262,7 +267,7 @@ internal class TvLibrary(
 
     /** Inside [LibraryLink.connect], before the TV's first frame can be handed on. */
     private fun onLinkOpened() {
-        val endpoint = openingFor
+        val endpoint = opening.value
         linkFor = endpoint
         linkOpenedAtMs = now()
         generation++
@@ -312,6 +317,8 @@ internal class TvLibrary(
         playOutstanding = false
         pushJob?.cancel()
         pushJob = null
+        answers.cancel()
+        answers = SupervisorJob(scope.coroutineContext[Job])
         stopPrefetch()
     }
 
@@ -324,8 +331,9 @@ internal class TvLibrary(
 
     /**
      * The debounced push. Nothing is rebuilt while a cast is live: the progress store writes
-     * every few seconds during a film, and [onCastCleanup] asks again once it ends. Asked again
-     * after every delivery too, so a change that lands mid-build is never lost.
+     * every few seconds during a film, and [onCastCleanup] or [onCastQueueCleared] asks again
+     * once it ends. Asked again after every delivery too, so a change that lands mid-build is
+     * never lost.
      */
     private fun schedulePush() {
         if (!freshness.dirty || !link.isOpen || !catalogAsked || phone.castLive()) return
@@ -502,16 +510,12 @@ internal class TvLibrary(
             .getOrDefault(false)
 
     private fun onDetail(id: String) {
-        if (!detailGate.tryBegin(now())) return
+        if (!detailGate.tryAdmit(now())) return
         val socket = generation
         val item = sentItems[id]
         val postersOn = phone.filmPosters.value
-        scope.launch {
-            try {
-                answerDetail(socket, id, item, postersOn)
-            } finally {
-                detailGate.end()
-            }
+        scope.launch(answers) {
+            detailGate.run { answerDetail(socket, id, item, postersOn) }
         }
     }
 
@@ -541,17 +545,13 @@ internal class TvLibrary(
     }
 
     private fun onSeason(showKey: String, season: Int) {
-        if (!seasonGate.tryBegin(now())) return
+        if (!seasonGate.tryAdmit(now())) return
         val socket = generation
         val tvId = TvSeasonPolicy.tmdbId(showKey)?.takeIf { phone.filmPosters.value }
-        scope.launch {
-            try {
-                val episodes = tvId?.let { TvSeasons.episodes(context, it, season) }.orEmpty()
-                if (socket != generation) return@launch
-                link.sendBatch(LibraryFrames.season(showKey, season, episodes))
-            } finally {
-                seasonGate.end()
-            }
+        scope.launch(answers) {
+            val episodes = seasonGate.run { tvId?.let { TvSeasons.episodes(context, it, season) }.orEmpty() }
+            if (socket != generation) return@launch
+            link.sendBatch(LibraryFrames.season(showKey, season, episodes))
         }
     }
 
@@ -643,6 +643,15 @@ internal class TvLibrary(
             openReadyWindow(justLeftForeground = false)
             schedulePush()
         }
+    }
+
+    /**
+     * A cast that was queued or behind its liveness check is no longer, whether it started or
+     * not. One that never started has no [onCastCleanup], so the push it held back is asked
+     * for here. Asked a dispatch later, once a cast that did start is live.
+     */
+    fun onCastQueueCleared() {
+        scope.launch(Dispatchers.Main) { schedulePush() }
     }
 
     // --- Ready window (contract §8) -----------------------------------------

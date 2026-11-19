@@ -84,6 +84,14 @@ internal object LibraryNav {
         return if (changed) kept else stack
     }
 
+    /**
+     * The show [route] names; after a TMDB re-key, until [pruned] catches up, the show that
+     * now holds the episode it was opened on, so its page stays composed and keeps focus.
+     */
+    fun showFor(route: LibraryRoute.Show, catalog: LibraryCatalog, shows: List<LibraryShow>): LibraryShow? =
+        shows.firstOrNull { it.key == route.showKey }
+            ?: route.episodeId?.let { catalog[it]?.showKey }?.let { key -> shows.firstOrNull { it.key == key } }
+
     private fun rekeyed(route: LibraryRoute.Show, catalog: LibraryCatalog, showKeys: Set<String>): LibraryRoute.Show? {
         val anchor = route.episodeId?.let { catalog[it] }
         val key = route.showKey.takeIf { it in showKeys }

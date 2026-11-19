@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -190,7 +191,9 @@ fun LibraryScreen(
     val context = LocalContext.current
     val loader = remember(context) { libraryImageLoader(context) }
     val thumbnails = hub.thumbnails.collectAsState()
-    val ui = remember(hub, loader, thumbnails) { LibraryUi(hub, loader, thumbnails) }
+    val state = hub.state.collectAsState()
+    val epoch = remember(state) { derivedStateOf { state.value.epoch } }
+    val ui = remember(hub, loader, thumbnails, epoch) { LibraryUi(hub, loader, thumbnails, epoch) }
     val modal = remember { LibraryModal() }
     CompositionLocalProvider(
         LocalHouseLit provides false,
@@ -315,7 +318,7 @@ private fun LibraryRoot(
                                 LibraryTab.FILMS -> FilmsPane(shelves, pane)
                                 LibraryTab.ALL -> AllVideosPane(catalog, pane)
                             }
-                            is LibraryRoute.Show -> shelves.shows.firstOrNull { it.key == route.showKey }?.let {
+                            is LibraryRoute.Show -> LibraryNav.showFor(route, catalog, shelves.shows)?.let {
                                 ShowPage(it, state, pane)
                             }
                             is LibraryRoute.Detail -> catalog[route.itemId]?.let { DetailPage(it, state, pane) }

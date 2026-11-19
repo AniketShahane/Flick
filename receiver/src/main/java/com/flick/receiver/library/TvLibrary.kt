@@ -65,9 +65,11 @@ class TvLibrary(
 
         val casting = CastingMap()
         val details = HashMap<String, LibraryDetail>()
-        val detailsAsked = HashSet<String>()
+
+        /** When each unanswered detail was asked: the phone may drop one silently (§6.2). */
+        val detailsAsked = HashMap<String, Long>()
         val seasons = HashMap<LibrarySeasonKey, List<LibraryEpisodeInfo>>()
-        val seasonsAsked = HashSet<LibrarySeasonKey>()
+        val seasonsAsked = HashMap<LibrarySeasonKey, Long>()
         val seasonParts = SeasonAssembler()
         val thumbQueue = ThumbnailQueue()
         var thumbTimer: Job? = null
@@ -140,8 +142,8 @@ class TvLibrary(
         }
         phone.thumbQueue.onDisconnect()
         // Requests the old socket never answered are asked again on this one.
-        phone.detailsAsked.retainAll(phone.details.keys)
-        phone.seasonsAsked.retainAll(phone.seasons.keys)
+        phone.detailsAsked.keys.retainAll(phone.details.keys)
+        phone.seasonsAsked.keys.retainAll(phone.seasons.keys)
         phone.seasonParts.clear()
         link.send(LibraryFrames.catWant(phone.assembler.current?.rev))
         pumpThumbnailsLocked(phone)
@@ -178,13 +180,13 @@ class TvLibrary(
                 schedulePlayTimerLocked()
                 publishStateLocked()
             }
-            is PhoneFrame.Detail -> if (frame.id in phone.detailsAsked && frame.id !in phone.details) {
+            is PhoneFrame.Detail -> if (frame.id in phone.detailsAsked.keys && frame.id !in phone.details) {
                 phone.details[frame.id] = LibraryDetail(frame.overview, frame.tagline, frame.hdr, frame.subtitle)
                 if (visible) publishDataLocked()
             }
             is PhoneFrame.Season -> {
                 val key = LibrarySeasonKey(frame.showKey, frame.season)
-                if (key in phone.seasonsAsked && key !in phone.seasons) {
+                if (key in phone.seasonsAsked.keys && key !in phone.seasons) {
                     phone.seasonParts.add(key, frame.part, frame.parts, frame.episodes)?.let { episodes ->
                         phone.seasons[key] = episodes
                         if (visible) publishDataLocked()
@@ -196,10 +198,11 @@ class TvLibrary(
                 pumpThumbnailsLocked(phone)
             }
             is PhoneFrame.Casting -> {
-                val fresh = phone.casting[frame.castId] == null
                 phone.casting.put(frame.castId, frame.id)
                 // Frames on the two sockets are unordered (§6.6): the cast may already have ended.
-                if (fresh && frame.castId == lastEndedCastId && _upNext.value == null) offerUpNextLocked(frame.castId)
+                // A re-sent one, after a reconnect, decides again: the first decision may have
+                // been made, or its card cleared, while the socket was down.
+                if (frame.castId == lastEndedCastId && _upNext.value == null) offerUpNextLocked(frame.castId)
             }
             is PhoneFrame.Unknown -> FlickLog.i("library", "frame ignored t=${typeLabel(frame.type)}")
             is PhoneFrame.Hello, is PhoneFrame.Proof, PhoneFrame.Malformed -> return Verdict.CLOSE
@@ -266,8 +269,14 @@ class TvLibrary(
 
     // --- From the app --------------------------------------------------------
 
-    /** A paired phone was renamed on this TV; the screens name it afresh. */
-    fun onPhonesChanged() = synchronized(lock) { publishStateLocked() }
+    /**
+     * A paired phone was renamed on this TV, or the TV came back from standby: the screens
+     * name it afresh, and lost phones are re-judged on [clock], since timers stop in suspend.
+     */
+    fun onPhonesChanged() = synchronized(lock) {
+        scheduleHideTimerLocked()
+        publishStateLocked()
+    }
 
     /** The phone holding the control lease, by key id; the screens prefer its library. */
     fun onControlPeer(keyId: String?) = synchronized(lock) {
@@ -339,7 +348,7 @@ class TvLibrary(
     override fun wantDetail(id: String) {
         synchronized(lock) {
             val phone = connectedLocked() ?: return
-            if (!LibraryWire.itemId(id) || id in phone.details || !phone.detailsAsked.add(id)) return
+            if (!LibraryWire.itemId(id) || id in phone.details || !askLocked(phone.detailsAsked, id)) return
             phone.link?.send(LibraryFrames.detailWant(id))
         }
     }
@@ -349,7 +358,7 @@ class TvLibrary(
             val phone = connectedLocked() ?: return
             if (!showKey.startsWith(TMDB_SHOW_PREFIX) || season !in 0..999) return
             val key = LibrarySeasonKey(showKey, season)
-            if (key in phone.seasons || !phone.seasonsAsked.add(key)) return
+            if (key in phone.seasons || !askLocked(phone.seasonsAsked, key)) return
             phone.link?.send(LibraryFrames.seasonWant(showKey, season))
         }
     }
@@ -389,9 +398,6 @@ class TvLibrary(
 
     override fun dismissUpNext() {
         synchronized(lock) {
-            val offer = _upNext.value
-            // Its failure was shown on the card; it must not reappear over the library.
-            if (offer != null && (playMachine.state as? LibraryPlay.Failed)?.id == offer.next.id) playMachine.clearResult()
             lastEndedCastId = null
             clearUpNextLocked()
             publishStateLocked()
@@ -401,6 +407,15 @@ class TvLibrary(
     // --- Internals (all under lock) -------------------------------------------
 
     private fun connectedLocked(): Phone? = visibleKeyId?.let(phones::get)?.takeIf { it.link != null }
+
+    /** Marks [key] asked unless an ask for it is still within [WANT_RETRY_MS]; true when it should be sent. */
+    private fun <K> askLocked(asked: HashMap<K, Long>, key: K): Boolean {
+        val now = clock()
+        val at = asked[key]
+        if (at != null && now - at < WANT_RETRY_MS) return false
+        asked[key] = now
+        return true
+    }
 
     private fun browsingLocked() {
         val phone = connectedLocked() ?: return
@@ -435,6 +450,11 @@ class TvLibrary(
         upNextCastId = castId
         upNextKeyId = phone.keyId
         _upNext.value = offer
+        // A refusal left over from an earlier ask must not open on the new card.
+        if ((playMachine.state as? LibraryPlay.Failed)?.id == offer.next.id) {
+            playMachine.clearResult()
+            publishStateLocked()
+        }
         FlickLog.i("library", "upNext offered autoplay=${offer.autoplayAtMs != null} stillWatching=${offer.stillWatching}")
         scheduleAutoplayLocked(offer)
     }
@@ -560,7 +580,11 @@ class TvLibrary(
         }
     }
 
+    /** Every caller publishes the state afterwards. */
     private fun clearUpNextLocked() {
+        // Its failure was shown on the card; it must not reappear over the library.
+        val offer = _upNext.value
+        if (offer != null && (playMachine.state as? LibraryPlay.Failed)?.id == offer.next.id) playMachine.clearResult()
         autoplayTimer?.cancel()
         autoplayTimer = null
         upNextCastId = null
@@ -602,6 +626,7 @@ class TvLibrary(
             catalog = shown?.first,
             shelves = shown?.second,
             play = playMachine.state,
+            epoch = phone?.authOrder ?: 0L,
         )
     }
 
@@ -615,6 +640,9 @@ class TvLibrary(
     companion object {
         const val REFRESH_INTERVAL_MS = 10_000L
         const val BROWSING_INTERVAL_MS = 60_000L
+
+        /** An unanswered `detailWant` or `seasonWant` may be sent again after this. */
+        const val WANT_RETRY_MS = 30_000L
 
         /** A phone gone this long has stopped sharing as far as the screens are concerned. */
         const val LOST_HIDE_MS = 10 * 60_000L

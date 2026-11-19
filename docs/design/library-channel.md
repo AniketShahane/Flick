@@ -228,10 +228,11 @@ From the phone's existing `FilmDetailsStore` (films and shows, by TMDB id) and `
 Every field but `id` is optional; `overview` ≤ 1200, `tagline` ≤ 200, `subtitle` (the label of
 the subtitle the phone will attach) ≤ 200. Sent at most once per `detailWant`.
 
-The phone keeps at most 4 `detailWant` and 4 `seasonWant` in flight and answers at most 20 of
-each per 10 s; a request beyond either bound is dropped with no reply. The TV therefore never
-waits on an answer: it asks again when the screen that needs it is shown again, including after
-a reconnect.
+The phone works on at most 4 `detailWant` and 4 `seasonWant` at a time (more wait for a slot)
+and accepts at most 20 of each per 10 s; a request beyond that rate is dropped with no reply.
+The TV therefore never waits on an answer: a request unanswered after 30 s may be sent again
+when the screen that needs it is shown again, and every request a showing screen needs is sent
+again after each new authentication.
 
 ### 6.3 Season
 
@@ -300,7 +301,7 @@ runs the Up next decision.
   coordinated release.
 - A known `t` with `v` other than `1` closes the library socket; an unknown `t` is ignored
   whatever its `v`.
-- Before authentication the TV tolerates at most 3 ignored or unknown frames, then closes, as
+- Before authentication the TV closes the socket on the third ignored or unknown frame, as
   `/control` does.
 
 ## 8. The phone's ready window

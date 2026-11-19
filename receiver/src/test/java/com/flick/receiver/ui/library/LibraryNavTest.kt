@@ -101,6 +101,17 @@ class LibraryNavTest {
     }
 
     @Test
+    fun aShowPageFindsItsShowThroughAReKeyByTheEpisodeItWasOpenedOn() {
+        val ep = episode("ep1", "tv:9")
+        val catalog = LibraryCatalog("AAAAAAAAAAAAAAAAAAAAAA", listOf(ep))
+        val show = LibraryShow(key = "tv:9", title = "Show", art = null, seasons = listOf(1), episodes = mapOf(1 to listOf(ep)), addedSeconds = 0L)
+        assertSame(show, LibraryNav.showFor(LibraryRoute.Show("name:x", "ep1"), catalog, listOf(show)))
+        assertSame(show, LibraryNav.showFor(LibraryRoute.Show("tv:9"), catalog, listOf(show)))
+        assertNull(LibraryNav.showFor(LibraryRoute.Show("name:x"), catalog, listOf(show)))
+        assertNull(LibraryNav.showFor(LibraryRoute.Show("name:x", "gone"), catalog, listOf(show)))
+    }
+
+    @Test
     fun aShowRouteIsAnchoredOnItsFirstEpisode() {
         val show = LibraryShow(
             key = "tv:9",

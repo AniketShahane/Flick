@@ -1,6 +1,8 @@
 package com.flick.sender.library
 
 import com.flick.sender.model.HdrType
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /** Contract §3: the wait before each library re-dial while control v2 stays up. */
 internal class LibraryDialBackoff {
@@ -41,19 +43,36 @@ internal class SlidingWindowLimiter(private val max: Int, private val windowMs: 
     }
 }
 
-/** Contract §6.2: at most [maxInFlight] unanswered and at most [maxPerWindow] begun in any [windowMs]. */
-internal class RequestGate(private val maxInFlight: Int, maxPerWindow: Int, windowMs: Long) {
+/**
+ * Contract §6.2: at most [maxPerWindow] admitted in any [windowMs], and those beyond are dropped;
+ * the admitted run at most [maxInFlight] at a time and the rest wait for a slot. The TV asks for
+ * a detail or season once per socket, so a request that is admitted must be answered.
+ */
+internal class RequestGate(maxInFlight: Int, maxPerWindow: Int, windowMs: Long) {
     private val window = SlidingWindowLimiter(maxPerWindow, windowMs)
-    private var inFlight = 0
+    private val slots = Semaphore(maxInFlight)
 
-    fun tryBegin(nowMs: Long): Boolean {
-        if (inFlight >= maxInFlight || !window.tryPass(nowMs)) return false
-        inFlight++
-        return true
-    }
+    fun tryAdmit(nowMs: Long): Boolean = window.tryPass(nowMs)
 
-    fun end() {
-        if (inFlight > 0) inFlight--
+    suspend fun <T> run(block: suspend () -> T): T = slots.withPermit { block() }
+}
+
+/**
+ * What the dial in progress is opening. Owned per attempt rather than per value: a cancelled
+ * dial's `finally` can run after the next dial, possibly to an equal endpoint, has begun.
+ */
+internal class AttemptSlot<T : Any> {
+    private class Attempt<T>(val value: T)
+
+    private var attempt: Attempt<T>? = null
+
+    val value: T? get() = attempt?.value
+
+    /** The token to hand back to [end]. */
+    fun begin(value: T): Any = Attempt(value).also { attempt = it }
+
+    fun end(token: Any) {
+        if (attempt === token) attempt = null
     }
 }
 
