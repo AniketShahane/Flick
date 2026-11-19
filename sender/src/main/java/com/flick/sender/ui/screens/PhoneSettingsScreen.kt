@@ -91,6 +91,7 @@ fun PhoneSettingsScreen(
     val castingItem by controller.castingItem.collectAsState()
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
     val filmPosters by controller.filmPosters.collectAsState()
+    val tvLibrary by controller.tvLibraryEnabled.collectAsState()
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the screen's final controls sit
@@ -158,6 +159,7 @@ fun PhoneSettingsScreen(
         if (FilmPosters.available) {
             FilmPostersSection(enabled = filmPosters, onSelect = controller::selectFilmPosters)
         }
+        TvLibrarySection(enabled = tvLibrary, onSelect = controller::selectTvLibrary)
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
         if (supportAvailable) {
             SupportFlickSection(onOpen = onOpenSupport)
@@ -317,6 +319,16 @@ internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
             )
         }
     }
+}
+
+@Composable
+internal fun TvLibrarySection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
+    SwitchRow(
+        title = stringResource(R.string.settings_tv_library_title),
+        summary = stringResource(R.string.settings_tv_library_summary),
+        checked = enabled,
+        onSelect = onSelect,
+    )
 }
 
 @Composable

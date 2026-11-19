@@ -18,7 +18,11 @@ import com.flick.sender.model.HdrType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -32,6 +36,11 @@ import kotlin.math.roundToInt
 object MediaProbe {
 
     private val hdrCache = ConcurrentHashMap<String, HdrType>()
+
+    private val _hdrVerdicts = MutableStateFlow(0)
+
+    /** Moves whenever a new verdict lands in the memo [cachedHdr] reads. */
+    val hdrVerdicts: StateFlow<Int> = _hdrVerdicts.asStateFlow()
 
     // A cold first scroll over a large library launches one detectHdr per tile; cap the
     // burst so those MediaExtractor container parses don't saturate the IO pool and
@@ -91,6 +100,7 @@ object MediaProbe {
                 }
             }.getOrDefault(HdrType.NONE)
             hdrCache[uri.toString()] = result
+            _hdrVerdicts.update { it + 1 }
             result
         }
     }

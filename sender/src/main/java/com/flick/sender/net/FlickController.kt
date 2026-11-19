@@ -19,6 +19,8 @@ import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.preferredTerminalCode
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
+import com.flick.sender.library.LibraryPhone
+import com.flick.sender.library.TvLibrary
 import com.flick.sender.WifiAssociationMonitor
 import com.flick.sender.currentProcessImportance
 import com.flick.sender.foregroundStartAllowed
@@ -542,6 +544,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      * the check, and a flag cleared by the check's own teardown would lag that by a dispatch.
      */
     private var castProbeAttempt: Long? = null
+        set(value) {
+            val cleared = field != null && value == null
+            field = value
+            if (cleared) tvLibrary.onCastQueueCleared()
+        }
     private val _subtitleOwnerKey = MutableStateFlow<String?>(null)
 
     /**
@@ -577,7 +584,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private var currentCastId: String? = null
     private var accepted: CompletableDeferred<JSONObject>? = null
     private var ready: CompletableDeferred<JSONObject>? = null
+    // Both this and [castProbeAttempt] hold the TV library's catalog pushes back while set,
+    // and many paths clear them without a cast ever starting, so the library hears it here.
     private var pendingCast: CastRequest? = null
+        set(value) {
+            val cleared = field != null && value == null
+            field = value
+            if (cleared) tvLibrary.onCastQueueCleared()
+        }
     private var retryItem: CastRequest? = null
     private var currentRequest: CastRequest? = null
     private var loadSentCastId: String? = null
@@ -852,6 +866,49 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             stopCast()
             publishTransport()
         }
+    }
+
+    /**
+     * The TV library channel. Declared after every flow it reads, because it starts collecting
+     * them as it is built.
+     */
+    private val tvLibrary = TvLibrary(appContext, scope, object : LibraryPhone {
+        override val control get() = this@CastCoordinator.control
+        override val library get() = this@CastCoordinator.library
+        override val libraryLoading get() = this@CastCoordinator.libraryLoading
+        override val libraryComplete get() = this@CastCoordinator.libraryComplete
+        override val mediaAccess get() = this@CastCoordinator.mediaAccess
+        override val playbackProgress get() = this@CastCoordinator.playbackProgress
+        override val unplayableFiles get() = this@CastCoordinator.unplayableFiles
+        override val silentAudioFiles get() = this@CastCoordinator.silentAudioFiles
+        override val simplifiedVideoNames get() = this@CastCoordinator.simplifiedVideoNames
+        override val filmPosters get() = this@CastCoordinator.filmPosters
+        override fun pairing(tvId: String) = store.get(tvId)?.takeIf { !it.needsRepair }
+        override fun tvName() = _connectedTv.value?.name
+        override fun visible() = foreground
+        override fun castStartInFlight() = this@CastCoordinator.castStartInFlight()
+        override fun castLive() = currentCastId != null || castProbeRunning() || pendingCast != null
+        override fun play(item: MediaItem, fromStart: Boolean) = if (fromStart) startOver(item) else flickToTv(item)
+        override fun refreshLibrary() = refreshMediaLibrary()
+        override fun subtitleLabel(item: MediaItem): String? =
+            _selectedSubtitle.value?.takeIf { subtitleOwner?.uri == item.uri }?.displayName
+                ?: rememberedSubtitle(subtitleMemoryStore.state.value, PlaybackMediaFingerprint.of(item))?.displayName
+    })
+
+    /** "Show my library on my TV" (library channel, contract §3). */
+    val tvLibraryEnabled: StateFlow<Boolean> = tvLibrary.enabled
+
+    fun selectTvLibrary(enabled: Boolean) = tvLibrary.select(enabled)
+
+    /**
+     * A start the viewer could still be waiting on: anything from the first dial to the
+     * first frame, including a cast queued behind a liveness check or the progress read.
+     */
+    private fun castStartInFlight(): Boolean {
+        val stage = _castStart.value
+        val starting = stage is CastStartState.ConnectingControl || stage is CastStartState.StartingSource ||
+            stage is CastStartState.AwaitingAcceptance || stage is CastStartState.AwaitingFirstFrame
+        return starting || castProbeRunning() || pendingCast != null || progressResolutionJob?.isActive == true
     }
 
     init {
@@ -1198,6 +1255,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // A receiver that starts afresh refills its buffer, and that refill is not a stall.
         linkMonitor.onReload()
         if (!session.reloadLive(castId, url, title, item.durationMs, startMs)) return ReattachLoad.LINE_LOST
+        tvLibrary.onLoadMedia(castId, item)
         FlickLog.i("cast", "reattach load castIdFp=${FlickLog.fp(castId)} startMs=$startMs")
         val accept = awaitUnlessLineLost(acceptedNow, CastStartupPolicy.ACCEPT_TIMEOUT_MS)
         if (accept != true) return if (accept == false) ReattachLoad.LINE_LOST else ReattachLoad.UNANSWERED
@@ -1639,6 +1697,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     fun onBackground() {
         foreground = false
         reconcileDiscovery()
+        tvLibrary.onAppBackground()
     }
 
     /**
@@ -2022,7 +2081,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         val resumeMs = session.state.value.confirmedMs.coerceAtLeast(0L)
             .let { if (item.durationMs > 0L) it.coerceAtMost(item.durationMs) else it }
         linkMonitor.onReload()
-        session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)
+        if (session.loadMedia(castId, videoUrl, title, item.durationMs, resumeMs)) tvLibrary.onLoadMedia(castId, item)
     }
 
     /** The subtitle URL is only ever emitted when it shares the media URL's origin. */
@@ -3099,6 +3158,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 if (!session.loadMedia(castId, videoUrl, title, item.durationMs, request.startMs)) {
                     throw CastStartupFailure("load_not_sent")
                 }
+                tvLibrary.onLoadMedia(castId, item)
                 watchEcho(castId)
                 // Back in force before the first frame is decoded, and in one frame rather
                 // than a walk — see PlaybackSession.applyRememberedAudioDelay for why a
@@ -3139,6 +3199,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     fingerprint,
                     startOver = request.startOver,
                 )?.let(::enqueueProgress)
+                tvLibrary.onCastActive(castId, item)
                 _route.value = Route.NowPlaying
                 // A first frame is the only thing that can outrank a previous refusal.
                 // It also clears the decoder suspicion: this file just found a decoder,
@@ -3323,6 +3384,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
+        // Before the stop: the TV library's ready window is started while this cast's own
+        // foreground service still holds the process (library contract §8).
+        if (currentCastId == castId) tvLibrary.onCastCleanup(castId)
         CastServerService.stop(appContext, castId)
         // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
         // retarget or disarm the subtitle its load is about to carry.
@@ -3483,6 +3547,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 state.durationMs,
                 state.phase,
             )?.let(::enqueueProgress)
+            tvLibrary.onConfirmed(id, state.confirmedMs, state.durationMs, state.phase)
         }
         when (frame.optString("t")) {
             "loadAccepted" -> accepted?.complete(frame)

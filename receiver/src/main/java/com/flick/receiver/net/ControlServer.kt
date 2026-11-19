@@ -3,6 +3,7 @@ package com.flick.receiver.net
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import com.flick.receiver.library.LibraryServer
 import com.flick.receiver.player.AudioDelayPolicy
 import com.flick.receiver.player.PlaybackFrame
 import com.flick.receiver.util.FlickLog
@@ -61,6 +62,8 @@ class ControlServer(
     private val pairing: PairingManager,
     private val commands: ControlCommands,
     private val stateProvider: () -> PlaybackFrame,
+    /** Serves `/library` on this engine; null leaves the route absent (HTTP 404). */
+    private val library: LibraryServer? = null,
     private val onPeerQuiet: (peerIp: String, trigger: String, stillQuiet: () -> Boolean) -> Unit = { _, _, _ -> },
 ) {
     private data class Auth(
@@ -254,7 +257,10 @@ class ControlServer(
                 },
             ) {
                 install(WebSockets) { maxFrameSize = MAX_FRAME.toLong() }
-                routing { webSocket("/control") { session(bound) } }
+                routing {
+                    webSocket("/control") { session(bound) }
+                    if (library != null) webSocket("/library") { librarySession(library, bound) }
+                }
             }
             // NonCancellable: once an engine has begun listening it must reach
             // `binding` or be stopped, or a cancelled reconcile (ON_STOP mid-bind)
@@ -671,6 +677,20 @@ class ControlServer(
         } finally {
             resume.getAndSet(null)?.let(outstandingResumes::remove)
         }
+    }
+
+    /**
+     * `/control`'s pre-read gates, unweakened, then the library's own handshake and permit
+     * pool (library-channel §2). The library never draws on [preAuthConnections].
+     */
+    private suspend fun DefaultWebSocketServerSession.librarySession(library: LibraryServer, bound: CompletableDeferred<Pair<String, Int>>) {
+        val (host, port) = withTimeoutOrNull(BIND_PUBLISH_TIMEOUT_MS) { bound.await() } ?: return closePolicy("library not_bound")
+        val hosts = call.request.headers.getAll(HttpHeaders.Host)
+        val peer = peerIdentity(call.request.local)
+        if (port !in 1..65535) return closePolicy("library port_unbound port=$port")
+        if (hosts != listOf("$host:$port")) return closePolicy("library host_pin got=${hosts?.joinToString(",") ?: "none"} want=$host:$port")
+        if (!MediaUrlValidator.isPrivateIpv4(peer)) return closePolicy("library peer_not_private peer=$peer")
+        library.serve(this, peer, host, port)
     }
 
     private suspend fun DefaultWebSocketServerSession.authenticate(

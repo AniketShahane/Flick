@@ -70,6 +70,11 @@ object FilmPosters {
 
     private val watchingNetwork = AtomicBoolean(false)
 
+    private val _arrivals = MutableStateFlow(0)
+
+    /** Moves whenever a lookup writes art down, so a reader of [cached] knows to read again. */
+    val arrivals: StateFlow<Int> = _arrivals.asStateFlow()
+
     /**
      * What is already known, without touching the network: a tile that has its art from
      * last time draws it on its first frame rather than flashing the still first.
@@ -207,6 +212,7 @@ object FilmPosters {
         prefs(context).edit()
             .putString(query.cacheKey, "$value|${System.currentTimeMillis()}|${art?.tmdbId ?: ""}|$kind")
             .apply()
+        if (art != null) _arrivals.update { it + 1 }
     }
 
     private fun prefs(context: Context): SharedPreferences =

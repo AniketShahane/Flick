@@ -107,10 +107,16 @@ internal object LibrarySearchPolicy {
      * adds is nothing, and what it adds otherwise is only what parsing changed: an `S1E2`
      * shown as `S01E02`.
      */
-    private fun entryOf(name: String): Entry {
+    private fun entryOf(name: String): Entry = Entry(searchText(name))
+
+    /**
+     * The text [entryOf] searches, spaces already gone. Shared with the TV's catalog `find`
+     * field, which the TV searches with the same rule: one function, so the two cannot drift.
+     */
+    internal fun searchText(name: String): String {
         val raw = FoldedText.fold(name)
         val displayed = FoldedText.fold(VideoNames.parse(name).displayName)
         val text = if (displayed.isEmpty() || displayed in raw) raw else "$raw $displayed"
-        return Entry(text.replace(" ", ""))
+        return text.replace(" ", "")
     }
 }
