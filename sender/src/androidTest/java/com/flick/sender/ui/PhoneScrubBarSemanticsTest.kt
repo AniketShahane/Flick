@@ -2,6 +2,7 @@ package com.flick.sender.ui
 
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -109,7 +110,9 @@ class PhoneScrubBarSemanticsTest {
 
     @Test
     fun draggingAcrossTheBarTracksTheFingerAndTerminatesOnce() {
-        val target = mutableFloatStateOf(0f)
+        // Mid-bar, so the touch at the left edge points away from the thumb and seeks
+        // there on the down rather than taking hold of the thumb.
+        val target = mutableFloatStateOf(0.5f)
         var starts = 0
         var ends = 0
         val values = mutableListOf<Float>()
@@ -152,6 +155,81 @@ class PhoneScrubBarSemanticsTest {
             assertTrue("expected at least a down and a move", values.size >= 2)
             assertTrue("drag should start at the left edge", values.first() < 0.05f)
             assertTrue("drag should end at the right edge", values.last() > 0.9f)
+        }
+    }
+
+    @Test
+    fun touchingTheThumbWithoutMovingSeeksNothing() {
+        var starts = 0
+        var ends = 0
+        val values = mutableListOf<Float>()
+
+        composeRule.setContent {
+            FlickTheme(darkTheme = true, dynamicColor = false) {
+                PhoneScrubBar(
+                    targetFraction = { 0.5f },
+                    ghostFraction = { null },
+                    syncing = false,
+                    framePreview = { null },
+                    previewLabel = { null },
+                    onScrubStart = { starts++ },
+                    onScrub = { values += it },
+                    onScrubEnd = { ends++ },
+                    targetLabel = "Seek target",
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Seek target")
+            .performTouchInput {
+                down(center)
+                up()
+            }
+
+        composeRule.runOnIdle {
+            assertEquals(1, starts)
+            assertEquals(1, ends)
+            assertEquals(emptyList<Float>(), values)
+        }
+    }
+
+    @Test
+    fun grabbingTheThumbOffCentreDoesNotJumpAndStillReachesTheEnd() {
+        val target = mutableFloatStateOf(0.5f)
+        val values = mutableListOf<Float>()
+
+        composeRule.setContent {
+            FlickTheme(darkTheme = true, dynamicColor = false) {
+                PhoneScrubBar(
+                    targetFraction = { target.floatValue },
+                    ghostFraction = { null },
+                    syncing = false,
+                    framePreview = { null },
+                    previewLabel = { null },
+                    onScrubStart = {},
+                    onScrub = { fraction ->
+                        target.floatValue = fraction
+                        values += fraction
+                    },
+                    onScrubEnd = {},
+                    durationMs = { 125_000L },
+                    targetLabel = "Seek target",
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Seek target")
+            .performTouchInput {
+                down(Offset(centerX + 12.dp.toPx(), centerY))
+                repeat(16) { moveBy(Offset(1.dp.toPx(), 0f)) }
+                moveTo(centerRight)
+                up()
+            }
+
+        composeRule.runOnIdle {
+            assertTrue("expected moves past the slop", values.size >= 2)
+            assertTrue("grab must not jump: ${values.first()}", values.first() in 0.5f..0.56f)
+            assertTrue("the end must stay reachable: ${values.last()}", values.last() > 0.99f)
         }
     }
 }

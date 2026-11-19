@@ -78,7 +78,7 @@ class PlaybackSession(
     private var audioDelayTarget = AudioDelayPolicy.IN_SYNC_MS
     val audioDelayTargetMs: Int get() = audioDelayTarget
 
-    /** Haptic cues for the hand (grip/detent/snap/confirm). */
+    /** Haptic cues for the hand (grip/detent/edge/snap/confirm). */
     val haptics = MutableSharedFlow<HapticCue>(extraBufferCapacity = 16)
 
     /** Emitted the instant ghost & target reconcile — drives the Spark pulse ring. */
@@ -87,7 +87,16 @@ class PlaybackSession(
     private var lastSeq = -1L
     private var lastSeekAtMs = 0L
     private var lastConfirmedAtMs = 0L
-    private var lastDetentBucket = -1L
+    private val scrubFeel = ScrubFeel()
+
+    // Where the head was when the finger went down, the last target a drag actually put
+    // on the wire (null: none yet this gesture) and when it left, and whether the touch
+    // cancelled a tap run whose seek never left — together they decide what letting go
+    // owes the TV.
+    private var scrubOriginMs = 0L
+    private var scrubLastSentMs: Long? = null
+    private var scrubLastSentAtMs = 0L
+    private var scrubSeekOwed = false
 
     private var seekPending = false
     private var seekPendingSinceMs = 0L
@@ -99,6 +108,11 @@ class PlaybackSession(
     private var playPending = false
     private var playPendingSinceMs = 0L
     private var playCommanded = false
+
+    // The play state the viewer last chose or the TV last settled in, which is what a drag
+    // re-sends when it ends. Not [PlaybackUiState.playing]: the TV reports `isPlaying`,
+    // false while buffering, so a drag begun during a rebuffer would end by pausing.
+    private var intendsPlaying = false
 
     // A run of ±10s taps is one intent, so the head accumulates locally and exactly one
     // absolute seek leaves when the tapping stops. One seek per tap made the TV flush its
@@ -141,6 +155,8 @@ class PlaybackSession(
         lastSeq = -1L
         seekPending = false
         playPending = false
+        intendsPlaying = true
+        resetScrubGesture(startMs)
         // A queued seek belongs to the cast it was tapped on and must never land against
         // this one; the fresh state below drops the run's head with it.
         skipBurst.cancel()
@@ -199,6 +215,7 @@ class PlaybackSession(
     fun togglePlayPause() {
         val next = !_state.value.playing
         playCommanded = next
+        intendsPlaying = next
         playPending = true
         playPendingSinceMs = SystemClock.elapsedRealtime()
         _state.update { it.copy(playing = next) }
@@ -242,39 +259,73 @@ class PlaybackSession(
 
     fun scrubStart() {
         // A drag supersedes a tap run: without cancelling here, both mechanisms would send
-        // a seek for what the user experienced as one gesture.
+        // a seek for what the user experienced as one gesture. The run's seek is still owed
+        // by the release, even one that never moves the head.
         skipBurst.cancel()
+        val owed = _state.value.skipping
         _state.update { it.copy(scrubbing = true, skipping = false) }
-        lastDetentBucket = _state.value.targetMs / DETENT_MS
+        val s = _state.value
+        resetScrubGesture(s.targetMs)
+        scrubSeekOwed = owed
+        scrubFeel.start(s.targetMs, s.durationMs, SystemClock.elapsedRealtime())
         haptics.tryEmit(HapticCue.GRIP)
     }
 
     fun scrubTo(fraction: Float) {
         val s = _state.value
         if (s.durationMs <= 0L) return
-        val next = (fraction.coerceIn(0f, 1f) * s.durationMs).toLong().coerceIn(0L, s.durationMs)
-        val bucket = next / DETENT_MS
-        if (bucket != lastDetentBucket) {
-            lastDetentBucket = bucket
-            haptics.tryEmit(HapticCue.DETENT)
-        }
+        val next = SeekPolicy.scrubTarget(fraction, s.durationMs)
         val now = SystemClock.elapsedRealtime()
+        scrubFeel.move(next, s.durationMs, now)?.let { haptics.tryEmit(it) }
         // Read before this move's seek is sent: the TV has not answered that one yet.
         val syncing = control.frameRhythm.syncing(now, lastConfirmedAtMs)
         _state.update { it.copy(targetMs = next, syncing = syncing) }
-        if (now - lastSeekAtMs >= SEEK_THROTTLE_MS) {
+        // A repeat of the last landing is not sent and does not spend the throttle, so the
+        // next real move is not held back by a seek that never left.
+        if (next != scrubLastSentMs && now - lastSeekAtMs >= SEEK_THROTTLE_MS) {
             lastSeekAtMs = now
-            control.send(cmd("seek").put("posMs", next))
+            if (control.send(cmd("seek").put("posMs", next))) {
+                scrubLastSentMs = next
+                scrubLastSentAtMs = now
+            }
         }
     }
 
     fun scrubEnd() {
         val target = _state.value.targetMs
-        control.send(cmd("seek").put("posMs", target))
-        seekPending = true
-        seekPendingSinceMs = SystemClock.elapsedRealtime()
         _state.update { it.copy(scrubbing = false) }
+        // The bar is disposed when a cast ends under the finger, so this can arrive after
+        // clear(): a seek with no castId is malformed and the TV closes the socket on it.
+        if (castId == null) {
+            resetScrubGesture(0L)
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        val release = SeekPolicy.scrubRelease(
+            originMs = scrubOriginMs,
+            lastSentMs = scrubLastSentMs,
+            lastSentAgoMs = now - scrubLastSentAtMs,
+            targetMs = target,
+            seekOwed = scrubSeekOwed,
+        )
+        resetScrubGesture(target)
+        if (!release.marker) return
+        if (release.seek) control.send(cmd("seek").put("posMs", target))
+        // A seek armed before the drag would otherwise hold the head on this target while
+        // the TV plays on from it.
+        seekPending = release.awaitTv
+        seekPendingSinceMs = now
+        // The end-of-drag marker. Both verbs are idempotent on every TV, so it is not a
+        // command the viewer gave: no optimistic state, no pending hold, no CONFIRM.
+        control.send(cmd(if (intendsPlaying) "play" else "pause"))
         haptics.tryEmit(HapticCue.SNAP)
+    }
+
+    private fun resetScrubGesture(originMs: Long) {
+        scrubOriginMs = originMs
+        scrubLastSentMs = null
+        scrubLastSentAtMs = 0L
+        scrubSeekOwed = false
     }
 
     /**
@@ -437,6 +488,8 @@ class PlaybackSession(
         castId = null
         seekPending = false
         playPending = false
+        intendsPlaying = false
+        resetScrubGesture(0L)
         skipBurst.cancel()
         audioDelayWalk?.cancel()
         audioDelayWalk = null
@@ -550,6 +603,12 @@ class PlaybackSession(
                 }
             }
         }
+        // The TV's phase follows its playWhenReady, never its hold while scrubbing, so a
+        // frame under a drag still reports the viewer's choice — including a pause pressed
+        // on the TV remote mid-drag, which the release marker must not undo.
+        if (!playPending) {
+            intendsPlaying = SeekPolicy.intendsPlayingAfter(phase, intendsPlaying)
+        }
 
         _frames.value = _frames.value.next(pos, lastConfirmedAtMs)
         _state.value = prev.copy(
@@ -585,7 +644,6 @@ class PlaybackSession(
     }
 
     private companion object {
-        const val DETENT_MS = 10_000L        // haptic tick every 10s of film
         const val SEEK_THROTTLE_MS = 50L      // ≤ ~20 seeks/s (control-channel §4)
         const val PLAY_PENDING_MS = 600L      // hold optimistic play/pause past stale frames
         const val GENERIC_TITLE = "Video"

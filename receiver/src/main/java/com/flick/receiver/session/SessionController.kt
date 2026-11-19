@@ -208,6 +208,13 @@ class SessionController(
      */
     private var pendingSeek by mutableStateOf<PendingSeek?>(null)
 
+    /**
+     * The last feed tick that found the player still scrubbing, or [NO_SCRUB_TICK]. Plain
+     * rather than Compose state because it is written at the feed rate for a whole drag;
+     * the pending seek is re-stamped with it once, when the drag ends.
+     */
+    private var lastScrubTickMs = NO_SCRUB_TICK
+
     /** True until the TV's own position feed confirms the seek that was issued. */
     val seeking: Boolean get() = pendingSeek != null
 
@@ -227,6 +234,8 @@ class SessionController(
         private set
 
     private val gate = CastGenerationGate()
+    /** Phone seeks only; a cast change resets it so a new film never inherits a drag. */
+    private val scrubCadence = ScrubCadence()
     private val castId get() = gate.castId
     private val generation get() = gate.generation
     /** The control connection that synchronously adopted [castId]. */
@@ -276,7 +285,7 @@ class SessionController(
     // Absolute, never expressed as a skip: a replay's destination is the start of the
     // film, while a skip's target is derived from wherever the player currently reports
     // itself — and at Ended that position has already been clamped to the duration.
-    fun onSeek(posMs: Long) { castId?.let { onSeek(it, posMs) } }
+    fun onSeek(posMs: Long) { castId?.let { seek(it, posMs, fromPhone = false) } }
     fun onSkip(deltaMs: Long) { castId?.let { onSkip(it, deltaMs) } }
     fun onSetVolume(level: Float) { castId?.let { onSetVolume(it, level) } }
 
@@ -574,6 +583,7 @@ class SessionController(
 
     override fun onControlLeaseMoved(fromGeneration: Long, toGeneration: Long) {
         if (castId == null || controlLeaseGeneration != fromGeneration) return
+        scrubCadence.reset()
         controlLeaseGeneration = toGeneration
         gate.rebindLease(toGeneration)
         stage = when (val value = stage) {
@@ -734,6 +744,7 @@ class SessionController(
     ) {
         if (!gate.isCurrent(id, generation)) return
         clearOrphan()
+        scrubCadence.reset()
         directLink.releaseCast()
         FlickLog.w("cast", "fail code=${code.wire} detail=$detail retryable=$retryable beforeReady=$beforeReady status=${status ?: -1} castIdFp=${FlickLog.fp(id)}")
         IncidentJournal.record(
@@ -771,15 +782,28 @@ class SessionController(
         clearStartupState()
     }
 
-    override fun onPlay(castId: String) { if (current(castId)) controller.resume() }
-    override fun onPause(castId: String) { if (current(castId)) controller.pause() }
-    override fun onSeek(castId: String, posMs: Long) {
+    // The phone ends a drag by sending the viewer's play or pause right after its last
+    // seek, so either verb lands the drag before it acts.
+    override fun onPlay(castId: String) {
+        if (!current(castId)) return
+        controller.landScrub()
+        controller.resume()
+    }
+    override fun onPause(castId: String) {
+        if (!current(castId)) return
+        controller.landScrub()
+        controller.pause()
+    }
+    override fun onSeek(castId: String, posMs: Long) = seek(castId, posMs, fromPhone = true)
+
+    private fun seek(castId: String, posMs: Long, fromPhone: Boolean) {
         if (!current(castId)) return
         // Sampled BEFORE the seek: the player masks its position with the target
         // as soon as it is issued, and a pending seek whose origin is its own
         // target has lost the direction the reconciliation needs.
         val before = controller.readPlaybackState()
-        controller.seekTo(posMs)
+        val drag = fromPhone && (scrubCadence.onPhoneSeek(clock()) || controller.isScrubbing)
+        if (drag) controller.scrubTo(posMs) else controller.seekTo(posMs)
         beginSeek(before.posMs, clampedSeekTarget(posMs, before.durationMs))
     }
     override fun onSkip(castId: String, deltaMs: Long) {
@@ -874,6 +898,7 @@ class SessionController(
      */
     private fun holdForPhone(held: OrphanedCast) {
         clearOrphan()
+        scrubCadence.reset()
         orphan = held
         reconnecting = true
         reconnectingKeyId = held.keyId
@@ -968,6 +993,7 @@ class SessionController(
         directLink.releaseCast()
         gate.forceInvalidate()
         pendingSeek = null
+        scrubCadence.reset()
         probeJob?.cancel(); probeJob = null
         // Cancelled before [onControlLost] arms its own, so a second drop cannot leave
         // two waiting sentences, and so a fresh cast or a Back silences the pending one.
@@ -1014,9 +1040,22 @@ class SessionController(
             pendingSeek = null
             return
         }
-        val pending = pendingSeek ?: run {
+        val held = pendingSeek ?: run {
+            lastScrubTickMs = NO_SCRUB_TICK
             seekTargetMs = position
             return
+        }
+        if (controller.isScrubbing) {
+            // A drag's frames are keyframes short of its target, and none of them is the
+            // landing: the seek's clocks start from the exact landing once the drag ends.
+            lastScrubTickMs = clock()
+            return
+        }
+        val pending = if (lastScrubTickMs == NO_SCRUB_TICK) held else {
+            held.copy(issuedAtElapsedMs = lastScrubTickMs).also {
+                pendingSeek = it
+                lastScrubTickMs = NO_SCRUB_TICK
+            }
         }
         when (SeekReconciler.phaseOf(pending, position, clock())) {
             SeekPhase.InFlight -> Unit
@@ -1030,6 +1069,7 @@ class SessionController(
 
     private fun beginSeek(originMs: Long, targetMs: Long) {
         seekTargetMs = targetMs
+        lastScrubTickMs = NO_SCRUB_TICK
         pendingSeek = PendingSeek(
             targetMs = targetMs,
             originMs = originMs,
@@ -1068,6 +1108,7 @@ class SessionController(
 
     private companion object {
         const val STARTUP_DEADLINE_MS = 18_000L
+        const val NO_SCRUB_TICK = -1L
 
         /**
          * Waits before each pre-flight after a cast-start link repair, on top of the
