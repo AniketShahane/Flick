@@ -34,4 +34,10 @@
       should survive the move.
     -->
     <exclude domain="sharedpref" path="flick_library.xml" />
+    <!--
+      The TV library channel backs nothing up. The watched ledger is keyed by the same
+      fingerprint as the progress store; the season cache names which shows this phone holds.
+    -->
+    <exclude domain="file" path="datastore/flick_watched.preferences_pb" />
+    <exclude domain="sharedpref" path="flick_tv_seasons.xml" />
 </full-backup-content>

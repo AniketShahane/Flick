@@ -24,6 +24,9 @@
          media server lives in a foreground service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- The TV library's ready window (TvReadyService). Its API 34+ runtime prerequisite is
+         CHANGE_WIFI_STATE, declared above. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- Keeps the CPU servicing the socket threads while the screen is off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is deliberately NOT declared. It is
@@ -108,6 +111,13 @@
             android:name=".CastServerService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Keeps the process reachable for the TV's library for a while after a film, so
+             Android's cached-app freezer does not drop the library socket. No locks. -->
+        <service
+            android:name=".library.TvReadyService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
     </application>
 

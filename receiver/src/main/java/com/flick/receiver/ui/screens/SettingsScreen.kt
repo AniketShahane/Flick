@@ -113,6 +113,7 @@ private const val SettingsPairedHeaderKey = "pairedPhones"
 private const val SettingsPairedRowPrefix = "paired:"
 private const val SettingsPairedBackKey = "pairedBack"
 private const val SettingsOpenForCastsKey = "openForCasts"
+private const val SettingsAutoplayKey = "autoplayNext"
 private const val SettingsMetricsKey = "metrics"
 private const val SettingsForgetKey = "forgetAll"
 private const val SettingsDiagnosticsKey = "diagnostics"
@@ -333,6 +334,9 @@ fun SettingsScreen(
     /** [OpenForCastsRow.Hidden] renders no row at all. */
     openForCasts: OpenForCastsRow = OpenForCastsRow.Hidden,
     onOpenForCasts: () -> Unit = {},
+    /** Null renders no row. */
+    autoplayNext: Boolean? = null,
+    onToggleAutoplayNext: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val safeArea = rememberTvSafeAreaPadding()
@@ -744,6 +748,45 @@ fun SettingsScreen(
                                             .settingsStage(stage, index = openRow, settled = entranceSettled)
                                             .testTag("settings-open-row"),
                                     )
+                                }
+                            }
+
+                            if (autoplayNext != null) {
+                                val autoplayRow = row++
+                                item(key = SettingsAutoplayKey) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .settingsStage(stage, index = autoplayRow, settled = entranceSettled),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        FlickTvRow(
+                                            onClick = onToggleAutoplayNext,
+                                            checked = autoplayNext,
+                                            stateDescription = stringResource(
+                                                if (autoplayNext) R.string.settings_metrics_on else R.string.settings_metrics_off,
+                                            ),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("settings-autoplay-row"),
+                                            contentPadding = RowPadding,
+                                        ) {
+                                            LabeledColumn(
+                                                modifier = Modifier.weight(1f),
+                                                title = stringResource(R.string.settings_autoplay_title),
+                                                summary = stringResource(R.string.settings_autoplay_summary),
+                                            )
+                                            ToggleGlyph(enabled = autoplayNext)
+                                        }
+                                        // TMDB's terms require this notice wherever its data is
+                                        // shown; it is static text, never a focus stop.
+                                        Text(
+                                            text = stringResource(R.string.settings_tmdb_notice),
+                                            style = FlickType.body(sizeSp = 13, weight = FontWeight.Medium),
+                                            color = FlickRoom.OnSurfaceDim,
+                                            modifier = Modifier.padding(horizontal = 18.dp),
+                                        )
+                                    }
                                 }
                             }
 

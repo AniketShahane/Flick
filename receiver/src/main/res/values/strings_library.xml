@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The TV library screens: the phone's video library browsed on the TV (docs/design/library-channel.md).
+     Mono labels (eyebrows, chips, counts) render in a style that applies no case transform, so
+     their copy arrives uppercase. -->
+<resources>
+    <!-- Top bar -->
+    <string name="libui_tab_home">Home</string>
+    <string name="libui_tab_shows">Shows</string>
+    <string name="libui_tab_films">Films</string>
+    <string name="libui_tab_all">All videos</string>
+    <string name="libui_search">Search</string>
+    <string name="libui_settings">Settings</string>
+    <!-- Spoken for the phone pill, which opens Refresh and Pair another phone. -->
+    <string name="libui_phone_menu_a11y">%1$s. Library options</string>
+    <string name="libui_refresh">Refresh library</string>
+    <string name="libui_pair_another">Pair another phone</string>
+    <string name="libui_phone_fallback">your phone</string>
+    <plurals name="libui_video_count">
+        <item quantity="one">%1$s VIDEO</item>
+        <item quantity="other">%1$s VIDEOS</item>
+    </plurals>
+    <!-- Calm, not alarming: the catalog stays on screen and browsable while it shows. -->
+    <string name="libui_reconnecting">Reconnecting to %1$s…</string>
+    <string name="libui_reconnecting_short">RECONNECTING…</string>
+
+    <!-- Breadcrumbs over a page, naming where Back returns to. -->
+    <string name="libui_crumb_home">HOME</string>
+    <string name="libui_crumb_shows">SHOWS</string>
+    <string name="libui_crumb_films">FILMS</string>
+    <string name="libui_crumb_all">ALL VIDEOS</string>
+    <string name="libui_crumb_search">SEARCH</string>
+
+    <!-- States -->
+    <string name="libui_loading">Loading your phone\'s library…</string>
+    <string name="libui_empty_title">No videos yet</string>
+    <string name="libui_empty_body">Videos on %1$s show up here as soon as Flick can see them.</string>
+    <string name="libui_empty_tab">Nothing here yet.</string>
+
+    <!-- Home rows -->
+    <string name="libui_row_continue">Continue watching</string>
+    <string name="libui_row_next">Next episodes</string>
+    <string name="libui_row_recent">Recently added</string>
+    <string name="libui_row_shows">Shows</string>
+    <string name="libui_row_films">Films</string>
+    <string name="libui_row_home_videos">Home videos</string>
+
+    <!-- Hero eyebrow: "CONTINUE WATCHING · FILM". -->
+    <string name="libui_hero_continue">CONTINUE WATCHING</string>
+    <string name="libui_hero_newest">NEWEST</string>
+    <string name="libui_kind_film">FILM</string>
+    <string name="libui_kind_episode">EPISODE</string>
+    <string name="libui_kind_video">VIDEO</string>
+    <string name="libui_join">%1$s · %2$s</string>
+
+    <!-- Running time and progress. -->
+    <plurals name="libui_minutes_left">
+        <item quantity="one">%1$d MIN LEFT</item>
+        <item quantity="other">%1$d MIN LEFT</item>
+    </plurals>
+    <plurals name="libui_minutes_left_short">
+        <item quantity="one">%1$d LEFT</item>
+        <item quantity="other">%1$d LEFT</item>
+    </plurals>
+    <plurals name="libui_minutes_left_sentence">
+        <item quantity="one">%1$d min left</item>
+        <item quantity="other">%1$d min left</item>
+    </plurals>
+    <plurals name="libui_minutes">
+        <item quantity="one">%1$d MIN</item>
+        <item quantity="other">%1$d MIN</item>
+    </plurals>
+    <plurals name="libui_minutes_sentence">
+        <item quantity="one">%1$d min.</item>
+        <item quantity="other">%1$d min.</item>
+    </plurals>
+    <string name="libui_progress_of">%1$s OF %2$s</string>
+    <string name="libui_episode_short">E%1$d</string>
+
+    <!-- Chips -->
+    <string name="libui_res_uhd">4K</string>
+    <string name="libui_res_fhd">1080P</string>
+    <string name="libui_res_hd">720P</string>
+    <string name="libui_res_sd">SD</string>
+    <string name="libui_res_dimensions">%1$s · %2$d × %3$d</string>
+    <string name="libui_hdr_dv">DOLBY VISION</string>
+    <string name="libui_hdr_dv_short">DV</string>
+    <string name="libui_hdr_hdr10">HDR10</string>
+    <string name="libui_hdr_sdr">SDR</string>
+    <!-- The subtitle the phone will attach, by its own label: "ENGLISH SUBS · FROM PHONE". -->
+    <string name="libui_subs_from_phone">%1$s SUBS · FROM PHONE</string>
+    <string name="libui_blocked_unplayable">Can\'t play on this TV</string>
+    <string name="libui_blocked_silent">No sound on this TV</string>
+    <string name="libui_watched">Watched</string>
+
+    <!-- Actions -->
+    <string name="libui_resume">Resume</string>
+    <string name="libui_play">Play</string>
+    <string name="libui_play_from_start">Play from start</string>
+    <string name="libui_more_info">More info</string>
+    <string name="libui_open_show">Open show</string>
+    <!-- On the button while the phone decides; the TV has started nothing yet. -->
+    <string name="libui_asking">Asking your phone…</string>
+    <string name="libui_resume_episode">Resume %1$s · %2$s</string>
+    <string name="libui_resume_episode_plain">Resume %1$s</string>
+    <string name="libui_start_episode_over">Start %1$s over</string>
+    <string name="libui_play_episode">Play %1$s</string>
+
+    <!-- Show page -->
+    <plurals name="libui_seasons">
+        <item quantity="one">%1$d SEASON</item>
+        <item quantity="other">%1$d SEASONS</item>
+    </plurals>
+    <plurals name="libui_episodes">
+        <item quantity="one">%1$d EPISODE</item>
+        <item quantity="other">%1$d EPISODES</item>
+    </plurals>
+    <plurals name="libui_watched_count">
+        <item quantity="one">%1$d WATCHED</item>
+        <item quantity="other">%1$d WATCHED</item>
+    </plurals>
+    <string name="libui_season">Season %1$d</string>
+    <string name="libui_specials">Specials</string>
+    <string name="libui_show_meta">SHOW · %1$s</string>
+
+    <!-- All videos -->
+    <string name="libui_folder_all">All folders</string>
+    <string name="libui_folder_title">SHOW VIDEOS FROM</string>
+    <string name="libui_folder_a11y">Showing %1$s. Choose a different folder.</string>
+    <string name="libui_sort_title">SORT BY</string>
+    <!-- The phone's own names for its five orders, so a choice reads the same on both. -->
+    <string name="libui_sort_recent">Recently added</string>
+    <string name="libui_sort_name">Name (A–Z)</string>
+    <string name="libui_sort_name_reversed">Name (Z–A)</string>
+    <string name="libui_sort_longest">Longest first</string>
+    <string name="libui_sort_shortest">Shortest first</string>
+    <string name="libui_sort_a11y">Sorted by %1$s. Change the order.</string>
+
+    <!-- Search -->
+    <string name="libui_search_eyebrow">SEARCH YOUR PHONE</string>
+    <string name="libui_key_space">Space</string>
+    <string name="libui_key_delete">Delete</string>
+    <string name="libui_key_clear">Clear</string>
+    <plurals name="libui_results">
+        <item quantity="one">%1$d result</item>
+        <item quantity="other">%1$d results</item>
+    </plurals>
+    <string name="libui_search_rule">every word, anywhere in the name — like on your phone</string>
+    <string name="libui_search_prompt">Type a few letters to search %1$s.</string>
+    <string name="libui_search_none">Nothing on %1$s matches that.</string>
+    <string name="libui_search_help">Results update with every letter. Down from the keyboard jumps into the results; OK plays a video or opens a show.</string>
+    <string name="libui_search_query_a11y">Search for %1$s</string>
+
+    <!-- A Play the phone refused or never answered. Each names the one thing to change. -->
+    <string name="libui_failed_title">That didn\'t start</string>
+    <string name="libui_failed_not_on_phone">That video isn\'t in your phone\'s library any more.</string>
+    <string name="libui_failed_setting_off">Show my library on my TV is off on your phone. Turn it on in Flick, then try again.</string>
+    <string name="libui_failed_busy">Your phone is already starting a cast. Give it a moment, then try again.</string>
+    <string name="libui_failed_cant_open">Your phone couldn\'t open that video. Check it\'s still on the phone, then try again.</string>
+    <string name="libui_failed_background">Your phone can\'t start a cast while Flick is in the background. Open Flick on the phone, or let it run unrestricted in its battery settings.</string>
+    <string name="libui_failed_no_answer">Your phone didn\'t answer. Check Flick is open on it, then try again.</string>
+    <string name="libui_failed_did_not_start">Your phone said yes, but the video didn\'t start. Try again.</string>
+    <string name="libui_failed_offline">Your phone isn\'t connected right now. Flick is reconnecting; try again in a moment.</string>
+    <string name="libui_failed_dismiss">Press any button to close</string>
+
+    <!-- Up next, over the end of an episode -->
+    <string name="libui_upnext_eyebrow">UP NEXT · %1$s</string>
+    <string name="libui_upnext_eyebrow_plain">UP NEXT</string>
+    <string name="libui_play_now">Play now</string>
+    <string name="libui_back_to_library">Back to library</string>
+    <string name="libui_still_watching">Still watching?</string>
+    <string name="libui_keep_watching">Keep watching</string>
+    <plurals name="libui_countdown_a11y">
+        <item quantity="one">Playing in %1$d second</item>
+        <item quantity="other">Playing in %1$d seconds</item>
+    </plurals>
+</resources>

@@ -369,6 +369,10 @@
     <string name="settings_open_blocked">This TV didn’t let Flick open · press to try again</string>
     <string name="ready_channel_name">Ready for your phone</string>
     <string name="ready_notification_title">Flick is ready for your phone</string>
+    <string name="settings_autoplay_title">Autoplay next episode</string>
+    <string name="settings_autoplay_summary">When an episode from your phone ends, the next one starts after 10 seconds</string>
+    <!-- TMDB's attribution notice, required verbatim by its API terms. -->
+    <string name="settings_tmdb_notice" translatable="false">This product uses the TMDB API but is not endorsed or certified by TMDB.</string>
     <string name="settings_metrics_title">Playback metrics overlay</string>
     <string name="settings_metrics_summary">For the curious: live throughput, buffer &amp; decoder</string>
     <string name="settings_metrics_on">On</string>

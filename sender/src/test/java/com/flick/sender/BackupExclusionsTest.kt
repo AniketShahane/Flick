@@ -230,7 +230,7 @@ class BackupExclusionsTest {
         val LEGACY_SECRET_BEARING = setOf("flick_subtitles_online")
 
         /**
-         * All three stores are keyed by the same hash of a content URI and a MediaStore
+         * Every store here is keyed by the same hash of a content URI and a MediaStore
          * source revision, so none of them names anything on a second device: restored,
          * they are records that can only ever fail to match, taking up a bounded store's
          * room against the films that phone actually holds.
@@ -245,6 +245,7 @@ class BackupExclusionsTest {
             "datastore/flick_audio_delay.preferences_pb",
             "datastore/flick_subtitle_memory.preferences_pb",
             "subtitle_memory",
+            "datastore/flick_watched.preferences_pb",
         )
 
         /**
@@ -282,6 +283,13 @@ class BackupExclusionsTest {
                     "it holds no API key, and a restored copy only saves another phone a lookup",
             "flick_film_poster_pref" to
                 "one on/off choice for showing posters, which is about the person and travels",
+            "flick_tv_library" to
+                "one on/off choice for showing this phone's library on a TV, which is about " +
+                    "the person and travels",
+            "flick_tv_seasons" to
+                "excluded, but for a non-security reason: a cache of public TMDB episode lists " +
+                    "keyed by show id, which taken together say which shows this phone holds, " +
+                    "and the library channel's contract backs nothing up",
         )
 
         /** `getSharedPreferences("name"` or `getSharedPreferences(CONSTANT`. */

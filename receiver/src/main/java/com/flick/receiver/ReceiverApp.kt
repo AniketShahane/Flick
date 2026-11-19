@@ -75,6 +75,11 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
+import com.flick.receiver.library.LibraryLink
+import com.flick.receiver.library.LibraryPrefs
+import com.flick.receiver.library.LibraryServer
+import com.flick.receiver.library.TvLibrary
+import com.flick.receiver.library.decodeLibraryThumbnail
 import com.flick.receiver.net.ControlPortStore
 import com.flick.receiver.net.ControlServer
 import com.flick.receiver.net.DirectLinkReset
@@ -139,6 +144,8 @@ import com.flick.receiver.ui.components.freshRevealRate
 import com.flick.receiver.ui.components.houseStageFor
 import com.flick.receiver.ui.components.rememberDisplayCadence
 import com.flick.receiver.ui.components.standbySurfaceInteractive
+import com.flick.receiver.ui.library.LibraryScreen
+import com.flick.receiver.ui.library.UpNextCard
 import com.flick.receiver.ui.screens.ErrorScreen
 import com.flick.receiver.ui.screens.IdleScreen
 import com.flick.receiver.ui.screens.MetricsOverlay
@@ -438,8 +445,29 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             directLink = MidFilmLinkGuard(context, controller::mediaStarvedMs, controller::lastMediaByteAtMs),
         )
     }
+    val libraryPrefs = remember { LibraryPrefs(context) }
+    var autoplayNext by remember { mutableStateOf(libraryPrefs.autoplayNext) }
+    val library = remember {
+        TvLibrary(
+            // The published snapshot, never a synchronized read of the store: the hub calls
+            // this under its own lock — see [TvLibrary].
+            labelOf = { keyId -> pairing.snapshot.value.devices.firstOrNull { it.keyId == keyId }?.label },
+            autoplayEnabled = { libraryPrefs.autoplayNext },
+            decodeThumbnail = ::decodeLibraryThumbnail,
+            clock = { android.os.SystemClock.elapsedRealtime() },
+        )
+    }
+    val libraryServer = remember {
+        LibraryServer(
+            tvId = { pairing.tvId },
+            findKey = { tvId, keyId -> pairing.findKey(tvId, keyId)?.key },
+            hub = library,
+        )
+    }
+    val libraryState = library.state.collectAsState()
+    val upNextOffer by library.upNext.collectAsState()
     val server = remember {
-        ControlServer(pairing, session, { playbackFlow.value }) { peer, trigger, stillQuiet ->
+        ControlServer(pairing, session, { playbackFlow.value }, library = libraryServer) { peer, trigger, stillQuiet ->
             DirectLinkReset.watch(context, peer, trigger, stillQuiet)
         }
     }
@@ -649,6 +677,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             controller.release()
             FlickLog.i("bind", "teardown trigger=dispose")
             server.stopDetached()
+            library.shutdown()
             nsd.unregister()
             lanMonitor.stop()
             wifiAssociations.stop()
@@ -846,6 +875,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val frame by playbackFlow.collectAsState()
     val stage = session.stage
     val surfaceMode = playerSurfaceMode(stage)
+    // Drawn over the ended film at full size; the video surface is never resized for it.
+    val upNextShowing = upNextOffer != null && stage is MediaStage.Active
 
     // A film is on screen only once the house lights have lifted off it: until then
     // the clocks below would run behind the veil or inside the resync blank.
@@ -875,6 +906,24 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             }
         }
     }
+
+    // The library hub learns of casts from the stage, which leaves the control server's
+    // `loadMedia` path untouched: a new castId reaches Checking exactly when this TV has
+    // accepted a `loadMedia` for it.
+    val stageCastId = when (stage) {
+        is MediaStage.Checking -> stage.castId
+        is MediaStage.Preparing -> stage.castId
+        is MediaStage.Active -> stage.castId
+        else -> null
+    }
+    LaunchedEffect(stageCastId) {
+        if (stageCastId != null) library.onCastStarted(stageCastId) else library.onCastNotEnded()
+    }
+    val endedCastId = activeCastId?.takeIf { frame.phase == PlaybackPhase.Ended }
+    LaunchedEffect(endedCastId) {
+        if (endedCastId != null) library.onCastEnded(endedCastId) else library.onCastNotEnded()
+    }
+    LaunchedEffect(pairingSnapshot.devices) { library.onPhonesChanged() }
 
     // Let the session push TV→phone `error` frames through the live control
     // socket (preflight/backgrounded/fatal → phone S12 instead of a frozen UI).
@@ -1042,8 +1091,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // With chrome hidden there is no focusable transport, so park focus on the
     // root catcher. Activity-level remote routing handles playback commands;
     // keeping a Compose focus owner also preserves ordinary fallback dispatch.
-    LaunchedEffect(stage, chromeVisible) {
-        if (rootFocusCatcherEnabled(stage, chromeVisible)) {
+    LaunchedEffect(stage, chromeVisible, upNextShowing) {
+        if (rootFocusCatcherEnabled(stage, chromeVisible) && !upNextShowing) {
             runCatching { rootFocus.requestFocus() }
         }
     }
@@ -1267,7 +1316,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     }
 
     val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
-        if (event.action == AndroidKeyEvent.ACTION_DOWN) houseKeys.tryEmit(Unit)
+        if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+            houseKeys.tryEmit(Unit)
+            library.onRemoteKey()
+        }
         val button = event.toTvRemoteButton()
         val eventType = when (event.action) {
             AndroidKeyEvent.ACTION_DOWN -> TvRemoteEventType.Down
@@ -1277,7 +1329,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         val active = stage is MediaStage.Active
         val playbackGestures = receiverPlaybackGesturesEnabled(
             playbackActive = active,
-            panelOpen = openPanel != PlaybackPanel.None,
+            // The Up next card owns the D-pad the way a side panel does.
+            panelOpen = openPanel != PlaybackPanel.None || upNextShowing,
         )
         val capturedBefore = capturedRemoteButton
         val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
@@ -1364,6 +1417,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             pairingSnapshot.surface is PairingSurface.Confirming -> pairing.denyPendingPair()
             pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
             stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
+            // The card is the topmost surface over an ended film; Back takes it away and
+            // leaves the film's own Watch again chrome.
+            stage is MediaStage.Active && upNextShowing -> library.dismissUpNext()
             // An open side panel is the topmost surface: dismiss it before Back is
             // allowed to hide the chrome underneath it or end the cast.
             stage is MediaStage.Active && openPanel != PlaybackPanel.None -> openPanel = PlaybackPanel.None
@@ -1391,7 +1447,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 // summoned handshake what the tunnel rises out of.
                 .background(if (stage is MediaStage.None || stage is MediaStage.Error) FlickRoom.Canvas else FlickColor.Canvas)
                 .focusRequester(rootFocus)
-                .focusable(enabled = rootFocusCatcherEnabled(stage, chromeVisible)),
+                .focusable(enabled = rootFocusCatcherEnabled(stage, chromeVisible) && !upNextShowing),
         ) {
             // The film, hosted once for the whole cast. Its view must never change parent:
             // moving it detaches it from the window, which destroys its surface and hands
@@ -1426,7 +1482,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     // The house lights are still staging the film: it plays in the
                     // tunnel's window, and nothing of this screen but the film may
                     // draw over the tunnel around it.
-                    chromeVisible = chromeVisible && pictureSettled && !filmStaging.staged,
+                    chromeVisible = chromeVisible && pictureSettled && !filmStaging.staged && !upNextShowing,
                     staged = filmStaging.staged,
                     quality = if (showQuality) qualityInfo(snapshot) else null,
                     remoteSeekDeltaMs = remoteSeekDeltaMs,
@@ -1495,6 +1551,19 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         .padding(safeArea),
                 ) {
                     MetricsOverlay(snapshot = snapshot)
+                }
+                upNextOffer?.takeIf { upNextShowing }?.let { offer ->
+                    UpNextCard(
+                        offer = offer,
+                        onPlayNow = { library.playUpNext() },
+                        // The same exit as Back on the playback surface: the phone is told
+                        // the cast stopped, and standby is the library.
+                        onBackToLibrary = {
+                            library.dismissUpNext()
+                            if (!server.stopLocalCast()) session.backToStandby()
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
 
@@ -1670,6 +1739,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                                     // behind this press.
                                                     onForgetPhone = { keyId ->
                                                         val forgotten = server.forget(keyId)
+                                                        // After `server.forget` has returned, so
+                                                        // neither the manager monitor nor the
+                                                        // server's lock is held.
+                                                        if (forgotten) libraryServer.forget(keyId)
                                                         if (forgotten && pairing.pairedCount() == 0) leaveSettings()
                                                         forgotten
                                                     },
@@ -1699,7 +1772,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                                     },
                                                     onToggleMetrics = { metricsEnabled = !metricsEnabled },
                                                     onForgetAll = {
-                                                        if (server.forgetAllPairings()) leaveSettings()
+                                                        if (server.forgetAllPairings()) {
+                                                            libraryServer.forgetAll()
+                                                            leaveSettings()
+                                                        }
+                                                    },
+                                                    autoplayNext = autoplayNext,
+                                                    onToggleAutoplayNext = {
+                                                        autoplayNext = !autoplayNext
+                                                        libraryPrefs.autoplayNext = autoplayNext
                                                     },
                                                     onDone = leaveSettings,
                                                     diagnosticsVisible = showDiagnostics,
@@ -1803,11 +1884,21 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                                     )
                                                 }
 
-                                                StandbySurface.Idle -> IdleScreen(
-                                                    pairedLabel = deviceLabel,
-                                                    onPairAnother = { pairing.requestOpen() },
-                                                    onOpenSettings = { showSettings = true },
-                                                )
+                                                // Read here, not at the root, so a catalog or
+                                                // play-state change recomposes only this branch.
+                                                StandbySurface.Idle -> if (libraryState.value.link != LibraryLink.NONE) {
+                                                    LibraryScreen(
+                                                        hub = library,
+                                                        onPairAnother = { pairing.requestOpen() },
+                                                        onOpenSettings = { showSettings = true },
+                                                    )
+                                                } else {
+                                                    IdleScreen(
+                                                        pairedLabel = deviceLabel,
+                                                        onPairAnother = { pairing.requestOpen() },
+                                                        onOpenSettings = { showSettings = true },
+                                                    )
+                                                }
                                             }
                                         }
                                     }

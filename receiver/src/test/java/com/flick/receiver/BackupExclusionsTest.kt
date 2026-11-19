@@ -192,6 +192,9 @@ class BackupExclusionsTest {
                 "the last control-server port number. It authorizes nothing — the port is " +
                     "advertised over NSD anyway, and a connection to it still has to pair or " +
                     "prove a key",
+            "flick_library" to
+                "the viewer's Autoplay next episode choice. Nothing the phone sends on the " +
+                    "library channel is stored there or anywhere else (library-channel §12)",
         )
 
         /** `getSharedPreferences("name"` or `getSharedPreferences(CONSTANT`. */

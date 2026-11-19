@@ -265,7 +265,8 @@ the two sockets are not ordered against each other; the TV matches by `castId`.
   control v2: the library is a display surface whose only action, `play`, is validated
   strictly, so ignoring an unknown display frame lets later versions add one without a
   coordinated release.
-- `v` other than `1` closes the library socket.
+- A known `t` with `v` other than `1` closes the library socket; an unknown `t` is ignored
+  whatever its `v`.
 
 ## 8. The phone's ready window
 

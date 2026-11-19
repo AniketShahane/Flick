@@ -228,6 +228,10 @@ dependencies {
     //     Canvas; no camera needed to display). ---
     implementation("com.google.zxing:core:3.5.3")
 
+    // --- TMDB art for the library screens, built from the paths the phone sends
+    //     (library-channel.md §5.1). The same Coil the sender uses. ---
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
