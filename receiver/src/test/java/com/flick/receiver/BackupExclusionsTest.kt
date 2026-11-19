@@ -195,6 +195,9 @@ class BackupExclusionsTest {
             "flick_library" to
                 "the viewer's Autoplay next episode choice. Nothing the phone sends on the " +
                     "library channel is stored there or anywhere else (library-channel §12)",
+            "library_ui" to
+                "the viewer's All videos sort order, stored as a sort enum name. It authorizes " +
+                    "nothing and holds nothing the phone sent (library-channel §12)",
         )
 
         /** `getSharedPreferences("name"` or `getSharedPreferences(CONSTANT`. */

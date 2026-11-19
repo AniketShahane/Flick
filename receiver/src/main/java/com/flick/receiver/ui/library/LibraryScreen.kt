@@ -654,8 +654,6 @@ private fun PhoneMenu(
     }
 }
 
-private fun Modifier.fillMaxWidth(): Modifier = this.then(androidx.compose.foundation.layout.fillMaxWidth())
-
 @Composable
 private fun LoadingState() {
     Column(
