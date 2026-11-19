@@ -32,6 +32,7 @@ import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.ScrubbingModeParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.LoadEventInfo
@@ -116,6 +117,18 @@ interface SessionPlayer {
     fun pause()
     fun seekTo(posMs: Long)
     fun seekBy(deltaMs: Long)
+
+    /**
+     * One seek of a phone drag: shown as soon as the decoder can, with playback held
+     * until [landScrub]. Any other seek or teardown abandons the drag.
+     */
+    fun scrubTo(posMs: Long)
+
+    /** End a drag with an exact seek to its last target. A no-op with no drag. */
+    fun landScrub()
+
+    /** Whether a drag started by [scrubTo] has not been landed or abandoned yet. */
+    val isScrubbing: Boolean
     fun setVolume(level: Float)
 
     /**
@@ -490,6 +503,19 @@ class PlayerController(context: Context) : SessionPlayer {
     /** A starting film paused at its first frame until the house lights release the picture. */
     private val pictureHold = PictureHold()
     private var pendingPictureHoldCap: Runnable? = null
+
+    /**
+     * A phone drag in scrubbing mode, from its first [scrubTo] to its landing or
+     * abandonment. Bound to the instance it enabled scrubbing mode on: the mode is a
+     * property of that player, and a landing must never seek a different one.
+     */
+    private class ScrubRun(val player: ExoPlayer, val startedAtMs: Long, val toleranceBefore: Double) {
+        val track = ScrubTrack()
+    }
+
+    private var scrubRun: ScrubRun? = null
+    private val scrubHold = Runnable { holdScrub() }
+    private val scrubSafety = Runnable { endScrub(land = true, how = "safety") }
     private var playbackFailureListener: ((PlaybackException, ReceiverFaultDetail) -> Unit)? = null
     private var externalSubtitleDroppedListener: ((String, ExternalSubtitle) -> Unit)? = null
     private var silentAudioListener: ((String, String) -> Unit)? = null
@@ -671,6 +697,14 @@ class PlayerController(context: Context) : SessionPlayer {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // Every branch below re-prepares, rebuilds or stops this player, and a failed
+            // player is IDLE: a drag has nothing left to land on. Each of them resumes from
+            // this player's position, which mid-drag can be a keyframe well short of the
+            // target, so the target is made the position first.
+            abandonScrubAt("error")?.let { dragMs ->
+                lastGoodPositionMs = dragMs
+                player?.seekTo(dragMs)
+            }
             // A text file must never cost the user the film. Checked before every
             // other branch so a failed sideloaded subtitle cannot reach the
             // startup callback, the recovery budget, or the diagnosis UI.
@@ -737,10 +771,11 @@ class PlayerController(context: Context) : SessionPlayer {
         // A recovery queued for the item that still contained the failed subtitle
         // must not re-prepare over this one-shot rollback.
         pendingRecovery.cancel()
+        val dragMs = abandonScrubAt("reprepared")
         subtitleFailureState.recordRollback()
         subtitleDropped = true
         currentSubtitle = null
-        val resumePositionMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+        val resumePositionMs = (dragMs ?: exo.currentPosition).coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = exo.playWhenReady
         savedPositionMs = resumePositionMs
@@ -990,6 +1025,13 @@ class PlayerController(context: Context) : SessionPlayer {
             initializationDurationMs: Long,
         ) {
             instrumentation.decoderName = decoderName
+        }
+
+        override fun onDroppedSeeksWhileScrubbing(
+            eventTime: AnalyticsListener.EventTime,
+            droppedSeeks: Int,
+        ) {
+            FlickLog.i("player", "scrub dropped=$droppedSeeks")
         }
     }
 
@@ -1484,7 +1526,8 @@ class PlayerController(context: Context) : SessionPlayer {
                 generation = generation,
                 nowMs = SystemClock.elapsedRealtime(),
                 renderingExpected = framesExpectedFrom(
-                    playWhenReady = exo.playWhenReady,
+                    // A drag suppresses playback, so only its scrub frames reach the panel.
+                    playWhenReady = exo.playWhenReady && scrubRun == null,
                     playbackState = exo.playbackState,
                     provenOnce = turnWatchdog.hasRenderedAFrame,
                 ),
@@ -1532,7 +1575,8 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelSubtitleReloadDeadline()
         // A recovery queued against the old item would re-prepare on top of this.
         pendingRecovery.cancel()
-        val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+        val dragMs = abandonScrubAt("reprepared")
+        val resumeMs = (dragMs ?: exo.currentPosition).coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = exo.playWhenReady
         savedPositionMs = resumeMs
@@ -1599,7 +1643,8 @@ class PlayerController(context: Context) : SessionPlayer {
         val url = currentUrl ?: return
         cancelSubtitleReloadDeadline()
         cancelTurnDeadline()
-        val resumeMs = previous.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+        val dragMs = abandonScrubAt("reprepared")
+        val resumeMs = (dragMs ?: previous.currentPosition).coerceAtLeast(0L).takeIf { it > 0L }
             ?: savedPositionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = previous.playWhenReady
         savedPositionMs = resumeMs
@@ -1876,7 +1921,7 @@ class PlayerController(context: Context) : SessionPlayer {
         val delayMs = RECOVERY_BACKOFF_MS[(attempt - 1).coerceIn(0, RECOVERY_BACKOFF_MS.lastIndex)]
         pendingRecovery.post(delayMs) {
             val exo = player ?: return@post
-            exo.seekTo(lastGoodPositionMs)
+            exo.seekTo(abandonScrubAt("reprepared") ?: lastGoodPositionMs)
             exo.prepare()
             // A recovery inside the picture hold keeps the film at its frame for the release.
             exo.playWhenReady = pictureHold.gate(true)
@@ -2155,6 +2200,7 @@ class PlayerController(context: Context) : SessionPlayer {
         cancelTurnDeadline()
         pendingTurnFallback.cancel()
         pendingAudioSinkRebuild.cancel()
+        val dragMs = abandonScrubAt("stopped")
         val exo = player ?: run {
             releaseMediaSession()
             return
@@ -2166,7 +2212,7 @@ class PlayerController(context: Context) : SessionPlayer {
         // decoder release doesn't leave currentRebufferStartMs non-zero and
         // corrupt cumulativeRebufferMs with backgrounded wall-clock time.
         closeRebufferWindow()
-        savedPositionMs = exo.currentPosition.coerceAtLeast(0L)
+        savedPositionMs = (dragMs ?: exo.currentPosition).coerceAtLeast(0L)
         pendingPlayWhenReady = heldWanted ?: exo.playWhenReady
         releaseMediaSession()
         exo.removeListener(playerListener)
@@ -2186,6 +2232,7 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingTurnFallback.cancel()
         pendingAudioSinkRebuild.cancel()
         pendingRecovery.cancel()
+        abandonScrub("stopped")
         releaseMediaSession()
         val exo = player ?: return
         // Close any in-progress rebuffer window before tearing down.
@@ -2202,6 +2249,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Start a fresh direct-play session against [url], resetting all metrics. */
     fun play(url: String) {
+        abandonScrub("stopped")
         startupCallbacks = null
         firstFrameGate.clear()
         clearPictureHold()
@@ -2253,6 +2301,7 @@ class PlayerController(context: Context) : SessionPlayer {
         onRotationRePrepare: () -> Unit,
     ) {
         val startedAtMs = SystemClock.uptimeMillis()
+        abandonScrub("stopped")
         firstFrameGate.arm(mediaId)
         startupCallbacks = StartupCallbacks(mediaId, onFirstFrame, onError, onRotationRePrepare)
         cancelPictureHoldCap()
@@ -2339,6 +2388,7 @@ class PlayerController(context: Context) : SessionPlayer {
     ): Boolean {
         cancelSubtitleReloadDeadline()
         val exo = player ?: return false
+        val dragMs = abandonScrubAt("reprepared")
         startupCallbacks = null
         firstFrameGate.clear()
         // A recovery queued against the old media would seek and re-prepare on
@@ -2346,7 +2396,7 @@ class PlayerController(context: Context) : SessionPlayer {
         pendingRecovery.cancel()
         // The live player's own clock, not the frame's: the phone's startMs is the
         // TV's confirmed position sampled at 10 Hz and already a tick stale.
-        val resumeMs = exo.currentPosition.coerceAtLeast(0L).takeIf { it > 0L }
+        val resumeMs = (dragMs ?: exo.currentPosition).coerceAtLeast(0L).takeIf { it > 0L }
             ?: positionMs.coerceAtLeast(0L)
         val resumePlayWhenReady = exo.playWhenReady
         currentUrl = url
@@ -2408,6 +2458,7 @@ class PlayerController(context: Context) : SessionPlayer {
     }
 
     override fun stop() {
+        abandonScrub("stopped")
         clearStartupListener()
         clearPictureHold()
         pendingPlayWhenReady = false
@@ -2445,16 +2496,19 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** Seek relative to the current position, clamped to [0, duration). Main-thread only. */
     override fun seekBy(deltaMs: Long) {
+        // A step during a phone drag is taken from the drag's newest target.
+        val fromMs = abandonScrubAt("superseded")
         val exo = player ?: return
         if (currentUrl == null) return
         val duration = exo.duration
-        val target = (exo.currentPosition + deltaMs)
+        val target = ((fromMs ?: exo.currentPosition) + deltaMs)
             .coerceAtLeast(0L)
             .let { if (duration != C.TIME_UNSET) it.coerceAtMost((duration - 1_000L).coerceAtLeast(0L)) else it }
         exo.seekTo(target)
     }
 
     fun togglePlayPause() {
+        landScrub()
         val exo = player ?: return
         val playing = if (pictureHold.holding) pictureHold.wanted else exo.playWhenReady
         exo.playWhenReady = pictureHold.request(!playing)
@@ -2468,6 +2522,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** WS `play`: resume only if a session is loaded (never re-prepares from Idle). */
     override fun resume() {
+        landScrub()
         if (currentUrl == null) return
         val play = pictureHold.request(true)
         player?.let { it.playWhenReady = play }
@@ -2475,6 +2530,7 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** WS `pause`. */
     override fun pause() {
+        landScrub()
         val play = pictureHold.request(false)
         player?.let { it.playWhenReady = play }
     }
@@ -2543,14 +2599,124 @@ class PlayerController(context: Context) : SessionPlayer {
 
     /** WS `seek`: absolute (optimistic target), clamped to [0, duration). */
     override fun seekTo(posMs: Long) {
+        abandonScrub("superseded")
+        val exo = player ?: return
+        if (currentUrl == null) return
+        exo.seekTo(seekTarget(posMs, exo.duration))
+    }
+
+    private fun seekTarget(posMs: Long, duration: Long): Long = posMs.coerceAtLeast(0L).let {
+        if (duration != C.TIME_UNSET) it.coerceAtMost((duration - 1_000L).coerceAtLeast(0L)) else it
+    }
+
+    override val isScrubbing: Boolean get() = scrubRun != null
+
+    /**
+     * Seeks while the phone's bar is dragged. Scrubbing mode keeps only the newest
+     * queued seek and starts it once the previous one has a frame on screen, so the TV
+     * shows pictures during the drag instead of resetting the decoder twenty times a
+     * second. Main-thread only.
+     */
+    override fun scrubTo(posMs: Long) {
         val exo = player ?: return
         if (currentUrl == null) return
         val duration = exo.duration
-        val target = posMs.coerceAtLeast(0L).let {
-            if (duration != C.TIME_UNSET) it.coerceAtMost((duration - 1_000L).coerceAtLeast(0L)) else it
+        val tolerance = ScrubPolicy.toleranceBeforeFraction(duration)
+        if (tolerance == null) {
+            seekTo(posMs)
+            return
+        }
+        if (scrubRun?.player?.let { it !== exo } == true) abandonScrub("superseded")
+        val run = scrubRun ?: ScrubRun(exo, SystemClock.uptimeMillis(), tolerance).also {
+            exo.setScrubbingModeParameters(scrubbingParameters(tolerance))
+            exo.setScrubbingModeEnabled(true)
+            scrubRun = it
+            FlickLog.i("player", "scrub start fromMs=${exo.currentPosition} durationMs=$duration")
+        }
+        val target = seekTarget(posMs, duration)
+        when (run.track.onScrub(target)) {
+            ScrubStep.NONE -> return
+            ScrubStep.SEEK -> Unit
+            ScrubStep.RESTORE_TOLERANCE_THEN_SEEK ->
+                exo.setScrubbingModeParameters(scrubbingParameters(run.toleranceBefore))
         }
         exo.seekTo(target)
+        recoveryHandler.removeCallbacks(scrubHold)
+        recoveryHandler.removeCallbacks(scrubSafety)
+        recoveryHandler.postDelayed(scrubHold, ScrubPolicy.QUIET_MS)
+        recoveryHandler.postDelayed(scrubSafety, ScrubPolicy.SAFETY_MS)
     }
+
+    /**
+     * The newest drag target, standing in for `currentPosition` while a drag is on: that
+     * reads the masked target while seeks are queued, then the keyframe up to
+     * [ScrubPolicy.TOLERANCE_BEFORE_MS] before it once the last one has run.
+     */
+    private fun scrubPositionMs(): Long? =
+        scrubRun?.takeIf { it.player === player }?.track?.lastTargetMs
+            ?.takeIf { it != ScrubTrack.NO_TARGET }
+
+    /**
+     * A finger resting on the bar: show the exact frame, but stay in the mode so playback
+     * stays suppressed until the phone's end-of-drag verb.
+     */
+    private fun holdScrub() {
+        val run = scrubRun ?: return
+        if (run.player !== player) return
+        val target = run.track.onHold() ?: return
+        run.player.setScrubbingModeParameters(scrubbingParameters(toleranceBefore = null))
+        run.player.seekTo(target)
+        FlickLog.i("player", "scrub hold targetMs=$target")
+    }
+
+    override fun landScrub() = endScrub(land = true, how = "landed")
+
+    /** End a drag without its landing seek: something else now decides the position. */
+    private fun abandonScrub(how: String) = endScrub(land = false, how = how)
+
+    /** [abandonScrub], returning the drag's newest target for the caller's own handoff. */
+    private fun abandonScrubAt(how: String): Long? = scrubPositionMs().also { abandonScrub(how) }
+
+    private fun endScrub(land: Boolean, how: String) {
+        val run = scrubRun ?: return
+        scrubRun = null
+        recoveryHandler.removeCallbacks(scrubHold)
+        recoveryHandler.removeCallbacks(scrubSafety)
+        val exo = run.player.takeIf { it === player }
+        if (exo != null) {
+            val landingMs = if (land) run.track.landingSeekMs() else null
+            if (landingMs != null) {
+                // Media3 executes the seek still queued when the mode is left before it
+                // leaves, so the landing goes after the exact parameters and before the
+                // disable.
+                exo.setScrubbingModeParameters(scrubbingParameters(toleranceBefore = null))
+                exo.seekTo(landingMs)
+            }
+            exo.setScrubbingModeEnabled(false)
+        }
+        FlickLog.i(
+            "player",
+            "scrub end seeks=${run.track.seeks} heldMs=${SystemClock.uptimeMillis() - run.startedAtMs} " +
+                "targetMs=${run.track.lastTargetMs} how=$how",
+        )
+    }
+
+    /**
+     * Audio stays enabled, unlike Media3's default: re-enabling a disabled track on
+     * the way out forces a reload unless its queue can seek within its buffer, which
+     * would make the landing slow.
+     *
+     * The decode-only flag and the codec rate boost are off: neither is proven on the
+     * MediaTek Dolby Vision decoder, keyframe-tolerant seeks leave them little to speed
+     * up, and the boost ends the moment the mode is left anyway.
+     */
+    private fun scrubbingParameters(toleranceBefore: Double?): ScrubbingModeParameters =
+        ScrubbingModeParameters.Builder()
+            .setDisabledTrackTypes(emptySet<Int>())
+            .setFractionalSeekTolerance(toleranceBefore, toleranceBefore?.let { 0.0 })
+            .setUseDecodeOnlyFlag(false)
+            .setShouldIncreaseCodecOperatingRate(false)
+            .build()
 
     /** WS `setVolume`: 0..1. Persisted so it survives player rebuilds. */
     override fun setVolume(level: Float) {
@@ -2646,14 +2812,20 @@ class PlayerController(context: Context) : SessionPlayer {
      */
     override fun readPlaybackState(): PlaybackFrame {
         val exo = player
-        val pos = (exo?.currentPosition ?: 0L).coerceAtLeast(0L)
+        val pos = (scrubPositionMs() ?: exo?.currentPosition ?: 0L).coerceAtLeast(0L)
         val duration = exo?.duration?.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
         val buffered = exo?.bufferedPosition?.takeIf { it != C.TIME_UNSET } ?: 0L
         // A film held at its first frame reads as the viewer's intent, not as paused: the
         // remote's toggle and the phone both act on this frame, and a held film is about to
         // play unless the viewer paused it during the card.
         val held = pictureHold.holding && exo?.playbackState == Player.STATE_READY
-        val playing = if (held) pictureHold.wanted else exo?.isPlaying ?: false
+        // Scrubbing mode suppresses playback for the whole drag; reporting that as a pause
+        // would flip the phone's play button and slow the feed under the viewer's finger.
+        val playing = when {
+            held -> pictureHold.wanted
+            scrubRun != null && exo != null -> if (pictureHold.holding) pictureHold.wanted else exo.playWhenReady
+            else -> exo?.isPlaying ?: false
+        }
         val volume = exo?.volume ?: lastVolume
         val phase = when {
             instrumentation.errorMessage != null -> PlaybackPhase.Error

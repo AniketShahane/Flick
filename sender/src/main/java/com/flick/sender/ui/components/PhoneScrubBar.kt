@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,6 +79,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.flick.sender.R
+import com.flick.sender.net.SeekPolicy
 import com.flick.sender.ui.Format
 import com.flick.sender.ui.theme.FlickCorners
 import com.flick.sender.ui.theme.FlickGradients
@@ -144,6 +146,7 @@ fun PhoneScrubBar(
     var dragging by remember { mutableStateOf(false) }
     var widthPx by remember { mutableIntStateOf(1) }
     val endGate = remember { ScrubEndGate() }
+    val currentTargetFraction by rememberUpdatedState(targetFraction)
 
     // Track/thumb growth and the detent ripple live in Animatables rather than
     // animateDpAsState so the swell plays entirely in the draw phase; recomposing
@@ -231,6 +234,9 @@ fun PhoneScrubBar(
                 // The mock's grab row is 36dp; the node is padded to a legal touch
                 // target because the instrumentation contract asserts ≥48dp here.
                 .height(HitHeight)
+                // The row runs nearly edge to edge, so a drag begun near either end of the
+                // film starts inside the system Back gesture's zone and would be taken by it.
+                .systemGestureExclusion()
                 .onSizeChanged { widthPx = it.width }
                 .semantics {
                     // Read through the leaf lambda rather than pulling the live
@@ -256,10 +262,20 @@ fun PhoneScrubBar(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val w = { size.width.toFloat().coerceAtLeast(1f) }
-                        // 36 spatial notches across the bar. The tick the hand feels is
-                        // emitted by PlaybackSession on its own boundary; the bar owns
-                        // only the ripple, so the two must not both drive the vibrator.
+                        // The tick the hand feels is emitted by PlaybackSession on the
+                        // same notches; the bar owns only the ripple, so the two must not
+                        // both drive the vibrator.
                         var detent = -1
+                        val grabbedAt = currentTargetFraction().coerceIn(0f, 1f)
+                        val thumbGrab = ScrubGrab.isThumbGrab(
+                            down.position.x,
+                            grabbedAt * w(),
+                            ThumbGrabRadius.toPx(),
+                        )
+                        // Set once a thumb grab has travelled past the touch slop; until
+                        // then the film stays where it is, and a grab that never moves
+                        // sends nothing.
+                        var anchorX = Float.NaN
                         endGate.start()
                         if (reservePreviewSpace) {
                             // The requester is attached to the full component, including
@@ -271,9 +287,13 @@ fun PhoneScrubBar(
                         scope.launch { swell.animateTo(1f, swellSpec) }
                         try {
                             onScrubStart()
-                            val first = (down.position.x / w()).coerceIn(0f, 1f)
-                            detent = detentIndex(first)
-                            onScrub(first)
+                            if (thumbGrab) {
+                                detent = detentIndex(grabbedAt)
+                            } else {
+                                val first = (down.position.x / w()).coerceIn(0f, 1f)
+                                detent = detentIndex(first)
+                                onScrub(first)
+                            }
                             down.consume()
                             while (true) {
                                 val event = awaitPointerEvent()
@@ -284,7 +304,20 @@ fun PhoneScrubBar(
                                     change.consume()
                                     break
                                 }
-                                val fraction = (change.position.x / w()).coerceIn(0f, 1f)
+                                val x = change.position.x
+                                if (thumbGrab && anchorX.isNaN()) {
+                                    val slop = viewConfiguration.touchSlop
+                                    if (abs(x - down.position.x) < slop) {
+                                        change.consume()
+                                        continue
+                                    }
+                                    anchorX = ScrubGrab.anchorX(down.position.x, x, slop, w())
+                                }
+                                val fraction = if (thumbGrab) {
+                                    ScrubGrab.fraction(x, anchorX, grabbedAt, w())
+                                } else {
+                                    (x / w()).coerceIn(0f, 1f)
+                                }
                                 val crossed = detentIndex(fraction)
                                 if (crossed != detent) {
                                     detent = crossed
@@ -709,9 +742,10 @@ private class DetentRipple {
 }
 
 private fun detentIndex(fraction: Float): Int =
-    (fraction.coerceIn(0f, 1f) * DetentCount).toInt().coerceAtMost(DetentCount - 1)
+    (fraction.coerceIn(0f, 1f) * SeekPolicy.SCRUB_DETENTS).toInt().coerceAtMost(SeekPolicy.SCRUB_DETENTS - 1)
 
-private const val DetentCount = 36
+/** How near the thumb a touch counts as taking hold of it rather than pointing elsewhere. */
+private val ThumbGrabRadius = 24.dp
 
 /** The echo is noise below this much of the timeline; above it, it is information. */
 private const val GhostThreshold = 0.004f

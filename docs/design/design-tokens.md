@@ -278,8 +278,9 @@ These stay tweens, each because nothing can interrupt it:
 **Cross-device rule:** one event → one motion. The four real protocol events (cast
 committed, handshake advancing, first frame confirmed, play/pause toggled) each produce a
 *paired* motion — an outbound gesture on the phone, an inbound settle on the TV. **Haptics
-are the phone's half of the motion:** tick detents while dragging (every 10 s of film
-crossed), firm snap on release, single confirm pulse on play/pause, soft ripple on grip.
+are the phone's half of the motion:** tick detents while dragging (one per notch of the bar's
+36, at most one per 45 ms), an edge knock at either end, firm snap on release (none when the
+head never moved), single confirm pulse on play/pause, soft ripple on grip.
 
 **Restraint.** There is no ambient decoration anywhere except the TV idle screensaver,
 whose entire job is ambience. Every measured number SNAPS between values — a tweened
@@ -324,8 +325,9 @@ The bar is **one session clock drawn twice**. Contract:
   network-confirmed**—trails. Cyan is the live link/sync shimmer, never either position.
 - **Healthy:** ghost and solid are superimposed — *sync is invisible when healthy* (Beat 1).
 - **Grab:** track swells, thumb ring blooms, frame-preview pops (`flickSettle`), TV wakes chrome
-  (`chromeFade` in 200ms), soft ripple haptic; playback keeps rolling until release (Beat 2).
-- **Drag:** TV playhead follows the thumb live (~35ms behind); detent haptic every 10s of film;
+  (`chromeFade` in 200ms), soft ripple haptic; playback keeps rolling until the thumb moves (Beat 2).
+- **Drag:** TV shows the keyframe at or before the thumb as it moves and the exact frame when the
+  finger rests, then lands exactly on release; detent haptic per bar notch;
   timecodes track in lockstep, tabular (Beat 3).
 - **Latency grace (the intellectual core):** on a Wi-Fi hiccup the phone's solid head **leads**;
   the TV shows the **ghost ○ at last-confirmed** trailing the target with a cyan "SYNCING…"

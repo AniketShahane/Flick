@@ -510,6 +510,7 @@ internal class RecordingPlayer : SessionPlayer {
     ) {
         instance++
         startups++
+        isScrubbing = false
         lastStartupPositionMs = startMs
         lastStartupSubtitle = subtitle
         lastStartupMediaId = mediaId
@@ -526,6 +527,7 @@ internal class RecordingPlayer : SessionPlayer {
     ): Boolean {
         if (!live) return false
         reloads++
+        isScrubbing = false
         lastReloadUrl = url
         lastReloadPositionMs = positionMs
         lastReloadMediaId = mediaId
@@ -541,13 +543,38 @@ internal class RecordingPlayer : SessionPlayer {
 
     override fun stop() {
         stops++
+        isScrubbing = false
         clearStartupListener()
     }
 
-    override fun resume() = Unit
-    override fun pause() = Unit
-    override fun seekTo(posMs: Long) = Unit
-    override fun seekBy(deltaMs: Long) = Unit
+    /** Transport calls in order, spelled `resume`, `pause`, `landScrub`, `seekTo:N`, `scrubTo:N`, `seekBy:N`. */
+    val transport = mutableListOf<String>()
+
+    /**
+     * Mirrors the real controller: a scrub starts a drag, and a landing, any other seek,
+     * a startup, a reload or a stop ends it.
+     */
+    override var isScrubbing = false
+        private set
+
+    override fun resume() { transport += "resume" }
+    override fun pause() { transport += "pause" }
+    override fun seekTo(posMs: Long) {
+        isScrubbing = false
+        transport += "seekTo:$posMs"
+    }
+    override fun seekBy(deltaMs: Long) {
+        isScrubbing = false
+        transport += "seekBy:$deltaMs"
+    }
+    override fun scrubTo(posMs: Long) {
+        isScrubbing = true
+        transport += "scrubTo:$posMs"
+    }
+    override fun landScrub() {
+        isScrubbing = false
+        transport += "landScrub"
+    }
     override fun setVolume(level: Float) = Unit
 
     /** Records the quarter turns the session forwarded, in order. */
