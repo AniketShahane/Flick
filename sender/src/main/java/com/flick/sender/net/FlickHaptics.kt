@@ -6,13 +6,11 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 
-/** What the hand feels — the phone's half of the motion (design §6 / Part 4). */
-enum class HapticCue { GRIP, DETENT, SNAP, CONFIRM }
-
 /**
  * Wraps the platform vibrator so the scrub gesture can speak back: soft ripple on
- * grip, a tick per 10s-of-film detent, a firm snap on release, a single confirm
- * pulse on play/pause.
+ * grip, a tick per notch of the bar ([SeekPolicy.SCRUB_DETENTS], rate-limited by
+ * [ScrubFeel]), a firmer knock where the drag meets either end, a firm snap on release,
+ * a single confirm pulse on play/pause.
  */
 class FlickHaptics(context: Context) {
 
@@ -32,6 +30,7 @@ class FlickHaptics(context: Context) {
         val (durationMs, amplitude) = when (cue) {
             HapticCue.GRIP -> 12L to 90
             HapticCue.DETENT -> 8L to 60
+            HapticCue.EDGE -> 14L to 170
             HapticCue.SNAP -> 22L to 200
             HapticCue.CONFIRM -> 16L to 140
         }

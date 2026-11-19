@@ -4,8 +4,9 @@ import com.flick.sender.model.PlaybackPhase
 import kotlin.math.abs
 
 /**
- * The two seek decisions the session makes, as arithmetic: where a ±10s tap lands, and
- * what one TV `state` frame settles about a seek the phone is still waiting on.
+ * The seek decisions the session makes, as arithmetic: where a ±10s tap or a drag lands,
+ * what letting go of a drag owes the TV, and what one TV `state` frame settles about a
+ * seek the phone is still waiting on.
  *
  * They live here rather than inline in [PlaybackSession] because that class reads
  * `SystemClock` and builds `org.json` frames, neither of which exists in a plain JVM
@@ -50,6 +51,21 @@ internal object SeekPolicy {
      */
     const val SEEK_ABANDON_MS = 45_000L
 
+    private const val SCRUB_END_GUARD_MAX_MS = 10_000L
+    private const val SCRUB_END_GUARD_MIN_MS = 1_000L
+
+    /**
+     * How recently a drag's last seek must have left for a release that sends nothing new
+     * to wait on the TV landing it.
+     *
+     * While the finger is held still the TV lands that seek exactly and keeps playback
+     * held; once the release marker frees it, it plays on from there, so a frame a second
+     * later reports a position the held target can no longer match and the head would sit
+     * frozen until [SEEK_DEADLINE_MS]. A held seek has long since landed, so the head
+     * simply follows the TV.
+     */
+    const val RELEASE_FRESH_MS = 1_000L
+
     /**
      * Where a ±10s tap lands, and — applied once per tap — where a whole run of them does.
      *
@@ -65,16 +81,105 @@ internal object SeekPolicy {
     }
 
     /**
+     * How far short of the end a dragged landing stops.
+     *
+     * A drag that reaches the right edge would otherwise seek to the duration itself: the
+     * TV plays its last second, reports ENDED, shows "Finished", and the phone drops the
+     * resume point — an overshoot of the thumb ends the film. Ten seconds on a feature and
+     * 5 % of a shorter clip, so the bar still covers almost all of it — but never under
+     * [SCRUB_END_GUARD_MIN_MS], the margin the TV clamps every seek to: a landing the TV
+     * moves would never be reported back, and the head would wait out [SEEK_DEADLINE_MS]
+     * for it. Never more than the clip itself, so the furthest landing is never negative.
+     * The ±10s buttons are not guarded: walking to the end on purpose is still allowed.
+     */
+    fun scrubEndGuardMs(durationMs: Long): Long = if (durationMs > 0L) {
+        maxOf(SCRUB_END_GUARD_MIN_MS, minOf(SCRUB_END_GUARD_MAX_MS, durationMs * 5L / 100L))
+            .coerceAtMost(durationMs)
+    } else {
+        0L
+    }
+
+    /** The furthest a dragged landing may go; only meaningful with a known duration. */
+    fun scrubMaxMs(durationMs: Long): Long = (durationMs - scrubEndGuardMs(durationMs)).coerceAtLeast(0L)
+
+    /** Where a drag at [fraction] of the bar lands. */
+    fun scrubTarget(fraction: Float, durationMs: Long): Long =
+        (fraction.coerceIn(0f, 1f) * durationMs).toLong().coerceIn(0L, scrubMaxMs(durationMs))
+
+    /**
      * Where an absolute seek lands — a scrubber that reports a landing and nothing before
      * it, which is what the phone's media notification gives the platform.
      *
-     * Clamped on the same terms as [skipTarget]: with an unknown duration the receiver
-     * clamps the high end against the real one, so guessing here would only be wrong.
+     * Guarded at the end exactly as a drag is. With an unknown duration only the low end
+     * is clamped, as in [skipTarget]: the receiver clamps the high end against the real
+     * one, so guessing here would only be wrong.
      */
     fun seekTarget(positionMs: Long, durationMs: Long): Long = if (durationMs > 0L) {
-        positionMs.coerceIn(0L, durationMs)
+        positionMs.coerceIn(0L, scrubMaxMs(durationMs))
     } else {
         positionMs.coerceAtLeast(0L)
+    }
+
+    /**
+     * The notches a drag is felt in. One per 10 s of film was ~720 ticks across a two-hour
+     * bar — a continuous buzz — and matched nothing drawn; the bar's ripple marks these.
+     */
+    const val SCRUB_DETENTS = 36
+
+    /** Which notch [targetMs] sits in, 0 until [SCRUB_DETENTS] − 1. */
+    fun detentOf(targetMs: Long, durationMs: Long): Int {
+        if (durationMs <= 0L) return 0
+        return (targetMs.coerceAtLeast(0L) * SCRUB_DETENTS / durationMs).toInt().coerceIn(0, SCRUB_DETENTS - 1)
+    }
+
+    /**
+     * What letting go of a drag owes the TV: whether to send the final seek, whether to
+     * send the end-of-drag marker, and whether the head should then wait for the TV to
+     * report the landing (rather than follow the TV straight away).
+     */
+    data class ScrubRelease(val seek: Boolean, val marker: Boolean, val awaitTv: Boolean) {
+        companion object {
+            val NONE = ScrubRelease(seek = false, marker = false, awaitTv = false)
+            val SEEK_AND_MARKER = ScrubRelease(seek = true, marker = true, awaitTv = true)
+            val MARKER_AWAITING = ScrubRelease(seek = false, marker = true, awaitTv = true)
+            val MARKER_FOLLOWING = ScrubRelease(seek = false, marker = true, awaitTv = false)
+        }
+    }
+
+    /**
+     * [lastSentMs] is null when no seek left during the gesture; [lastSentAgoMs] is how
+     * long ago it left, and is ignored without one. [seekOwed] is a ±10s tap run the touch
+     * cancelled before its seek left: the head already shows it, so the TV is owed it.
+     *
+     * A touch that never moved the head owes nothing: a seek to where the TV already is
+     * still costs it a decoder flush. Anything else ends with the play/pause verb the
+     * viewer last chose, because that is the only end-of-drag signal the frozen protocol
+     * has — the TV leaves its scrubbing mode on it instead of waiting out a quiet period.
+     */
+    fun scrubRelease(
+        originMs: Long,
+        lastSentMs: Long?,
+        lastSentAgoMs: Long,
+        targetMs: Long,
+        seekOwed: Boolean,
+    ): ScrubRelease = when {
+        lastSentMs == null && targetMs == originMs && !seekOwed -> ScrubRelease.NONE
+        lastSentMs == targetMs ->
+            if (lastSentAgoMs < RELEASE_FRESH_MS) ScrubRelease.MARKER_AWAITING else ScrubRelease.MARKER_FOLLOWING
+        else -> ScrubRelease.SEEK_AND_MARKER
+    }
+
+    /**
+     * The viewer's play intent after a TV frame in [phase].
+     *
+     * Only a settled phase is evidence. The TV's `playing` field is `isPlaying`, false
+     * while it buffers, so reading intent off it would make a drag that began during a
+     * rebuffer end with `pause` and stop the film.
+     */
+    fun intendsPlayingAfter(phase: PlaybackPhase, intendsPlaying: Boolean): Boolean = when (phase) {
+        PlaybackPhase.PLAYING -> true
+        PlaybackPhase.PAUSED -> false
+        else -> intendsPlaying
     }
 
     /** What a `state` frame settles about an outstanding seek. */
