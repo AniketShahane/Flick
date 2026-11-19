@@ -71,6 +71,17 @@ once-a-second rhythm, that a cast still re-attaches after a Wi-Fi blip now that 
 stopped behind a screen-off cast, and that the Connect screen drops a TV that left while Flick
 was in the background.
 
+For the TV library (the `/library` socket, the phone's catalog and ready window, the TV's
+library screens and Up next), the gate run on 2026-11-19 on the branch with `main` merged in
+(so including the seeking change) was `:sender:testDebugUnitTest :receiver:testDebugUnitTest`
+with both debug and both **release** APKs assembled: **1,391 sender and 1,285 receiver JVM
+tests, 0 failures and 0 errors**, and `lintVitalRelease` clean on both. **None of it has run on
+hardware.** What only the devices can settle: that the phone's ready window holds the library
+after a cast with the phone pocketed (and what Android does when battery optimisation is on),
+that Up next appears on a real episode end and its autoplay starts the next cast, how the
+library screens feel on the D-pad at the TV's real frame rate, and how long a full catalog of
+the phone's ~1,000 videos takes to arrive.
+
 ### Connected instrumentation and TV smoke
 
 On a connected, awake Google TV Streamer running API 34 at 1920×1080, the receiver Compose
