@@ -36,6 +36,7 @@ import com.flick.receiver.R
 import com.flick.receiver.library.LibraryEpisodeInfo
 import com.flick.receiver.library.LibraryHdr
 import com.flick.receiver.library.LibraryItem
+import com.flick.receiver.library.LibraryLink
 import com.flick.receiver.library.LibrarySeasonKey
 import com.flick.receiver.library.LibraryShelving
 import com.flick.receiver.library.LibraryShow
@@ -61,8 +62,10 @@ internal fun ShowPage(show: LibraryShow, state: LibraryState, pane: PaneContext)
     val episodes = show.episodes[season].orEmpty()
     val seasons by ui.hub.seasons.collectAsState()
     val details by ui.hub.details.collectAsState()
-    LaunchedEffect(show.key, season) { if (hasSeasonData(show.key)) ui.hub.wantSeason(show.key, season) }
-    pick?.let { LaunchedEffect(it.id) { ui.hub.wantDetail(it.id) } }
+    // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
+    val connected = state.link == LibraryLink.CONNECTED
+    LaunchedEffect(show.key, season, connected) { if (hasSeasonData(show.key)) ui.hub.wantSeason(show.key, season) }
+    pick?.let { LaunchedEffect(it.id, connected) { ui.hub.wantDetail(it.id) } }
     val info = remember(seasons, show.key, season) {
         seasons[LibrarySeasonKey(show.key, season)]?.associateBy { it.episode }.orEmpty()
     }
@@ -200,13 +203,18 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = LibraryLayout.Gutter, end = LibraryLayout.Gutter, top = LibraryLayout.RingRoom),
+            .padding(end = LibraryLayout.Gutter, top = LibraryLayout.RingRoom),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        FocusBeaconHost {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                show.seasons.forEach { number ->
+        // Lazy and scrolling, so a long-running show's tabs past the screen edge keep their width.
+        FocusBeaconHost(Modifier.weight(1f, fill = false)) {
+            LazyRow(
+                state = pane.memory.row("seasons"),
+                contentPadding = PaddingValues(start = LibraryLayout.Gutter, end = LibraryLayout.RingRoom),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(show.seasons, key = { it }) { number ->
                     val on = number == season
                     FlickTvButton(
                         onClick = { pane.memory.season = number },

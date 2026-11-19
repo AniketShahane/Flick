@@ -1,5 +1,6 @@
 package com.flick.sender.library
 
+import com.flick.sender.model.HdrType
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +16,93 @@ class LibraryLinkPolicyTest {
         assertEquals(listOf(2_000L, 5_000L, 15_000L, 60_000L, 60_000L), List(5) { backoff.next() })
         backoff.reset()
         assertEquals(2_000L, backoff.next())
+    }
+
+    @Test
+    fun onlyASocketThatStayedUpThirtySecondsResetsTheBackoff() {
+        val backoff = LibraryDialBackoff()
+        assertEquals(2_000L, backoff.next())
+        // A TV that accepts and then drops the socket keeps the phone climbing the steps.
+        backoff.socketEnded(29_999L)
+        assertEquals(5_000L, backoff.next())
+        backoff.socketEnded(0L)
+        assertEquals(15_000L, backoff.next())
+        backoff.socketEnded(30_000L)
+        assertEquals(2_000L, backoff.next())
+    }
+
+    @Test
+    fun detailAndSeasonAnswersAreFourInFlightAndTwentyPer10Seconds() {
+        val gate = RequestGate(4, 20, 10_000L)
+        repeat(4) { assertTrue(gate.tryBegin(it.toLong())) }
+        assertFalse(gate.tryBegin(10L))
+        gate.end()
+        assertTrue(gate.tryBegin(11L))
+        repeat(4) { gate.end() }
+        // Five begun so far; fifteen more fit in the window, four at a time.
+        repeat(15) {
+            assertTrue(gate.tryBegin(100L + it))
+            gate.end()
+        }
+        assertFalse(gate.tryBegin(200L))
+        // A refusal does not hold a slot.
+        assertTrue(gate.tryBegin(10_000L))
+        // An extra end never opens a fifth slot.
+        repeat(10) { gate.end() }
+        repeat(4) { assertTrue(gate.tryBegin(30_000L + it)) }
+        assertFalse(gate.tryBegin(30_010L))
+    }
+
+    @Test
+    fun aChangeDuringABuildOrABuildThatNeverFinishedLeavesTheCatalogStale() {
+        val freshness = CatalogFreshness()
+        assertTrue(freshness.dirty)
+        val first = freshness.buildStarting()
+        freshness.built(first)
+        assertFalse(freshness.dirty)
+
+        freshness.changed()
+        val during = freshness.buildStarting()
+        freshness.changed()
+        freshness.built(during)
+        assertTrue(freshness.dirty)
+
+        // Started and never kept: still stale.
+        freshness.buildStarting()
+        assertTrue(freshness.dirty)
+
+        val again = freshness.buildStarting()
+        freshness.built(again)
+        assertFalse(freshness.dirty)
+        // An older token handed back late does not undo a newer build.
+        freshness.built(during)
+        assertFalse(freshness.dirty)
+    }
+
+    @Test
+    fun theLiveCastsCastingIsSaidOnceOnEachNewSocket() {
+        val memory = CastingMemory()
+        assertNull(memory.afterDelivery())
+        memory.loaded("cast-a", "id-a")
+        // The socket that saw the loadMedia live needs nothing again.
+        assertNull(memory.afterDelivery())
+        memory.socketOpened()
+        assertEquals("cast-a" to "id-a", memory.afterDelivery())
+        assertNull(memory.afterDelivery())
+        memory.socketOpened()
+        memory.ended("cast-other")
+        assertEquals("cast-a" to "id-a", memory.afterDelivery())
+        memory.ended("cast-a")
+        memory.socketOpened()
+        assertNull(memory.afterDelivery())
+    }
+
+    @Test
+    fun aProbeThatFoundNoHdrIsNeverSentAsSdr() {
+        assertEquals(CatalogItem.Hdr.DOLBY_VISION, LibraryHdr.wire(HdrType.DOLBY_VISION))
+        assertEquals(CatalogItem.Hdr.HDR10, LibraryHdr.wire(HdrType.HDR10))
+        assertNull(LibraryHdr.wire(HdrType.NONE))
+        assertNull(LibraryHdr.wire(null))
     }
 
     @Test
@@ -46,11 +134,15 @@ class LibraryLinkPolicyTest {
     }
 
     @Test
-    fun backgroundStartsNeedVisibilityOrTheBatteryExemptionFromAndroid12() {
-        assertTrue(LibraryPlayPolicy.mayStartForegroundService(30, visible = false, batteryExempt = false))
-        assertFalse(LibraryPlayPolicy.mayStartForegroundService(31, visible = false, batteryExempt = false))
-        assertTrue(LibraryPlayPolicy.mayStartForegroundService(31, visible = true, batteryExempt = false))
-        assertTrue(LibraryPlayPolicy.mayStartForegroundService(35, visible = false, batteryExempt = true))
+    fun backgroundStartsNeedVisibilityTheBatteryExemptionOrAForegroundProcessFromAndroid12() {
+        fun may(sdk: Int, visible: Boolean = false, exempt: Boolean = false, process: Boolean = false) =
+            LibraryPlayPolicy.mayStartForegroundService(sdk, visible, exempt, process)
+        assertTrue(may(30))
+        assertFalse(may(31))
+        assertTrue(may(31, visible = true))
+        assertTrue(may(35, exempt = true))
+        // A process still holding the cast's foreground service.
+        assertTrue(may(35, process = true))
     }
 
     @Test

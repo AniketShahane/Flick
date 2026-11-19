@@ -12,6 +12,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
@@ -30,7 +31,7 @@ internal object TvSeasons {
     private const val TTL_MS = 7L * 24 * 60 * 60 * 1000
     private const val FAILURE_BACKOFF_MS = 10L * 60 * 1000
     private const val TIMEOUT_MS = 8_000
-    private const val MAX_ENTRIES = 200
+    private const val MAX_ENTRIES = 50
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = ConcurrentHashMap<String, Deferred<List<LibraryFrames.EpisodeInfo>?>>()
@@ -44,7 +45,8 @@ internal object TvSeasons {
         if (!available || keyRejected) return null
         val key = TvSeasonPolicy.cacheKey(tvId, season)
         val appContext = context.applicationContext
-        val stored = read(appContext, key)
+        // The first SharedPreferences read waits on the file, and callers are on Main.
+        val stored = withContext(Dispatchers.IO) { read(appContext, key) }
         if (stored != null && System.currentTimeMillis() - stored.atMs < TTL_MS) return stored.episodes
         if ((failedUntil[key] ?: 0L) > System.currentTimeMillis()) return stored?.episodes
         val lookup = inFlight.computeIfAbsent(key) {

@@ -92,6 +92,24 @@ class LibraryPoliciesTest {
     }
 
     @Test
+    fun theThirdIgnoredFrameBeforeAuthenticationIsAViolation() {
+        val machine = handshake()
+        assertEquals(LibraryHandshake.Step.Ignore, machine.onFrame(PhoneFrame.Unknown("later")))
+        assertEquals(LibraryHandshake.Step.Ignore, machine.onFrame(PhoneFrame.Unknown("later")))
+        assertEquals(LibraryHandshake.Step.Violation, machine.onFrame(PhoneFrame.Unknown("later")))
+        assertEquals(LibraryHandshake.Step.Violation, machine.onFrame(PhoneFrame.Hello(tvId, keyId, clientNonce)))
+    }
+
+    @Test
+    fun ignoredFramesBetweenHelloAndProofCountTowardsTheSameBudget() {
+        val machine = handshake()
+        machine.onFrame(PhoneFrame.Unknown("later"))
+        assertTrue(machine.onFrame(PhoneFrame.Hello(tvId, keyId, clientNonce)) is LibraryHandshake.Step.Reply)
+        assertEquals(LibraryHandshake.Step.Ignore, machine.onFrame(PhoneFrame.Unknown("later")))
+        assertEquals(LibraryHandshake.Step.Violation, machine.onFrame(PhoneFrame.Unknown("later")))
+    }
+
+    @Test
     fun aKeyTheStoreCannotDecodeIsDenied() {
         val machine = LibraryHandshake(tvId, "192.168.1.20", "192.168.1.30", 42421, { _, _ -> "not base64 !!" }, { serverNonce })
         machine.onFrame(PhoneFrame.Hello(tvId, keyId, clientNonce))
@@ -151,6 +169,22 @@ class LibraryPoliciesTest {
         assertEquals(LibraryPlay.Asking("item0000001"), machine.state)
         machine.onAck(REQ, true, null, 500L)
         assertEquals(LibraryPlay.Idle, machine.state)
+    }
+
+    @Test
+    fun aCastSeenWhileAskingSettlesQuietlyWhenTheAckNeverComes() {
+        val machine = LibraryPlayMachine()
+        machine.request("item0000001", true, REQ, 0L)
+        machine.onCastStarted()
+        machine.tick(8_000L)
+        assertEquals(LibraryPlay.Idle, machine.state)
+        assertNull(machine.deadlineAtMs)
+
+        val lost = LibraryPlayMachine()
+        lost.request("item0000001", true, REQ, 0L)
+        lost.onCastStarted()
+        lost.onLinkLost()
+        assertEquals(LibraryPlay.Idle, lost.state)
     }
 
     @Test
@@ -249,14 +283,60 @@ class LibraryPoliciesTest {
     }
 
     @Test
-    fun aDroppedRequestExpiresAndFreesItsSlot() {
+    fun aDroppedRequestExpiresFreesItsSlotAndWaitsBehindNewerOnes() {
         val queue = ThumbnailQueue(maxOutstanding = 1, expiryMs = 15_000L)
         queue.want("a", 0L)
         queue.pump(0L)
         queue.want("b", 1_000L)
         assertEquals(emptyList<String>(), queue.pump(14_999L))
         assertEquals(listOf("b"), queue.pump(15_000L))
+        // Still wanted: a late frame for it is accepted, and it is not asked again.
+        assertTrue(queue.onArrived("a"))
+        assertTrue(queue.onArrived("b"))
+        assertEquals(emptyList<String>(), queue.pump(15_000L))
+    }
+
+    @Test
+    fun anExpiredRequestIsAskedAgainUpToItsAttemptLimit() {
+        val queue = ThumbnailQueue(maxOutstanding = 1, expiryMs = 15_000L, maxAttempts = 2)
+        queue.want("a", 0L)
+        assertEquals(listOf("a"), queue.pump(0L))
+        assertEquals(listOf("a"), queue.pump(15_000L))
+        assertEquals(emptyList<String>(), queue.pump(30_000L))
         assertFalse(queue.onArrived("a"))
+        assertNull(queue.nextPumpAtMs(30_000L))
+        // A tile that asks again starts afresh.
+        queue.want("a", 31_000L)
+        assertEquals(listOf("a"), queue.pump(31_000L))
+    }
+
+    @Test
+    fun sendsAreCappedAtTheRatePerWindowAndTheNextPumpIsWhenBudgetFrees() {
+        val queue = ThumbnailQueue(maxOutstanding = 6, maxQueued = 100, maxSends = 60, sendWindowMs = 10_000L)
+        (1..70).forEach { queue.want("t$it", 0L) }
+        var sent = 0
+        repeat(20) {
+            val batch = queue.pump(1_000L)
+            sent += batch.size
+            batch.forEach { queue.onArrived(it) }
+        }
+        assertEquals(60, sent)
+        assertEquals(11_000L, queue.nextPumpAtMs(1_000L))
+        assertEquals(6, queue.pump(11_000L).size)
+    }
+
+    @Test
+    fun theNextPumpIsWhenASlotExpiresAndNothingWhenIdle() {
+        val queue = ThumbnailQueue(maxOutstanding = 1, expiryMs = 15_000L)
+        assertNull(queue.nextPumpAtMs(0L))
+        queue.want("a", 0L)
+        queue.want("b", 0L)
+        queue.pump(2_000L)
+        assertEquals(17_000L, queue.nextPumpAtMs(2_000L))
+        queue.onArrived("b")
+        assertEquals(listOf("a"), queue.pump(3_000L))
+        queue.onArrived("a")
+        assertNull(queue.nextPumpAtMs(3_000L))
     }
 
     @Test
@@ -339,6 +419,19 @@ class LibraryPoliciesTest {
         val e1 = LibraryEpisodeInfo(1, "One", null, null)
         assertNull(assembler.add(key, 0, 3, listOf(e1)))
         assertEquals(listOf(e1), assembler.add(key, 0, 1, listOf(e1)))
+    }
+
+    @Test
+    fun aSeasonKeepsAtMostItsEpisodeCap() {
+        val assembler = SeasonAssembler(maxEpisodes = 3)
+        val key = LibrarySeasonKey("tv:1", 1)
+        val eps = (1..4).map { LibraryEpisodeInfo(it, null, null, null) }
+        assertNull(assembler.add(key, 0, 3, eps.take(2)))
+        assertNull(assembler.add(key, 1, 3, eps.drop(2)))
+        // A part sent again replaces its own share rather than adding to it.
+        assertNull(assembler.add(key, 1, 3, eps.drop(2)))
+        assertEquals(eps.take(3), assembler.add(key, 2, 3, eps))
+        assertEquals(4_000, SeasonAssembler.MAX_EPISODES)
     }
 
     @Test

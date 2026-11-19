@@ -312,17 +312,18 @@ internal fun TitleCard(title: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * The phone's own still for [id], asked for once when this composes and drawn when it
- * arrives; until then a title card, or nothing when [title] is null. Only for items without
+ * The phone's own still for [id], asked for whenever this composes without it and drawn when
+ * it arrives; until then a title card, or nothing when [title] is null. Only for items without
  * TMDB art: the hub never fetches stills for the others.
  */
 @Composable
 internal fun PhoneThumbnail(id: String, title: String?, modifier: Modifier = Modifier) {
     val ui = LocalLibraryUi.current
-    LaunchedEffect(id) { ui.hub.wantThumbnail(id) }
     // Per tile, so one arriving thumbnail recomposes its own tile and not every tile on screen.
     val bitmap by remember(id, ui) { derivedStateOf { ui.thumbnails.value[id] } }
     val shown = bitmap
+    // Asked again whenever the still goes missing: the hub keeps only so many, oldest out first.
+    LaunchedEffect(id, shown == null) { if (shown == null) ui.hub.wantThumbnail(id) }
     if (shown != null) {
         Image(bitmap = shown, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier)
     } else if (title != null) {

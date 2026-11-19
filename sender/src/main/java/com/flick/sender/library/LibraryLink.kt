@@ -51,6 +51,13 @@ internal class LibraryLink(
     }
 
     interface Handler {
+        /**
+         * The proof has passed and a socket is installed. Called before any frame of it can
+         * reach [onFrame]: the TV sends its first `catWant` right behind `libReady`, and the
+         * reader runs on [scope]'s dispatcher inline.
+         */
+        fun onOpened()
+
         /** An authenticated frame from the TV, already parsed; never a handshake frame. */
         fun onFrame(frame: TvFrame)
 
@@ -147,9 +154,10 @@ internal class LibraryLink(
     }
 
     private fun install(session: DefaultClientWebSocketSession) {
-        val queue = Channel<Outgoing>(Channel.UNLIMITED)
+        val queue = Channel<Outgoing>(MAX_QUEUED)
         socket = session
         outgoing = queue
+        handler.onOpened()
         writer = scope.launch {
             try {
                 for (item in queue) {
@@ -196,13 +204,51 @@ internal class LibraryLink(
         }
     }
 
-    fun sendText(frame: String): Boolean = outgoing?.trySend(Outgoing.Text(frame))?.isSuccess == true
+    fun sendText(frame: String): Boolean = enqueue(Outgoing.Text(frame))
 
     /** Frames that must reach the TV back to back, as a catalog does. */
-    fun sendBatch(frames: List<String>): Boolean =
-        frames.isNotEmpty() && outgoing?.trySend(Outgoing.Batch(frames))?.isSuccess == true
+    fun sendBatch(frames: List<String>): Boolean = frames.isNotEmpty() && enqueue(Outgoing.Batch(frames))
 
-    fun sendBinary(bytes: ByteArray): Boolean = outgoing?.trySend(Outgoing.Binary(bytes))?.isSuccess == true
+    fun sendBinary(bytes: ByteArray): Boolean = enqueue(Outgoing.Binary(bytes))
+
+    /**
+     * Contract §3: a full queue closes the socket, which then reports through
+     * [Handler.onClosed] like any other end — possibly before this returns.
+     */
+    private fun enqueue(item: Outgoing): Boolean {
+        val queue = outgoing ?: return false
+        if (queue.trySend(item).isSuccess) return true
+        socket?.let { ended(it, "overflow") }
+        return false
+    }
+
+    /**
+     * Send [frames], then close from this side once they are written or [FLUSH_MS] has
+     * passed. Nothing more reaches [Handler] from this socket, and [Handler.onClosed] is not
+     * called for it.
+     */
+    fun closeAfter(frames: List<String>, reason: String) {
+        val session = socket ?: return
+        val queue = outgoing
+        val drain = writer
+        if (frames.isEmpty() || queue == null || drain == null || !queue.trySend(Outgoing.Batch(frames)).isSuccess) {
+            close(reason)
+            return
+        }
+        socket = null
+        outgoing = null
+        writer = null
+        reader?.cancel()
+        reader = null
+        // A closed channel still hands the writer everything already queued, then ends its loop.
+        queue.close()
+        FlickLog.i("library", "closed by phone reason=$reason after=${frames.size}")
+        scope.launch {
+            withTimeoutOrNull(FLUSH_MS) { drain.join() }
+            drain.cancel()
+            runCatching { session.close() }
+        }
+    }
 
     /** Close the socket from this side. [Handler.onClosed] is not called for a close asked for here. */
     fun close(reason: String) {
@@ -246,6 +292,10 @@ internal class LibraryLink(
 
     companion object {
         const val HANDSHAKE_MS = 6_000L
+
+        /** Queued sends, a catalog batch counting once; the TV bounds its own side at 512 frames. */
+        const val MAX_QUEUED = 512
+        const val FLUSH_MS = 2_000L
 
         /**
          * Its own client, never control v2's: that one pings every 15 s, and the library socket

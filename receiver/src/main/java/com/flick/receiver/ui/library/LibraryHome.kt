@@ -44,6 +44,7 @@ import com.flick.receiver.library.LibraryHdr
 import com.flick.receiver.library.LibraryImages
 import com.flick.receiver.library.LibraryItem
 import com.flick.receiver.library.LibraryItemKind
+import com.flick.receiver.library.LibraryLink
 import com.flick.receiver.library.LibraryPlay
 import com.flick.receiver.library.LibraryShelves
 import com.flick.receiver.library.LibraryShow
@@ -82,7 +83,9 @@ internal fun HomePane(state: LibraryState, catalog: LibraryCatalog, shelves: Lib
     val heroFocus = remember { FocusRequester() }
     LandFocus(pane, if (hero != null) heroFocus else null, focused)
     val details by ui.hub.details.collectAsState()
-    hero?.let { pick -> LaunchedEffect(pick.item.id) { ui.hub.wantDetail(pick.item.id) } }
+    // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
+    val connected = state.link == LibraryLink.CONNECTED
+    hero?.let { pick -> LaunchedEffect(pick.item.id, connected) { ui.hub.wantDetail(pick.item.id) } }
 
     Box(
         Modifier
@@ -453,7 +456,7 @@ internal fun PosterShowTile(
         focusKey = focusKey,
         focusRequester = focusRequester,
         contentDescription = show.title,
-        onClick = { pane.open(LibraryRoute.Show(show.key)) },
+        onClick = { pane.open(LibraryNav.showRoute(show)) },
         picture = { ShowArt(show, ArtKind.POSTER, Modifier.fillMaxSize()) },
         caption = {
             TileTitle(show.title)

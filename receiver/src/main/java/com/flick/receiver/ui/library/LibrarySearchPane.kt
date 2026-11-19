@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -73,6 +75,8 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
     val focused = remember { mutableStateOf(false) }
     val firstKey = remember { FocusRequester() }
     val firstResult = remember { FocusRequester() }
+    // The first result is only composed, and so only focusable, while the grid is at its top.
+    val resultsAtTop by remember(memory) { derivedStateOf { memory.grid.firstVisibleItemIndex == 0 } }
     LandFocus(pane, firstKey, focused)
 
     // A new query starts its results from the top; coming back to the same query does not.
@@ -109,7 +113,11 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
             Keyboard(
                 memory = memory,
                 firstKey = firstKey,
-                down = if (hits.isNotEmpty()) firstResult else null,
+                down = when {
+                    hits.isEmpty() -> null
+                    resultsAtTop -> firstResult
+                    else -> FocusRequester.Default
+                },
                 onType = { memory.query = LibrarySearchModel.typed(memory.query, it) },
                 onDelete = { memory.query = LibrarySearchModel.deleted(memory.query) },
                 onClear = { memory.query = "" },
@@ -176,7 +184,7 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
                                     memory = memory,
                                     focusKey = "hit/" + hit.key,
                                     contentDescription = hit.show.title,
-                                    onClick = { pane.open(LibraryRoute.Show(hit.show.key)) },
+                                    onClick = { pane.open(LibraryNav.showRoute(hit.show)) },
                                     focusRequester = requester,
                                     picture = { ShowArt(hit.show, ArtKind.LANDSCAPE, Modifier.fillMaxSize()) },
                                     caption = {

@@ -101,7 +101,8 @@ sealed interface PhoneFrame {
     companion object {
         private val ShowKey = Regex("^(?:tv:[1-9][0-9]{0,11}|name:.{1,200})$")
         private val CastId = Regex("[A-Za-z0-9_-]{22}")
-        private const val MAX_SEASON_PARTS = 64
+        /** Matches the catalog's part cap (§5.2): a long season's parts must not close the socket. */
+        private const val MAX_SEASON_PARTS = LibraryWire.MAX_PARTS
 
         fun parse(text: String): PhoneFrame {
             if (text.toByteArray(StandardCharsets.UTF_8).size > LibraryFrames.MAX_FRAME_BYTES) return Malformed

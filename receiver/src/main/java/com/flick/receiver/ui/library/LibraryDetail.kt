@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.library.LibraryItem
+import com.flick.receiver.library.LibraryLink
 import com.flick.receiver.library.LibrarySeasonKey
 import com.flick.receiver.library.LibraryState
 import com.flick.receiver.library.PlayFrom
@@ -57,10 +58,12 @@ internal fun DetailPage(item: LibraryItem, state: LibraryState, pane: PaneContex
     val ui = LocalLibraryUi.current
     val details by ui.hub.details.collectAsState()
     val seasons by ui.hub.seasons.collectAsState()
-    LaunchedEffect(item.id) { ui.hub.wantDetail(item.id) }
+    // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
+    val connected = state.link == LibraryLink.CONNECTED
+    LaunchedEffect(item.id, connected) { ui.hub.wantDetail(item.id) }
     val season = item.season
     if (item.isEpisode && hasSeasonData(item.showKey) && season != null) {
-        LaunchedEffect(item.showKey, season) { ui.hub.wantSeason(item.showKey!!, season) }
+        LaunchedEffect(item.showKey, season, connected) { ui.hub.wantSeason(item.showKey!!, season) }
     }
     val episodeInfo = if (item.isEpisode && season != null) {
         seasons[LibrarySeasonKey(item.showKey!!, season)]?.firstOrNull { it.episode == item.episode }
@@ -209,10 +212,10 @@ private fun DetailActions(item: LibraryItem, state: LibraryState, primaryFocus: 
             }
             val showKey = item.showKey
             // Not when this episode was opened from its own show: Back already goes there.
-            if (item.isEpisode && showKey != null && pane.under != LibraryRoute.Show(showKey)) {
+            if (item.isEpisode && showKey != null && (pane.under as? LibraryRoute.Show)?.showKey != showKey) {
                 SecondaryAction(
                     text = stringResource(R.string.libui_open_show),
-                    onClick = { pane.open(LibraryRoute.Show(showKey)) },
+                    onClick = { pane.open(LibraryRoute.Show(showKey, item.id)) },
                     modifier = Modifier
                         .remembersFocus(pane.memory, "detail/show")
                         .closedToModal(),

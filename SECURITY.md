@@ -44,6 +44,17 @@ When the TV's owner turns on **Open when you cast** (TV Settings, off by default
 
 Accepted residual P2: v2 has `busy` but no positive `available` frame. After a valid `paired`/`resumed`, the sender waits a fixed 250 ms for an immediate busy disposition, then treats silence as available. A delayed busy can briefly start sender UI/foreground-service work before the ordinary terminal cleanup runs, but the receiver's ownership mutex never grants that phone the active cast. A future protocol revision may add an explicit `available|busy` disposition.
 
+## Library channel
+
+The TV library (phone Settings › **Show my library on my TV**, on by default) adds a second WebSocket, `/library`, on the TV's control port. The binding contract is [docs/design/library-channel.md](docs/design/library-channel.md). It grants the TV display data and exactly one action:
+
+- **Same gates, separate budget.** The route applies `/control`'s binding, exact `Host` pin and private-IPv4 peer checks before reading a frame, and has its own pre-auth permit pool (two sockets, one per peer) and three-frame pre-auth budget, so it cannot starve pairing or control.
+- **Mutual proof, domain-separated.** Both ends prove the pairing key with HmacSHA256 over a length-prefixed transcript that starts `Flick-Library-V1` and binds role, `tvId`, `keyId`, both fresh nonces, the observed phone IP and the TV's bound host/port. A library proof can never be replayed as a control proof or the reverse. The phone dials only the endpoint control v2 last verified, checks that the echoed peer IP matches its authenticated control session, and verifies the TV's proof before sending any catalog byte. A library denial never changes or deletes a pairing.
+- **One action, decided by the phone.** The TV can only ask the phone to cast an item id from the phone's current catalog. The phone resolves the id itself and runs its normal cast path, so it alone mints cast IDs and tokens; the TV never receives a path, content URI, media URL or token on this channel. A play the phone cannot or will not start gets a fixed refusal code.
+- **No URLs from the wire.** Art arrives as TMDB paths matching the phone's own poster rule; the TV builds `https://image.tmdb.org/t/p/<size><path>` itself and fetches nothing else. Phone thumbnails are a bounded binary frame (≤ 16 KiB) decoded in memory.
+- **Bounded on both ends.** Frames are ≤ 16 KiB with control v2's strict JSON reader; catalogs are capped at 20,000 items and 4,000 parts; requests, thumbnails and queues are rate-limited and bounded; malformed known frames close only the library socket, never control v2.
+- **Privacy.** The catalog is held in TV memory only, dropped when the phone is forgotten, and hidden when the phone opts out (it sends an empty catalog) or has been gone for ten minutes. Titles, file and folder names, item ids, art paths and thumbnails never enter logs, exceptions, notifications, diagnostics, the incident journal or backup on either device. The phone's watched ledger is excluded from backup.
+
 ## Custom-scheme limitation
 
 Custom URI schemes do not establish application identity. Another installed app can claim `flick` or invoke Flick with a forged URI. The launch-only envelope prevents URI endpoint/capability injection, but it cannot stop a user from entering visible TV values into a phishing app selected in the system chooser.

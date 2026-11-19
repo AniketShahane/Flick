@@ -34,8 +34,21 @@ class LibraryShelvesTest {
     @Test
     fun anInProgressNextEpisodeIsLeftToContinueWatching() {
         val show = LibraryShelving.shows(listOf(ep("e1", "tv:1", 1, 1, watched = true), ep("e2", "tv:1", 1, 2, resumeMs = 5_000L), ep("e3", "tv:1", 1, 3))).single()
-        assertEquals("e3", LibraryShelving.nextEpisode(show)?.id)
+        // Continue watching holds e2; Next episodes does not reach past it to e3.
+        assertNull(LibraryShelving.nextEpisode(show))
         assertEquals("e2", LibraryShelving.showPick(show)?.id)
+    }
+
+    @Test
+    fun nextEpisodeSkipsASecondFileOfTheWatchedEpisode() {
+        val show = LibraryShelving.shows(listOf(ep("e1", "tv:1", 1, 1, watched = true), ep("e1b", "tv:1", 1, 1), ep("e2", "tv:1", 1, 2))).single()
+        assertEquals("e2", LibraryShelving.nextEpisode(show)?.id)
+    }
+
+    @Test
+    fun nextEpisodeIsNullWhenOnlyASecondFileOfTheWatchedEpisodeFollows() {
+        val finished = LibraryShelving.shows(listOf(ep("e1", "tv:1", 1, 1), ep("e2", "tv:1", 1, 2, watched = true), ep("e2b", "tv:1", 1, 2))).single()
+        assertNull(LibraryShelving.nextEpisode(finished))
     }
 
     @Test

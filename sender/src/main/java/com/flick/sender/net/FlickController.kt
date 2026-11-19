@@ -3372,12 +3372,14 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (stopRemoteIfLoaded && CastCleanupPolicy.shouldSendStop(castId, loadSentCastId)) requestRemoteStop(castId)
         castGate.invalidate(castId); accepted?.cancel(); ready?.cancel(); accepted = null; ready = null
         if (loadSentCastId == castId) loadSentCastId = null
+        // Before the stop: the TV library's ready window is started while this cast's own
+        // foreground service still holds the process (library contract §8).
+        if (currentCastId == castId) tvLibrary.onCastCleanup(castId)
         CastServerService.stop(appContext, castId)
         // Both are cast-scoped: a stale cleanup must not cancel a newer cast's
         // retarget or disarm the subtitle its load is about to carry.
         if (currentCastId == castId) {
             playbackProgressRecorder.finish(castId)?.let(::enqueueProgress)
-            tvLibrary.onCastCleanup(castId)
             // Before session.clear() below, which republishes in-sync: that value belongs
             // to no film, and a recorder still active when it arrived would read it as the
             // viewer cancelling the nudge on the one that just ended.

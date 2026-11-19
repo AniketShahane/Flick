@@ -877,6 +877,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val surfaceMode = playerSurfaceMode(stage)
     // Drawn over the ended film at full size; the video surface is never resized for it.
     val upNextShowing = upNextOffer != null && stage is MediaStage.Active
+    // The card owns the D-pad; a side panel left open beside it would hold focus nobody can see used.
+    LaunchedEffect(upNextShowing) {
+        if (upNextShowing) openPanel = PlaybackPanel.None
+    }
 
     // A film is on screen only once the house lights have lifted off it: until then
     // the clocks below would run behind the veil or inside the resync blank.
@@ -917,7 +921,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         else -> null
     }
     LaunchedEffect(stageCastId) {
-        if (stageCastId != null) library.onCastStarted(stageCastId) else library.onCastNotEnded()
+        if (stageCastId != null) library.onCastStarted(stageCastId) else library.onCastStopped()
     }
     val endedCastId = activeCastId?.takeIf { frame.phase == PlaybackPhase.Ended }
     LaunchedEffect(endedCastId) {
@@ -1278,6 +1282,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     // say a rename is about this phone — see [ControlServer.onPhoneRenamed].
     val controlPeer by server.controlPeer.collectAsState()
     val castDeviceLabel = controlPeer?.label ?: deviceLabel
+    val leaseKeyId = controlPeer?.keyId
+    LaunchedEffect(leaseKeyId) { library.onControlPeer(leaseKeyId) }
     // Looked up by the key id the lost lease carried, not through [controlPeer]: another
     // phone may connect while this film is held, and the notice is about the one it waits on.
     val reconnectingTo = if (session.reconnecting) {
@@ -1318,7 +1324,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
         if (event.action == AndroidKeyEvent.ACTION_DOWN) {
             houseKeys.tryEmit(Unit)
-            library.onRemoteKey()
+            library.onRemoteKey(
+                libraryShowing = stage is MediaStage.None &&
+                    standbySurfaceFor(showSettings, pairingSnapshot.surface, pairingSnapshot.pairedCount) == StandbySurface.Idle &&
+                    libraryState.value.link != LibraryLink.NONE,
+            )
         }
         val button = event.toTvRemoteButton()
         val eventType = when (event.action) {
@@ -1555,6 +1565,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 upNextOffer?.takeIf { upNextShowing }?.let { offer ->
                     UpNextCard(
                         offer = offer,
+                        play = libraryState.value.play,
                         onPlayNow = { library.playUpNext() },
                         // The same exit as Back on the playback surface: the phone is told
                         // the cast stopped, and standby is the library.

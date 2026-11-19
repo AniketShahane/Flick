@@ -401,6 +401,221 @@ class TvLibraryTest {
         assertNull(hub.upNext.value)
     }
 
+    @Test
+    fun aFailedUpNextPlayStaysOnTheCardAndCanBeRetried() {
+        val link = episodeEnded()
+        link.sent.clear()
+        hub.playUpNext()
+        assertEquals(LibraryPlay.Asking(E2.id), hub.state.value.play)
+        hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), false, PlayRefusal.BUSY))
+        assertEquals(LibraryPlay.Failed(E2.id, LibraryPlayFailure.BUSY), hub.state.value.play)
+        assertEquals(E2, hub.upNext.value?.next)
+        hub.playUpNext()
+        assertEquals(LibraryPlay.Asking(E2.id), hub.state.value.play)
+        hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), false, PlayRefusal.BUSY))
+        // Leaving the card takes its failure with it, so the library does not show it again.
+        hub.dismissUpNext()
+        assertEquals(LibraryPlay.Idle, hub.state.value.play)
+    }
+
+    @Test
+    fun aCastingFrameThatArrivesAfterTheEndStillOffersUpNext() {
+        val link = connect()
+        deliver(link, listOf(E1, E2))
+        hub.onCastStarted(CAST_1)
+        hub.onCastEnded(CAST_1)
+        assertNull(hub.upNext.value)
+        hub.onFrame(link, PhoneFrame.Casting(CAST_1, E1.id))
+        assertEquals(E2, hub.upNext.value?.next)
+        hub.dismissUpNext()
+        hub.onFrame(link, PhoneFrame.Casting(CAST_1, E1.id))
+        assertNull(hub.upNext.value)
+    }
+
+    @Test
+    fun aLateCastingFrameForAReplacedCastOffersNothing() {
+        val link = connect()
+        deliver(link, listOf(E1, E2))
+        hub.onCastStarted(CAST_1)
+        hub.onCastEnded(CAST_1)
+        hub.onCastStarted(CAST_2)
+        hub.onFrame(link, PhoneFrame.Casting(CAST_1, E1.id))
+        assertNull(hub.upNext.value)
+    }
+
+    // --- Two phones, lost phones, empty libraries ---------------------------------
+
+    @Test
+    fun upNextPlaysOnThePhoneThatCastTheEndedEpisode() {
+        val a = connect(KEY_A)
+        deliver(a, listOf(E1, E2))
+        hub.onFrame(a, PhoneFrame.Casting(CAST_1, E1.id))
+        val b = connect(KEY_B)
+        assertEquals("Other", hub.state.value.phoneName)
+        hub.onCastStarted(CAST_1)
+        hub.onCastEnded(CAST_1)
+        assertEquals(E2, hub.upNext.value?.next)
+        a.sent.clear()
+        b.sent.clear()
+        hub.playUpNext()
+        assertEquals(listOf("play"), a.types())
+        assertTrue(b.sent.isEmpty())
+        // Only the phone the play went to can answer it.
+        hub.onFrame(b, PhoneFrame.PlayAck(lastReq(a), false, PlayRefusal.BUSY))
+        assertEquals(LibraryPlay.Asking(E2.id), hub.state.value.play)
+        hub.onFrame(a, PhoneFrame.PlayAck(lastReq(a), true, null))
+        assertEquals(LibraryPlay.Starting(E2.id), hub.state.value.play)
+    }
+
+    @Test
+    fun theShownPhoneDoesNotSwitchUnderAnOfferOrAPlayInFlight() {
+        val a = episodeEnded()
+        connect(KEY_B)
+        assertEquals("Pixel", hub.state.value.phoneName)
+        assertNotNull(hub.upNext.value)
+        hub.dismissUpNext()
+        assertEquals("Other", hub.state.value.phoneName)
+
+        hub.forget(KEY_B)
+        assertEquals("Pixel", hub.state.value.phoneName)
+        hub.play(E1.id, PlayFrom.START)
+        connect(KEY_B)
+        assertEquals("Pixel", hub.state.value.phoneName)
+        hub.onFrame(a, PhoneFrame.PlayAck(lastReq(a), true, null))
+        assertEquals("Pixel", hub.state.value.phoneName)
+        hub.onCastStarted(CAST_2)
+        assertEquals("Other", hub.state.value.phoneName)
+    }
+
+    @Test
+    fun theLeaseHolderIsShownBeforeTheMostRecentPhone() {
+        connect(KEY_A)
+        connect(KEY_B)
+        assertEquals("Other", hub.state.value.phoneName)
+        hub.onControlPeer(KEY_A)
+        assertEquals("Pixel", hub.state.value.phoneName)
+        hub.onControlPeer(null)
+        assertEquals("Other", hub.state.value.phoneName)
+    }
+
+    @Test
+    fun anEmptyLibraryIsNotShown() {
+        val link = connect()
+        deliver(link, emptyList())
+        assertEquals(LibraryLink.NONE, hub.state.value.link)
+        assertNull(hub.state.value.catalog)
+        deliver(link, listOf(E1), REV2)
+        assertEquals(LibraryLink.CONNECTED, hub.state.value.link)
+        assertEquals(REV2, hub.state.value.catalog?.rev)
+    }
+
+    @Test
+    fun aPhoneGoneForTenMinutesIsHiddenAndItsReconnectShowsItAgain() {
+        val first = connect()
+        deliver(first, listOf(E1, E2))
+        hub.onClosed(first)
+        scope.advanceTimeBy(TvLibrary.LOST_HIDE_MS - 1)
+        assertEquals(LibraryLink.LOST, hub.state.value.link)
+        scope.advanceTimeBy(2L)
+        assertEquals(LibraryLink.NONE, hub.state.value.link)
+        assertNull(hub.state.value.catalog)
+        assertNull(hub.state.value.phoneName)
+        val second = connect()
+        // Still the patch base for the reconnect.
+        assertEquals(listOf(LibraryFrames.catWant(REV1)), second.sent)
+        assertEquals(LibraryLink.CONNECTED, hub.state.value.link)
+        assertEquals(REV1, hub.state.value.catalog?.rev)
+    }
+
+    @Test
+    fun aHiddenPhoneGivesWayToAnotherThatIsStillSharing() {
+        val b = connect(KEY_B)
+        deliver(b, listOf(E1))
+        val a = connect(KEY_A)
+        deliver(a, listOf(E1, E2))
+        hub.onClosed(a)
+        assertEquals("Pixel", hub.state.value.phoneName)
+        scope.advanceTimeBy(TvLibrary.LOST_HIDE_MS + 1)
+        assertEquals("Other", hub.state.value.phoneName)
+        assertEquals(LibraryLink.CONNECTED, hub.state.value.link)
+    }
+
+    // --- Supersede, browsing, thumbnails, shelves during a cast ---------------------
+
+    @Test
+    fun aSupersededSocketsPlaySettlesAsOffline() {
+        connect()
+        hub.play(E1.id, PlayFrom.START)
+        assertEquals(LibraryPlay.Asking(E1.id), hub.state.value.play)
+        connect()
+        assertEquals(LibraryPlay.Failed(E1.id, LibraryPlayFailure.OFFLINE), hub.state.value.play)
+    }
+
+    @Test
+    fun aPlayWhoseCastStartedBeforeItsAckSettlesQuietlyAtTheDeadline() {
+        connect()
+        hub.play(E1.id, PlayFrom.START)
+        hub.onCastStarted(CAST_1)
+        assertEquals(LibraryPlay.Asking(E1.id), hub.state.value.play)
+        scope.advanceTimeBy(8_001L)
+        assertEquals(LibraryPlay.Idle, hub.state.value.play)
+    }
+
+    @Test
+    fun remoteKeysSendBrowsingOnlyOnALibraryScreenAndAtMostOnceAMinute() {
+        val link = connect()
+        link.sent.clear()
+        hub.onRemoteKey()
+        hub.onRemoteKey(libraryShowing = false)
+        assertTrue(link.sent.isEmpty())
+        hub.onRemoteKey(libraryShowing = true)
+        hub.onRemoteKey(libraryShowing = true)
+        assertEquals(listOf("browsing"), link.types())
+        scope.advanceTimeBy(TvLibrary.BROWSING_INTERVAL_MS)
+        hub.onRemoteKey(libraryShowing = true)
+        assertEquals(listOf("browsing", "browsing"), link.types())
+    }
+
+    @Test
+    fun expiredThumbnailRequestsAreAskedAgainWithoutANewAsk() {
+        val link = connect()
+        val artless = (1..8).map { video("video00000$it") }
+        deliver(link, artless)
+        link.sent.clear()
+        artless.forEach { hub.wantThumbnail(it.id) }
+        assertEquals(6, link.sent.size)
+        scope.advanceTimeBy(15_001L)
+        assertEquals(12, link.sent.size)
+        assertTrue(link.types().all { it == "thumbWant" })
+    }
+
+    @Test
+    fun noThumbnailTimerOutlivesTheSocket() {
+        val link = connect()
+        val artless = (1..8).map { video("video00000$it") }
+        deliver(link, artless)
+        artless.forEach { hub.wantThumbnail(it.id) }
+        hub.onClosed(link)
+        link.sent.clear()
+        scope.advanceTimeBy(60_000L)
+        assertTrue(link.sent.isEmpty())
+    }
+
+    @Test
+    fun shelvesForACatalogThatArrivesDuringACastWaitForItToEnd() {
+        val link = connect()
+        deliver(link, listOf(E1))
+        hub.onCastStarted(CAST_1)
+        deliver(link, listOf(E1, E2), REV2)
+        assertEquals(REV1, hub.state.value.catalog?.rev)
+        hub.onCastStopped()
+        scope.runCurrent()
+        assertEquals(REV2, hub.state.value.catalog?.rev)
+        assertEquals(2, hub.state.value.shelves?.shows?.single()?.episodeCount)
+    }
+
+    private fun lastReq(link: FakeLink): String = Regex("\"req\":\"([^\"]+)\"").findAll(link.sent.joinToString("\n")).last().groupValues[1]
+
     private companion object {
         const val KEY_A = "IiIiIiIiIiIiIiIiIiIiIg"
         const val KEY_B = "MzMzMzMzMzMzMzMzMzMzMw"

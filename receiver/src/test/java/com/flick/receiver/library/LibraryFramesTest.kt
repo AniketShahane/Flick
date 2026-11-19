@@ -94,6 +94,10 @@ class LibraryFramesTest {
         )
         assertEquals(PhoneFrame.Season("tv:91234", 2, 0, 1, listOf(LibraryEpisodeInfo(4, "The Quiet Tide", "o", "/d.jpg"))), season)
         assertEquals(PhoneFrame.Malformed, PhoneFrame.parse("{\"t\":\"season\",\"v\":1,\"showKey\":\"tv:1\",\"s\":2,\"part\":1,\"parts\":1,\"episodes\":[]}"))
+        // A long season may need more parts than a short one; the cap is the catalog's.
+        assertEquals(PhoneFrame.Season("tv:1", 2, 64, 65, emptyList()), PhoneFrame.parse("{\"t\":\"season\",\"v\":1,\"showKey\":\"tv:1\",\"s\":2,\"part\":64,\"parts\":65,\"episodes\":[]}"))
+        assertEquals(PhoneFrame.Season("tv:1", 2, 3999, 4000, emptyList()), PhoneFrame.parse("{\"t\":\"season\",\"v\":1,\"showKey\":\"tv:1\",\"s\":2,\"part\":3999,\"parts\":4000,\"episodes\":[]}"))
+        assertEquals(PhoneFrame.Malformed, PhoneFrame.parse("{\"t\":\"season\",\"v\":1,\"showKey\":\"tv:1\",\"s\":2,\"part\":0,\"parts\":4001,\"episodes\":[]}"))
         assertEquals(
             PhoneFrame.Detail("nTbULXb50u0", "Over", null, LibraryHdr.HDR10, "English"),
             PhoneFrame.parse("{\"t\":\"detail\",\"v\":1,\"id\":\"nTbULXb50u0\",\"overview\":\"Over\",\"hdr\":\"hdr10\",\"subtitle\":\"English\"}"),

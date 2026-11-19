@@ -7,6 +7,8 @@ import android.os.SystemClock
 import com.flick.sender.R
 import com.flick.sender.ServerStateHolder
 import com.flick.sender.ServerStatus
+import com.flick.sender.currentProcessImportance
+import com.flick.sender.foregroundStartAllowed
 import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.MediaProbe
@@ -16,7 +18,6 @@ import com.flick.sender.media.VideoNames
 import com.flick.sender.media.labelResource
 import com.flick.sender.media.resumePositionMs
 import com.flick.sender.model.ConnectionStatus
-import com.flick.sender.model.HdrType
 import com.flick.sender.model.MediaItem
 import com.flick.sender.model.PlaybackPhase
 import com.flick.sender.net.ControlClient
@@ -28,6 +29,7 @@ import com.flick.sender.util.FlickLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -105,6 +107,7 @@ internal class TvLibrary(
     val watched: StateFlow<Map<String, Long>> = watchedStore.state
 
     private val link = LibraryLink(scope, object : LibraryLink.Handler {
+        override fun onOpened() = onLinkOpened()
         override fun onFrame(frame: TvFrame) = onTvFrame(frame)
         override fun onClosed(reason: String) = onLinkClosed()
     })
@@ -114,17 +117,20 @@ internal class TvLibrary(
     private val unsupported = HashSet<String>()
     private var dialJob: Job? = null
     private var dialFor: ControlClient.AuthenticatedEndpoint? = null
+    private var openingFor: ControlClient.AuthenticatedEndpoint? = null
     private var linkFor: ControlClient.AuthenticatedEndpoint? = null
+    private var linkOpenedAtMs = 0L
 
     // Moves on every socket, so an answer computed for one never lands on its successor.
     private var generation = 0L
     private var catalogAsked = false
     private var playOutstanding = false
+    private val casting = CastingMemory()
 
     private val catalogLock = Mutex()
     private val names = CatalogNameFacts.Cache()
     private var built: Built? = null
-    private var dirty = true
+    private val freshness = CatalogFreshness()
     private var pushJob: Job? = null
 
     // What the TV is known to hold, for patches; kept across reconnects to the same TV
@@ -136,6 +142,8 @@ internal class TvLibrary(
     private val thumbGate = Semaphore(THUMBS_IN_FLIGHT)
     private val thumbLimiter = SlidingWindowLimiter(THUMBS_PER_WINDOW, THUMB_WINDOW_MS)
     private val refreshGate = MinIntervalGate(REFRESH_INTERVAL_MS)
+    private val detailGate = RequestGate(ANSWERS_IN_FLIGHT, ANSWERS_PER_WINDOW, ANSWER_WINDOW_MS)
+    private val seasonGate = RequestGate(ANSWERS_IN_FLIGHT, ANSWERS_PER_WINDOW, ANSWER_WINDOW_MS)
     private var prefetchJob: Job? = null
 
     private val readyWindow = TvReadyWindowPolicy()
@@ -170,6 +178,8 @@ internal class TvLibrary(
     // --- Link lifecycle (contract §3) ---------------------------------------
 
     private fun reconcile() {
+        // Off ends the window whatever control v2 is doing (contract §8).
+        if (!preference.enabled.value) closeReadyWindow("setting")
         val endpoint = phone.control.authenticatedEndpoint()
             ?.takeIf { phone.control.connection.value == ConnectionStatus.CONNECTED }
         if (endpoint == null) {
@@ -181,12 +191,11 @@ internal class TvLibrary(
         readyWindow.controlRestored()
         scheduleReadyDeadline()
         if (!preference.enabled.value) {
-            closeLink("setting")
-            closeReadyWindow("setting")
+            closeLink("setting", optOut = true)
             return
         }
         if (phone.mediaAccess.value == MediaAccess.NONE) {
-            closeLink("media_access")
+            closeLink("media_access", optOut = true)
             return
         }
         if (endpoint.tvId in unsupported) {
@@ -208,20 +217,32 @@ internal class TvLibrary(
                 if (!stillWanted(endpoint)) return@launch
                 val pairing = phone.pairing(endpoint.tvId)?.takeIf { it.keyId == endpoint.keyId }
                 if (pairing == null) {
-                    FlickLog.w("library", "dial skipped reason=no_pairing")
-                    return@launch
+                    // Control v2 publishes CONNECTED before the coordinator saves a new or
+                    // re-made pairing, so a first pair can get here a moment before its key.
+                    FlickLog.w("library", "dial waiting reason=no_pairing")
+                    delay(backoff.next())
+                    continue
                 }
                 val target = LibraryLink.Target(
                     endpoint.tvId, endpoint.keyId, pairing.key, endpoint.peerIp, endpoint.host, endpoint.port,
                 )
-                when (val outcome = link.connect(target)) {
+                openingFor = endpoint
+                val outcome = try {
+                    link.connect(target)
+                } finally {
+                    openingFor = null
+                }
+                when (outcome) {
                     LibraryLink.Outcome.Ready -> {
+                        // The TV may have ended it already, and onLinkClosed has then planned the next dial.
+                        if (!link.isOpen || linkFor != endpoint) return@launch
                         if (!stillWanted(endpoint)) {
                             link.close("superseded")
+                            endLinkState()
                             return@launch
                         }
-                        backoff.reset()
-                        onLinkReady(endpoint)
+                        dialFor = null
+                        startPrefetch()
                         return@launch
                     }
                     LibraryLink.Outcome.Unsupported -> {
@@ -239,31 +260,48 @@ internal class TvLibrary(
             phone.control.connection.value == ConnectionStatus.CONNECTED &&
             phone.control.authenticatedEndpoint() == endpoint && endpoint.tvId !in unsupported
 
-    private fun onLinkReady(endpoint: ControlClient.AuthenticatedEndpoint) {
+    /** Inside [LibraryLink.connect], before the TV's first frame can be handed on. */
+    private fun onLinkOpened() {
+        val endpoint = openingFor
         linkFor = endpoint
-        dialFor = null
+        linkOpenedAtMs = now()
         generation++
         catalogAsked = false
         playOutstanding = false
-        if (heldTvId != endpoint.tvId) {
+        casting.socketOpened()
+        if (endpoint != null && heldTvId != endpoint.tvId) {
             held = null
             heldTvId = endpoint.tvId
         }
-        startPrefetch()
     }
 
     /** The TV ended the socket while control v2 may still be up: dial again after the backoff. */
     private fun onLinkClosed() {
         val endpoint = linkFor
+        backoff.socketEnded(now() - linkOpenedAtMs)
         endLinkState()
         if (endpoint != null && stillWanted(endpoint)) dial(endpoint, backoff.next())
     }
 
-    private fun closeLink(reason: String) {
+    /**
+     * [optOut]: the phone is withdrawing its library, not just dropping a socket, so the TV is
+     * first sent an empty catalog and stops showing it at once (contract §3).
+     */
+    private fun closeLink(reason: String, optOut: Boolean = false) {
         dialJob?.cancel()
         dialJob = null
         dialFor = null
-        if (link.isOpen) link.close(reason)
+        if (link.isOpen) {
+            if (optOut) {
+                val empty = EncodedCatalog.of(emptyList())
+                link.closeAfter(LibraryFrames.full(empty), reason)
+                held = empty
+                sentItems = emptyMap()
+                FlickLog.i("library", "catalog sent=opt_out")
+            } else {
+                link.close(reason)
+            }
+        }
         endLinkState()
     }
 
@@ -280,17 +318,29 @@ internal class TvLibrary(
     // --- Catalog (contract §5) ----------------------------------------------
 
     private fun markDirty() {
-        dirty = true
-        if (!link.isOpen || !catalogAsked || pushJob?.isActive == true) return
+        freshness.changed()
+        schedulePush()
+    }
+
+    /**
+     * The debounced push. Nothing is rebuilt while a cast is live: the progress store writes
+     * every few seconds during a film, and [onCastCleanup] asks again once it ends. Asked again
+     * after every delivery too, so a change that lands mid-build is never lost.
+     */
+    private fun schedulePush() {
+        if (!freshness.dirty || !link.isOpen || !catalogAsked || phone.castLive()) return
+        if (pushJob?.isActive == true) return
         val socket = generation
         pushJob = scope.launch {
             delay(PUSH_DEBOUNCE_MS)
             catalogLock.withLock {
-                if (socket != generation) return@withLock
+                if (socket != generation || phone.castLive()) return@withLock
                 val current = currentCatalog() ?: return@withLock
                 if (socket != generation) return@withLock
                 deliver(CatalogDelivery.push(current.catalog, held), current)
             }
+            if (pushJob === coroutineContext[Job]) pushJob = null
+            if (socket == generation) schedulePush()
         }
     }
 
@@ -303,6 +353,7 @@ internal class TvLibrary(
                 catalogAsked = true
                 deliver(CatalogDelivery.answer(have, current.catalog, held), current)
             }
+            if (socket == generation) schedulePush()
         }
     }
 
@@ -321,11 +372,14 @@ internal class TvLibrary(
             is CatalogAnswer.Full -> "full parts=${answer.frames.size - 2}"
         }
         FlickLog.i("library", "catalog sent=$kind count=${current.catalog.size} dropped=${current.catalog.dropped}")
+        casting.afterDelivery()?.let { (castId, id) ->
+            if (phone.castLive() && held?.json(id) != null) link.sendText(LibraryFrames.casting(castId, id))
+        }
     }
 
     /** The catalog as the phone's state stands, rebuilt only when something it reads has moved. */
     private suspend fun currentCatalog(): Built? {
-        built?.takeIf { !dirty }?.let { return it }
+        built?.takeIf { !freshness.dirty }?.let { return it }
         // A library still on its first read would tell the TV the phone has nothing.
         if (phone.library.value.items.isEmpty()) {
             withTimeoutOrNull(LIBRARY_WAIT_MS) {
@@ -333,7 +387,7 @@ internal class TvLibrary(
                     .first { it }
             }
         }
-        dirty = false
+        val token = freshness.buildStarting()
         val items = phone.library.value.items
         val progress = phone.playbackProgress.value
         val watchedNow = watchedStore.state.value.keys
@@ -366,7 +420,7 @@ internal class TvLibrary(
                 unplayable = unplayable,
                 silent = silent,
                 art = if (postersOn) { query -> FilmPosters.cached(context, query) } else null,
-                hdr = { key -> byKey[key]?.let { MediaProbe.cachedHdr(it.uri) }?.let(::wireHdr) },
+                hdr = { key -> LibraryHdr.wire(byKey[key]?.let { MediaProbe.cachedHdr(it.uri) }) },
             )
             names.retain(items.mapTo(HashSet()) { it.name })
             val catalogItems = LibraryCatalogBuilder.build(rows, inputs, names)
@@ -377,6 +431,7 @@ internal class TvLibrary(
         }
         FlickLog.d("library", "catalog built count=${next.catalog.size} ms=${(System.nanoTime() - startedAtNs) / 1_000_000L}")
         built = next
+        freshness.built(token)
         return next
     }
 
@@ -413,7 +468,11 @@ internal class TvLibrary(
             return
         }
         scope.launch {
-            val readable = withTimeoutOrNull(READABLE_CHECK_MS) { readable(item) } ?: true
+            // A hung provider must not hold the answer past the 2 s playAck deadline, and a
+            // blocking open is not cancellable, so it runs apart and is only waited on.
+            val check = async(Dispatchers.IO) { isReadable(item) }
+            val readable = withTimeoutOrNull(READABLE_CHECK_MS) { check.await() }
+            if (readable == null) check.cancel()
             if (socket != generation) return@launch
             // Asked again: a tap on the phone may have started a cast while the file was opened.
             val late = LibraryPlayPolicy.refusal(
@@ -421,7 +480,7 @@ internal class TvLibrary(
                 listed = true,
                 startInFlight = phone.castStartInFlight(),
                 mayStartForeground = mayStartForegroundService(),
-            ) ?: PlayRefusal.UNAVAILABLE.takeIf { !readable }
+            ) ?: PlayRefusal.UNAVAILABLE.takeIf { readable == false }
             if (late != null) {
                 answerPlay(socket, frame.req, late)
                 return@launch
@@ -438,48 +497,61 @@ internal class TvLibrary(
         FlickLog.i("library", "play ok=${refusal == null} code=${refusal?.wire ?: "none"}")
     }
 
-    private suspend fun readable(item: MediaItem): Boolean = withContext(Dispatchers.IO) {
+    private fun isReadable(item: MediaItem): Boolean =
         runCatching { context.contentResolver.openFileDescriptor(item.uri, "r")?.use { true } ?: false }
             .getOrDefault(false)
-    }
 
     private fun onDetail(id: String) {
+        if (!detailGate.tryBegin(now())) return
         val socket = generation
         val item = sentItems[id]
         val postersOn = phone.filmPosters.value
         scope.launch {
-            var overview: String? = null
-            var tagline: String? = null
-            var hdr: CatalogItem.Hdr? = null
-            var subtitle: String? = null
-            if (item != null) {
-                hdr = MediaProbe.cachedHdr(item.uri)?.let(::wireHdr)
-                subtitle = phone.subtitleLabel(item)
-                val parsed = withContext(Dispatchers.Default) { VideoNames.parse(item.name) }
-                val base = if (postersOn && FilmDetailsStore.available) FilmPosterPolicy.queryFor(parsed) else null
-                if (base != null) {
-                    // The film the art was found as, by id, as the phone's own detail page asks.
-                    val art = withContext(Dispatchers.IO) { FilmPosters.cached(context, base) }
-                    val tmdbId = art?.tmdbId
-                    val show = art?.show.takeIf { tmdbId != null }
-                    val query = if (show != null) base.copy(show = show) else base
-                    val details = FilmDetailsStore.details(context, query, tmdbId)
-                    overview = details?.overview
-                    tagline = details?.tagline
-                }
+            try {
+                answerDetail(socket, id, item, postersOn)
+            } finally {
+                detailGate.end()
             }
-            if (socket != generation) return@launch
-            link.sendText(LibraryFrames.detail(id, overview, tagline, hdr, subtitle))
         }
     }
 
+    private suspend fun answerDetail(socket: Long, id: String, item: MediaItem?, postersOn: Boolean) {
+        var overview: String? = null
+        var tagline: String? = null
+        var hdr: CatalogItem.Hdr? = null
+        var subtitle: String? = null
+        if (item != null) {
+            hdr = LibraryHdr.wire(MediaProbe.cachedHdr(item.uri))
+            subtitle = phone.subtitleLabel(item)
+            val parsed = withContext(Dispatchers.Default) { VideoNames.parse(item.name) }
+            val base = if (postersOn && FilmDetailsStore.available) FilmPosterPolicy.queryFor(parsed) else null
+            if (base != null) {
+                // The film the art was found as, by id, as the phone's own detail page asks.
+                val art = withContext(Dispatchers.IO) { FilmPosters.cached(context, base) }
+                val tmdbId = art?.tmdbId
+                val show = art?.show.takeIf { tmdbId != null }
+                val query = if (show != null) base.copy(show = show) else base
+                val details = FilmDetailsStore.details(context, query, tmdbId)
+                overview = details?.overview
+                tagline = details?.tagline
+            }
+        }
+        if (socket != generation) return
+        link.sendText(LibraryFrames.detail(id, overview, tagline, hdr, subtitle))
+    }
+
     private fun onSeason(showKey: String, season: Int) {
+        if (!seasonGate.tryBegin(now())) return
         val socket = generation
         val tvId = TvSeasonPolicy.tmdbId(showKey)?.takeIf { phone.filmPosters.value }
         scope.launch {
-            val episodes = tvId?.let { TvSeasons.episodes(context, it, season) }.orEmpty()
-            if (socket != generation) return@launch
-            link.sendBatch(LibraryFrames.season(showKey, season, episodes))
+            try {
+                val episodes = tvId?.let { TvSeasons.episodes(context, it, season) }.orEmpty()
+                if (socket != generation) return@launch
+                link.sendBatch(LibraryFrames.season(showKey, season, episodes))
+            } finally {
+                seasonGate.end()
+            }
         }
     }
 
@@ -501,9 +573,9 @@ internal class TvLibrary(
 
     /** Called for every control-v2 `loadMedia`, whoever started the cast (contract §6.6). */
     fun onLoadMedia(castId: String, item: MediaItem) {
-        if (!link.isOpen) return
         val id = LibraryProtocol.itemId(PlaybackMediaFingerprint.of(item))
-        if (held?.json(id) == null) return
+        casting.loaded(castId, id)
+        if (!link.isOpen || held?.json(id) == null) return
         link.sendText(LibraryFrames.casting(castId, id))
     }
 
@@ -566,7 +638,11 @@ internal class TvLibrary(
      */
     fun onCastCleanup(castId: String) {
         watchedRecorder.finish(castId)?.let(watchedStore::mark)
-        scope.launch(Dispatchers.Main) { openReadyWindow(justLeftForeground = false) }
+        casting.ended(castId)
+        scope.launch(Dispatchers.Main) {
+            openReadyWindow(justLeftForeground = false)
+            schedulePush()
+        }
     }
 
     // --- Ready window (contract §8) -----------------------------------------
@@ -591,7 +667,9 @@ internal class TvLibrary(
             controlAuthenticated = phone.control.connection.value == ConnectionStatus.CONNECTED &&
                 phone.control.authenticatedEndpoint() != null,
             linkOpen = link.isOpen,
-            castServing = phone.castLive() || ServerStateHolder.state.value.status == ServerStatus.RUNNING,
+            // Not the media server's status: it still reads RUNNING until the stop it was just
+            // sent lands, and that is exactly when the window has to be started.
+            castServing = phone.castLive(),
             mayStartForeground = justLeftForeground || mayStartForegroundService(),
         )
         if (!allowed) return
@@ -639,17 +717,12 @@ internal class TvLibrary(
         sdkInt = Build.VERSION.SDK_INT,
         visible = phone.visible(),
         batteryExempt = batteryExempt(),
+        processAllowed = foregroundStartAllowed(Build.VERSION.SDK_INT, currentProcessImportance()),
     )
 
     private fun batteryExempt(): Boolean = runCatching {
         context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) == true
     }.getOrDefault(false)
-
-    private fun wireHdr(type: HdrType): CatalogItem.Hdr = when (type) {
-        HdrType.DOLBY_VISION -> CatalogItem.Hdr.DOLBY_VISION
-        HdrType.HDR10 -> CatalogItem.Hdr.HDR10
-        HdrType.NONE -> CatalogItem.Hdr.SDR
-    }
 
     private fun now(): Long = SystemClock.elapsedRealtime()
 
@@ -662,5 +735,8 @@ internal class TvLibrary(
         const val REFRESH_INTERVAL_MS = 10_000L
         const val PREFETCH_PARALLELISM = 2
         const val LIBRARY_WAIT_MS = 20_000L
+        const val ANSWERS_IN_FLIGHT = 4
+        const val ANSWERS_PER_WINDOW = 20
+        const val ANSWER_WINDOW_MS = 10_000L
     }
 }

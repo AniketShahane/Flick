@@ -330,10 +330,12 @@ content:// media ── CastServerService ── HTTP ranges ──> Media3 hard
        |             (+ :8080 /s/<token> subtitle)             |
        |                  exact owned peer IP                   |
        └──── application CastCoordinator <── WebSocket v2 ──────┘
-                                                    control server
+       |                                            control server
+       └──── TvLibrary (catalog, play) <──── /library WebSocket ──┘
+                                              (same port, own proof)
 ```
 
-The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/`FileChannel`; it does not cache or copy the whole file. The TV's Ktor CIO WebSocket server carries pairing/control/state only and cannot browse files or request arbitrary URLs.
+The sender's Ktor CIO media server reads directly from a `ParcelFileDescriptor`/`FileChannel`; it does not cache or copy the whole file. The TV's Ktor CIO WebSocket server carries pairing/control/state on `/control`, and the phone's display catalog on `/library` (see [The TV library](#the-tv-library)); neither route can browse files or request arbitrary URLs.
 
 ## Optional one-time tips
 
@@ -1535,6 +1537,57 @@ When a station's IPv4 address is removed, Android's netd destroys every TCP sock
 **Only `edge=available` is evidence.** A network callback replays `onAvailable` for every already-up network the instant it registers, so a monitor's first arrival is the association it merely walked in on at least as often as it is a new one, and nothing inside the process can tell the two apart. That first edge is therefore named `first` and claims only what is known. It matters because it was measured: three app restarts inside four minutes each logged an identical `epoch=1` while the radio did nothing at all, and counting those is exactly the false positive that would make a ±30 s correlation agree with whatever it was asked.
 
 Wire failures are stable lowercase codes with required `retryable` and optional HTTP status only when observed. Raw exception text is never serialized. Classification is evidence-conservative: actual parser/decoder/network/status evidence is used, while ambiguous codec/HDR failures stay broad (`unsupported_video_format`, `decoder_init`, or `unknown`). Phone-local pre-control/source/bind failures remain phone-only; adopted receiver failure reaches both devices only while control is still usable.
+
+## The TV library
+
+The TV can show the phone's video library and play from it with the remote. The binding
+contract is [library-channel.md](design/library-channel.md); this section says where it lives.
+
+- **A second socket, not a control-v2 change.** The phone dials `ws://<tv>:<control-port>/library`
+  only while control v2 is authenticated to that TV, **Show my library on my TV** (phone
+  Settings, on by default) is on and media access is granted. Its own HMAC proof uses the
+  pairing key with the `Flick-Library-V1` domain, so the two routes can never accept each
+  other's proofs, and the apps can be updated in either order. An old TV answers 404 and the
+  phone stops trying until the next app start.
+- **Phone side** (`sender/.../library/`). `TvLibrary` owns the link and the policy: it builds the
+  catalog from the same rows, titles, sort keys and search text the phone's own library uses
+  (`LibraryCatalogBuilder`), answers `play` through the exact entry a tap runs
+  (`FlickController.flickToTv` / `startOver`), sends `casting` with every `loadMedia`, and serves
+  detail, TMDB seasons (`TvSeasons`, 7-day cache) and thumbnails (`LibraryThumbs`). The watched
+  ledger (`WatchedLedger`/`WatchedStore`, newest 5000, not backed up) feeds Next episodes. While a
+  cast is live it does not rebuild or push; one push follows the cast's end.
+- **The ready window.** Android 14+ freezes a cached app ~10 s after it is cached and kills its
+  sockets, which would drop the library the moment a film ends with the phone in a pocket.
+  `TvReadyService` is a `connectedDevice` foreground service with a quiet "Ready for <TV>"
+  notification, no wake lock and no Wi-Fi lock. It opens when a cast ends or the app goes to the
+  background while the library socket is up, and closes 30 minutes after the last viewer
+  activity on either device, two minutes after control is lost, on Stop, or at once when the
+  setting is turned off. A start from the background happens only when Android allows it (the
+  activity visible, battery optimisation off, SDK < 31, or the process already in the
+  foreground-service state); otherwise the window stays shut and a TV `play` is refused with
+  `background`, and the TV says what to change (open Flick on the phone, or let it run
+  unrestricted in its battery settings).
+- **TV side** (`receiver/.../library/`). `LibraryServer` is the route: the same binding, `Host`
+  and private-peer gates as `/control`, its own pre-auth permit pool, a 512-frame outgoing bound.
+  `TvLibrary` implements `LibraryHub`: it assembles catalogs, keeps them in memory only (keyed by
+  the phone's `keyId`, dropped on forget), derives shelves off the main thread, and owns the
+  single outstanding `play`, the thumbnail queue and the Up next decision. Sorting, folder scope
+  and search are ports of the phone's own policies with parity tests (`LibraryFold`,
+  `LibraryNameOrder`, `LibrarySorting`, `LibrarySearch`, `LibraryFolderTree`).
+- **TV screens** (`receiver/.../ui/library/`). Home (Continue watching, Next episodes, Recently
+  added, Shows, Films, Home videos), Shows, Films, All videos with the phone's five sort orders
+  and folder chooser, Search, a show page with season tabs, and a detail page. TMDB art loads
+  from `image.tmdb.org` with Coil; only paths matching the phone's poster rule are ever turned
+  into URLs. Items with no TMDB art get the phone's own still, at most 6 in flight.
+- **Up next.** When an episode's cast ends and the next episode of that show is in the catalog,
+  the TV draws the Up next card over the full-size film (the film is never scaled; see
+  [Stage motion](#stage-motion-house-lights-the-tunnel-and-the-resync-wait)). With **Autoplay
+  next episode** on (TV Settings, on by default) it asks the phone to play it after 10 s; after
+  three autoplays with no key press it asks "Still watching?" instead.
+- **What it never does.** The TV never receives a path, content URI, media URL or token on this
+  channel, never fetches a URL the phone sent, and starts nothing itself: every cast is still
+  minted and served by the phone through control v2. Titles, names, folders, ids and art paths
+  never enter either device's logs or journal (§12 of the contract).
 
 ## Privacy and diagnostics
 

@@ -5,7 +5,10 @@ import kotlinx.coroutines.flow.StateFlow
 
 /** How this TV's library socket to the phone stands. */
 enum class LibraryLink {
-    /** No phone has sent a library since this process started; the standby screen stays Idle. */
+    /**
+     * No library to show: no phone has sent one, the phone's library is empty, or its socket
+     * has been gone long enough that it has stopped sharing. The standby screen stays Idle.
+     */
     NONE,
 
     /** Authenticated and current. */
@@ -106,7 +109,7 @@ interface LibraryHub {
 
     fun refresh()
 
-    /** Called while a library screen is visible; sent at most once a minute. */
+    /** Someone is using a library screen; sent at most once a minute, and only on viewer input. */
     fun browsing()
 
     fun playUpNext()

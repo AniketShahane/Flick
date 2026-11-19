@@ -27,6 +27,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -76,13 +77,6 @@ import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 import com.flick.receiver.ui.theme.LocalHouseLit
 import com.flick.receiver.ui.theme.LocalReducedMotion
-import kotlinx.coroutines.delay
-
-/**
- * How often the TV tells the phone someone is browsing (§6.5: at most once a minute). The hub
- * throttles too; this is simply the cadence a visible library asks at.
- */
-private const val BROWSING_INTERVAL_MS = 60_000L
 
 /** The menu scrim: [FlickColor.CanvasPlayback] @ 55 %, as in the sort mockup. */
 private val MenuScrim = Color(0x8C02040A)
@@ -91,6 +85,9 @@ private val MenuScrim = Color(0x8C02040A)
 @Stable
 internal class LibraryModal {
     var open by mutableStateOf(false)
+
+    /** A page's menu, drawn by the screen over everything, the top bar included; see [OverTopBar]. */
+    var overlay by mutableStateOf<(@Composable () -> Unit)?>(null)
 }
 
 internal val LocalLibraryModal = staticCompositionLocalOf<LibraryModal?> { null }
@@ -113,6 +110,26 @@ internal fun HoldModal() {
     DisposableEffect(modal) {
         modal.open = true
         onDispose { modal.open = false }
+    }
+}
+
+/**
+ * Draws [content] at the screen's level, above the top bar, for as long as the caller is
+ * composed. A page sits under the top bar, so a menu's scrim drawn inside it would leave the
+ * bar lit.
+ */
+@Composable
+internal fun OverTopBar(content: @Composable () -> Unit) {
+    val modal = LocalLibraryModal.current
+    if (modal == null) {
+        content()
+        return
+    }
+    val latest = rememberUpdatedState(content)
+    DisposableEffect(modal) {
+        val slot: @Composable () -> Unit = { latest.value() }
+        modal.overlay = slot
+        onDispose { if (modal.overlay === slot) modal.overlay = null }
     }
 }
 
@@ -193,6 +210,7 @@ private fun LibraryRoot(
 ) {
     val state by ui.hub.state.collectAsState()
     val retained = LocalShellRetained.current
+    val modal = LocalLibraryModal.current
     val phoneName = state.phoneName ?: stringResource(R.string.libui_phone_fallback)
 
     var stack by remember { mutableStateOf(LibraryNav.root()) }
@@ -217,15 +235,11 @@ private fun LibraryRoot(
         memories.keys.retainAll { serial -> serial < 0L || next.any { it.serial == serial } }
     }
 
+    // Once each time the library comes on screen; remote key presses send it after that.
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner, retained) {
         if (retained) return@LaunchedEffect
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                ui.hub.browsing()
-                delay(BROWSING_INTERVAL_MS)
-            }
-        }
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { ui.hub.browsing() }
     }
 
     val catalog = state.catalog
@@ -233,7 +247,8 @@ private fun LibraryRoot(
     LaunchedEffect(catalog, shelves) {
         if (catalog == null || shelves == null) return@LaunchedEffect
         val pruned = LibraryNav.pruned(stack, catalog, shelves.shows.mapTo(HashSet()) { it.key })
-        if (pruned !== stack) navigate(pruned, land = true)
+        // A page re-keyed in place keeps its focus; only a page that went away re-lands it.
+        if (pruned !== stack) navigate(pruned, land = pruned.last().serial != stack.last().serial)
     }
 
     // While the catalog is still on its way the top bar is all there is; the remote must
@@ -332,7 +347,9 @@ private fun LibraryRoot(
             ReconnectingPill(phoneName, Modifier.align(Alignment.TopEnd))
         }
 
-        PlayStatus(state, showAsking = top.route == LibraryRoute.Search, modifier = Modifier.align(Alignment.BottomEnd))
+        PlayStatus(state, modifier = Modifier.align(Alignment.BottomEnd))
+
+        modal?.overlay?.let { slot -> key(slot) { slot() } }
 
         if (phoneMenu) {
             PhoneMenu(
@@ -546,13 +563,13 @@ private fun ReconnectingPill(phoneName: String, modifier: Modifier = Modifier) {
 
 /**
  * The outcome of a Play, bottom right. A failure names the one thing to change and stays
- * until any key is pressed. "Asking your phone…" shows here only for a pick made from a tile
- * ([showAsking]); a page's own Play button says it in place.
+ * until any key is pressed. "Asking your phone…" shows on every page while any Play is out,
+ * so a second press, which the hub ignores until the first settles, visibly waits.
  */
 @Composable
-private fun PlayStatus(state: LibraryState, showAsking: Boolean, modifier: Modifier = Modifier) {
+private fun PlayStatus(state: LibraryState, modifier: Modifier = Modifier) {
     val play = state.play
-    val asking = showAsking && (play is LibraryPlay.Asking || play is LibraryPlay.Starting)
+    val asking = play is LibraryPlay.Asking || play is LibraryPlay.Starting
     if (play !is LibraryPlay.Failed && !asking) return
     GlassPanel(
         modifier = modifier
@@ -613,7 +630,7 @@ private fun PhoneMenu(
     val inside = remember { mutableStateOf(false) }
     val retained = LocalShellRetained.current
     LaunchedEffect(Unit) { if (!retained) landTvFocus(first, first) { inside.value } }
-    BackHandler { onDismiss() }
+    BackHandler(enabled = !retained) { onDismiss() }
     Box(
         Modifier
             .fillMaxSize()

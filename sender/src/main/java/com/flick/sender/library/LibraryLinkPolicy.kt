@@ -1,5 +1,7 @@
 package com.flick.sender.library
 
+import com.flick.sender.model.HdrType
+
 /** Contract §3: the wait before each library re-dial while control v2 stays up. */
 internal class LibraryDialBackoff {
     private var failures = 0
@@ -15,9 +17,15 @@ internal class LibraryDialBackoff {
         failures = 0
     }
 
+    /** An authenticated socket ended after [upMs]; only one that stayed up earns a fresh start. */
+    fun socketEnded(upMs: Long) {
+        if (upMs >= STABLE_MS) reset()
+    }
+
     companion object {
         val STEPS_MS = listOf(2_000L, 5_000L, 15_000L)
         const val STEADY_MS = 60_000L
+        const val STABLE_MS = 30_000L
     }
 }
 
@@ -30,6 +38,79 @@ internal class SlidingWindowLimiter(private val max: Int, private val windowMs: 
         if (passes.size >= max) return false
         passes.addLast(nowMs)
         return true
+    }
+}
+
+/** Contract §6.2: at most [maxInFlight] unanswered and at most [maxPerWindow] begun in any [windowMs]. */
+internal class RequestGate(private val maxInFlight: Int, maxPerWindow: Int, windowMs: Long) {
+    private val window = SlidingWindowLimiter(maxPerWindow, windowMs)
+    private var inFlight = 0
+
+    fun tryBegin(nowMs: Long): Boolean {
+        if (inFlight >= maxInFlight || !window.tryPass(nowMs)) return false
+        inFlight++
+        return true
+    }
+
+    fun end() {
+        if (inFlight > 0) inFlight--
+    }
+}
+
+/**
+ * Contract §5.2: whether the catalog last built is still the phone's state. A change that
+ * lands while a build runs leaves it stale, and so does a build that never finished.
+ */
+internal class CatalogFreshness {
+    private var changes = 1L
+    private var builtFrom = 0L
+
+    val dirty: Boolean get() = builtFrom != changes
+
+    fun changed() {
+        changes++
+    }
+
+    /** Taken before a build reads anything; handed back to [built] once its result is kept. */
+    fun buildStarting(): Long = changes
+
+    fun built(token: Long) {
+        builtFrom = maxOf(builtFrom, token)
+    }
+}
+
+/** Contract §6.6: the live cast's `casting`, said again once on each new socket. */
+internal class CastingMemory {
+    private var live: Pair<String, String>? = null
+    private var said = true
+
+    fun loaded(castId: String, id: String) {
+        live = castId to id
+    }
+
+    fun ended(castId: String) {
+        if (live?.first == castId) live = null
+    }
+
+    fun socketOpened() {
+        said = false
+    }
+
+    /** The (castId, item id) to send after a catalog delivery, at most once per socket. */
+    fun afterDelivery(): Pair<String, String>? {
+        if (said) return null
+        said = true
+        return live
+    }
+}
+
+/** Contract §5.1: `hdr` is omitted unless the probe said something positive. */
+internal object LibraryHdr {
+    // HdrType.NONE is both "no HDR transfer seen" and "the probe failed", so it is never `sdr`.
+    fun wire(type: HdrType?): CatalogItem.Hdr? = when (type) {
+        HdrType.DOLBY_VISION -> CatalogItem.Hdr.DOLBY_VISION
+        HdrType.HDR10 -> CatalogItem.Hdr.HDR10
+        HdrType.NONE, null -> null
     }
 }
 
@@ -50,12 +131,13 @@ internal object LibraryPlayPolicy {
     const val ANDROID_S = 31
 
     /**
-     * Android 12+ lets a backgrounded app start a foreground service only under listed
-     * exemptions. A foreground service the app already runs is not one of them; "the user
-     * turned off battery optimisation for the app" is.
+     * Contract §8. Android 12+ lets a backgrounded app start a foreground service only under
+     * listed exemptions; the documented one is "the user turned off battery optimisation for
+     * the app". [processAllowed] is `foregroundStartAllowed` on this process's importance,
+     * which AOSP also lets through for a process already holding a foreground service.
      */
-    fun mayStartForegroundService(sdkInt: Int, visible: Boolean, batteryExempt: Boolean): Boolean =
-        sdkInt < ANDROID_S || visible || batteryExempt
+    fun mayStartForegroundService(sdkInt: Int, visible: Boolean, batteryExempt: Boolean, processAllowed: Boolean): Boolean =
+        sdkInt < ANDROID_S || visible || batteryExempt || processAllowed
 
     /** The refusal for a `play`, or null when the phone should run the cast path. */
     fun refusal(enabled: Boolean, listed: Boolean, startInFlight: Boolean, mayStartForeground: Boolean): PlayRefusal? = when {

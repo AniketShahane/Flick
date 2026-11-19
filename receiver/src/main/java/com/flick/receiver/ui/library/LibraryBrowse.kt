@@ -317,33 +317,35 @@ internal fun AllVideosPane(catalog: LibraryCatalog, pane: PaneContext) {
         }
     }
 
-    when (menu) {
-        AllMenu.SORT -> SortMenu(
-            current = sort,
-            onPick = { order ->
-                if (order != sort) {
-                    sort = order
-                    prefs.edit().putString(KEY_SORT, order.name).apply()
-                    restart()
-                }
-                closeMenu()
-            },
-            onDismiss = { closeMenu() },
-        )
-        AllMenu.FOLDER -> FolderMenu(
-            folders = folders,
-            current = folder,
-            total = catalog.items.size,
-            onPick = { path ->
-                if (path != folder) {
-                    pane.memory.folder = path
-                    restart()
-                }
-                closeMenu()
-            },
-            onDismiss = { closeMenu() },
-        )
-        null -> Unit
+    if (menu != null) OverTopBar {
+        when (menu) {
+            AllMenu.SORT -> SortMenu(
+                current = sort,
+                onPick = { order ->
+                    if (order != sort) {
+                        sort = order
+                        prefs.edit().putString(KEY_SORT, order.name).apply()
+                        restart()
+                    }
+                    closeMenu()
+                },
+                onDismiss = { closeMenu() },
+            )
+            AllMenu.FOLDER -> FolderMenu(
+                folders = folders,
+                current = folder,
+                total = catalog.items.size,
+                onPick = { path ->
+                    if (path != folder) {
+                        pane.memory.folder = path
+                        restart()
+                    }
+                    closeMenu()
+                },
+                onDismiss = { closeMenu() },
+            )
+            null -> Unit
+        }
     }
 }
 
@@ -355,7 +357,7 @@ private fun sortLabel(order: LibrarySortOrder): Int = when (order) {
     LibrarySortOrder.SHORTEST -> R.string.libui_sort_shortest
 }
 
-/** A menu over the grid: a scrim, and a panel that alone takes focus while it is open. */
+/** A menu over the whole screen: a scrim, and a panel that alone takes focus while it is open. */
 @Composable
 private fun ChoiceMenu(
     title: String,
@@ -368,7 +370,7 @@ private fun ChoiceMenu(
     val inside = remember { mutableStateOf(false) }
     val retained = LocalShellRetained.current
     LaunchedEffect(Unit) { if (!retained) landTvFocus(initial, initial) { inside.value } }
-    BackHandler { onDismiss() }
+    BackHandler(enabled = !retained) { onDismiss() }
     Box(
         Modifier
             .fillMaxSize()
@@ -453,7 +455,7 @@ private fun FolderMenu(
                     onClick = { onPick(null) },
                 )
             }
-            listItemsIndexed(folders, key = { _, node -> node.path }) { _, node ->
+            listItemsIndexed(folders, key = { _, node -> "f:" + node.path }) { _, node ->
                 FolderRow(
                     name = node.name,
                     count = node.count,

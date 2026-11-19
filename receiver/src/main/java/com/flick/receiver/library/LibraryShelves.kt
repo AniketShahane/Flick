@@ -56,16 +56,20 @@ object LibraryShelving {
     }
 
     /**
-     * The episode to offer after [show]'s most recently finished one: the next by
-     * `(season, episode)` that is not already watched. Null when nothing in the show has been
-     * watched yet, when the show is finished, or when the next one is already in progress
-     * (it is in Continue watching instead).
+     * The episode to offer after [show]'s most recently finished one: the first after it by
+     * `(season, episode)` that is a different episode (a second file of the finished one is
+     * skipped). Null when nothing in the show has been watched yet, when the show is finished,
+     * or when that episode is watched or already in progress (it is in Continue watching
+     * instead) — a later episode is never offered in its place.
      */
     fun nextEpisode(show: LibraryShow): LibraryItem? {
         val ordered = show.all
         val lastWatched = ordered.indexOfLast { it.watched }
         if (lastWatched < 0) return null
-        return ordered.drop(lastWatched + 1).firstOrNull { !it.watched && it.resumeMs == null }
+        val last = ordered[lastWatched]
+        val candidate = ordered.drop(lastWatched + 1)
+            .firstOrNull { it.season != last.season || it.episode != last.episode } ?: return null
+        return candidate.takeIf { !it.watched && it.resumeMs == null }
     }
 
     /**

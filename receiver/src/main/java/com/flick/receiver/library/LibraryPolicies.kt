@@ -36,13 +36,16 @@ class LibraryHandshake(
     private var helloSeen = false
     private var challenge: Challenge? = null
     private var finished = false
+    private var ignored = 0
 
     fun onFrame(frame: PhoneFrame): Step {
         if (finished) return Step.Violation
         return when (frame) {
             is PhoneFrame.Hello -> hello(frame)
             is PhoneFrame.Proof -> proof(frame)
-            is PhoneFrame.Unknown -> Step.Ignore
+            // Bounded like `/control`'s pre-auth budget: unknown frames cannot hold a permit
+            // for the whole six seconds.
+            is PhoneFrame.Unknown -> if (++ignored >= MAX_IGNORED) finish(Step.Violation) else Step.Ignore
             // Malformed, or a session frame before the session exists.
             else -> finish(Step.Violation)
         }
@@ -77,6 +80,11 @@ class LibraryHandshake(
         finished = true
         challenge = null
         return step
+    }
+
+    companion object {
+        /** The third ignored frame before authentication closes the socket, as on `/control`. */
+        const val MAX_IGNORED = 3
     }
 }
 
@@ -142,14 +150,15 @@ class LibraryPlayMachine {
     /** No `playAck` can arrive on a socket that is gone; an accepted request may still start. */
     fun onLinkLost() {
         val asking = state as? LibraryPlay.Asking ?: return
-        settle(LibraryPlay.Failed(asking.id, LibraryPlayFailure.OFFLINE))
+        settle(if (castSeenWhileAsking) LibraryPlay.Idle else LibraryPlay.Failed(asking.id, LibraryPlayFailure.OFFLINE))
     }
 
     fun tick(nowMs: Long) {
         val due = deadlineAtMs ?: return
         if (nowMs < due) return
         when (val current = state) {
-            is LibraryPlay.Asking -> settle(LibraryPlay.Failed(current.id, LibraryPlayFailure.NO_ANSWER))
+            // The cast it asked for is already playing; only the ack went missing.
+            is LibraryPlay.Asking -> settle(if (castSeenWhileAsking) LibraryPlay.Idle else LibraryPlay.Failed(current.id, LibraryPlayFailure.NO_ANSWER))
             is LibraryPlay.Starting -> settle(LibraryPlay.Failed(current.id, LibraryPlayFailure.NOT_STARTED))
             else -> deadlineAtMs = null
         }
@@ -182,21 +191,26 @@ class LibraryPlayMachine {
 
 /**
  * Phone thumbnails to ask for (§6.4): at most [maxOutstanding] in flight, the newest request
- * first, a `thumbMiss` never asked again.
+ * first, a `thumbMiss` never asked again, and at most [maxSends] asks per [sendWindowMs] —
+ * the phone silently drops `thumbWant` past that cap.
  *
- * An outstanding request expires after [expiryMs] without a timer: the phone drops
- * `thumbWant` past its own rate cap and says nothing, and six such losses would otherwise
- * hold every slot for the life of the socket. Expiry is checked whenever the queue is used,
- * which is whenever a tile asks.
+ * An outstanding request expires after [expiryMs]: the phone may have dropped it, so it goes
+ * back behind the newer requests, at most [maxAttempts] asks in all. The caller re-pumps at
+ * [nextPumpAtMs], since a freed slot or send budget otherwise waits for the next tile to ask.
  */
 class ThumbnailQueue(
     private val maxOutstanding: Int = 6,
     private val maxQueued: Int = 60,
     private val expiryMs: Long = 15_000L,
+    private val maxSends: Int = 60,
+    private val sendWindowMs: Long = 10_000L,
+    private val maxAttempts: Int = 3,
 ) {
     private val queued = ArrayDeque<String>()
     private val outstanding = LinkedHashMap<String, Long>()
     private val missed = HashSet<String>()
+    private val attempts = HashMap<String, Int>()
+    private val sentAt = ArrayDeque<Long>()
 
     val outstandingCount: Int get() = outstanding.size
 
@@ -208,28 +222,55 @@ class ThumbnailQueue(
         if (id in missed || id in outstanding) return
         queued.remove(id)
         queued.addFirst(id)
-        while (queued.size > maxQueued) queued.removeLast()
+        trim()
     }
 
     /** The ids to send `thumbWant` for now, each now outstanding. */
     fun pump(nowMs: Long): List<String> {
         expire(nowMs)
-        if (queued.isEmpty() || outstanding.size >= maxOutstanding) return emptyList()
+        pruneSends(nowMs)
+        if (queued.isEmpty() || outstanding.size >= maxOutstanding || sentAt.size >= maxSends) return emptyList()
         val out = ArrayList<String>()
-        while (outstanding.size < maxOutstanding && queued.isNotEmpty()) {
+        while (outstanding.size < maxOutstanding && queued.isNotEmpty() && sentAt.size < maxSends) {
             val id = queued.removeFirst()
             outstanding[id] = nowMs
+            attempts[id] = (attempts[id] ?: 0) + 1
+            sentAt.addLast(nowMs)
             out += id
         }
         return out
     }
 
-    /** True when [id] was asked for, so its image is worth decoding. */
-    fun onArrived(id: String): Boolean = outstanding.remove(id) != null
+    /**
+     * When [pump] may next have something to send or to expire, or null when nothing is
+     * queued or in flight.
+     */
+    fun nextPumpAtMs(nowMs: Long): Long? {
+        pruneSends(nowMs)
+        var next: Long? = null
+        outstanding.values.minOrNull()?.let { next = it + expiryMs }
+        if (queued.isNotEmpty()) {
+            val ready = when {
+                outstanding.size >= maxOutstanding -> null
+                sentAt.size >= maxSends -> sentAt.first() + sendWindowMs
+                else -> nowMs
+            }
+            if (ready != null) next = next?.let { minOf(it, ready) } ?: ready
+        }
+        return next
+    }
+
+    /** True when [id] is still wanted, so its image is worth decoding — late frames included. */
+    fun onArrived(id: String): Boolean {
+        val wanted = outstanding.remove(id) != null || queued.remove(id)
+        if (wanted) attempts.remove(id)
+        return wanted
+    }
 
     fun onMiss(id: String) {
         outstanding.remove(id)
         queued.remove(id)
+        attempts.remove(id)
         missed += id
     }
 
@@ -241,20 +282,37 @@ class ThumbnailQueue(
             queued.remove(id)
             queued.addFirst(id)
         }
-        while (queued.size > maxQueued) queued.removeLast()
+        trim()
     }
 
     /** The catalog no longer holds these, or now has TMDB art for them. */
     fun retainOnly(keep: (String) -> Boolean) {
         queued.retainAll(keep)
         outstanding.keys.retainAll(keep)
+        attempts.keys.retainAll(keep)
     }
 
     private fun expire(nowMs: Long) {
-        val iterator = outstanding.entries.iterator()
-        while (iterator.hasNext()) {
-            if (nowMs - iterator.next().value >= expiryMs) iterator.remove()
+        val expired = outstanding.entries.filter { nowMs - it.value >= expiryMs }.map { it.key }
+        if (expired.isEmpty()) return
+        for (id in expired) {
+            outstanding.remove(id)
+            if ((attempts[id] ?: 0) < maxAttempts) {
+                if (id !in queued) queued.addLast(id)
+            } else {
+                // Given up for now; a tile that asks again starts afresh.
+                attempts.remove(id)
+            }
         }
+        trim()
+    }
+
+    private fun pruneSends(nowMs: Long) {
+        while (sentAt.isNotEmpty() && nowMs - sentAt.first() >= sendWindowMs) sentAt.removeFirst()
+    }
+
+    private fun trim() {
+        while (queued.size > maxQueued) attempts.remove(queued.removeLast())
     }
 }
 
@@ -287,11 +345,13 @@ class CastingMap(private val capacity: Int = 8) {
 
 /**
  * Assembles one show-season's `season` parts (§6.3). A part whose `parts` disagrees with
- * the parts already held restarts that season.
+ * the parts already held restarts that season. At most [maxEpisodes] episodes are kept per
+ * season; parts past that arrive empty, so a phone cannot grow one season without bound.
  */
-class SeasonAssembler {
+class SeasonAssembler(private val maxEpisodes: Int = MAX_EPISODES) {
     private class Pending(val parts: Int) {
         val received = arrayOfNulls<List<LibraryEpisodeInfo>>(parts)
+        var count = 0
     }
 
     private val pending = HashMap<LibrarySeasonKey, Pending>()
@@ -300,13 +360,21 @@ class SeasonAssembler {
     fun add(key: LibrarySeasonKey, part: Int, parts: Int, episodes: List<LibraryEpisodeInfo>): List<LibraryEpisodeInfo>? {
         if (parts <= 0 || part !in 0 until parts) return null
         val held = pending[key]?.takeIf { it.parts == parts } ?: Pending(parts).also { pending[key] = it }
-        held.received[part] = episodes
+        held.received[part]?.let { held.count -= it.size }
+        val kept = episodes.take((maxEpisodes - held.count).coerceAtLeast(0))
+        held.received[part] = kept
+        held.count += kept.size
         if (held.received.any { it == null }) return null
         pending.remove(key)
         return held.received.flatMap { it!! }
     }
 
     fun clear() = pending.clear()
+
+    companion object {
+        /** As many as a whole catalog's parts (§5.2); no real season comes near it. */
+        const val MAX_EPISODES = 4_000
+    }
 }
 
 /** §10: whether, and how, an ended cast offers the next episode. */

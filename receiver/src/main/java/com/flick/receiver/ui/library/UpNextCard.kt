@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.flick.receiver.R
 import com.flick.receiver.library.LibraryImages
+import com.flick.receiver.library.LibraryPlay
 import com.flick.receiver.library.UpNextOffer
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.components.GlassPanel
@@ -67,10 +68,14 @@ private const val AUTOPLAY_WINDOW_SECONDS = 10
  * With autoplay on it counts down to [UpNextOffer.autoplayAtMs]; the hub sends the play,
  * this only draws the time left. When [UpNextOffer.stillWatching] it asks instead, with no
  * countdown at all.
+ *
+ * [play] is the hub's one Play: while it asks the phone for the next episode the button says
+ * so, and a refusal stays on the card with "Play now" left to try again.
  */
 @Composable
 fun UpNextCard(
     offer: UpNextOffer,
+    play: LibraryPlay,
     onPlayNow: () -> Unit,
     onBackToLibrary: () -> Unit,
     modifier: Modifier = Modifier,
@@ -86,6 +91,8 @@ fun UpNextCard(
             if (!retained) landTvFocus(playFocus, playFocus) { inside.value }
         }
         val label = LibraryFormat.episodeLabel(next)
+        val asking = LibraryFormat.asking(play, next.id)
+        val failure = (play as? LibraryPlay.Failed)?.takeIf { it.id == next.id }?.reason
 
         Box(modifier.tvOverscanSafeArea()) {
             GlassPanel(
@@ -144,10 +151,25 @@ fun UpNextCard(
                     val autoplayAt = offer.autoplayAtMs
                     if (!offer.stillWatching && autoplayAt != null) CountdownRing(autoplayAt)
                 }
+                if (failure != null) {
+                    Text(
+                        text = stringResource(failureText(LibraryFormat.failureCopy(failure))),
+                        style = FlickType.body(sizeSp = 14, weight = FontWeight.Medium),
+                        color = FlickColor.Caution,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 FocusBeaconHost {
                     Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                         PrimaryAction(
-                            text = stringResource(if (offer.stillWatching) R.string.libui_keep_watching else R.string.libui_play_now),
+                            text = stringResource(
+                                when {
+                                    asking -> R.string.libui_asking
+                                    offer.stillWatching -> R.string.libui_keep_watching
+                                    else -> R.string.libui_play_now
+                                },
+                            ),
                             onClick = onPlayNow,
                             focusRequester = playFocus,
                         )
