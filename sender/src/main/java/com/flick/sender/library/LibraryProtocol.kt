@@ -414,6 +414,9 @@ internal enum class PlayRefusal(val wire: String) {
     DISABLED("disabled"),
     BUSY("busy"),
     UNAVAILABLE("unavailable"),
+
+    /** The phone may not start a foreground service now: not visible and battery-optimised. */
+    BACKGROUND("background"),
 }
 
 /** Frames the TV sends, as the phone reads them. */

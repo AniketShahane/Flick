@@ -19,6 +19,9 @@ enum class LibraryLink {
 enum class LibraryPlayFailure {
     MISSING, DISABLED, BUSY, UNAVAILABLE,
 
+    /** The phone cannot start a cast while Flick is in its background and battery-optimised. */
+    BACKGROUND,
+
     /** No `playAck` within 8 s. */
     NO_ANSWER,
 

@@ -189,7 +189,9 @@ a Wi-Fi blip does not blank the screen.
 - `playAck ok:true` means the phone accepted and has begun that path; success is still the
   control-v2 `loadMedia` → `loadReady` the TV already handles. `ok:false` codes: `missing`
   (not in the current catalog), `disabled` (setting off), `busy` (a phone-side cast start is
-  already in flight), `unavailable` (the file can no longer be read).
+  already in flight), `unavailable` (the file can no longer be read), `background` (Android
+  would refuse the cast's foreground service: Flick is not visible and not exempt from battery
+  optimisation, see §8). A code the TV does not know reads as `unavailable`.
 - The phone answers within 2 s. The TV shows "Asking your phone…" on the button and gives up
   after 8 s with no `playAck`, or 30 s after `ok:true` with no `loadMedia`; nothing is half
   started because the TV started nothing.
@@ -274,15 +276,21 @@ stops while it is in a pocket — the moment the library is most needed.
 - When a cast ends or stops, or the app goes to the background, while control v2 to a TV is
   authenticated and the library socket is open, the phone starts `TvReadyService`, a
   `connectedDevice` foreground service with a low-importance notification ("Ready for
-  <TV name>", action Stop). It is started while the cast service or the activity still makes
-  the process foreground; a refused start (`ForegroundServiceStartNotAllowedException`) is
-  logged and the window simply does not open.
+  <TV name>", action Stop). Its runtime prerequisite is met by the `CHANGE_WIFI_STATE`
+  permission the phone already declares. A refused start
+  (`ForegroundServiceStartNotAllowedException`) is logged and the window simply does not open.
 - It holds **no wake lock and no Wi-Fi lock**. It ends 30 minutes after the last of: the cast
   ending, the app leaving the foreground, a `browsing` or any request frame from the TV. It
   also ends when control v2 is lost and not regained within 2 minutes, on Stop, or when the
   setting is turned off. A cast starting supersedes it (the cast service takes over).
-- While it runs, a `play` from the TV starts `CastServerService` from the background, which
-  Android allows because the process already holds a foreground service.
+- Android lets an app start a foreground service from the background only under listed
+  exemptions; a service the app already runs is **not** one of them. The one that applies is
+  "the user turns off battery optimizations for your app", which Flick's hardening layer
+  already asks for. So the phone starts `TvReadyService`, and a TV-requested
+  `CastServerService`, only while its activity is visible or
+  `PowerManager.isIgnoringBatteryOptimizations` is true. Otherwise the window does not open,
+  and a `play` is answered `ok:false` `background` so the TV can say what to change.
+  (developer.android.com, "Restrictions on starting a foreground service from the background".)
 
 ## 9. Watched ledger (phone)
 

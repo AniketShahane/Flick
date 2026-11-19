@@ -67,6 +67,7 @@ enum class PlayRefusal(val wire: String) {
     DISABLED("disabled"),
     BUSY("busy"),
     UNAVAILABLE("unavailable"),
+    BACKGROUND("background"),
     ;
 
     companion object {
