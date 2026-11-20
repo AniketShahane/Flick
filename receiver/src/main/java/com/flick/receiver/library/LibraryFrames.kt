@@ -93,6 +93,8 @@ sealed interface PhoneFrame {
     data class ThumbMiss(val id: String) : PhoneFrame
     /** §6.6: the control-v2 cast [castId] is playing catalog item [id]. */
     data class Casting(val castId: String, val id: String) : PhoneFrame
+    /** The port the phone's doorbell listener is bound to now. */
+    data class KnockAt(val port: Int) : PhoneFrame
     /** A type this TV does not know: ignored, never fatal (§7). */
     data class Unknown(val type: String) : PhoneFrame
     /** A known type with a bad field, a wrong `v`, or not a JSON object: closes the library socket. */
@@ -180,6 +182,7 @@ sealed interface PhoneFrame {
                     val id = o.text("id")?.takeIf(LibraryWire::itemId)
                     if (castId == null || id == null) Malformed else Casting(castId, id)
                 }
+                "knockAt" -> o.whole("port")?.takeIf { it in 1L..65_535L }?.let { KnockAt(it.toInt()) } ?: Malformed
                 else -> Unknown(type)
             }
         }
@@ -208,7 +211,7 @@ sealed interface PhoneFrame {
 
         private val KnownTypes = setOf(
             "libHello", "libProof", "catBegin", "catPart", "catEnd", "catPatch", "playAck", "detail",
-            "season", "thumbMiss", "casting",
+            "season", "thumbMiss", "casting", "knockAt",
         )
 
         private fun StrictJsonValue.Obj.text(key: String): String? = (fields[key] as? StrictJsonValue.Str)?.value

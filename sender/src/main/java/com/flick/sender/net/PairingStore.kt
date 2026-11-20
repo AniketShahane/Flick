@@ -1,6 +1,7 @@
 package com.flick.sender.net
 
 import android.content.Context
+import android.content.SharedPreferences
 
 /** Private v2 pairing persistence. All writes use commit so a successful proof is durable before UI advances. */
 class PairingStore(context: Context) {
@@ -17,6 +18,22 @@ class PairingStore(context: Context) {
     )
 
     fun last(): Pairing? = prefs.getString(LAST_TV, null)?.let(::get)
+
+    /** The stored host of every pairing that is usable now (not marked for repair). */
+    fun verifiedHosts(): List<String> = prefs.all.keys
+        .filter { it.startsWith(HOST_PREFIX) }
+        .mapNotNull { get(it.removePrefix(HOST_PREFIX))?.takeIf { pairing -> !pairing.needsRepair }?.host }
+
+    /**
+     * [onChange] runs on the main thread after every write to the pairings. The platform holds
+     * the returned listener only weakly: the caller keeps it, and passes it to [unwatch].
+     */
+    fun watch(onChange: () -> Unit): SharedPreferences.OnSharedPreferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> onChange() }
+            .also(prefs::registerOnSharedPreferenceChangeListener)
+
+    fun unwatch(listener: SharedPreferences.OnSharedPreferenceChangeListener) =
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
 
     fun get(tvId: String): Pairing? {
         if (prefs.getBoolean(tombstone(tvId), false)) return null
@@ -97,10 +114,13 @@ class PairingStore(context: Context) {
     private fun key(tvId: String) = "v2_key_$tvId"
     private fun keyId(tvId: String) = "v2_key_id_$tvId"
     private fun name(tvId: String) = "v2_name_$tvId"
-    private fun host(tvId: String) = "v2_host_$tvId"
+    private fun host(tvId: String) = "$HOST_PREFIX$tvId"
     private fun port(tvId: String) = "v2_port_$tvId"
     private fun repair(tvId: String) = "v2_repair_$tvId"
     private fun tombstone(id: String) = "v2_tombstone_$id"
     private fun Pairing.toRule() = PairingRecordRules.Record(tvId, keyId, name, host, port, key, needsRepair)
-    private companion object { const val LAST_TV = "v2_last_tv" }
+    private companion object {
+        const val LAST_TV = "v2_last_tv"
+        const val HOST_PREFIX = "v2_host_"
+    }
 }

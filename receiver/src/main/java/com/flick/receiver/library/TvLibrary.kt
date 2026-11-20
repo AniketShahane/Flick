@@ -137,12 +137,16 @@ class TvLibrary(
     private val _seasons = MutableStateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>>(emptyMap())
     private val _thumbnails = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
     private val _upNext = MutableStateFlow<UpNextOffer?>(null)
+    private val _anyLinked = MutableStateFlow(false)
 
     override val state: StateFlow<LibraryState> = _state.asStateFlow()
     override val details: StateFlow<Map<String, LibraryDetail>> = _details.asStateFlow()
     override val seasons: StateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>> = _seasons.asStateFlow()
     override val thumbnails: StateFlow<Map<String, ImageBitmap>> = _thumbnails.asStateFlow()
     override val upNext: StateFlow<UpNextOffer?> = _upNext.asStateFlow()
+
+    /** Whether any phone's library socket is authenticated, shown or not: an empty library is still a link. */
+    val anyLinked: StateFlow<Boolean> = _anyLinked.asStateFlow()
 
     init {
         creditsStorage?.let { storage -> runCatching { storage.load() }.getOrNull()?.let(credits::decode) }
@@ -182,6 +186,9 @@ class TvLibrary(
         publishStateLocked()
         true
     }
+
+    /** The phones whose library socket is authenticated now. */
+    fun linkedKeyIds(): Set<String> = synchronized(lock) { phones.values.filter { it.link != null }.mapTo(HashSet()) { it.keyId } }
 
     fun onClosed(link: LibraryLinkHandle) = synchronized(lock) {
         val phone = phones.values.firstOrNull { it.link === link } ?: return@synchronized
@@ -235,6 +242,8 @@ class TvLibrary(
                 // been made, or its card cleared, while the socket was down.
                 if (frame.castId == lastEndedCastId && _upNext.value == null) offerUpNextLocked(frame.castId)
             }
+            // Recorded by the server before the hub, so the address book is never written under this lock.
+            is PhoneFrame.KnockAt -> Unit
             is PhoneFrame.Unknown -> FlickLog.i("library", "frame ignored t=${typeLabel(frame.type)}")
             is PhoneFrame.Hello, is PhoneFrame.Proof, PhoneFrame.Malformed -> return Verdict.CLOSE
         }
@@ -770,6 +779,7 @@ class TvLibrary(
 
     private fun publishStateLocked() {
         reselectVisibleLocked()
+        _anyLinked.value = phones.values.any { it.link != null }
         // A phone sharing an empty library is not shown, even while a card holds it visible.
         val phone = visibleKeyId?.let(phones::get)?.takeUnless { it.shown?.first?.items?.isEmpty() == true }
         val shown = phone?.shown

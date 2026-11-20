@@ -415,7 +415,7 @@ private fun videoPermissions(): Array<String> = when {
     else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 }
 
-private fun currentVideoAccess(context: Context): MediaAccess {
+internal fun currentVideoAccess(context: Context): MediaAccess {
     val fullPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_VIDEO
     } else {

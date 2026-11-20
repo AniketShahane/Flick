@@ -226,7 +226,9 @@ internal object LibraryThumbPolicy {
 }
 
 /**
- * Contract §8: when the ready window may open, and when it closes.
+ * Contract §8: when the ready window may open, and when it closes. In ready mode it never
+ * closes on its own: its idle deadline hangs up the TV's sockets instead, and then nothing
+ * is scheduled until the next activity.
  *
  * Main-confined. Times are on the monotonic clock.
  */
@@ -236,17 +238,33 @@ internal class TvReadyWindowPolicy(
 ) {
     private var lastActivityAtMs: Long? = null
     private var controlLostAtMs: Long? = null
+    private var hungUp = false
 
     val open: Boolean get() = lastActivityAtMs != null
 
-    fun opened(nowMs: Long) {
+    var readyMode: Boolean = false
+        private set
+
+    fun opened(nowMs: Long, ready: Boolean = false) {
         lastActivityAtMs = nowMs
         controlLostAtMs = null
+        readyMode = ready
+        hungUp = false
     }
 
-    /** A cast ending, the app leaving the foreground, or any TV request: the window runs on from here. */
+    /** Ready mode gained or lost while the window is open; the activity clock runs on. */
+    fun modeChanged(ready: Boolean) {
+        if (lastActivityAtMs == null) return
+        readyMode = ready
+        if (!ready) hungUp = false
+    }
+
+    /** A cast ending, the app leaving the foreground, a knock or any TV request: the window runs on from here. */
     fun touch(nowMs: Long) {
-        if (lastActivityAtMs != null) lastActivityAtMs = nowMs
+        if (lastActivityAtMs != null) {
+            lastActivityAtMs = nowMs
+            hungUp = false
+        }
     }
 
     fun controlLost(nowMs: Long) {
@@ -260,16 +278,39 @@ internal class TvReadyWindowPolicy(
     fun closed() {
         lastActivityAtMs = null
         controlLostAtMs = null
+        readyMode = false
+        hungUp = false
     }
 
-    /** When the window must close on its own, or null while it is not open. */
+    /** When the window must act on its own, or null while it is not open or has nothing left to do. */
     fun deadlineMs(): Long? {
         val activity = lastActivityAtMs ?: return null
+        if (readyMode && hungUp) return null
         val idle = activity + windowMs
+        if (readyMode) return idle
         return controlLostAtMs?.let { minOf(idle, it + controlGraceMs) } ?: idle
     }
 
     fun expired(nowMs: Long): Boolean = deadlineMs()?.let { nowMs >= it } == true
+
+    /** What a deadline that has passed asks for. */
+    enum class Expiry { CLOSE, HANG_UP, TOUCH }
+
+    /**
+     * Ready mode keeps the service and only hangs up, and never while a cast is live, a
+     * connection attempt is running or the activity is in front of the person; a hang-up then
+     * leaves nothing scheduled. [dialInFlight] must not count a sheet merely left open: that
+     * would postpone the hang-up for as long as the phone stays pocketed.
+     */
+    fun onExpired(nowMs: Long, castLive: Boolean, dialInFlight: Boolean, visible: Boolean): Expiry {
+        if (!readyMode) return Expiry.CLOSE
+        if (castLive || dialInFlight || visible) {
+            touch(nowMs)
+            return Expiry.TOUCH
+        }
+        hungUp = true
+        return Expiry.HANG_UP
+    }
 
     companion object {
         const val WINDOW_MS = 30L * 60 * 1000
@@ -278,6 +319,7 @@ internal class TvReadyWindowPolicy(
         /**
          * Whether a trigger may open the window now. A live cast's own foreground service
          * already keeps this process reachable, so the window opens only once that one is gone.
+         * In ready mode the doorbell is the point, so neither control nor the library need be up.
          */
         fun mayOpen(
             enabled: Boolean,
@@ -285,6 +327,7 @@ internal class TvReadyWindowPolicy(
             linkOpen: Boolean,
             castServing: Boolean,
             mayStartForeground: Boolean,
-        ): Boolean = enabled && controlAuthenticated && linkOpen && !castServing && mayStartForeground
+            readyMode: Boolean = false,
+        ): Boolean = enabled && !castServing && mayStartForeground && (readyMode || (controlAuthenticated && linkOpen))
     }
 }

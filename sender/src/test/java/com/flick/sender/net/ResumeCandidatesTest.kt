@@ -23,6 +23,26 @@ class ResumeCandidatesTest {
         )
     }
 
+    @Test fun aKnockersAddressIsTriedOnlyBehindTheStoredEndpointAtTheStoredPort() {
+        assertEquals(
+            listOf("192.168.42.88" to 42421, "192.168.42.95" to 42421),
+            ResumeCandidates.forKnock("192.168.42.88", 42421, tvId, "192.168.42.95").map { it.host to it.port },
+        )
+        assertEquals(
+            listOf("192.168.42.88" to 42421),
+            ResumeCandidates.forKnock("192.168.42.88", 42421, tvId, "192.168.42.88").map { it.host to it.port },
+        )
+        assertEquals(
+            listOf("192.168.42.88" to 42421),
+            ResumeCandidates.forKnock("192.168.42.88", 42421, tvId, null).map { it.host to it.port },
+        )
+        // Not a private IPv4: never a candidate.
+        assertEquals(
+            listOf("192.168.42.88" to 42421),
+            ResumeCandidates.forKnock("192.168.42.88", 42421, tvId, "8.8.8.8").map { it.host to it.port },
+        )
+    }
+
     @Test fun aLiveAdvertisementAtTheStoredAddressIsTriedBeforeTheStoredPort() {
         // A same-host rebind is the receiver telling us the port moved; the stored
         // port would otherwise burn a full connect timeout first.

@@ -42,6 +42,34 @@ class CreditsLeadPrefs(context: Context) : CreditsLeadStorage {
     }
 }
 
+/** Where the TV keeps its [KnockAddressBook]. Excluded from backup and device transfer. */
+class KnockAddressPrefs(context: Context) : KnockAddressStorage {
+    private val prefs = context.applicationContext.getSharedPreferences(DOORBELL_PREFS, Context.MODE_PRIVATE)
+
+    override fun loadAll(): Map<String, String> =
+        prefs.all.mapNotNull { (name, value) ->
+            val keyId = name.removePrefix(KEY_PREFIX).takeIf { name.startsWith(KEY_PREFIX) }
+            if (keyId != null && value is String) keyId to value else null
+        }.toMap()
+
+    override fun save(keyId: String, encoded: String) {
+        prefs.edit().putString(KEY_PREFIX + keyId, encoded).apply()
+    }
+
+    override fun remove(keyId: String) {
+        prefs.edit().remove(KEY_PREFIX + keyId).apply()
+    }
+
+    override fun clear() {
+        prefs.edit().clear().apply()
+    }
+
+    private companion object {
+        const val DOORBELL_PREFS = "flick_doorbell"
+        const val KEY_PREFIX = "addr_"
+    }
+}
+
 /**
  * A phone thumbnail (§6.4) as a tile image. RGB_565 halves the memory of the ~120 kept:
  * a 384×216 still has no alpha and its banding is invisible at tile size.

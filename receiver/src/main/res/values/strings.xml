@@ -94,6 +94,8 @@
     <string name="idle_paired_with">Paired with %1$s</string>
     <string name="idle_pair_another">Pair another phone</string>
     <string name="idle_settings">Settings</string>
+    <string name="idle_waking">Waking your phone…</string>
+    <string name="idle_wake_hint">Couldn\'t wake your phone. Check it\'s on this Wi-Fi and Flick\'s battery is set to Unrestricted.</string>
 
     <!-- Connecting (pre-flight probe gate) / handshake -->
     <string name="connecting_title">Starting your film…</string>

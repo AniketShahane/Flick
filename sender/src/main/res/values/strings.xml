@@ -327,12 +327,18 @@
     <string name="settings_film_posters_notice">This product uses the TMDB API but is not endorsed or certified by TMDB.</string>
     <string name="settings_tv_library_title">Show my library on my TV</string>
     <string name="settings_tv_library_summary">Browse and play this phone\'s videos from your TV while the two are connected.</string>
+    <string name="settings_tv_library_wake">Your TV can wake Flick when you open it. For that, set Flick\'s battery use to Unrestricted (on Samsung, also add Flick to Never sleeping apps).</string>
     <!-- The ready window's notification. It names the TV and never a film: titles stay off
          every surface the library channel touches. -->
     <string name="tv_ready_channel_name">TV library</string>
     <string name="tv_ready_channel_desc">Keeps this phone reachable for a while after a film, so your TV can show your videos.</string>
     <string name="tv_ready_title">Ready for %1$s</string>
     <string name="tv_ready_text">Your TV can browse and play your videos.</string>
+    <!-- Ready mode (library contract §8, §13): a channel of its own, at the same LOW
+         importance, so the person can minimise or hide this notice apart from the window's. -->
+    <string name="tv_ready_quiet_channel_name">TV wake-up</string>
+    <string name="tv_ready_quiet_channel_desc">A silent notice while your TV can wake Flick to show your videos.</string>
+    <string name="tv_ready_wake_text">Your TV can wake Flick</string>
     <!-- INFO, not CAUTION, and the second sentence is why: nothing about the cast changes.
          Only the lock-screen and shade controls are lost, which is a fact worth stating
          and not an error. -->

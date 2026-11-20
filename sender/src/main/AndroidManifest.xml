@@ -27,6 +27,8 @@
     <!-- The TV library's ready window (TvReadyService). Its API 34+ runtime prerequisite is
          CHANGE_WIFI_STATE, declared above. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Brings the TV doorbell's ready mode back after a reboot (TvReadyBootReceiver). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Keeps the CPU servicing the socket threads while the screen is off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is deliberately NOT declared. It is
@@ -113,11 +115,22 @@
             android:foregroundServiceType="mediaPlayback" />
 
         <!-- Keeps the process reachable for the TV's library for a while after a film, so
-             Android's cached-app freezer does not drop the library socket. No locks. -->
+             Android's cached-app freezer does not drop the library socket. In ready mode it
+             also hosts the TV doorbell listener. No locks while idle. -->
         <service
             android:name=".library.TvReadyService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Starts ready mode after a reboot or an update, only when it holds. -->
+        <receiver
+            android:name=".library.TvReadyBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

@@ -184,8 +184,13 @@ class BackupExclusionsTest {
          * `flick_credits` is when this viewer leaves each show's episodes, keyed by a
          * hash of the show key. It names no title, but it is a viewing record
          * of this household and is no use on another TV.
+         *
+         * `flick_doorbell` is each paired phone's last LAN address and doorbell port, by
+         * key id. It authorizes nothing, but it maps this household's phones on its
+         * network, and restored onto another TV it would knock on addresses that mean
+         * nothing there.
          */
-        val THIS_TV_ONLY = setOf("flick_open_for_casts", "flick_credits")
+        val THIS_TV_ONLY = setOf("flick_open_for_casts", "flick_credits", "flick_doorbell")
 
         /**
          * Prefs files that carry no credential, with the reason each is allowed to
