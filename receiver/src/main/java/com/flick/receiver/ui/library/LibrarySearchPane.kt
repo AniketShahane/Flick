@@ -51,11 +51,11 @@ import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
 private val AsideWidth: Dp = 300.dp
-private val KeyGap: Dp = 5.dp
+/** A key's ring stays off its neighbours. */
+private val KeyGap: Dp = 10.dp
 private val KeyHeight: Dp = 36.dp
 private val KeyWidth: Dp = (AsideWidth - KeyGap * (LibrarySearchModel.KEY_COLUMNS - 1)) / LibrarySearchModel.KEY_COLUMNS
-private val ResultsStart: Dp = 390.dp
-private val ResultGap: Dp = 13.dp
+private val ResultsStart: Dp = 400.dp
 private const val RESULT_COLUMNS = 3
 
 /** The query field's fill, the mockup's `rgba(9,17,42,.85)`. */
@@ -99,7 +99,7 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
             Modifier
                 .padding(start = LibraryLayout.Gutter, top = LibraryLayout.TopInset)
                 .width(AsideWidth),
-            verticalArrangement = Arrangement.spacedBy(13.dp),
+            verticalArrangement = Arrangement.spacedBy(FlickSpace.Md),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlickSpace.Xs)) {
                 Icon(imageVector = LibraryIcons.Back, contentDescription = null, tint = FlickColor.OnSurfaceFaint, modifier = Modifier.size(14.dp))
@@ -150,7 +150,7 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
                 )
                 hits.isEmpty() -> SearchNote(stringResource(R.string.libui_search_none, pane.phoneName))
                 else -> BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val width = (maxWidth - LibraryLayout.RingRoom * 2 - ResultGap * (RESULT_COLUMNS - 1)) / RESULT_COLUMNS
+                    val width = (maxWidth - LibraryLayout.RingRoom * 2 - LibraryLayout.TileGap * (RESULT_COLUMNS - 1)) / RESULT_COLUMNS
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(RESULT_COLUMNS),
                         state = memory.grid,
@@ -161,8 +161,8 @@ internal fun SearchPane(catalog: LibraryCatalog, shelves: LibraryShelves, state:
                             start = LibraryLayout.RingRoom,
                             end = LibraryLayout.RingRoom,
                         ),
-                        horizontalArrangement = Arrangement.spacedBy(ResultGap),
-                        verticalArrangement = Arrangement.spacedBy(ResultGap),
+                        horizontalArrangement = Arrangement.spacedBy(LibraryLayout.TileGap),
+                        verticalArrangement = Arrangement.spacedBy(LibraryLayout.GridRowGap),
                     ) {
                         itemsIndexed(hits, key = { _, hit -> hit.key }) { index, hit ->
                             val requester = if (index == 0) firstResult else null

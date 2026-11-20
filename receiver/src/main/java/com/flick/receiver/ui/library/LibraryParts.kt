@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -88,20 +89,53 @@ import java.text.NumberFormat
 // ten-foot floor, which is why small mockup labels come out a touch larger.
 
 internal object LibraryLayout {
-    /** The overscan-safe side margin; rows bleed past it to the screen edge. */
-    val Gutter: Dp = FlickDimens.OverscanHorizontal
+    /**
+     * The side margin, and Google TV's 58 dp grid margin: the overscan inset plus the focus
+     * ring's reserve. The reserve covers a control up to ~139 dp wide; a 196 dp row tile's ring
+     * reaches ~2 dp past it, still inside the 48 dp overscan band. Rows bleed past it to the edge.
+     */
+    val Gutter: Dp = FlickDimens.OverscanHorizontal + FlickDimens.FocusRingReserve
 
     val TopInset: Dp = FlickDimens.OverscanVertical
 
-    /** Where a tab's content starts under the top bar. */
-    val UnderTopBar: Dp = 76.dp
+    /** The top bar's top edge, inset like [Gutter] so a focused tab's ring stays on the panel. */
+    val TopBarTop: Dp = FlickDimens.OverscanVertical + FlickDimens.FocusRingReserve
 
-    /** Room a lazy row or grid keeps around its items so a lifted tile's ring is not clipped. */
+    /** Where a tab's content starts under the top bar. */
+    val UnderTopBar: Dp = 88.dp
+
+    /** Room a lazy row or grid keeps around its items so a lifted control's ring is not clipped. */
     val RingRoom: Dp = FlickDimens.FocusRingReserve
 
-    val RowTileWidth: Dp = 200.dp
-    val RowTileHeight: Dp = 112.dp
-    val RowGap: Dp = 15.dp
+    /** [RingRoom] for pictures, which lift further: it covers a tile up to ~236 dp tall. */
+    val TileRingRoom: Dp = 14.dp
+
+    /** Between tiles side by side: Google TV's card spacing, and past a lifted neighbour's ring. */
+    val TileGap: Dp = 20.dp
+
+    /** Between the rows of a grid: a lifted tile's ring stays clear of the caption above it. */
+    val GridRowGap: Dp = 28.dp
+
+    /** Between Home's rows, and between its hero and the first row. */
+    val ShelfGap: Dp = 28.dp
+
+    /** A row's title to its tiles; more than [TileRingRoom], so a lifted tile never meets it. */
+    val TitleGap: Dp = FlickSpace.Md
+
+    /** A picture to its caption: clears the lifted ring of any picture up to ~200 dp tall. */
+    val CaptionGap: Dp = 12.dp
+
+    /** Between buttons side by side: a lifted button's ring stays off its neighbour, even a long one's. */
+    val ActionGap: Dp = 20.dp
+
+    /** Between pill tabs, which are shorter and narrower than buttons and lift less. */
+    val PillGap: Dp = 12.dp
+
+    /** Between spec chips. */
+    val ChipGap: Dp = 8.dp
+
+    val RowTileWidth: Dp = 196.dp
+    val RowTileHeight: Dp = 110.dp
 
     val PosterWidth: Dp = 124.dp
     val PosterHeight: Dp = 186.dp
@@ -403,11 +437,11 @@ internal fun ProgressStrip(fraction: Float, modifier: Modifier = Modifier, heigh
 
 /** The hero's rounded progress bar with its label beside it. */
 @Composable
-internal fun ProgressLine(fraction: Float, label: String, modifier: Modifier = Modifier) {
+internal fun ProgressLine(fraction: Float, label: String, modifier: Modifier = Modifier, barWidth: Dp = 150.dp) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
         Box(
             Modifier
-                .width(150.dp)
+                .width(barWidth)
                 .height(4.dp)
                 .clip(FlickShape.Pill)
                 .drawBehind {
@@ -415,7 +449,13 @@ internal fun ProgressLine(fraction: Float, label: String, modifier: Modifier = M
                     drawRect(FlickColor.Spark, size = Size(size.width * fraction.coerceIn(0f, 1f), size.height))
                 },
         )
-        Text(text = label, style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f), color = FlickColor.OnSurface)
+        Text(
+            text = label,
+            style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f),
+            color = FlickColor.OnSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -448,7 +488,14 @@ internal fun HdrChip(hdr: LibraryHdr, modifier: Modifier = Modifier, short: Bool
                 .background(DolbyFoil)
                 .padding(horizontal = if (short) 5.dp else 7.dp, vertical = if (short) 3.dp else 4.dp),
         ) {
-            Text(text = hdrText(hdr, short), style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f, weight = FontWeight.SemiBold), color = DolbyInk, maxLines = 1)
+            Text(
+                text = hdrText(hdr, short),
+                style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f, weight = FontWeight.SemiBold),
+                color = DolbyInk,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         LibraryHdr.HDR10 -> MetaChip(hdrText(hdr), modifier, ink = Hdr10Ink, edge = Hdr10Edge)
         LibraryHdr.SDR -> MetaChip(hdrText(hdr), modifier)
@@ -532,7 +579,7 @@ internal fun LibraryTile(
     picture: @Composable BoxScope.() -> Unit,
     caption: @Composable ColumnScope.() -> Unit = {},
 ) {
-    Column(modifier.width(width), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+    Column(modifier.width(width)) {
         FlickTvButton(
             onClick = onClick,
             modifier = Modifier
@@ -548,7 +595,8 @@ internal fun LibraryTile(
         ) {
             Box(Modifier.fillMaxSize(), content = picture)
         }
-        caption()
+        Spacer(Modifier.height(LibraryLayout.CaptionGap))
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp), content = caption)
     }
 }
 
@@ -637,14 +685,17 @@ internal fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 /** Every chip a detail-style header carries, in the mockups' order. */
 @Composable
 internal fun ItemChips(item: LibraryItem, modifier: Modifier = Modifier, hdr: LibraryHdr? = item.hdr, dimensions: Boolean = false) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ChipGap), verticalAlignment = Alignment.CenterVertically) {
         item.year?.let { MetaChip(it.toString()) }
         LibraryFormat.runtimeMinutes(item.durationMs)?.let { MetaChip(pluralText(R.plurals.libui_minutes, it, it)) }
         LibraryFormat.resolution(item.width, item.height)?.let { resolution ->
             val label = resolutionText(resolution)
-            MetaChip(
-                if (dimensions) stringResource(R.string.libui_res_dimensions, label, item.width, item.height) else label,
-            )
+            if (dimensions) {
+                // The only chip long enough to crowd the row: it gives way so Dolby Vision stays whole.
+                MetaChip(stringResource(R.string.libui_res_dimensions, label, item.width, item.height), Modifier.weight(1f, fill = false))
+            } else {
+                MetaChip(label)
+            }
         }
         hdr?.let { HdrChip(it) }
     }

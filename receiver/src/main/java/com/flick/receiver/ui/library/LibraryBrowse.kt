@@ -69,16 +69,18 @@ private const val PREFS = "library_ui"
 /** The sort order, stored under the phone's enum name so the two read the same ([LibrarySortOrder.of]). */
 private const val KEY_SORT = "sort"
 
-private val GridGap: Dp = 14.dp
 private const val POSTER_COLUMNS = 6
 private const val VIDEO_COLUMNS = 5
+
+/** The All videos grid under its sort and folder buttons: a group's gap below them, past both rings. */
+private val AllVideosGridTop: Dp = 48.dp
 
 /** The menu scrim: [FlickColor.CanvasPlayback] @ 55 %, as in the sort mockup. */
 private val MenuScrim = Color(0x8C02040A)
 
 /** The width each of [columns] cells gets inside the gutters. */
 private fun cellWidth(total: Dp, columns: Int): Dp =
-    (total - LibraryLayout.Gutter * 2 - GridGap * (columns - 1)) / columns
+    (total - LibraryLayout.Gutter * 2 - LibraryLayout.TileGap * (columns - 1)) / columns
 
 @Composable
 internal fun ShowsPane(shelves: LibraryShelves, pane: PaneContext) {
@@ -92,8 +94,8 @@ internal fun ShowsPane(shelves: LibraryShelves, pane: PaneContext) {
             state = pane.memory.grid,
             modifier = Modifier.fillMaxSize(),
             contentPadding = gridPadding(),
-            horizontalArrangement = Arrangement.spacedBy(GridGap),
-            verticalArrangement = Arrangement.spacedBy(GridGap),
+            horizontalArrangement = Arrangement.spacedBy(LibraryLayout.TileGap),
+            verticalArrangement = Arrangement.spacedBy(LibraryLayout.GridRowGap),
         ) {
             itemsIndexed(shows, key = { _, show -> show.key }) { index, show ->
                 PosterShowTile(
@@ -121,8 +123,8 @@ internal fun FilmsPane(shelves: LibraryShelves, pane: PaneContext) {
             state = pane.memory.grid,
             modifier = Modifier.fillMaxSize(),
             contentPadding = gridPadding(),
-            horizontalArrangement = Arrangement.spacedBy(GridGap),
-            verticalArrangement = Arrangement.spacedBy(GridGap),
+            horizontalArrangement = Arrangement.spacedBy(LibraryLayout.TileGap),
+            verticalArrangement = Arrangement.spacedBy(LibraryLayout.GridRowGap),
         ) {
             itemsIndexed(films, key = { _, item -> item.id }) { index, item ->
                 PosterItemTile(
@@ -141,7 +143,7 @@ internal fun FilmsPane(shelves: LibraryShelves, pane: PaneContext) {
 private fun gridPadding(): PaddingValues = PaddingValues(
     start = LibraryLayout.Gutter,
     end = LibraryLayout.Gutter,
-    top = LibraryLayout.RingRoom,
+    top = LibraryLayout.TileRingRoom,
     bottom = LibraryLayout.TopInset,
 )
 
@@ -241,7 +243,7 @@ internal fun AllVideosPane(catalog: LibraryCatalog, pane: PaneContext) {
                     .fillMaxWidth()
                     .padding(horizontal = LibraryLayout.Gutter),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ActionGap),
             ) {
                 if (chooser) {
                     val folderName = folder?.let { path -> folders.firstOrNull { it.path == path }?.name }
@@ -295,10 +297,10 @@ internal fun AllVideosPane(catalog: LibraryCatalog, pane: PaneContext) {
                 state = pane.memory.grid,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = 40.dp),
+                    .padding(top = AllVideosGridTop),
                 contentPadding = gridPadding(),
-                horizontalArrangement = Arrangement.spacedBy(GridGap),
-                verticalArrangement = Arrangement.spacedBy(GridGap),
+                horizontalArrangement = Arrangement.spacedBy(LibraryLayout.TileGap),
+                verticalArrangement = Arrangement.spacedBy(LibraryLayout.GridRowGap),
             ) {
                 itemsIndexed(videos, key = { _, item -> item.id }) { index, item ->
                     LandscapeItemTile(
@@ -383,8 +385,8 @@ private fun ChoiceMenu(
                 .tracksFocus(inside),
             shape = FlickShape.Hero,
             tone = GlassPanelTone.Panel,
-            contentPadding = PaddingValues(9.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 text = title,
@@ -441,9 +443,9 @@ private fun FolderMenu(
     ChoiceMenu(stringResource(R.string.libui_folder_title), initial, onDismiss, width = 360.dp) {
         LazyColumn(
             state = list,
-            modifier = Modifier.heightIn(max = 330.dp),
+            modifier = Modifier.heightIn(max = 320.dp),
             contentPadding = PaddingValues(vertical = LibraryLayout.RingRoom, horizontal = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             item(key = "all") {
                 FolderRow(

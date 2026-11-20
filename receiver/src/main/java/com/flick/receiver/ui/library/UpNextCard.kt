@@ -99,14 +99,14 @@ fun UpNextCard(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(bottom = FlickSpace.Sm)
-                    .width(390.dp)
+                    .width(410.dp)
                     .tracksFocus(inside),
                 shape = FlickShape.Lg,
                 tone = GlassPanelTone.Panel,
-                contentPadding = PaddingValues(13.dp),
-                verticalArrangement = Arrangement.spacedBy(11.dp),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Box(
                         Modifier
                             .size(150.dp, 84.dp)
@@ -161,7 +161,7 @@ fun UpNextCard(
                     )
                 }
                 FocusBeaconHost {
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ActionGap)) {
                         PrimaryAction(
                             text = stringResource(
                                 when {
