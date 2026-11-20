@@ -35,7 +35,6 @@ import com.flick.receiver.library.LibraryState
 import com.flick.receiver.library.PlayFrom
 import com.flick.receiver.ui.components.FocusBeaconHost
 import com.flick.receiver.ui.theme.FlickColor
-import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
 /** The detail page's washes: the art fills the right two thirds and full height, as in the mockup. */
@@ -107,7 +106,7 @@ internal fun DetailPage(item: LibraryItem, state: LibraryState, pane: PaneContex
                 Modifier
                     .padding(start = LibraryLayout.Gutter)
                     .width(470.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 val label = LibraryFormat.episodeLabel(item)
                 if (item.isEpisode && label != null) {
@@ -126,12 +125,12 @@ internal fun DetailPage(item: LibraryItem, state: LibraryState, pane: PaneContex
                     maxWidth = 450.dp,
                     logoHeight = 66.dp,
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(LibraryLayout.ChipGap)) {
                     ItemChips(item, hdr = item.hdr ?: detail?.hdr, dimensions = true)
                     val subtitle = detail?.subtitle
                     val block = item.blocked
                     if (subtitle != null || block != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ChipGap), verticalAlignment = Alignment.CenterVertically) {
                             subtitle?.let { MetaChip(stringResource(R.string.libui_subs_from_phone, it.uppercase())) }
                             block?.let { BlockedBadge(it) }
                         }
@@ -177,8 +176,8 @@ private fun DetailActions(item: LibraryItem, state: LibraryState, primaryFocus: 
     val resumable = item.resumeMs != null
     // Without a resume point the one button plays from the start; with one, Resume leads.
     val primaryFrom = if (resumable) PlayFrom.RESUME else PlayFrom.START
-    FocusBeaconHost(Modifier.padding(top = FlickSpace.Xs)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FocusBeaconHost(Modifier.padding(top = 8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ActionGap)) {
             PrimaryAction(
                 text = when {
                     asking && askedFrom == primaryFrom -> stringResource(R.string.libui_asking)

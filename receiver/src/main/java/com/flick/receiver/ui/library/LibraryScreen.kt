@@ -439,14 +439,13 @@ private fun TopBar(
 ) {
     Row(
         modifier
-            .padding(start = LibraryLayout.Gutter, end = LibraryLayout.Gutter, top = LibraryLayout.TopInset)
-            .padding(top = FlickSpace.Xs),
+            .padding(start = LibraryLayout.Gutter, end = LibraryLayout.Gutter, top = LibraryLayout.TopBarTop),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BrandMark(size = 32.dp)
-        Spacer(Modifier.width(FlickSpace.Md))
+        Spacer(Modifier.width(FlickSpace.Lg))
         FocusBeaconHost {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.PillGap), verticalAlignment = Alignment.CenterVertically) {
                 LibraryTab.entries.forEach { tab ->
                     val isSelected = tab == selected
                     FlickTvButton(
@@ -480,7 +479,7 @@ private fun TopBar(
         }
         Spacer(Modifier.weight(1f))
         FocusBeaconHost {
-            Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Sm), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(FlickSpace.Md), verticalAlignment = Alignment.CenterVertically) {
                 val lost = state.link == LibraryLink.LOST
                 val count = state.catalog?.items?.size
                 FlickTvButton(
@@ -647,8 +646,8 @@ private fun PhoneMenu(
                 .tracksFocus(inside),
             shape = FlickShape.Hero,
             tone = GlassPanelTone.Panel,
-            contentPadding = PaddingValues(9.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
                 Modifier.padding(horizontal = 8.dp, vertical = 6.dp),

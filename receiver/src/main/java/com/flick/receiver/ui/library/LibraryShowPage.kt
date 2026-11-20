@@ -48,8 +48,11 @@ import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
 
-private val EpisodeWidth: Dp = 180.dp
-private val EpisodeHeight: Dp = 101.dp
+private val EpisodeWidth: Dp = 172.dp
+private val EpisodeHeight: Dp = 97.dp
+
+/** Season tabs to the episodes under them: past a lifted episode's ring, and closer than the header above. */
+private val EpisodesTop: Dp = 20.dp
 
 /** Only TMDB-matched shows (`tv:` keys) have season data to ask for (§6.3). */
 internal fun hasSeasonData(showKey: String?): Boolean = showKey?.startsWith("tv:") == true
@@ -91,17 +94,17 @@ internal fun ShowPage(show: LibraryShow, state: LibraryState, pane: PaneContext)
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(top = LibraryLayout.TopInset, bottom = LibraryLayout.TopInset - LibraryLayout.RingRoom),
+                .padding(top = LibraryLayout.TopInset, bottom = LibraryLayout.TopInset),
         ) {
             Breadcrumb(pane.crumb, Modifier.padding(start = LibraryLayout.Gutter))
-            Spacer(Modifier.height(FlickSpace.Lg))
+            Spacer(Modifier.height(20.dp))
             ShowHeader(show, pick, state, pick?.let { details[it.id] }?.overview, primaryFocus, pane)
             Spacer(Modifier.weight(1f))
             SeasonTabs(show, season, episodes, pane)
             LazyRow(
                 state = pane.memory.row("season/$season"),
-                contentPadding = PaddingValues(horizontal = LibraryLayout.Gutter, vertical = LibraryLayout.RingRoom),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(start = LibraryLayout.Gutter, end = LibraryLayout.Gutter, top = EpisodesTop),
+                horizontalArrangement = Arrangement.spacedBy(LibraryLayout.TileGap),
             ) {
                 items(episodes, key = { it.id }) { episode ->
                     EpisodeTile(episode, info[episode.episode], pane)
@@ -125,10 +128,10 @@ private fun ShowHeader(
         Modifier
             .padding(start = LibraryLayout.Gutter)
             .width(460.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        HeroTitle(show.title, show.art?.logo, sizeSp = 40, maxWidth = 420.dp, logoHeight = 56.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+        HeroTitle(show.title, show.art?.logo, sizeSp = 40, maxWidth = 420.dp, logoHeight = 50.dp)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ChipGap), verticalAlignment = Alignment.CenterVertically) {
             MetaChip(
                 stringResource(
                     R.string.libui_join,
@@ -143,6 +146,7 @@ private fun ShowHeader(
             }
         }
         if (overview != null || show.art?.tmdbId != null) {
+            Spacer(Modifier.height(10.dp))
             Text(
                 text = overview.orEmpty(),
                 style = FlickType.body(sizeSp = 14, weight = FontWeight.Medium),
@@ -157,8 +161,9 @@ private fun ShowHeader(
             val asking = LibraryFormat.asking(state.play, pick.id)
             val label = LibraryFormat.episodeLabel(pick).orEmpty()
             val resumable = pick.resumeMs != null
+            Spacer(Modifier.height(18.dp))
             FocusBeaconHost {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ActionGap)) {
                     PrimaryAction(
                         text = when {
                             asking && askedFrom == PlayFrom.RESUME -> stringResource(R.string.libui_asking)
@@ -205,7 +210,6 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
             .fillMaxWidth()
             .padding(end = LibraryLayout.Gutter, top = LibraryLayout.RingRoom),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         val tabs = pane.memory.row("seasons")
         // Opened on a later season, its tab would otherwise start past the screen edge.
@@ -222,7 +226,7 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
             LazyRow(
                 state = tabs,
                 contentPadding = PaddingValues(start = LibraryLayout.Gutter, end = LibraryLayout.RingRoom),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(LibraryLayout.PillGap),
             ) {
                 items(show.seasons, key = { it }) { number ->
                     val on = number == season
@@ -253,7 +257,7 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
             ),
             style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.12f),
             color = FlickColor.OnSurfaceFaint,
-            modifier = Modifier.padding(start = FlickSpace.Sm),
+            modifier = Modifier.padding(start = FlickSpace.Md),
         )
     }
 }
