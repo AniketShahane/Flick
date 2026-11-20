@@ -266,8 +266,13 @@ private fun SeasonTabs(show: LibraryShow, season: Int, episodes: List<LibraryIte
 private fun EpisodeTile(episode: LibraryItem, info: LibraryEpisodeInfo?, pane: PaneContext) {
     val number = episode.episode ?: 0
     var meta = stringResource(R.string.libui_episode_short, number)
-    LibraryFormat.runtimeMinutes(episode.durationMs)?.let { meta = stringResource(R.string.libui_join, meta, pluralText(R.plurals.libui_minutes, it, it)) }
-    LibraryFormat.minutesLeft(episode)?.let { meta = stringResource(R.string.libui_join, meta, pluralText(R.plurals.libui_minutes_left_short, it, it)) }
+    // Time left stands in for the running time: both together overrun the tile's width.
+    val left = LibraryFormat.minutesLeft(episode)
+    val runtime = LibraryFormat.runtimeMinutes(episode.durationMs)
+    when {
+        left != null -> meta = stringResource(R.string.libui_join, meta, pluralText(R.plurals.libui_minutes_left, left, left))
+        runtime != null -> meta = stringResource(R.string.libui_join, meta, pluralText(R.plurals.libui_minutes, runtime, runtime))
+    }
     val name = info?.name ?: episode.title
     LibraryTile(
         width = EpisodeWidth,
