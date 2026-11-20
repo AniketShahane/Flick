@@ -443,7 +443,7 @@ private fun FolderMenu(
     ChoiceMenu(stringResource(R.string.libui_folder_title), initial, onDismiss, width = 360.dp) {
         LazyColumn(
             state = list,
-            modifier = Modifier.heightIn(max = 330.dp),
+            modifier = Modifier.heightIn(max = 320.dp),
             contentPadding = PaddingValues(vertical = LibraryLayout.RingRoom, horizontal = 4.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {

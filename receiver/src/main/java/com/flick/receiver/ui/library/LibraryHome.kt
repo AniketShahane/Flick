@@ -58,6 +58,7 @@ import com.flick.receiver.library.LibraryShow
 import com.flick.receiver.library.LibraryState
 import com.flick.receiver.library.PlayFrom
 import com.flick.receiver.ui.components.FocusBeaconHost
+import com.flick.receiver.ui.components.LocalShellRetained
 import com.flick.receiver.ui.theme.FlickColor
 import com.flick.receiver.ui.theme.FlickSpace
 import com.flick.receiver.ui.theme.FlickType
@@ -99,6 +100,15 @@ private object HoldStill : BringIntoViewSpec {
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
 }
 
+/**
+ * The column's top inset under the top bar. Kept small so that at rest the first row's captions
+ * still land on the screen below the hero; nothing focusable sits at the top of an item.
+ */
+private val HomeTop: Dp = 4.dp
+
+/** The column's trailing room, as a share of its height: more than any row leaves free at the top. */
+private const val TRAILING_ROOM = 0.6f
+
 /** How far the hero scrolls before the backdrop behind it has faded fully. */
 private val HeroFadeDistance: Dp = 200.dp
 
@@ -112,21 +122,33 @@ internal fun HomePane(state: LibraryState, catalog: LibraryCatalog, shelves: Lib
     val hero = remember(shelves) { LibraryFormat.heroPick(shelves) }
     val focused = remember { mutableStateOf(false) }
     val heroFocus = remember { FocusRequester() }
+    val column = pane.memory.column
+    val retained = LocalShellRetained.current
+    // Ahead of LandFocus, whose effect runs after this one. A remembered control that has gone
+    // (a finished item, a pruned row) cannot be restored, and the hero that landing falls back
+    // to is not composed while the column is scrolled past it, so both go back to the top.
+    LaunchedEffect(pane.land) {
+        if (!pane.land || retained) return@LaunchedEffect
+        val key = pane.memory.focusKey
+        if (key == null || key !in homeFocusKeys(shelves)) {
+            pane.memory.focusKey = null
+            column.scrollToItem(0)
+        }
+    }
     LandFocus(pane, if (hero != null) heroFocus else null, focused)
     val details by ui.hub.details.collectAsState()
     // Keyed on the link too: a want sent while it was down was dropped, and is sent again.
     val connected = state.link == LibraryLink.CONNECTED
     hero?.let { pick -> LaunchedEffect(pick.item.id, connected, state.epoch) { ui.hub.wantDetail(pick.item.id) } }
 
-    val column = pane.memory.column
     val scope = rememberCoroutineScope()
     val reduced = LocalReducedMotion.current
     // The rows' own horizontal scrolling keeps the platform's bring-into-view; only the column holds still.
     val rowSpec = LocalBringIntoViewSpec.current
     val fadePx = with(LocalDensity.current) { HeroFadeDistance.toPx() }
 
-    // The item holding focus goes to the top of the column, so the row in use always has the
-    // screen under the top bar to itself, and the hero shows only while it has focus.
+    // The item holding focus goes to the top of the column, so the row in use always starts just
+    // under the top bar, and the hero shows only while it has focus.
     fun settle(index: Int) {
         scope.launch { if (reduced) column.scrollToItem(index) else column.animateScrollToItem(index) }
     }
@@ -162,7 +184,7 @@ internal fun HomePane(state: LibraryState, catalog: LibraryCatalog, shelves: Lib
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = LibraryLayout.UnderTopBar),
-                contentPadding = PaddingValues(top = LibraryLayout.RingRoom, bottom = LibraryLayout.TopInset),
+                contentPadding = PaddingValues(top = HomeTop),
                 verticalArrangement = Arrangement.spacedBy(LibraryLayout.ShelfGap),
             ) {
                 var index = 0
@@ -227,9 +249,24 @@ internal fun HomePane(state: LibraryState, catalog: LibraryCatalog, shelves: Lib
                         }
                     }
                 }
+                // Room for the last row to reach the top too; without it the column stops short and
+                // leaves the row above sliced by the top edge.
+                item(key = "end") { Spacer(Modifier.fillParentMaxHeight(TRAILING_ROOM)) }
             }
         }
     }
+}
+
+/** Every focus key a Home control can leave in its screen memory, for the current shelves. */
+private fun homeFocusKeys(shelves: LibraryShelves): Set<String> = buildSet {
+    add("hero/play")
+    add("hero/info")
+    shelves.continueWatching.forEach { add("continue/" + it.id) }
+    shelves.nextEpisodes.forEach { add("next/" + it.id) }
+    shelves.recentlyAdded.forEach { add("recent/" + it.id) }
+    shelves.shows.forEach { add("shows/" + it.key) }
+    shelves.films.forEach { add("films/" + it.id) }
+    shelves.homeVideos.forEach { add("homeVideos/" + it.id) }
 }
 
 /** A Continue watching or Next episodes title: the show for an episode, the film otherwise. */
@@ -295,7 +332,7 @@ private fun HomeHero(
             style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.22f),
             color = FlickColor.Spark,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         HeroTitle(
             title = if (item.isEpisode) item.show ?: item.title else item.title,
             logoPath = item.art?.logo,
@@ -312,7 +349,7 @@ private fun HomeHero(
         // those alone keeps the rows from jumping down when the overview arrives.
         val overview = detail?.overview
         if (overview != null || item.art?.tmdbId != null) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Text(
                 text = overview.orEmpty(),
                 style = FlickType.body(sizeSp = 14, weight = FontWeight.Medium),
@@ -324,7 +361,7 @@ private fun HomeHero(
                     .heightIn(min = 40.dp),
             )
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlickSpace.Lg)) {
             FocusBeaconHost {
                 Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ActionGap)) {
@@ -369,7 +406,7 @@ internal fun kindLabel(kind: LibraryItemKind): Int = when (kind) {
  * loaded — and for good if it never does — so the hero is never untitled.
  */
 @Composable
-internal fun HeroTitle(title: String, logoPath: String?, sizeSp: Int, maxWidth: Dp, logoHeight: Dp) {
+internal fun HeroTitle(title: String, logoPath: String?, sizeSp: Int, maxWidth: Dp, logoHeight: Dp, maxLines: Int = 2) {
     val ui = LocalLibraryUi.current
     val url = LibraryImages.logo(logoPath)
     if (url == null) {
@@ -377,7 +414,7 @@ internal fun HeroTitle(title: String, logoPath: String?, sizeSp: Int, maxWidth: 
             text = title,
             style = FlickType.display(sizeSp = sizeSp, lineHeightRatio = 1.3f),
             color = FlickColor.OnSurface,
-            maxLines = 2,
+            maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.width(maxWidth),
         )

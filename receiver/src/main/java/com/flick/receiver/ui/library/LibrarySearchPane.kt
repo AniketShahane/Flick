@@ -52,7 +52,7 @@ import com.flick.receiver.ui.theme.FlickType
 
 private val AsideWidth: Dp = 300.dp
 /** A key's ring stays off its neighbours. */
-private val KeyGap: Dp = 8.dp
+private val KeyGap: Dp = 10.dp
 private val KeyHeight: Dp = 36.dp
 private val KeyWidth: Dp = (AsideWidth - KeyGap * (LibrarySearchModel.KEY_COLUMNS - 1)) / LibrarySearchModel.KEY_COLUMNS
 private val ResultsStart: Dp = 400.dp

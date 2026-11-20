@@ -99,7 +99,7 @@ fun UpNextCard(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(bottom = FlickSpace.Sm)
-                    .width(400.dp)
+                    .width(410.dp)
                     .tracksFocus(inside),
                 shape = FlickShape.Lg,
                 tone = GlassPanelTone.Panel,

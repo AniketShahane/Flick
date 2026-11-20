@@ -90,9 +90,9 @@ import java.text.NumberFormat
 
 internal object LibraryLayout {
     /**
-     * The side margin: the overscan inset plus the focus ring's reserve, so a lifted control at
-     * the edge keeps its ring on the panel. It is also Google TV's 58 dp grid margin. Rows bleed
-     * past it to the screen edge.
+     * The side margin, and Google TV's 58 dp grid margin: the overscan inset plus the focus
+     * ring's reserve. The reserve covers a control up to ~139 dp wide; a 196 dp row tile's ring
+     * reaches ~2 dp past it, still inside the 48 dp overscan band. Rows bleed past it to the edge.
      */
     val Gutter: Dp = FlickDimens.OverscanHorizontal + FlickDimens.FocusRingReserve
 
@@ -117,16 +117,16 @@ internal object LibraryLayout {
     val GridRowGap: Dp = 28.dp
 
     /** Between Home's rows, and between its hero and the first row. */
-    val ShelfGap: Dp = 32.dp
+    val ShelfGap: Dp = 28.dp
 
     /** A row's title to its tiles; more than [TileRingRoom], so a lifted tile never meets it. */
     val TitleGap: Dp = FlickSpace.Md
 
-    /** A picture to its caption: past the lifted picture's ring, so focus never touches the text. */
+    /** A picture to its caption: clears the lifted ring of any picture up to ~200 dp tall. */
     val CaptionGap: Dp = 12.dp
 
-    /** Between buttons side by side: a lifted button's ring stays off its neighbour. */
-    val ActionGap: Dp = FlickSpace.Md
+    /** Between buttons side by side: a lifted button's ring stays off its neighbour, even a long one's. */
+    val ActionGap: Dp = 20.dp
 
     /** Between pill tabs, which are shorter and narrower than buttons and lift less. */
     val PillGap: Dp = 12.dp
@@ -488,7 +488,14 @@ internal fun HdrChip(hdr: LibraryHdr, modifier: Modifier = Modifier, short: Bool
                 .background(DolbyFoil)
                 .padding(horizontal = if (short) 5.dp else 7.dp, vertical = if (short) 3.dp else 4.dp),
         ) {
-            Text(text = hdrText(hdr, short), style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f, weight = FontWeight.SemiBold), color = DolbyInk, maxLines = 1)
+            Text(
+                text = hdrText(hdr, short),
+                style = FlickType.monoEyebrow(sizeSp = 14, trackingEm = 0.06f, weight = FontWeight.SemiBold),
+                color = DolbyInk,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         LibraryHdr.HDR10 -> MetaChip(hdrText(hdr), modifier, ink = Hdr10Ink, edge = Hdr10Edge)
         LibraryHdr.SDR -> MetaChip(hdrText(hdr), modifier)
@@ -683,9 +690,12 @@ internal fun ItemChips(item: LibraryItem, modifier: Modifier = Modifier, hdr: Li
         LibraryFormat.runtimeMinutes(item.durationMs)?.let { MetaChip(pluralText(R.plurals.libui_minutes, it, it)) }
         LibraryFormat.resolution(item.width, item.height)?.let { resolution ->
             val label = resolutionText(resolution)
-            MetaChip(
-                if (dimensions) stringResource(R.string.libui_res_dimensions, label, item.width, item.height) else label,
-            )
+            if (dimensions) {
+                // The only chip long enough to crowd the row: it gives way so Dolby Vision stays whole.
+                MetaChip(stringResource(R.string.libui_res_dimensions, label, item.width, item.height), Modifier.weight(1f, fill = false))
+            } else {
+                MetaChip(label)
+            }
         }
         hdr?.let { HdrChip(it) }
     }

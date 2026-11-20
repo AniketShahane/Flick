@@ -49,6 +49,10 @@ import kotlin.math.abs
  * The TV library's screens over an invented catalog, written out as PNGs so spacing can be
  * judged by eye on the 960 × 540 dp canvas. A harness, not a gate: nothing is asserted.
  *
+ * [show] with `worstCase` adds the layouts most likely to run out of room: a show with a
+ * one-line-too-long title and TMDB season data (three-line episode captions), and a 1080p
+ * Dolby Vision film and episode whose detail pages carry every optional line.
+ *
  * Every item is art-less, so each picture is a generated still served as a phone thumbnail —
  * no network, no TMDB, the same pixels on every run. Pull the files from the app's external
  * files directory; a Gradle connected run uninstalls the app and takes them with it.
@@ -58,7 +62,12 @@ class LibraryLookTest {
     @get:Rule
     val composeRule = createComposeRule()
 
-    private class FakeHub(catalog: LibraryCatalog, thumbs: Map<String, ImageBitmap>, details: Map<String, LibraryDetail>) : LibraryHub {
+    private class FakeHub(
+        catalog: LibraryCatalog,
+        thumbs: Map<String, ImageBitmap>,
+        details: Map<String, LibraryDetail>,
+        seasons: Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>,
+    ) : LibraryHub {
         override val state: StateFlow<LibraryState> = MutableStateFlow(
             LibraryState(
                 link = LibraryLink.CONNECTED,
@@ -69,7 +78,7 @@ class LibraryLookTest {
             ),
         )
         override val details: StateFlow<Map<String, LibraryDetail>> = MutableStateFlow(details)
-        override val seasons: StateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>> = MutableStateFlow(emptyMap())
+        override val seasons: StateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>> = MutableStateFlow(seasons)
         override val thumbnails: StateFlow<Map<String, ImageBitmap>> = MutableStateFlow(thumbs)
         override val upNext: StateFlow<UpNextOffer?> = MutableStateFlow(null)
         override fun play(id: String, from: PlayFrom) = Unit
@@ -83,21 +92,27 @@ class LibraryLookTest {
         override fun dismissUpNext() = Unit
     }
 
-    private fun show() {
-        val items = catalogItems()
+    private fun show(worstCase: Boolean = false) {
+        val items = catalogItems() + if (worstCase) worstItems() else emptyList()
         val catalog = LibraryCatalog(rev = "look", items = items)
         val thumbs = items.withIndex().associate { (index, item) -> item.id to still(index) }
         val synopsis = "A lighthouse keeper's daughter finds a ledger of ships that never reached " +
             "port, and follows it up a coast that keeps rearranging itself behind her."
         val details = items.associate { item ->
+            val worst = item.id == WORST_FILM || item.showKey == WORST_SHOW
             item.id to LibraryDetail(
-                overview = synopsis,
-                tagline = if (item.kind == LibraryItemKind.FILM) "Some doors only open from the inside." else null,
+                overview = if (worst) LONG_OVERVIEW else synopsis,
+                tagline = when {
+                    worst -> LONG_TAGLINE
+                    item.kind == LibraryItemKind.FILM -> "Some doors only open from the inside."
+                    else -> null
+                },
                 hdr = item.hdr,
-                subtitle = if (item.id == "glasshouse") "English" else null,
+                subtitle = if (item.id == "glasshouse" || worst) "English" else null,
             )
         }
-        val hub = FakeHub(catalog, thumbs, details)
+        val seasons = if (worstCase) worstSeasons() else emptyMap()
+        val hub = FakeHub(catalog, thumbs, details, seasons)
         composeRule.setContent {
             FlickTvTheme {
                 LibraryScreen(hub = hub, onPairAnother = {}, onOpenSettings = {})
@@ -190,6 +205,47 @@ class LibraryLookTest {
     }
 
     @Test
+    fun home_last_row() {
+        show()
+        focus("Paper Moons")
+        press(Key.DirectionDown, times = 5)
+        shoot("11-home-last-row")
+        press(Key.DirectionUp, times = 6)
+        shoot("12-home-back-to-hero")
+    }
+
+    @Test
+    fun worst_show_page() {
+        show(worstCase = true)
+        tab("Shows")
+        composeRule.onAllNodes(hasContentDescription(WORST_SHOW_TITLE) and hasClickAction()).onFirst().performClick()
+        composeRule.waitForIdle()
+        shoot("13-worst-show-page")
+        press(Key.DirectionDown, times = 2)
+        shoot("14-worst-show-episodes-focused")
+    }
+
+    @Test
+    fun worst_episode_detail() {
+        show(worstCase = true)
+        tab("Shows")
+        composeRule.onAllNodes(hasContentDescription(WORST_SHOW_TITLE) and hasClickAction()).onFirst().performClick()
+        composeRule.waitForIdle()
+        composeRule.onAllNodes(hasContentDescription(episodeName(3)) and hasClickAction()).onFirst().performClick()
+        composeRule.waitForIdle()
+        shoot("15-worst-episode-detail")
+    }
+
+    @Test
+    fun worst_film_detail() {
+        show(worstCase = true)
+        tab("Films")
+        composeRule.onAllNodes(hasContentDescription(WORST_FILM_TITLE) and hasClickAction()).onFirst().performClick()
+        composeRule.waitForIdle()
+        shoot("16-worst-film-detail")
+    }
+
+    @Test
     fun search() {
         show()
         composeRule.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
@@ -278,6 +334,26 @@ class LibraryLookTest {
         }
     }
 
+    private fun worstItems(): List<LibraryItem> = buildList {
+        addAll(
+            episodes(WORST_SHOW, WORST_SHOW_TITLE, mapOf(1 to 6, 2 to 5), watchedThrough = 1 to 2, resume = 1 to 3)
+                .map { it.copy(width = 1920, height = 1080, hdr = LibraryHdr.DOLBY_VISION) },
+        )
+        add(
+            film(WORST_FILM, WORST_FILM_TITLE, 2024, 148, resumeMinutes = 51, hdr = LibraryHdr.DOLBY_VISION)
+                .copy(width = 1920, height = 1080),
+        )
+    }
+
+    private fun worstSeasons(): Map<LibrarySeasonKey, List<LibraryEpisodeInfo>> =
+        mapOf(1 to 6, 2 to 5).entries.associate { (season, count) ->
+            LibrarySeasonKey(WORST_SHOW, season) to (1..count).map { episode ->
+                LibraryEpisodeInfo(episode = episode, name = episodeName(episode), overview = LONG_OVERVIEW, still = null)
+            }
+        }
+
+    private fun episodeName(episode: Int) = "The Night the Harbour Lights Went Out Over the Whole Coast, Part $episode"
+
     /** A made-up film still: a sky, a light in it and a horizon, its colour picked by [seed]. */
     private fun still(seed: Int): ImageBitmap {
         val w = 480f
@@ -310,5 +386,17 @@ class LibraryLookTest {
         }
         canvas.drawPath(ridge, paint)
         return bitmap.asImageBitmap()
+    }
+
+    private companion object {
+        const val WORST_SHOW = "tv:4401"
+        const val WORST_SHOW_TITLE = "Ashes of the Northern Sea and Everything Left Behind"
+        const val WORST_FILM = "borrowed-light"
+        const val WORST_FILM_TITLE = "Borrowed Light"
+        const val LONG_TAGLINE = "Every light in the house was borrowed from somebody, and now every one of them wants it back."
+        const val LONG_OVERVIEW = "Twenty years after the night the harbour went dark, a ferry pilot comes home to bury her " +
+            "father and finds the lighthouse lit again, tended by a stranger who knows every ship that was ever lost " +
+            "off that coast by name. As the winter storms close the roads, she pieces together a ledger of debts the " +
+            "town would rather forget, and a promise her father made that nobody alive is willing to keep."
     }
 }

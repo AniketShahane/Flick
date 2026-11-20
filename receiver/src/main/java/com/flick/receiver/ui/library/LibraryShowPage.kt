@@ -127,9 +127,9 @@ private fun ShowHeader(
     Column(
         Modifier
             .padding(start = LibraryLayout.Gutter)
-            .width(460.dp),
+            .width(480.dp),
     ) {
-        HeroTitle(show.title, show.art?.logo, sizeSp = 40, maxWidth = 420.dp, logoHeight = 50.dp)
+        HeroTitle(show.title, show.art?.logo, sizeSp = 40, maxWidth = 420.dp, logoHeight = 50.dp, maxLines = 1)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(LibraryLayout.ChipGap), verticalAlignment = Alignment.CenterVertically) {
             MetaChip(

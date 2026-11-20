@@ -101,7 +101,7 @@ internal fun DetailPage(item: LibraryItem, state: LibraryState, pane: PaneContex
                 .padding(top = LibraryLayout.TopInset),
         ) {
             Breadcrumb(pane.crumb, Modifier.padding(start = LibraryLayout.Gutter))
-            Spacer(Modifier.height(40.dp))
+            Spacer(Modifier.height(32.dp))
             Column(
                 Modifier
                     .padding(start = LibraryLayout.Gutter)
