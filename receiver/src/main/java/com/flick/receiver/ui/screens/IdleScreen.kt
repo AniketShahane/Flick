@@ -99,7 +99,10 @@ private fun Modifier.idleStage(
     }
 }
 
-private data class IdleLine(val label: String?, val doorbell: DoorbellFace)
+private data class IdleLine(val label: String?, val waking: Boolean)
+
+private val IdleDotSize = 7.dp
+private val IdleDotGap = 12.dp
 
 /**
  * T2 · Idle — "ready to cast". Screensaver-grade standby on the ambient blue
@@ -198,7 +201,7 @@ fun IdleScreen(
             }
         }
 
-        Row(
+        Column(
             // Held off the safe-area floor by the same reserve as the buttons
             // opposite, so the two bottom rows still read off one line.
             modifier = Modifier
@@ -207,30 +210,37 @@ fun IdleScreen(
                 // Wraps the wake hint short of the buttons in the opposite corner.
                 .widthIn(max = 440.dp)
                 .idleStage(stage, index = 1, settled = entranceSettled),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Static: the dot reports that a phone is paired, which is not an
-            // event, and the drifting wash is this screen's one moving thing.
-            LiveDot(color = FlickRoom.Live, size = 7.dp)
-            FlickSwap(target = IdleLine(pairedLabel, doorbell), label = "idlePaired") { line ->
-                Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(IdleDotGap),
+            ) {
+                // Static: the dot reports that a phone is paired, which is not an
+                // event, and the drifting wash is this screen's one moving thing.
+                LiveDot(color = FlickRoom.Live, size = IdleDotSize)
+                val waking = doorbell == DoorbellFace.WAKING
+                FlickSwap(target = IdleLine(pairedLabel, waking), label = "idlePaired") { line ->
                     Text(
                         text = when {
-                            line.doorbell == DoorbellFace.WAKING -> stringResource(R.string.idle_waking)
+                            line.waking -> stringResource(R.string.idle_waking)
                             line.label != null -> stringResource(R.string.idle_paired_with, line.label)
                             else -> stringResource(R.string.idle_ready)
                         },
                         style = FlickType.body(sizeSp = 16),
                         color = FlickRoom.OnSurfaceDim,
                     )
-                    if (line.doorbell == DoorbellFace.UNANSWERED) {
-                        Text(
-                            text = stringResource(R.string.idle_wake_hint),
-                            style = FlickType.body(sizeSp = 14),
-                            color = FlickRoom.OnSurfaceDim,
-                        )
-                    }
+                }
+            }
+            // Below the dot's line, not beside it: the dot speaks for the pairing,
+            // never for the warning.
+            FlickSwap(target = doorbell == DoorbellFace.UNANSWERED, label = "idleWakeHint") { hinted ->
+                if (hinted) {
+                    Text(
+                        text = stringResource(R.string.idle_wake_hint),
+                        style = FlickType.body(sizeSp = 14),
+                        color = FlickRoom.OnSurfaceDim,
+                        modifier = Modifier.padding(start = IdleDotSize + IdleDotGap),
+                    )
                 }
             }
         }
