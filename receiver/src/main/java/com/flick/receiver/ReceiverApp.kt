@@ -75,6 +75,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
+import com.flick.receiver.library.CreditsLeadPrefs
 import com.flick.receiver.library.LibraryLink
 import com.flick.receiver.library.LibraryPrefs
 import com.flick.receiver.library.LibraryServer
@@ -455,6 +456,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             autoplayEnabled = { libraryPrefs.autoplayNext },
             decodeThumbnail = ::decodeLibraryThumbnail,
             clock = { android.os.SystemClock.elapsedRealtime() },
+            creditsStorage = CreditsLeadPrefs(context),
         )
     }
     val libraryServer = remember {
@@ -841,6 +843,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 playbackFlow.value = frame
                 session.syncTick(frame.posMs)
                 if (frame.phase == PlaybackPhase.Error) session.onFatalPlaybackError()
+                // Once a second: the library is synchronized, and the credits lead is in seconds.
+                if (tick % 10 == 0 && (frame.phase == PlaybackPhase.Playing || frame.phase == PlaybackPhase.Paused)) {
+                    (session.stage as? MediaStage.Active)?.let { library.onCastPosition(it.castId, frame.posMs, frame.durationMs) }
+                }
                 if (tick % 5 == 0) {
                     snapshot = controller.snapshot()
                     // Tagged in the same tick: the player resets the rate as the
@@ -877,9 +883,12 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val frame by playbackFlow.collectAsState()
     val stage = session.stage
     val surfaceMode = playerSurfaceMode(stage)
-    // Drawn over the ended film at full size; the video surface is never resized for it.
+    // Drawn over the film at full size, in its credits or ended; the video surface is never resized for it.
     val upNextShowing = upNextOffer != null && stage is MediaStage.Active
-    // The card owns the D-pad; a side panel left open beside it would hold focus nobody can see used.
+    // Offered at the credits while the film still runs: Left/Right stay seeks and OK is Play now,
+    // so the card takes no key the film would have had, and offers no way to stop it by accident.
+    val creditsCard = upNextShowing && frame.phase != PlaybackPhase.Ended
+    // The chrome is hidden under the card; a side panel left open beside it would hold focus nobody can see used.
     LaunchedEffect(upNextShowing) {
         if (upNextShowing) openPanel = PlaybackPanel.None
     }
@@ -923,7 +932,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         else -> null
     }
     LaunchedEffect(stageCastId) {
-        if (stageCastId != null) library.onCastStarted(stageCastId) else library.onCastStopped()
+        if (stageCastId != null) library.onCastStarted(stageCastId) else library.onCastStopped(session.lastStoppedCastId)
     }
     val endedCastId = activeCastId?.takeIf { frame.phase == PlaybackPhase.Ended }
     LaunchedEffect(endedCastId) {
@@ -1341,9 +1350,11 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         val active = stage is MediaStage.Active
         val playbackGestures = receiverPlaybackGesturesEnabled(
             playbackActive = active,
-            // The Up next card owns the D-pad the way a side panel does.
-            panelOpen = openPanel != PlaybackPanel.None || upNextShowing,
+            // The Up next card over an ended film owns the D-pad the way a side panel does.
+            panelOpen = openPanel != PlaybackPanel.None || (upNextShowing && !creditsCard),
         )
+        // The chrome is not drawn under the card, whatever its own state says.
+        val chromeUp = chromeVisible && !upNextShowing
         val capturedBefore = capturedRemoteButton
         val seekButton = button == TvRemoteButton.Left || button == TvRemoteButton.Right
         val decision = tvRemoteDecision(
@@ -1351,8 +1362,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             eventType = eventType,
             repeatCount = event.repeatCount,
             playbackActive = playbackGestures,
-            chromeVisible = chromeVisible,
-            scrubFocused = scrubFocused,
+            chromeVisible = chromeUp,
+            scrubFocused = scrubFocused && !upNextShowing,
             capturedButton = capturedRemoteButton,
         )
         if (playbackGestures && eventType == TvRemoteEventType.Down && seekButton &&
@@ -1368,7 +1379,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 // timecodes, and a 38 %-wide wash over the panel would be a second
                 // account of one gesture — and a full-height layer over the film
                 // to give it.
-                remoteSeekVisible = !chromeVisible
+                remoteSeekVisible = !chromeUp
             } else if (event.repeatCount > 0) {
                 remoteSeekHeld = true
             }
@@ -1390,13 +1401,17 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
         // would make the second tap of a double-tap a focus move rather than
         // another ten seconds. Center/up/down still reveal, so nothing is
         // unreachable.
-        val blindSeek = seekButton && !chromeVisible && playbackGestures
-        if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other && !blindSeek) {
+        val blindSeek = seekButton && !chromeUp && playbackGestures
+        if (eventType == TvRemoteEventType.Down && active && button != TvRemoteButton.Other && !blindSeek && !creditsCard) {
             session.pokeChrome()
         }
         when (val command = decision.command) {
             TvRemoteCommand.RevealChrome -> Unit // pokeChrome above is the reveal signal.
-            TvRemoteCommand.TogglePlayPause -> if (frame.playing) session.onPause() else session.onPlay()
+            TvRemoteCommand.TogglePlayPause -> when {
+                creditsCard -> library.playUpNext()
+                frame.playing -> session.onPause()
+                else -> session.onPlay()
+            }
             is TvRemoteCommand.SeekBy -> {
                 remoteSeekDeltaMs = (remoteSeekDeltaMs ?: 0L) + command.deltaMs
                 remoteSeekSpeedLevel = command.speedLevel
@@ -1429,8 +1444,8 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             pairingSnapshot.surface is PairingSurface.Confirming -> pairing.denyPendingPair()
             pairingSnapshot.surface is PairingSurface.Open || pairingSnapshot.surface is PairingSurface.Locked -> pairing.closeSurface()
             stage is MediaStage.Checking || stage is MediaStage.Preparing -> if (!server.stopLocalCast()) session.backToStandby()
-            // The card is the topmost surface over an ended film; Back takes it away and
-            // leaves the film's own Watch again chrome.
+            // The card is the topmost surface; Back takes it away, leaving the credits
+            // playing or the ended film's own Watch again chrome.
             stage is MediaStage.Active && upNextShowing -> library.dismissUpNext()
             // An open side panel is the topmost surface: dismiss it before Back is
             // allowed to hide the chrome underneath it or end the cast.
@@ -1569,6 +1584,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         offer = offer,
                         play = libraryState.value.play,
                         onPlayNow = { library.playUpNext() },
+                        backToLibraryOffered = !creditsCard,
                         // The same exit as Back on the playback surface: the phone is told
                         // the cast stopped, and standby is the library.
                         onBackToLibrary = {

@@ -55,15 +55,65 @@ object LibraryShelving {
         }.sortedWith { a, b -> LibraryNameOrder.compare(LibraryFold.fold(a.title), LibraryFold.fold(b.title)) }
     }
 
+    /** A resume point shorter than this is a sampling, not a watch: it never moves a show's anchor. */
+    const val ANCHOR_MIN_RESUME_MS = 120_000L
+
+    /** When the viewer last really watched [item], in epoch seconds, or null. */
+    fun touchedAt(item: LibraryItem): Long? {
+        val watched = item.watchedAtSeconds?.takeIf { item.watched }
+        val played = item.playedAtSeconds?.takeIf { (item.resumeMs ?: 0L) >= ANCHOR_MIN_RESUME_MS }
+        return when {
+            watched == null -> played
+            played == null -> watched
+            else -> maxOf(watched, played)
+        }
+    }
+
+    /** No episode carries a time: the phone predates `playedAt` / `watchedAt`. */
+    fun isLegacy(show: LibraryShow): Boolean = show.all.none { touchedAt(it) != null }
+
     /**
-     * The episode to offer after [show]'s most recently finished one: the first after it by
-     * `(season, episode)` that is a different episode (a second file of the finished one is
-     * skipped). Null when nothing in the show has been watched yet, when the show is finished,
-     * or when that episode is watched or already in progress (it is in Continue watching
-     * instead) — a later episode is never offered in its place.
+     * The episode the viewer is at in [show]: the most recently touched (a tie goes to the
+     * later episode), or for a legacy phone the last watched by `(season, episode)`.
+     */
+    fun anchor(show: LibraryShow): LibraryItem? = anchorIn(show.all)
+
+    private fun anchorIn(ordered: List<LibraryItem>): LibraryItem? {
+        var best: LibraryItem? = null
+        var bestAt = Long.MIN_VALUE
+        for (item in ordered) {
+            val at = touchedAt(item) ?: continue
+            if (at >= bestAt) {
+                best = item
+                bestAt = at
+            }
+        }
+        return best ?: ordered.lastOrNull { it.watched }
+    }
+
+    /** The first unwatched episode after [anchor] that is a different episode, in [ordered]. */
+    private fun unwatchedAfter(ordered: List<LibraryItem>, anchor: LibraryItem): LibraryItem? {
+        val at = ordered.indexOfFirst { it.id == anchor.id }
+        if (at < 0) return null
+        return ordered.subList(at + 1, ordered.size)
+            .firstOrNull { (it.season != anchor.season || it.episode != anchor.episode) && !it.watched }
+    }
+
+    /**
+     * The episode Next episodes offers for [show]: the first unwatched one after its anchor
+     * that is a different episode. Null when nothing has been watched, when the anchor is in
+     * progress or the show is finished, or when that episode is in progress (both are in
+     * Continue watching) — a later episode is never offered in its place.
      */
     fun nextEpisode(show: LibraryShow): LibraryItem? {
         val ordered = show.all
+        if (isLegacy(show)) return legacyNextEpisode(ordered)
+        val anchor = anchorIn(ordered) ?: return null
+        if (anchor.resumeMs != null) return null
+        return unwatchedAfter(ordered, anchor)?.takeIf { it.resumeMs == null }
+    }
+
+    private fun legacyNextEpisode(ordered: List<LibraryItem>): LibraryItem? {
         val lastWatched = ordered.indexOfLast { it.watched }
         if (lastWatched < 0) return null
         val last = ordered[lastWatched]
@@ -84,19 +134,63 @@ object LibraryShelving {
         return ordered.drop(at + 1).firstOrNull { it.season != item.season || it.episode != item.episode }
     }
 
-    /** What "Play" on a show starts: the in-progress episode, else the next one, else the first. */
-    fun showPick(show: LibraryShow): LibraryItem? =
-        show.all.firstOrNull { it.resumeMs != null } ?: nextEpisode(show) ?: show.all.firstOrNull { !it.watched } ?: show.all.firstOrNull()
+    /**
+     * What "Play" on a show starts: the anchor if it is in progress, else the next unwatched
+     * episode after it (resumed if started), else the first unwatched, else the first.
+     */
+    fun showPick(show: LibraryShow): LibraryItem? {
+        val ordered = show.all
+        if (isLegacy(show)) {
+            return ordered.firstOrNull { it.resumeMs != null } ?: legacyNextEpisode(ordered)
+                ?: ordered.firstOrNull { !it.watched } ?: ordered.firstOrNull()
+        }
+        val anchor = anchorIn(ordered)
+        if (anchor?.resumeMs != null) return anchor
+        return anchor?.let { unwatchedAfter(ordered, it) } ?: ordered.firstOrNull { !it.watched } ?: ordered.firstOrNull()
+    }
+
+    /**
+     * The one in-progress episode of a non-legacy [show] that Continue watching holds: the
+     * episode Play on the show would resume, which is the anchor whenever the anchor is in
+     * progress. Other in-progress episodes are ones the viewer moved past.
+     */
+    private fun heldInProgress(show: LibraryShow): LibraryItem? = showPick(show)?.takeIf { it.resumeMs != null }
 
     fun shelves(catalog: LibraryCatalog): LibraryShelves {
         val items = catalog.items
         val shows = shows(items)
         val recent = LibrarySorting.sorted(items, LibrarySortOrder.RECENT)
+
+        // A legacy show keeps every in-progress episode in Continue watching, as before.
+        val heldByShow = HashMap<String, String?>()
+        val legacyShows = HashSet<String>()
+        val nexts = ArrayList<Triple<LibraryItem, Long?, Long>>()
+        for (show in shows) {
+            val legacy = isLegacy(show)
+            if (legacy) legacyShows += show.key
+            else heldByShow[show.key] = heldInProgress(show)?.id
+            val next = nextEpisode(show) ?: continue
+            val anchorAt = if (legacy) null else anchor(show)?.let(::touchedAt)
+            val lastWatchedAdded = show.all.filter { it.watched }.maxOfOrNull { it.addedSeconds } ?: 0L
+            nexts += Triple(next, anchorAt, lastWatchedAdded)
+        }
+
+        val continuing = recent.filter { item ->
+            when {
+                item.resumeMs == null -> false
+                !item.isEpisode -> true
+                else -> item.showKey!! in legacyShows || heldByShow[item.showKey!!] == item.id
+            }
+        }
+        // Stable: items with no `playedAt` keep their Recently added order, after the rest.
+        val continueWatching = continuing.sortedWith(compareByDescending<LibraryItem, Long?>(nullsFirst<Long>()) { it.playedAtSeconds })
+        val nextEpisodes = nexts
+            .sortedWith(compareByDescending<Triple<LibraryItem, Long?, Long>, Long?>(nullsFirst<Long>()) { it.second }.thenByDescending { it.third })
+            .map { it.first }
+
         return LibraryShelves(
-            continueWatching = recent.filter { it.resumeMs != null }.take(ROW_LIMIT),
-            nextEpisodes = shows.mapNotNull(::nextEpisode)
-                .sortedByDescending { next -> shows.first { it.key == next.showKey }.all.filter { it.watched }.maxOfOrNull { it.addedSeconds } ?: 0L }
-                .take(ROW_LIMIT),
+            continueWatching = continueWatching.take(ROW_LIMIT),
+            nextEpisodes = nextEpisodes.take(ROW_LIMIT),
             recentlyAdded = recent.take(ROW_LIMIT),
             shows = shows,
             films = LibrarySorting.sorted(items.filter { it.kind == LibraryItemKind.FILM }, LibrarySortOrder.NAME),

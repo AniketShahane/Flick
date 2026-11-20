@@ -94,7 +94,27 @@ internal object PlaybackResumePolicy {
     const val WRITE_INTERVAL_MS = 5_000L
     const val MAX_POSITION_MS = 604_800_000L
 
+    /**
+     * Contract §9's finish zone: the last 30 s or the last 5 %, whichever is longer. One rule for
+     * "watched", "no resume" and "clear the checkpoint", so no surface disagrees about a finish.
+     */
+    fun inFinishZone(positionMs: Long, durationMs: Long): Boolean {
+        if (durationMs <= 0L) return false
+        val remaining = durationMs - positionMs.coerceIn(0L, durationMs)
+        return remaining <= END_WINDOW_MS || remaining <= durationMs / 20
+    }
+
     fun eligiblePosition(positionMs: Long, durationMs: Long): Long? {
+        val safe = livePosition(positionMs, durationMs) ?: return null
+        if (inFinishZone(safe, durationMs)) return null
+        return safe
+    }
+
+    /**
+     * Where a re-cast of a cast that was live a moment ago starts. Only the 30 s end window
+     * counts as over here: a drop during the end credits returns to them, not to the top.
+     */
+    fun livePosition(positionMs: Long, durationMs: Long): Long? {
         val safe = positionMs.coerceIn(0L, MAX_POSITION_MS).let {
             if (durationMs > 0L) it.coerceAtMost(durationMs) else it
         }
@@ -106,9 +126,7 @@ internal object PlaybackResumePolicy {
     fun mutation(positionMs: Long, durationMs: Long, phase: PlaybackPhase): PlaybackProgressMutation? {
         if (phase == PlaybackPhase.ENDED) return PlaybackProgressMutation.Clear
         if (positionMs < MIN_RESUME_MS) return PlaybackProgressMutation.Clear
-        if (durationMs > 0L && durationMs - positionMs.coerceAtMost(durationMs) <= END_WINDOW_MS) {
-            return PlaybackProgressMutation.Clear
-        }
+        if (inFinishZone(positionMs, durationMs)) return PlaybackProgressMutation.Clear
         return eligiblePosition(positionMs, durationMs)?.let(PlaybackProgressMutation::Save)
     }
 }

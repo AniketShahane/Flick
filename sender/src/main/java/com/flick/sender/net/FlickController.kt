@@ -310,7 +310,7 @@ internal object CastRetryPolicy {
         durationMs: Long,
         wireDurationMs: Long,
     ): RetryStart = if (active) {
-        val resumed = PlaybackResumePolicy.eligiblePosition(confirmedMs, durationMs) ?: 0L
+        val resumed = PlaybackResumePolicy.livePosition(confirmedMs, durationMs) ?: 0L
         RetryStart(
             if (wireDurationMs > 0L) resumed.coerceAtMost(wireDurationMs) else resumed,
             startOver = false,
@@ -3194,12 +3194,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 supportPromptStore.recordSuccess()
                 publishCastStart(CastStartState.Active(castId))
                 watchDirectLink(castId)
+                // Ahead of the progress recorder, which may clear the checkpoint it backfills from.
+                tvLibrary.onCastActive(castId, item)
                 playbackProgressRecorder.activate(
                     castId,
                     fingerprint,
                     startOver = request.startOver,
                 )?.let(::enqueueProgress)
-                tvLibrary.onCastActive(castId, item)
                 _route.value = Route.NowPlaying
                 // A first frame is the only thing that can outrank a previous refusal.
                 // It also clears the decoder suspicion: this file just found a decoder,

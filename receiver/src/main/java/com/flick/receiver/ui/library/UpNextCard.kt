@@ -71,6 +71,9 @@ private const val AUTOPLAY_WINDOW_SECONDS = 10
  *
  * [play] is the hub's one Play: while it asks the phone for the next episode the button says
  * so, and a refusal stays on the card with "Play now" left to try again.
+ *
+ * Without [backToLibraryOffered] (the film is still in its credits) Play now is the only
+ * button, so no press on the card can stop the film.
  */
 @Composable
 fun UpNextCard(
@@ -79,6 +82,7 @@ fun UpNextCard(
     onPlayNow: () -> Unit,
     onBackToLibrary: () -> Unit,
     modifier: Modifier = Modifier,
+    backToLibraryOffered: Boolean = true,
 ) {
     CompositionLocalProvider(LocalHouseLit provides false) {
         val context = LocalContext.current
@@ -173,10 +177,12 @@ fun UpNextCard(
                             onClick = onPlayNow,
                             focusRequester = playFocus,
                         )
-                        SecondaryAction(
-                            text = stringResource(R.string.libui_back_to_library),
-                            onClick = onBackToLibrary,
-                        )
+                        if (backToLibraryOffered) {
+                            SecondaryAction(
+                                text = stringResource(R.string.libui_back_to_library),
+                                onClick = onBackToLibrary,
+                            )
+                        }
                     }
                 }
             }

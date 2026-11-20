@@ -60,6 +60,25 @@ class LibraryFramesTest {
     }
 
     @Test
+    fun playedAtAndWatchedAtAreOptionalEpochSeconds() {
+        fun parse(item: String) = PhoneFrame.parse("{\"t\":\"catPart\",\"v\":1,\"rev\":\"$rev\",\"index\":0,\"items\":[$item]}")
+        val plain = (parse(exampleItem) as PhoneFrame.CatPart).items.single()
+        assertNull(plain.playedAtSeconds)
+        assertNull(plain.watchedAtSeconds)
+
+        val timed = exampleItem.replace("\"resumeMs\":1260000", "\"resumeMs\":1260000,\"playedAt\":1795000100,\"watched\":true,\"watchedAt\":4102444800")
+        val item = (parse(timed) as PhoneFrame.CatPart).items.single()
+        assertEquals(1_795_000_100L, item.playedAtSeconds)
+        assertEquals(4_102_444_800L, item.watchedAtSeconds)
+        assertTrue(item.watched)
+
+        for (bad in listOf("0", "4102444801", "-5", "1.5", "\"1795000100\"", "true")) {
+            assertEquals(bad, PhoneFrame.Malformed, parse(exampleItem.replace("\"resumeMs\":1260000", "\"resumeMs\":1260000,\"playedAt\":$bad")))
+            assertEquals(bad, PhoneFrame.Malformed, parse(exampleItem.replace("\"resumeMs\":1260000", "\"resumeMs\":1260000,\"watchedAt\":$bad")))
+        }
+    }
+
+    @Test
     fun artNeedsAtLeastOneValidPath() {
         val noPaths = exampleItem.replace("\"art\":{\"tmdb\":91234,\"tv\":true,\"poster\":\"/a.jpg\",\"backdrop\":\"/b.jpg\",\"logo\":\"/c.png\"}", "\"art\":{\"tmdb\":1}")
         assertEquals(PhoneFrame.Malformed, PhoneFrame.parse("{\"t\":\"catPart\",\"v\":1,\"rev\":\"$rev\",\"index\":0,\"items\":[$noPaths]}"))

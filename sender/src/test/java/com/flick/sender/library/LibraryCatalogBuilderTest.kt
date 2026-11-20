@@ -3,6 +3,7 @@ package com.flick.sender.library
 import com.flick.sender.media.FilmArt
 import com.flick.sender.media.FilmPosterQuery
 import com.flick.sender.media.FoldedText
+import com.flick.sender.media.PlaybackCheckpoint
 import com.flick.sender.media.VideoEdition
 import com.flick.sender.media.librarySortTitle
 import com.flick.sender.ui.screens.LibrarySearchPolicy
@@ -33,7 +34,8 @@ class LibraryCatalogBuilderTest {
         simplified: Boolean = true,
         art: ((FilmPosterQuery) -> FilmArt?)? = { null },
         resume: Long? = null,
-        watched: Set<String> = emptySet(),
+        checkpoint: PlaybackCheckpoint? = null,
+        watched: Map<String, Long> = emptyMap(),
         unplayable: Set<String> = emptySet(),
         silent: Set<String> = emptySet(),
         hdr: CatalogItem.Hdr? = null,
@@ -42,6 +44,7 @@ class LibraryCatalogBuilderTest {
         genericTitle = "Video",
         editionLabel = { edition -> if (edition == VideoEdition.FINAL_CUT) "Final Cut" else edition.name },
         resumeMs = { _, _ -> resume },
+        checkpoint = { checkpoint },
         watched = watched,
         unplayable = unplayable,
         silent = silent,
@@ -135,7 +138,7 @@ class LibraryCatalogBuilderTest {
         val fingerprint = "B".repeat(43)
         val item = LibraryCatalogBuilder.build(
             listOf(row(filmName, fingerprint = fingerprint, uriKey = "k")),
-            inputs(resume = 1_260_000L, watched = setOf(fingerprint), unplayable = setOf("k"), silent = setOf("k"), hdr = CatalogItem.Hdr.DOLBY_VISION),
+            inputs(resume = 1_260_000L, watched = mapOf(fingerprint to 1_790_000_000_999L), unplayable = setOf("k"), silent = setOf("k"), hdr = CatalogItem.Hdr.DOLBY_VISION),
         ).single()
 
         assertEquals(LibraryProtocol.itemId(fingerprint), item.id)
@@ -148,6 +151,7 @@ class LibraryCatalogBuilderTest {
         assertEquals(2160, item.height)
         assertEquals(1_260_000L, item.resumeMs)
         assertTrue(item.watched)
+        assertEquals(1_790_000_000L, item.watchedAtSeconds)
         // Unplayable wins, as the tile shows no "no sound" chip on a refused file.
         assertEquals(CatalogItem.Block.UNPLAYABLE, item.blocked)
         assertEquals(CatalogItem.Hdr.DOLBY_VISION, item.hdr)
@@ -162,6 +166,56 @@ class LibraryCatalogBuilderTest {
         assertNull(plain.resumeMs)
         assertFalse(plain.watched)
         assertNull(plain.hdr)
+        assertNull(plain.playedAtSeconds)
+        assertNull(plain.watchedAtSeconds)
+    }
+
+    @Test
+    fun aResumeCarriesItsCheckpointsTime() {
+        val item = LibraryCatalogBuilder.build(
+            listOf(row(filmName)),
+            inputs(resume = 1_260_000L, checkpoint = PlaybackCheckpoint(1_260_000L, 1_800_000_123_456L)),
+        ).single()
+        assertEquals(1_800_000_123L, item.playedAtSeconds)
+        assertFalse(item.watched)
+        assertNull(item.watchedAtSeconds)
+    }
+
+    @Test
+    fun aCheckpointInTheFinishZoneIsWatchedWithoutTheLedger() {
+        // 3_000_000 of 3_130_000 is past 95 %, with 130 s left; the resume rule offers nothing there.
+        val checkpoint = PlaybackCheckpoint(3_000_000L, 1_800_000_000_500L)
+        val item = LibraryCatalogBuilder.build(listOf(row(episodeName)), inputs(checkpoint = checkpoint)).single()
+        assertNull(item.resumeMs)
+        assertNull(item.playedAtSeconds)
+        assertTrue(item.watched)
+        assertEquals(1_800_000_000L, item.watchedAtSeconds)
+    }
+
+    @Test
+    fun theLedgersTimeWinsOverABackfill() {
+        val fingerprint = "C".repeat(43)
+        val item = LibraryCatalogBuilder.build(
+            listOf(row(episodeName, fingerprint = fingerprint)),
+            inputs(checkpoint = PlaybackCheckpoint(3_000_000L, 1_800_000_000_000L), watched = mapOf(fingerprint to 1_700_000_000_000L)),
+        ).single()
+        assertTrue(item.watched)
+        assertEquals(1_700_000_000L, item.watchedAtSeconds)
+    }
+
+    @Test
+    fun aCheckpointOutsideTheZoneOrWithoutADurationIsNoFinish() {
+        val midway = LibraryCatalogBuilder.build(
+            listOf(row(episodeName)),
+            inputs(checkpoint = PlaybackCheckpoint(2_973_499L, 1_800_000_000_000L)),
+        ).single()
+        assertFalse(midway.watched)
+        assertNull(midway.watchedAtSeconds)
+        val unmeasured = LibraryCatalogBuilder.build(
+            listOf(row(episodeName).copy(durationMs = 0L)),
+            inputs(checkpoint = PlaybackCheckpoint(3_000_000L, 1_800_000_000_000L)),
+        ).single()
+        assertFalse(unmeasured.watched)
     }
 
     @Test

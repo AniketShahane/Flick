@@ -377,12 +377,12 @@ class SeasonAssembler(private val maxEpisodes: Int = MAX_EPISODES) {
     }
 }
 
-/** §10: whether, and how, an ended cast offers the next episode. */
+/** §10: whether, and how, a cast at its end or in its credits offers the next episode. */
 object UpNextPolicy {
     const val AUTOPLAY_DELAY_MS = 10_000L
 
     /**
-     * [castItemId] is what the phone's `casting` frame named for the ended cast; null when
+     * [castItemId] is what the phone's `casting` frame named for the cast; null when
      * this phone sent none, so the cast is not one of its catalog's files.
      */
     fun offer(
@@ -406,4 +406,116 @@ object UpNextPolicy {
             stillWatching = autoplayEnabled && !autoplay,
         )
     }
+}
+
+/**
+ * How long before an episode's end Up next appears: where this viewer usually leaves a
+ * show's episodes, learned from the last few times they left during the end credits.
+ */
+object CreditsLead {
+    const val DEFAULT_MS = 30_000L
+    const val MIN_MS = 20_000L
+    const val MAX_MS = 180_000L
+    const val SAMPLES = 3
+
+    /** A left-early sample is no closer to the end than this: the viewer saw the last frames. */
+    const val MIN_SAMPLE_MS = 5_000L
+
+    /** The median of [samples] clamped to [MIN_MS]..[MAX_MS]; [DEFAULT_MS] with none. */
+    fun leadMs(samples: List<Long>): Long {
+        if (samples.isEmpty()) return DEFAULT_MS
+        val sorted = samples.sorted()
+        val mid = sorted.size / 2
+        val median = if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid]) / 2
+        return median.coerceIn(MIN_MS, MAX_MS)
+    }
+
+    /**
+     * The phone's state feed lags by up to a second, so a skip from a card shown this far
+     * inside the phone's finish zone still reaches the phone inside it.
+     */
+    const val FINISH_ZONE_MARGIN_MS = 3_000L
+
+    /**
+     * [learnedMs] capped so the card appears only inside the phone's finish zone for an
+     * episode of [durationMs] (the last 30 s or 5 %, whichever is longer): a skip from the
+     * card then always counts the episode watched on the phone.
+     */
+    fun effectiveLeadMs(learnedMs: Long, durationMs: Long): Long {
+        val zone = maxOf(30_000L, durationMs.coerceAtLeast(0L) / 20)
+        return minOf(learnedMs, maxOf(MIN_MS, zone - FINISH_ZONE_MARGIN_MS))
+    }
+
+    /**
+     * The remaining time when the viewer left at [posMs], or null when leaving there says
+     * nothing about the credits: too early in the episode, or too close to its end.
+     */
+    fun sample(posMs: Long, durationMs: Long): Long? {
+        if (durationMs <= 0L) return null
+        val pos = posMs.coerceIn(0L, durationMs)
+        val remaining = durationMs - pos
+        if (remaining !in MIN_SAMPLE_MS..MAX_MS) return null
+        if (pos * 100 < durationMs * 85) return null
+        return remaining
+    }
+}
+
+/**
+ * Per show, the newest [CreditsLead.SAMPLES] samples, for the [maxShows] most recently sampled shows. Shows
+ * are held only by a hash of their key, so nothing stored names a title (§12).
+ */
+class CreditsLeadBook(private val maxShows: Int = MAX_SHOWS) {
+    private val byShow = LinkedHashMap<String, List<Long>>()
+
+    val size: Int get() = byShow.size
+
+    fun leadMs(showKey: String): Long = CreditsLead.leadMs(byShow[hash(showKey)].orEmpty())
+
+    fun samples(showKey: String): List<Long> = byShow[hash(showKey)].orEmpty()
+
+    fun record(showKey: String, remainingMs: Long) {
+        val key = hash(showKey)
+        val held = byShow.remove(key).orEmpty()
+        byShow[key] = (held + remainingMs).takeLast(CreditsLead.SAMPLES)
+        trim()
+    }
+
+    /** `hash:ms,ms;hash:ms`, the show sampled longest ago first. */
+    fun encode(): String = byShow.entries.joinToString(";") { (key, samples) -> key + ":" + samples.joinToString(",") }
+
+    /** Restores [encode]'s output; anything malformed is skipped. */
+    fun decode(encoded: String?) {
+        byShow.clear()
+        if (encoded.isNullOrEmpty()) return
+        for (entry in encoded.split(';')) {
+            val key = entry.substringBefore(':', "")
+            if (!HashShape.matches(key)) continue
+            val samples = entry.substringAfter(':', "").split(',')
+                .mapNotNull { it.toLongOrNull()?.takeIf { ms -> ms in CreditsLead.MIN_SAMPLE_MS..CreditsLead.MAX_MS } }
+                .takeLast(CreditsLead.SAMPLES)
+            if (samples.isNotEmpty()) byShow[key] = samples
+        }
+        trim()
+    }
+
+    private fun trim() {
+        while (byShow.size > maxShows) byShow.remove(byShow.keys.first())
+    }
+
+    companion object {
+        const val MAX_SHOWS = 200
+        private val HashShape = Regex("[0-9a-f]{16}")
+
+        fun hash(showKey: String): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(("Flick-Credits-V1|$showKey").toByteArray(Charsets.UTF_8))
+            return digest.take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+    }
+}
+
+/** Where a [CreditsLeadBook] is kept between runs. Called off the hub's lock. */
+interface CreditsLeadStorage {
+    fun load(): String?
+    fun save(encoded: String)
 }

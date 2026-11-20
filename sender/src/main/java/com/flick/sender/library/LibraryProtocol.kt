@@ -108,7 +108,11 @@ internal data class CatalogItem(
     val height: Int = 0,
     val hdr: Hdr? = null,
     val resumeMs: Long? = null,
+    /** When [resumeMs] was recorded, epoch seconds. */
+    val playedAtSeconds: Long? = null,
     val watched: Boolean = false,
+    /** When the item became watched, epoch seconds. */
+    val watchedAtSeconds: Long? = null,
     val blocked: Block? = null,
     val art: Art? = null,
 ) {
@@ -133,6 +137,7 @@ internal object CatalogRules {
     const val FOLDER_MAX = 512
     const val SHOW_NAME_KEY_MAX = 200
     const val MAX_MS = 604_800_000L
+    val EPOCH_SECONDS = 1L..4_102_444_800L
 
     private val imagePath = Regex("^/[A-Za-z0-9_-]+\\.(?:jpg|jpeg|png|webp)$")
 
@@ -166,8 +171,15 @@ internal object CatalogRules {
         w.num("w", item.width.coerceIn(0, 100_000))
         w.num("h", item.height.coerceIn(0, 100_000))
         item.hdr?.let { w.str("hdr", it.wire) }
-        item.resumeMs?.takeIf { it in 0L..MAX_MS }?.let { w.num("resumeMs", it) }
-        if (item.watched) w.bool("watched", true)
+        val resumeMs = item.resumeMs?.takeIf { it in 0L..MAX_MS }
+        if (resumeMs != null) {
+            w.num("resumeMs", resumeMs)
+            item.playedAtSeconds?.takeIf { it in EPOCH_SECONDS }?.let { w.num("playedAt", it) }
+        }
+        if (item.watched) {
+            w.bool("watched", true)
+            item.watchedAtSeconds?.takeIf { it in EPOCH_SECONDS }?.let { w.num("watchedAt", it) }
+        }
         item.blocked?.let { w.str("blocked", it.wire) }
         item.art?.let(::artJson)?.let { w.raw("art", it) }
         return w.build()

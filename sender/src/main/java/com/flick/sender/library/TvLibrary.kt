@@ -398,7 +398,8 @@ internal class TvLibrary(
         val token = freshness.buildStarting()
         val items = phone.library.value.items
         val progress = phone.playbackProgress.value
-        val watchedNow = watchedStore.state.value.keys
+        val checkpoints = (progress as? PlaybackProgressState.Ready)?.checkpoints.orEmpty()
+        val watchedNow = watchedStore.state.value
         val unplayable = phone.unplayableFiles.value.keys
         val silent = phone.silentAudioFiles.value.keys
         val simplified = phone.simplifiedVideoNames.value
@@ -424,6 +425,7 @@ internal class TvLibrary(
                 genericTitle = generic,
                 editionLabel = { context.getString(it.labelResource()) },
                 resumeMs = { fingerprint, durationMs -> resumePositionMs(progress, fingerprint, durationMs) },
+                checkpoint = { fingerprint -> checkpoints[fingerprint] },
                 watched = watchedNow,
                 unplayable = unplayable,
                 silent = silent,
@@ -621,9 +623,20 @@ internal class TvLibrary(
 
     // --- Watched ledger (contract §9) ---------------------------------------
 
-    /** A cast reached its first frame. */
+    /**
+     * A cast reached its first frame. Called before the progress recorder activates: a replay
+     * from the top clears the checkpoint, and a finish-zone checkpoint is the only record of a
+     * finish the ledger never saw, so it is backfilled here while it is still read.
+     */
     fun onCastActive(castId: String, item: MediaItem) {
-        watchedRecorder.activate(castId, PlaybackMediaFingerprint.of(item))
+        val fingerprint = PlaybackMediaFingerprint.of(item)
+        watchedRecorder.activate(castId, fingerprint)
+        val checkpoint = (phone.playbackProgress.value as? PlaybackProgressState.Ready)?.checkpoints?.get(fingerprint)
+        WatchedLedgerPolicy.backfillAtMs(
+            checkpoint,
+            item.durationMs,
+            recorded = fingerprint in watchedStore.state.value,
+        )?.let { watchedStore.backfill(fingerprint, it) }
     }
 
     fun onConfirmed(castId: String, positionMs: Long, durationMs: Long, phase: PlaybackPhase) {

@@ -270,6 +270,13 @@ class SessionController(
     /** Whether this cast has already told the phone its film plays silent. */
     private var audioSilentSent = false
 
+    /**
+     * The last cast a stop command ended: the phone's Stop or this TV's Back. Set before the
+     * stage leaves it, so whoever sees the stage go reads which exit it was.
+     */
+    var lastStoppedCastId: String? = null
+        private set
+
     init {
         controller.setPlaybackFailureListener(::onPlaybackError)
         controller.setExternalSubtitleDroppedListener(::onExternalSubtitleDropped)
@@ -838,6 +845,7 @@ class SessionController(
     override fun onStop(castId: String): Boolean {
         if (!current(castId)) return false
         IncidentJournal.record("cast_end", "cast" to journalId(castId), "reason" to "stopped")
+        lastStoppedCastId = castId
         retainedResult = ControlCastResult.Stopped(castId)
         invalidateToNone(clearRetained = false)
         return true

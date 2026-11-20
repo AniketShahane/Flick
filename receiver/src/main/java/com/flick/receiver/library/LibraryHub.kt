@@ -71,7 +71,7 @@ data class LibraryDetail(val overview: String?, val tagline: String?, val hdr: L
 data class LibrarySeasonKey(val showKey: String, val season: Int)
 
 /**
- * The Up next card over an ended episode (§10). [autoplayAtMs] is on
+ * The Up next card over an episode in its credits or ended (§10). [autoplayAtMs] is on
  * `SystemClock.elapsedRealtime()`; null when autoplay is off or [stillWatching] is asking.
  */
 data class UpNextOffer(
