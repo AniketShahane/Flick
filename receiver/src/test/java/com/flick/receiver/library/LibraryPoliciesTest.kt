@@ -508,6 +508,17 @@ class LibraryPoliciesTest {
     }
 
     @Test
+    fun aPhoneWithNoTimesCountsOnlyTheLast30Seconds() {
+        val minute = 60_000L
+        assertEquals(177_000L, CreditsLead.capMs(60 * minute, phoneHasTimes = true))
+        assertEquals(27_000L, CreditsLead.capMs(60 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.capMs(10 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(180_000L, 60 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(30_000L, 22 * minute, phoneHasTimes = false))
+        assertEquals(20_000L, CreditsLead.effectiveLeadMs(20_000L, 22 * minute, phoneHasTimes = false))
+    }
+
+    @Test
     fun onlyALeaveInTheLastStretchIsASample() {
         val hour = 3_600_000L
         assertEquals(60_000L, CreditsLead.sample(hour - 60_000L, hour))

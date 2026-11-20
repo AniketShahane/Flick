@@ -386,14 +386,18 @@ TV's Next episodes row only; it changes nothing on the phone's own screens.
   viewer left the episode early", clamped to 20 s..3 min, or 30 s with no samples. The effective
   lead is capped to the phone's finish zone (§9): min(learned lead, max(20 s, zone − 3 s)), with
   zone = max(30 s, 5 % of the duration), so a skip from the card always lands inside the zone and
-  the phone counts the episode watched. Only a viewer exit is a sample: a `stop` (from the phone
-  or the TV remote), a replacement by a new cast, or Play now, before `ended`; the remaining time
-  is kept only when 5 s..3 min was left and at least 85 % had played. Errors, link loss,
-  teardown, backgrounding, an autoplay and a natural `ended` are not samples. Samples are kept on
+  the phone counts the episode watched. When none of the casting phone's items carries
+  `playedAt` or `watchedAt` (a phone from before those fields, whose zone is the last 30 s only),
+  the cap is 27 s. Only a viewer exit with no credits card showing is a sample: a `stop` (from the
+  phone or the TV remote), a replacement by a new cast, or Play now, before `ended`; the
+  remaining time is kept only when 5 s..3 min was left and at least 85 % had played. An exit
+  while the credits card is up says nothing new about the credits and is not a sample; nor are
+  errors, link loss, teardown, backgrounding, an autoplay or a natural `ended`. (A phone-side
+  fault that makes the phone send `stop` reads as a stop.) Samples are kept on
   the TV under a hash of the `showKey` (no title stored), newest 200 shows, not backed up. During
   the credits the card offers only Play now (no Back to library) and leaves Left/Right to
   seeking: OK plays now, Back hides it. It clears if the viewer seeks back past the lead plus
-  10 s (unless its `play` is already outstanding); once hidden the credits do not offer it again
+  10 s, or past the cap if that is sooner (unless its `play` is already outstanding); once hidden the credits do not offer it again
   for that cast, but `ended` still does, with the card as before. With autoplay on (TV setting, default on)
   it sends `play` with `from:"start"` after 10 s. The card shows the play's progress and the
   specific reason if the phone refuses, and Play now retries. After three consecutive autoplays

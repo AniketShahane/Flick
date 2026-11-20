@@ -696,6 +696,60 @@ class TvLibraryTest {
         assertEquals(L2, capped.upNext.value?.next)
     }
 
+    private fun hubWithLead(learnedMs: Long): TvLibrary {
+        val book = CreditsLeadBook()
+        book.record("tv:1", learnedMs)
+        return TvLibrary(
+            labelOf = { "Pixel" },
+            autoplayEnabled = { true },
+            decodeThumbnail = { null },
+            clock = { dispatcher.scheduler.currentTime },
+            scope = scope,
+            workDispatcher = dispatcher,
+            creditsStorage = FakeCredits(book.encode()),
+        )
+    }
+
+    private fun TvLibrary.casting(items: List<LibraryItem>) {
+        val link = FakeLink()
+        onAuthenticated(KEY_A, link) { true }
+        onFrame(link, PhoneFrame.CatBegin(REV1, items.size, 1))
+        onFrame(link, PhoneFrame.CatPart(REV1, 0, items))
+        onFrame(link, PhoneFrame.CatEnd(REV1))
+        onFrame(link, PhoneFrame.Casting(CAST_1, items.first().id))
+        onCastStarted(CAST_1)
+    }
+
+    @Test
+    fun aPhoneWithNoTimesGetsTheCardOnlyInItsLast27Seconds() {
+        val legacy = hubWithLead(180_000L)
+        legacy.casting(listOf(L1.copy(playedAtSeconds = null), L2))
+        val duration = 60 * 60_000L
+        legacy.onCastPosition(CAST_1, duration - 27_001L, duration)
+        assertNull(legacy.upNext.value)
+        legacy.onCastPosition(CAST_1, duration - 27_000L, duration)
+        assertEquals(L2, legacy.upNext.value?.next)
+        // Seeking back clears it as soon as it is outside the cap.
+        legacy.onCastPosition(CAST_1, duration - 27_001L, duration)
+        assertNull(legacy.upNext.value)
+    }
+
+    @Test
+    fun seekingBackOutsideTheCapClearsATailCard() {
+        // A 60-minute episode: learned 180 s is capped at 177 s, so 187 s left is outside it.
+        val capped = hubWithLead(180_000L)
+        capped.casting(listOf(L1, L2))
+        val duration = 60 * 60_000L
+        capped.onCastPosition(CAST_1, duration - 177_000L, duration)
+        assertEquals(L2, capped.upNext.value?.next)
+        capped.onCastPosition(CAST_1, duration - 187_000L, duration)
+        assertNull(capped.upNext.value)
+        capped.onCastPosition(CAST_1, duration - 177_000L, duration)
+        assertNotNull(capped.upNext.value)
+        capped.onCastPosition(CAST_1, duration - 177_001L, duration)
+        assertNull(capped.upNext.value)
+    }
+
     @Test
     fun aFinaleTailAsksAgainOnlyWhenTheCatalogChanges() {
         val link = connect()
@@ -721,17 +775,39 @@ class TvLibraryTest {
     }
 
     @Test
-    fun playNowIsASampleAndTheReplacementIsNotASecond() {
+    fun playNowFromATailCardIsNoSample() {
         val link = episodePlaying()
         at(25_000L)
         hub.playUpNext()
-        scope.runCurrent()
-        assertEquals("25000", savedSamples())
         hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), true, null))
         hub.onCastStarted(CAST_2)
         hub.onCastStopped()
         scope.runCurrent()
-        assertEquals(1, credits.saves.size)
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun stoppingOrReplacingWhileATailCardIsUpIsNoSample() {
+        episodePlaying()
+        at(25_000L)
+        assertNotNull(hub.upNext.value)
+        hub.onCastStopped(CAST_1)
+        episodePlaying(CAST_2)
+        at(25_000L, CAST_2)
+        assertNotNull(hub.upNext.value)
+        hub.onCastStarted("Y2FzdDNjYXN0M2Nhc3QzYw")
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun stoppingAfterBackHidTheTailCardIsASample() {
+        episodePlaying()
+        at(25_000L)
+        hub.dismissUpNext()
+        hub.onCastStopped(CAST_1)
+        scope.runCurrent()
+        assertEquals("25000", savedSamples())
     }
 
     @Test
@@ -984,7 +1060,8 @@ class TvLibraryTest {
         val E1 = episode("s01e01xxxxx", 1)
         val E2 = episode("s01e02xxxxx", 2)
         const val DUR = 3_000_000L
-        val L1 = episode("s01e01lllll", 1).copy(durationMs = DUR)
+        // A time marks the phone as one that counts the longer finish zone.
+        val L1 = episode("s01e01lllll", 1).copy(durationMs = DUR, playedAtSeconds = 1L)
         val L2 = episode("s01e02lllll", 2).copy(durationMs = DUR)
         val FILM = LibraryItem(
             id = "film0000001", name = "f.mkv", title = "F", sortKey = "f", find = "f", kind = LibraryItemKind.FILM,

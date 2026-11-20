@@ -1616,12 +1616,14 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   [Stage motion](#stage-motion-house-lights-the-tunnel-and-the-resync-wait)). It also offers it at
   the credits, once the time left is within the show's credits lead: the median of the last 3
   times left when the viewer left an episode early (a stop from the phone or the TV remote, a
-  replacement by a new cast, or Play now; never an error, link loss, teardown or backgrounding),
+  replacement by a new cast, or Play now, while no credits card is up; never an error, link loss,
+  teardown or backgrounding),
   clamped to 20 s..3 min, 30 s by default, stored on the TV in `flick_credits` under a hash of the
   show key (excluded from backup). The lead is capped to min(learned, max(20 s, zone − 3 s)) with
   the phone's finish zone = max(30 s, 5 % of the duration), so skipping from the card always
-  counts as watched. At the credits the card offers only Play now and leaves Left/Right to
-  seeking: OK plays now, Back hides it until `ended`, and seeking back clears it. With **Autoplay
+  counts as watched; a phone whose catalog carries no `playedAt`/`watchedAt` (older, 30 s zone)
+  gets a 27 s cap. At the credits the card offers only Play now and leaves Left/Right to
+  seeking: OK plays now, Back hides it until `ended`, and seeking back past the lead plus 10 s (or the cap) clears it. With **Autoplay
   next episode** on (TV Settings, on by default) it asks the phone to play it after 10 s; after
   three autoplays with no key press it asks "Still watching?" instead.
 - **What it never does.** The TV never receives a path, content URI, media URL or token on this

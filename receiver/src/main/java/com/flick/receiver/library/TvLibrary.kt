@@ -512,8 +512,26 @@ class TvLibrary(
         return duration - livePosMs.coerceIn(0L, duration)
     }
 
-    private fun leadLocked(item: LibraryItem): Long =
-        CreditsLead.effectiveLeadMs(credits.leadMs(item.showKey!!), liveDurationMs.takeIf { it > 0L } ?: item.durationMs)
+    private fun durationLocked(item: LibraryItem): Long = liveDurationMs.takeIf { it > 0L } ?: item.durationMs
+
+    private fun capLocked(item: LibraryItem, catalog: LibraryCatalog?): Long =
+        CreditsLead.capMs(durationLocked(item), phoneHasTimesLocked(catalog))
+
+    private fun leadLocked(item: LibraryItem, catalog: LibraryCatalog?): Long =
+        CreditsLead.effectiveLeadMs(credits.leadMs(item.showKey!!), durationLocked(item), phoneHasTimesLocked(catalog))
+
+    /** Scanned once per catalog: the tail asks every second. */
+    private var timesCatalog: LibraryCatalog? = null
+    private var timesCatalogHas = false
+
+    private fun phoneHasTimesLocked(catalog: LibraryCatalog?): Boolean {
+        if (catalog == null) return false
+        if (timesCatalog !== catalog) {
+            timesCatalog = catalog
+            timesCatalogHas = catalog.items.any { it.playedAtSeconds != null || it.watchedAtSeconds != null }
+        }
+        return timesCatalogHas
+    }
 
     private fun tailLocked(castId: String) {
         if (lastEndedCastId == castId) return
@@ -524,7 +542,9 @@ class TvLibrary(
             val play = playMachine.state
             val outstanding = (play is LibraryPlay.Asking && play.id == offer.next.id) ||
                 (play is LibraryPlay.Starting && play.id == offer.next.id)
-            if (!outstanding && remaining > leadLocked(offer.ended) + TAIL_CLEAR_SLACK_MS) {
+            val catalog = phones.values.filter { it.casting[castId] != null }.maxByOrNull { it.authOrder }?.assembler?.current
+            val clearAt = minOf(leadLocked(offer.ended, catalog) + TAIL_CLEAR_SLACK_MS, capLocked(offer.ended, catalog))
+            if (!outstanding && remaining > clearAt) {
                 FlickLog.i("library", "upNext cleared seekBack")
                 clearUpNextLocked()
                 publishStateLocked()
@@ -537,7 +557,7 @@ class TvLibrary(
         if (tailNoNextCastId == castId && tailNoNextCatalog === catalog) return
         val item = phone.casting[castId]?.let(catalog::get)?.takeIf { it.isEpisode } ?: return
         val remaining = liveRemainingLocked(item) ?: return
-        if (remaining > leadLocked(item)) return
+        if (remaining > leadLocked(item, catalog)) return
         // Only a connected phone's answer is final; a disconnected one is asked again.
         if (phone.link != null && LibraryShelving.following(item, catalog) == null) {
             tailNoNextCastId = castId
@@ -552,10 +572,11 @@ class TvLibrary(
         val castId = liveCastId ?: return
         if (liveSampleSettled) return
         liveSampleSettled = true
+        // Leaving from the tail card is where the card appeared, not where the credits start.
+        if (offerFromTail && upNextCastId == castId && _upNext.value != null) return
         val item = castEpisodeLocked(castId) ?: return
         if (livePosMs < 0L) return
-        val duration = liveDurationMs.takeIf { it > 0L } ?: item.durationMs
-        val remaining = CreditsLead.sample(livePosMs, duration) ?: return
+        val remaining = CreditsLead.sample(livePosMs, durationLocked(item)) ?: return
         credits.record(item.showKey!!, remaining)
         FlickLog.i("library", "credits sample remainingS=${remaining / 1_000L}")
         saveCreditsLocked()

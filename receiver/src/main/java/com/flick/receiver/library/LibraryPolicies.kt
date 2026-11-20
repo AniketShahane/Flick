@@ -437,14 +437,23 @@ object CreditsLead {
     const val FINISH_ZONE_MARGIN_MS = 3_000L
 
     /**
-     * [learnedMs] capped so the card appears only inside the phone's finish zone for an
-     * episode of [durationMs] (the last 30 s or 5 %, whichever is longer): a skip from the
-     * card then always counts the episode watched on the phone.
+     * The longest lead whose card still appears inside the phone's finish zone for an episode
+     * of [durationMs], so a skip from the card always counts the episode watched there. The
+     * zone is the last 30 s or 5 %, whichever is longer; a phone from before that change
+     * counts only the last 30 s, and is recognized by sending no [LibraryItem.playedAtSeconds]
+     * or [LibraryItem.watchedAtSeconds] ([phoneHasTimes] false).
      */
-    fun effectiveLeadMs(learnedMs: Long, durationMs: Long): Long {
-        val zone = maxOf(30_000L, durationMs.coerceAtLeast(0L) / 20)
-        return minOf(learnedMs, maxOf(MIN_MS, zone - FINISH_ZONE_MARGIN_MS))
+    fun capMs(durationMs: Long, phoneHasTimes: Boolean): Long {
+        if (!phoneHasTimes) return LEGACY_ZONE_MS - FINISH_ZONE_MARGIN_MS
+        val zone = maxOf(LEGACY_ZONE_MS, durationMs.coerceAtLeast(0L) / 20)
+        return maxOf(MIN_MS, zone - FINISH_ZONE_MARGIN_MS)
     }
+
+    private const val LEGACY_ZONE_MS = 30_000L
+
+    /** [learnedMs] capped at [capMs]. */
+    fun effectiveLeadMs(learnedMs: Long, durationMs: Long, phoneHasTimes: Boolean = true): Long =
+        minOf(learnedMs, capMs(durationMs, phoneHasTimes))
 
     /**
      * The remaining time when the viewer left at [posMs], or null when leaving there says
