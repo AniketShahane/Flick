@@ -76,9 +76,14 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.flick.receiver.library.CreditsLeadPrefs
+import com.flick.receiver.library.KnockAddressBook
+import com.flick.receiver.library.KnockAddressPrefs
+import com.flick.receiver.library.KnockTimes
 import com.flick.receiver.library.LibraryLink
 import com.flick.receiver.library.LibraryPrefs
 import com.flick.receiver.library.LibraryServer
+import com.flick.receiver.library.SocketKnockTransport
+import com.flick.receiver.library.TvDoorbell
 import com.flick.receiver.library.TvLibrary
 import com.flick.receiver.library.decodeLibraryThumbnail
 import com.flick.receiver.net.ControlPortStore
@@ -180,6 +185,7 @@ import com.flick.receiver.util.ScreenWakeHelper
 import com.flick.receiver.util.keepScreenOnWhilePresenting
 import com.flick.receiver.util.preferredWindowRefreshRate
 import com.flick.receiver.util.refreshRateHintDelayMs
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -459,14 +465,50 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             creditsStorage = CreditsLeadPrefs(context),
         )
     }
+    val knockBook = remember {
+        KnockAddressBook(KnockAddressPrefs(context)).also { book ->
+            book.retainOnly(pairing.snapshot.value.devices.mapTo(HashSet()) { it.keyId })
+        }
+    }
     val libraryServer = remember {
         LibraryServer(
             tvId = { pairing.tvId },
             findKey = { tvId, keyId -> pairing.findKey(tvId, keyId)?.key },
             hub = library,
+            knockBook = knockBook,
         )
     }
+    val doorbell = remember {
+        TvDoorbell(
+            book = knockBook,
+            pairedKeyIds = { pairing.snapshot.value.devices.mapTo(HashSet()) { it.keyId } },
+            linkedKeyIds = library::linkedKeyIds,
+            keyFor = { keyId -> pairing.findKey(pairing.tvId, keyId)?.key },
+            tvId = { pairing.tvId },
+            // The address the control server binds: the knock leaves from the same LAN.
+            localHost = LanAddress::current,
+            transport = SocketKnockTransport(),
+            clock = { android.os.SystemClock.elapsedRealtime() },
+            scope = scope,
+            times = KnockTimes.process,
+        )
+    }
+    val doorbellFace by doorbell.face.collectAsState()
     val libraryState = library.state.collectAsState()
+    LaunchedEffect(doorbell) {
+        library.anyLinked.collect { doorbell.onLinkChanged(it) }
+    }
+    // Knocks only while STARTED: a stop cancels any knock still out.
+    LaunchedEffect(doorbell, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            doorbell.onStarted()
+            try {
+                awaitCancellation()
+            } finally {
+                doorbell.onStopped()
+            }
+        }
+    }
     val upNextOffer by library.upNext.collectAsState()
     val server = remember {
         ControlServer(pairing, session, { playbackFlow.value }, library = libraryServer) { peer, trigger, stillQuiet ->
@@ -742,8 +784,9 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 boundHost = null
                 boundPort = -1
             }
-            suspend fun reconcile(addressMoved: Boolean) {
-                if (!bindingGate.mayBindOrAdvertise()) return
+            /** True when the control server has just bound or re-listened. */
+            suspend fun reconcile(addressMoved: Boolean): Boolean {
+                if (!bindingGate.mayBindOrAdvertise()) return false
                 var host = LanAddress.current()
                 var blipped = false
                 val held = boundHost
@@ -756,7 +799,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     var verdict = LanBlipPolicy.decide(held, host, waitedMs = 0L)
                     while (verdict == LanBlipVerdict.WAIT) {
                         delay(LanBlipPolicy.LAN_BLIP_RESAMPLE_MS)
-                        if (!bindingGate.mayBindOrAdvertise()) return
+                        if (!bindingGate.mayBindOrAdvertise()) return false
                         host = LanAddress.current()
                         verdict = LanBlipPolicy.decide(held, host, android.os.SystemClock.elapsedRealtime() - waitStartedMs)
                     }
@@ -771,7 +814,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     lanHost = null
                     anyIpv4 = LanAddress.hasAnyIpv4()
                     if (boundHost != null) release("no_lan_address", boundHost)
-                    return
+                    return false
                 }
                 // Recorded BEFORE the bind, and separately from [boundHost]: a bind that
                 // fails leaves boundHost null, and folding the two together is what told
@@ -787,7 +830,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         FlickLog.i("bind", "relisten host=$host port=$boundPort result=$port")
                         if (port == boundPort) {
                             nsd.register(tvName, port, Build.MODEL ?: "Android TV", NsdAdvertiser.STATE_READY, pairing.tvId)
-                            return
+                            return true
                         }
                         // The port could not be taken back. Fall through to an ordinary
                         // bind on the same address, which walks the candidates and
@@ -798,7 +841,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                         boundPort = -1
                         rebindCount++
                     } else {
-                        return
+                        return false
                     }
                 }
                 // A new address is a control-loss boundary even when the old
@@ -811,7 +854,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                 }
                 val persisted = portStore.lastPort()
                 val port = server.start(host, portStore.candidates())
-                if (port <= 0) return
+                if (port <= 0) return false
                 portStore.remember(port)
                 boundHost = host
                 boundPort = port
@@ -825,11 +868,15 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                     state = NsdAdvertiser.STATE_READY,
                     tvId = pairing.tvId,
                 )
+                return true
             }
             merge(
                 lanMonitor.address.map { true },
                 flow { while (true) { emit(false); delay(RECONCILE_SAFETY_NET_MS) } },
-            ).collect { addressMoved -> reconcile(addressMoved) }
+            ).collect { addressMoved ->
+                val rebound = reconcile(addressMoved)
+                doorbell.onServer(bound = boundPort > 0 && boundHost != null, rebound = rebound)
+            }
         }
     }
 
@@ -1335,11 +1382,10 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val handleRemoteKey by rememberUpdatedState<(AndroidKeyEvent) -> Boolean> { event ->
         if (event.action == AndroidKeyEvent.ACTION_DOWN) {
             houseKeys.tryEmit(Unit)
-            library.onRemoteKey(
-                libraryShowing = stage is MediaStage.None &&
-                    standbySurfaceFor(showSettings, pairingSnapshot.surface, pairingSnapshot.pairedCount) == StandbySurface.Idle &&
-                    libraryState.value.link != LibraryLink.NONE,
-            )
+            val idleShowing = stage is MediaStage.None &&
+                standbySurfaceFor(showSettings, pairingSnapshot.surface, pairingSnapshot.pairedCount) == StandbySurface.Idle
+            library.onRemoteKey(libraryShowing = idleShowing && libraryState.value.link != LibraryLink.NONE)
+            if (idleShowing && libraryState.value.link != LibraryLink.CONNECTED) doorbell.onIdleKey()
         }
         val button = event.toTvRemoteButton()
         val eventType = when (event.action) {
@@ -1926,6 +1972,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
                                                         pairedLabel = deviceLabel,
                                                         onPairAnother = { pairing.requestOpen() },
                                                         onOpenSettings = { showSettings = true },
+                                                        doorbell = doorbellFace,
                                                     )
                                                 }
                                             }

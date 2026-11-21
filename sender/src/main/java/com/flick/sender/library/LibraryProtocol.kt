@@ -365,6 +365,9 @@ internal object LibraryFrames {
     fun casting(castId: String, id: String): String = LibraryJsonWriter()
         .str("t", "casting").num("v", V).str("castId", castId).str("id", id).build()
 
+    /** §13: where this phone's doorbell listens now, on the address the TV saw this socket come from. */
+    fun knockAt(port: Int): String = LibraryJsonWriter().str("t", "knockAt").num("v", V).num("port", port).build()
+
     fun detail(id: String, overview: String?, tagline: String?, hdr: CatalogItem.Hdr?, subtitle: String?): String {
         val w = LibraryJsonWriter().str("t", "detail").num("v", V).str("id", id)
         overview?.let { CatalogRules.label(it, 1_200) }?.let { w.str("overview", it) }

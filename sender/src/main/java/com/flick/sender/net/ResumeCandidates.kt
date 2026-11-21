@@ -1,6 +1,7 @@
 package com.flick.sender.net
 
 import com.flick.sender.model.DiscoveredTv
+import com.flick.sender.model.TvAvailability
 
 /** Candidate policy is pure so discovery hints cannot poison a stored endpoint. */
 internal object ResumeCandidates {
@@ -38,6 +39,19 @@ internal object ResumeCandidates {
         // rogue advertiser can never jump ahead of the endpoint we actually verified.
         val (rebound, elsewhere) = candidates.partition { it.host == lastHost }
         return rebound + last + elsewhere
+    }
+
+    /**
+     * A doorbell knock's dial (library contract §13.3): the stored endpoint, then the address
+     * the knock came from at the stored port. A valid knock proves only that the knocker
+     * holds the pairing key, so its address is a hint like an advertisement and never goes
+     * ahead of the verified endpoint.
+     */
+    fun forKnock(lastHost: String, lastPort: Int, tvId: String, knockHost: String?): List<Endpoint> {
+        val hint = knockHost?.let {
+            DiscoveredTv(name = "", host = it, port = lastPort, tvId = tvId, model = null, state = TvAvailability.UNKNOWN)
+        }
+        return ordered(lastHost, lastPort, tvId, listOfNotNull(hint))
     }
 }
 

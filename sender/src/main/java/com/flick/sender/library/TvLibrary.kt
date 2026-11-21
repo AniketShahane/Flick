@@ -24,14 +24,17 @@ import com.flick.sender.net.ControlClient
 import com.flick.sender.net.FilmDetailsStore
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.net.LibraryView
+import com.flick.sender.net.Liveness
 import com.flick.sender.net.PairingStore
 import com.flick.sender.util.FlickLog
+import com.flick.sender.util.IncidentJournal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -81,6 +84,36 @@ internal interface LibraryPhone {
 
     /** The label of the subtitle a cast of [item] would attach now, or null. */
     fun subtitleLabel(item: MediaItem): String?
+
+    /** The pairing ready mode serves: the last TV, verified and not needing repair. */
+    fun readyPairing(): PairingStore.Pairing?
+
+    /** Media access as the platform grants it now, whether or not anything has read it yet. */
+    fun mediaAccessGranted(): Boolean
+
+    /** Evaluate media access if nothing in this process has yet, so a library can load. */
+    fun ensureMediaAccess()
+
+    /** A dial, a pairing or a block wait owns control v2 right now. */
+    fun dialing(): Boolean
+
+    /**
+     * A connection attempt is actually running (a dial, a resume including a knock's, or a block
+     * wait). Unlike [dialing], an open pair sheet or scanned-code card alone does not count.
+     */
+    fun dialInFlight(): Boolean
+
+    /** The tvId a knock's own resume ([knockResume]) is still dialing, or null. */
+    fun knockResumingTv(): String?
+
+    /**
+     * The quiet, non-user resume to [pairing]'s stored endpoint, then [knockHost] (where the
+     * knock came from) behind it. False when it did not start.
+     */
+    fun knockResume(pairing: PairingStore.Pairing, knockHost: String?): Boolean
+
+    /** Close control v2 with no face, no haptic and no redial. */
+    fun hangUpControl()
 }
 
 /**
@@ -154,6 +187,11 @@ internal class TvLibrary(
     private val readyWindow = TvReadyWindowPolicy()
     private var readyDeadlineJob: Job? = null
 
+    // §13: the doorbell's bound port, and the one last sent on the current library socket.
+    private var doorbellPort: Int? = null
+    private var knockAtSent: Int? = null
+    private var knockCheck: Job? = null
+
     private class Built(val catalog: EncodedCatalog, val items: Map<String, MediaItem>)
 
     init {
@@ -169,7 +207,7 @@ internal class TvLibrary(
             ).collect { markDirty() }
         }
         scope.launch { phone.filmPosters.collect { if (it) startPrefetch() else stopPrefetch() } }
-        scope.launch { TvReadyService.ended.collect { readyWindowEnded() } }
+        scope.launch { TvReadyService.ended.collect { readyWindowEnded(it) } }
         // The cast's own foreground service takes over once it is up.
         scope.launch {
             ServerStateHolder.state.collect { state ->
@@ -184,7 +222,7 @@ internal class TvLibrary(
 
     private fun reconcile() {
         // Off ends the window whatever control v2 is doing (contract §8).
-        if (!preference.enabled.value) closeReadyWindow("setting")
+        if (!preference.enabled.value) closeReadyWindow("setting") else reconcileReadyMode()
         val endpoint = phone.control.authenticatedEndpoint()
             ?.takeIf { phone.control.connection.value == ConnectionStatus.CONNECTED }
         if (endpoint == null) {
@@ -197,14 +235,17 @@ internal class TvLibrary(
         scheduleReadyDeadline()
         if (!preference.enabled.value) {
             closeLink("setting", optOut = true)
+            TvReadyService.releaseKnockWake()
             return
         }
         if (phone.mediaAccess.value == MediaAccess.NONE) {
             closeLink("media_access", optOut = true)
+            TvReadyService.releaseKnockWake()
             return
         }
         if (endpoint.tvId in unsupported) {
             closeLink("unsupported")
+            TvReadyService.releaseKnockWake()
             return
         }
         if (link.isOpen && linkFor == endpoint) return
@@ -252,6 +293,7 @@ internal class TvLibrary(
                     }
                     LibraryLink.Outcome.Unsupported -> {
                         unsupported += endpoint.tvId
+                        TvReadyService.releaseKnockWake()
                         return@launch
                     }
                     is LibraryLink.Outcome.Failed -> delay(backoff.next())
@@ -278,6 +320,8 @@ internal class TvLibrary(
             held = null
             heldTvId = endpoint.tvId
         }
+        knockAtSent = null
+        sendKnockAt()
     }
 
     /** The TV ended the socket while control v2 may still be up: dial again after the backoff. */
@@ -312,6 +356,7 @@ internal class TvLibrary(
 
     private fun endLinkState() {
         linkFor = null
+        knockAtSent = null
         generation++
         catalogAsked = false
         playOutstanding = false
@@ -372,6 +417,8 @@ internal class TvLibrary(
             is CatalogAnswer.Full -> link.sendBatch(answer.frames)
         }
         if (!sent) return
+        // A knock's wake lock covers the MediaStore read and the build, up to this first delivery.
+        TvReadyService.releaseKnockWake()
         held = current.catalog
         sentItems = current.items
         val kind = when (answer) {
@@ -667,11 +714,35 @@ internal class TvLibrary(
         scope.launch(Dispatchers.Main) { schedulePush() }
     }
 
-    // --- Ready window (contract §8) -----------------------------------------
+    // --- Ready window and ready mode (contract §8) ---------------------------
 
     /** The app left the viewer's sight. */
     fun onAppBackground() {
         openReadyWindow(justLeftForeground = true)
+    }
+
+    /** The activity started: a Stop pressed before this no longer holds ready mode back. */
+    fun onAppForeground() {
+        if (preferenceStore.stoppedSinceOpened()) preferenceStore.saveStopped(false)
+    }
+
+    /** The phone booted or Flick was updated (§8): only ready mode starts from here. */
+    fun onSystemStart() {
+        if (readyModeHolds()) openReadyWindow(justLeftForeground = false)
+    }
+
+    /**
+     * `TvReadyService` was restarted by the platform after the process died. The TV name for
+     * its notification when ready mode still holds; null and the service stops.
+     */
+    fun readyServiceRestarted(): String? {
+        if (!readyModeHolds() || phone.castLive()) return null
+        if (!readyWindow.open) {
+            readyWindow.opened(now(), ready = true)
+            FlickLog.i("library", "ready window opened mode=ready restart=true")
+            scheduleReadyDeadline()
+        }
+        return readyName()
     }
 
     /**
@@ -680,7 +751,9 @@ internal class TvLibrary(
      * the background start restriction, so that one moment counts as visible.
      */
     private fun openReadyWindow(justLeftForeground: Boolean) {
+        val ready = readyModeHolds()
         if (readyWindow.open) {
+            if (ready != readyWindow.readyMode) switchReadyMode(ready)
             touchReadyWindow()
             return
         }
@@ -693,13 +766,43 @@ internal class TvLibrary(
             // sent lands, and that is exactly when the window has to be started.
             castServing = phone.castLive(),
             mayStartForeground = justLeftForeground || mayStartForegroundService(),
+            readyMode = ready,
         )
         if (!allowed) return
-        if (!TvReadyService.start(context, phone.tvName())) return
-        readyWindow.opened(now())
-        FlickLog.i("library", "ready window opened")
+        if (!TvReadyService.start(context, readyName(), ready)) return
+        readyWindow.opened(now(), ready)
+        FlickLog.i("library", "ready window opened mode=${if (ready) "ready" else "window"}")
         scheduleReadyDeadline()
     }
+
+    /** Ready mode's conditions moved while the window is open: the service follows. */
+    private fun reconcileReadyMode() {
+        if (!readyWindow.open) return
+        val ready = readyModeHolds()
+        if (ready != readyWindow.readyMode) switchReadyMode(ready)
+    }
+
+    private fun switchReadyMode(ready: Boolean) {
+        // A promoted service takes a new start command whatever this process's state is.
+        if (!TvReadyService.start(context, readyName(), ready)) {
+            // Still in ready mode with what it needs withdrawn, and nothing would ever end it.
+            if (!ready) closeReadyWindow("mode_refused")
+            return
+        }
+        readyWindow.modeChanged(ready)
+        FlickLog.i("library", "ready window mode=${if (ready) "ready" else "window"}")
+        scheduleReadyDeadline()
+    }
+
+    private fun readyModeHolds(): Boolean = TvReadyMode.holds(
+        enabled = preference.enabled.value,
+        verifiedPairing = phone.readyPairing() != null,
+        mediaAccess = phone.mediaAccessGranted(),
+        batteryExempt = batteryExempt(),
+        stoppedSinceOpened = preferenceStore.stoppedSinceOpened(),
+    )
+
+    private fun readyName(): String? = phone.tvName() ?: phone.readyPairing()?.name
 
     private fun touchReadyWindow() {
         if (!readyWindow.open) return
@@ -709,11 +812,45 @@ internal class TvLibrary(
 
     private fun scheduleReadyDeadline() {
         readyDeadlineJob?.cancel()
+        readyDeadlineJob = null
         val deadline = readyWindow.deadlineMs() ?: return
         readyDeadlineJob = scope.launch {
             delay((deadline - now()).coerceAtLeast(0L))
-            if (readyWindow.expired(now())) closeReadyWindow("expired") else scheduleReadyDeadline()
+            if (!readyWindow.expired(now())) {
+                scheduleReadyDeadline()
+                return@launch
+            }
+            // Asked here rather than kept current: the battery exemption has no callback.
+            reconcileReadyMode()
+            if (!readyWindow.expired(now())) {
+                scheduleReadyDeadline()
+                return@launch
+            }
+            val expiry = readyWindow.onExpired(
+                now(),
+                castLive = phone.castLive(),
+                dialInFlight = phone.dialInFlight(),
+                visible = phone.visible(),
+            )
+            when (expiry) {
+                TvReadyWindowPolicy.Expiry.CLOSE -> closeReadyWindow("expired")
+                TvReadyWindowPolicy.Expiry.HANG_UP -> hangUpIdle()
+                TvReadyWindowPolicy.Expiry.TOUCH -> scheduleReadyDeadline()
+            }
         }
+    }
+
+    /**
+     * §8 ready mode: nobody has used the TV link for the window's length, so the phone stops
+     * paying for control's pings. The service and the doorbell stay, and the TV knocks when
+     * it is next opened.
+     */
+    private fun hangUpIdle() {
+        readyDeadlineJob = null
+        val linked = link.isOpen || phone.control.connection.value == ConnectionStatus.CONNECTED
+        closeLink("idle")
+        if (phone.control.connection.value != ConnectionStatus.DISCONNECTED) phone.hangUpControl()
+        if (linked) FlickLog.i("library", "ready idle hang_up")
     }
 
     private fun closeReadyWindow(reason: String) {
@@ -725,12 +862,104 @@ internal class TvLibrary(
         FlickLog.i("library", "ready window closed reason=$reason")
     }
 
-    private fun readyWindowEnded() {
+    private fun readyWindowEnded(end: TvReadyService.End) {
+        if (end == TvReadyService.End.USER) preferenceStore.saveStopped(true)
         if (!readyWindow.open) return
         readyWindow.closed()
         readyDeadlineJob?.cancel()
         readyDeadlineJob = null
-        FlickLog.i("library", "ready window closed reason=service")
+        FlickLog.i("library", "ready window closed reason=${if (end == TvReadyService.End.USER) "stop" else "refused"}")
+    }
+
+    // --- Doorbell (contract §13) ---------------------------------------------
+
+    /** The listener bound, moved, or stopped. */
+    fun onDoorbellPort(port: Int?) {
+        doorbellPort = port
+        sendKnockAt()
+    }
+
+    private fun sendKnockAt() {
+        if (!link.isOpen) return
+        val port = KnockPolicy.knockAtPort(doorbellPort, knockAtSent) ?: return
+        if (link.sendText(LibraryFrames.knockAt(port))) knockAtSent = port
+    }
+
+    /**
+     * A verified knock from (tvId, keyId), with the knock's wake lock held. Nothing here
+     * moves the visible screen: the resume is the silent one, and the library opens behind it.
+     * [knockHost] is where the knock came from: a candidate behind the stored endpoint only.
+     */
+    fun onKnock(tvId: String, keyId: String, knockHost: String?) {
+        phone.ensureMediaAccess()
+        val pairing = phone.pairing(tvId)?.takeIf { it.keyId == keyId }
+        if (pairing == null) {
+            journalKnock("no_pairing")
+            TvReadyService.releaseKnockWake()
+            return
+        }
+        touchReadyWindow()
+        // The earlier knock still waiting on its check gives way, and is journaled as such.
+        if (knockCheck?.isActive == true) journalKnock("superseded")
+        knockCheck?.cancel()
+        knockCheck = null
+        val line = phone.control.line()
+        val check = KnockResponse.needsLivenessCheck(
+            castLive = phone.castLive(),
+            knockResumingTv = phone.knockResumingTv(),
+            control = knockControl(tvId, keyId),
+            visible = phone.visible(),
+        )
+        if (line == null || !check) {
+            answerKnock(pairing, knockHost, controlAlive = false)
+            return
+        }
+        knockCheck = scope.launch {
+            val verdict = phone.control.confirmAlive(line, roundTrip = true)
+            ensureActive()
+            // A line installed while the ping was out is fresh, whatever this one did.
+            val alive = verdict != Liveness.DEAD || phone.control.line() !== line
+            if (!alive) FlickLog.i("library", "knock control unanswered")
+            answerKnock(pairing, knockHost, alive)
+        }
+    }
+
+    private fun knockControl(tvId: String, keyId: String): KnockControl {
+        val endpoint = phone.control.authenticatedEndpoint()
+            ?.takeIf { phone.control.connection.value == ConnectionStatus.CONNECTED }
+            ?: return KnockControl.NONE
+        return if (endpoint.tvId == tvId && endpoint.keyId == keyId) KnockControl.THAT_TV else KnockControl.OTHER_TV
+    }
+
+    private fun answerKnock(pairing: PairingStore.Pairing, knockHost: String?, controlAlive: Boolean) {
+        val control = knockControl(pairing.tvId, pairing.keyId)
+        val endpoint = phone.control.authenticatedEndpoint()
+        val action = KnockResponse.action(
+            tvId = pairing.tvId,
+            castLive = phone.castLive(),
+            knockResumingTv = phone.knockResumingTv(),
+            control = control,
+            libraryOpen = control == KnockControl.THAT_TV && link.isOpen && linkFor == endpoint,
+            dialing = phone.dialing(),
+            visible = phone.visible(),
+            controlAlive = controlAlive,
+        )
+        when (action) {
+            KnockAction.CAST_LIVE, KnockAction.BUSY -> TvReadyService.releaseKnockWake()
+            // The resume in flight releases the lock when it fails, the first catalog when it works.
+            KnockAction.RESUMING -> Unit
+            KnockAction.LINKED, KnockAction.LIBRARY -> {
+                closeLink("knock")
+                reconcile()
+            }
+            KnockAction.RESUME -> if (!phone.knockResume(pairing, knockHost)) TvReadyService.releaseKnockWake()
+        }
+        journalKnock(action.journal)
+    }
+
+    private fun journalKnock(outcome: String) {
+        FlickLog.i("library", "knock outcome=$outcome")
+        IncidentJournal.record("knock", "outcome" to outcome)
     }
 
     // --- Helpers ------------------------------------------------------------

@@ -17,7 +17,17 @@ class TvLibraryPreferenceStore(context: Context) {
         prefs.edit().putBoolean(ENABLED, enabled).apply()
     }
 
-    private companion object { const val ENABLED = "enabled" }
+    /** §8: the person pressed Stop on the ready notification and has not opened Flick since. */
+    fun stoppedSinceOpened(): Boolean = prefs.getBoolean(STOPPED, false)
+
+    fun saveStopped(stopped: Boolean) {
+        prefs.edit().putBoolean(STOPPED, stopped).apply()
+    }
+
+    private companion object {
+        const val ENABLED = "enabled"
+        const val STOPPED = "ready_stopped"
+    }
 }
 
 class TvLibraryPreferenceController(

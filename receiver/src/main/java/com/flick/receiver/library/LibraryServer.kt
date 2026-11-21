@@ -22,12 +22,13 @@ import java.util.concurrent.atomic.AtomicReference
  * library's own permit pool, the §4 handshake, the session — is this class's.
  *
  * [findKey] reads the pairing store and is only ever called with no lock of this class or
- * of [hub] held.
+ * of [hub] held. [knockBook] learns where each proven phone's doorbell can be reached.
  */
 class LibraryServer(
     private val tvId: () -> String,
     private val findKey: (tvId: String, keyId: String) -> String?,
     private val hub: TvLibrary,
+    private val knockBook: KnockAddressBook? = null,
 ) {
     /**
      * A handshake that has read a key and not yet been installed. A forget marks it, so a
@@ -47,12 +48,14 @@ class LibraryServer(
     fun forget(keyId: String) {
         tickets.forEach { if (it.keyId == keyId) it.revoked = true }
         hub.forget(keyId)
+        knockBook?.forget(keyId)
     }
 
     /** Call after the pairing store has durably removed every key. */
     fun forgetAll() {
         tickets.forEach { it.revoked = true }
         hub.forgetAll()
+        knockBook?.forgetAll()
     }
 
     /** One `/library` socket that has passed the control server's binding, Host and peer gates. */
@@ -74,7 +77,7 @@ class LibraryServer(
                 if (step == LibraryHandshake.Step.Deny) runCatching { session.send(Frame.Text(LibraryFrames.denied())) }
                 return session.closePolicy(if (step == null) "auth_timeout" else "auth_refused")
             }
-            session.serveSession(proven, ticket)
+            session.serveSession(proven, ticket, peer)
         } finally {
             ticket.getAndSet(null)?.let(tickets::remove)
         }
@@ -141,6 +144,7 @@ class LibraryServer(
     private suspend fun DefaultWebSocketSession.serveSession(
         proven: LibraryHandshake.Step.Authenticated,
         ticket: AtomicReference<Ticket?>,
+        peer: String,
     ) {
         val link = Link(this)
         link.outbox.trySend(proven.readyFrame)
@@ -153,6 +157,8 @@ class LibraryServer(
             return closePolicy("auth_forgotten")
         }
         FlickLog.i("library", "auth ok keyIdFp=${FlickLog.fp(proven.keyId)}")
+        val stillPaired = { findKey(tvId(), proven.keyId) != null }
+        knockBook?.recordPeer(proven.keyId, peer, stillPaired)
         // runCatching: a send that fails because the socket went is the reader's to report.
         val writer = launch {
             runCatching { for (frame in link.outbox) send(Frame.Text(frame)) }
@@ -161,7 +167,13 @@ class LibraryServer(
         try {
             for (frame in incoming) {
                 val verdict = when (frame) {
-                    is Frame.Text -> if (!frame.fin) TvLibrary.Verdict.CLOSE else hub.onFrame(link, PhoneFrame.parse(frame.readText()))
+                    is Frame.Text -> if (!frame.fin) {
+                        TvLibrary.Verdict.CLOSE
+                    } else {
+                        val parsed = PhoneFrame.parse(frame.readText())
+                        if (parsed is PhoneFrame.KnockAt) knockBook?.recordPort(proven.keyId, parsed.port, stillPaired)
+                        hub.onFrame(link, parsed)
+                    }
                     is Frame.Binary -> {
                         val thumb = if (frame.fin) PhoneFrame.thumbnail(frame.data) else null
                         if (thumb == null) {

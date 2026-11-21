@@ -159,7 +159,12 @@ fun PhoneSettingsScreen(
         if (FilmPosters.available) {
             FilmPostersSection(enabled = filmPosters, onSelect = controller::selectFilmPosters)
         }
-        TvLibrarySection(enabled = tvLibrary, onSelect = controller::selectTvLibrary)
+        TvLibrarySection(
+            enabled = tvLibrary,
+            onSelect = controller::selectTvLibrary,
+            batteryExempt = batteryExempt,
+            onRequestBatteryExemption = onRequestBatteryExemption,
+        )
         AppearanceSection(preference = themePreference, onSelect = onSelectTheme)
         if (supportAvailable) {
             SupportFlickSection(onOpen = onOpenSupport)
@@ -322,13 +327,40 @@ internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
 }
 
 @Composable
-internal fun TvLibrarySection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
-    SwitchRow(
-        title = stringResource(R.string.settings_tv_library_title),
-        summary = stringResource(R.string.settings_tv_library_summary),
-        checked = enabled,
-        onSelect = onSelect,
-    )
+internal fun TvLibrarySection(
+    enabled: Boolean,
+    onSelect: (Boolean) -> Unit,
+    batteryExempt: Boolean,
+    onRequestBatteryExemption: () -> Unit,
+) {
+    val colors = LocalFlickColors.current
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SwitchRow(
+            title = stringResource(R.string.settings_tv_library_title),
+            summary = stringResource(R.string.settings_tv_library_summary),
+            checked = enabled,
+            onSelect = onSelect,
+        )
+        if (enabled) {
+            Text(
+                text = stringResource(R.string.settings_tv_library_wake),
+                style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
+            )
+            if (!batteryExempt) {
+                FilledTonalButton(
+                    onClick = onRequestBatteryExemption,
+                    shapes = ButtonDefaults.shapes(shape = PillMorphShape, pressedShape = PressedPillShape),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = colors.primaryContainer,
+                        contentColor = colors.onPrimaryContainer,
+                    ),
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(text = stringResource(R.string.advisory_battery_primary), style = FlickText.labelMedium)
+                }
+            }
+        }
+    }
 }
 
 @Composable

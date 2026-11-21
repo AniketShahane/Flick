@@ -3,4 +3,5 @@
     <exclude domain="sharedpref" path="flick_pairing.xml" />
     <exclude domain="sharedpref" path="flick_open_for_casts.xml" />
     <exclude domain="sharedpref" path="flick_credits.xml" />
+    <exclude domain="sharedpref" path="flick_doorbell.xml" />
 </full-backup-content>

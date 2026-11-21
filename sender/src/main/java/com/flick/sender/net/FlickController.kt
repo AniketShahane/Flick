@@ -21,8 +21,10 @@ import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
 import com.flick.sender.library.LibraryPhone
 import com.flick.sender.library.TvLibrary
+import com.flick.sender.library.TvReadyService
 import com.flick.sender.WifiAssociationMonitor
 import com.flick.sender.currentProcessImportance
+import com.flick.sender.currentVideoAccess
 import com.flick.sender.foregroundStartAllowed
 import com.flick.sender.mediaServerListening
 import com.flick.sender.media.AudioDelayMemoryStore
@@ -509,9 +511,12 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         ?: appContext.getString(R.string.sender_device_generic)
     // Whether the activity is started; main-confined, like the rest of this class.
     private var foreground = false
-    // Every dial, resume and name refresh runs here; its run keeps discovery wanted.
+    // Every dial, resume and name refresh runs here; its run keeps discovery wanted, except
+    // [knockResumeJob]'s: a knock's resume dials stored addresses only and reads no browse.
     private var pairingJob: Job? = null
         set(value) { field = value; trackDiscoveryDemand(value) }
+    private var knockResumeJob: Job? = null
+    private var knockResumeTvId: String? = null
     private var castJob: Job? = null
     private var directLinkWatch: Job? = null
     private var directLinkReleasedFor: ControlClient.OutstandingPing? = null
@@ -868,6 +873,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         }
     }
 
+    // Set by the first [onMediaAccess]; until then [mediaAccess] is a default, not an answer.
+    private var mediaAccessEvaluated = false
+
     /**
      * The TV library channel. Declared after every flow it reads, because it starts collecting
      * them as it is built.
@@ -893,12 +901,97 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         override fun subtitleLabel(item: MediaItem): String? =
             _selectedSubtitle.value?.takeIf { subtitleOwner?.uri == item.uri }?.displayName
                 ?: rememberedSubtitle(subtitleMemoryStore.state.value, PlaybackMediaFingerprint.of(item))?.displayName
+        override fun readyPairing() = store.last()?.takeIf { !it.needsRepair }
+        override fun mediaAccessGranted() = currentVideoAccess(appContext) != MediaAccess.NONE
+        override fun ensureMediaAccess() {
+            if (!mediaAccessEvaluated) onMediaAccess(currentVideoAccess(appContext))
+        }
+        override fun dialing() = pairingJob?.isActive == true || blockJob?.isActive == true ||
+            _pairTarget.value != null || _pendingPairLaunch.value != null
+        override fun dialInFlight() = pairingJob?.isActive == true || blockJob?.isActive == true ||
+            knockResumeJob?.isActive == true
+        override fun knockResumingTv() = knockResumeTvId?.takeIf { knockResumeJob?.isActive == true }
+        override fun knockResume(pairing: PairingStore.Pairing, knockHost: String?) =
+            this@CastCoordinator.knockResume(pairing, knockHost)
+        override fun hangUpControl() {
+            if (currentCastId == null && pendingCast == null && !castProbeRunning()) control.close()
+        }
     })
 
     /** "Show my library on my TV" (library channel, contract §3). */
     val tvLibraryEnabled: StateFlow<Boolean> = tvLibrary.enabled
 
     fun selectTvLibrary(enabled: Boolean) = tvLibrary.select(enabled)
+
+    /** A verified doorbell knock (library contract §13), on the main thread. */
+    internal fun onDoorbellKnock(tvId: String, keyId: String, peerHost: String?) =
+        tvLibrary.onKnock(tvId, keyId, peerHost)
+
+    internal fun onDoorbellPort(port: Int?) = tvLibrary.onDoorbellPort(port)
+
+    /** The phone booted or Flick was updated. */
+    internal fun onSystemStart() = tvLibrary.onSystemStart()
+
+    internal fun readyServiceRestarted(): String? = tvLibrary.readyServiceRestarted()
+
+    /**
+     * The knock's resume: [refreshTvName]'s shape. Nobody asked for it on this phone, so a
+     * failure is silent, never marks the pairing for repair and never moves the route.
+     *
+     * [knockHost] proved the pairing key by knocking, and control v2 authenticates whatever
+     * answers there, so it is tried — at the stored port, after the stored endpoint has
+     * failed — for a TV whose address changed; [ResumeCandidates] never puts a different
+     * host ahead of the verified one. Only a resume that succeeds there writes it, as any
+     * resume does. Every way out journals once; every failure lets the knock's wake lock go.
+     */
+    private fun knockResume(pairing: PairingStore.Pairing, knockHost: String?): Boolean {
+        if (pairingJob?.isActive == true) return false
+        val candidates = ResumeCandidates.forKnock(pairing.host, pairing.port, pairing.tvId, knockHost)
+        val attempt = beginPairingAttempt()
+        val job = scope.launch {
+            var outcome = "failed"
+            var dials = 0
+            try {
+                for (endpoint in candidates) {
+                    dials += 1
+                    val result = control.resume(pairing, endpoint.host, endpoint.port)
+                    if (!pairingGate.isCurrent(attempt)) {
+                        outcome = "superseded"
+                        return@launch
+                    }
+                    val resumed = (result as? ControlClient.Result.Resumed)?.endpoint
+                    if (resumed == null) {
+                        FlickLog.w("ws", "knock resume dial=$dials -> ${result.javaClass.simpleName}")
+                        continue
+                    }
+                    val committed = PairingPersistence.commit {
+                        store.commitVerifiedEndpoint(pairing.tvId, resumed.tv, endpoint.host, endpoint.port)
+                    }
+                    if (!committed) {
+                        control.close()
+                        outcome = "commit"
+                        return@launch
+                    }
+                    _connectedTv.value = PairedTv(resumed.tv, endpoint.host, endpoint.port, pairing.tvId)
+                    _connectedTv.value?.let(::seedEchoTrust)
+                    publishTransport()
+                    outcome = "ok"
+                    return@launch
+                }
+            } finally {
+                // A dial the person started cancels this one through the same gate.
+                if (outcome == "failed" && !pairingGate.isCurrent(attempt)) outcome = "superseded"
+                val ok = outcome == "ok"
+                IncidentJournal.record("knock_resume", "ok" to ok, "reason" to outcome, "dials" to dials)
+                // On success the library holds it until the TV's first catalog.
+                if (!ok) TvReadyService.releaseKnockWake()
+            }
+        }
+        knockResumeJob = job
+        knockResumeTvId = pairing.tvId
+        pairingJob = job
+        return true
+    }
 
     /**
      * A start the viewer could still be waiting on: anything from the first dial to the
@@ -1689,6 +1782,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     /** The app came back in front of the viewer; the socket held while it was away may not have survived that. */
     fun onForeground() {
         foreground = true
+        tvLibrary.onAppForeground()
         reconcileDiscovery()
         checkHeldLine()
     }
@@ -1708,7 +1802,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private fun reconcileDiscovery() {
         val wanted = DiscoveryDemand.wanted(
             foreground = foreground,
-            attemptInFlight = pairingJob?.isCompleted == false || reattachJob?.isCompleted == false,
+            attemptInFlight = (pairingJob?.isCompleted == false && pairingJob !== knockResumeJob) ||
+                reattachJob?.isCompleted == false,
             blockWaitArmed = blockJob?.isCompleted == false,
             castLive = currentCastId != null,
             connection = control.connection.value,
@@ -1782,6 +1877,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     }
 
     fun onMediaAccess(access: MediaAccess) {
+        mediaAccessEvaluated = true
         val load = libraryGate.begin(access)
         libraryJob?.cancel()
         libraryJob = null

@@ -1594,6 +1594,53 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   foreground-service state); otherwise the window stays shut and a TV `play` is refused with
   `background`, and the TV says what to change (open Flick on the phone, or let it run
   unrestricted in its battery settings).
+- **Ready mode and the doorbell** (contract §8.1, §13). With the battery exemption, a verified
+  pairing, media access and the setting on, and no Stop pressed since Flick was last opened,
+  `TvReadyService` stays up with no time limit on its own silent `IMPORTANCE_LOW` channel ("Your
+  TV can wake Flick"; LOW because the system raises a foreground service's MIN channel to LOW,
+  and its own id lets the person minimise just this one), `START_STICKY`, and also starts from `TvReadyBootReceiver` (`BOOT_COMPLETED`,
+  `MY_PACKAGE_REPLACED`; `RECEIVE_BOOT_COMPLETED`). After 30 idle minutes with no cast and the
+  activity hidden and no connection attempt running (an open pair sheet doesn't count) it hangs up the library and control sockets quietly, so
+  control's 15-s pings stop, and schedules nothing more. Inside it, `TvDoorbell` listens on TCP 47670 (falling back
+  through 47679, then ephemeral; `SO_REUSEADDR`, failed candidates closed, an `accept` error backs
+  off up to 1 s instead of ending the loop) on a Wi-Fi private IPv4 address only, and only on a
+  Wi-Fi network whose subnet holds a verified pairing's stored host (`DoorbellBinding`; a
+  heuristic: another network on the same private subnet qualifies too); the service tracks every
+  Wi-Fi network so a network switch moves the listener rather than dropping it, and re-asks the
+  rule on its own thread whenever the pairings change (a `PairingStore.watch` listener), so a
+  newly committed endpoint gets a listener and a `knockAt` at once. The port goes to the TV in a `knockAt` library frame. Admission is per peer (one per 5 s,
+  six per minute) under a global 30 per minute (`KnockGate`), on `SystemClock.elapsedRealtime` so
+  the limits are in real time across deep sleep; rate refusals are logged once a minute with a
+  count (`RefusalLog`). A TV knock is a line-delimited
+  strict-JSON exchange proved with the pairing key under the `Flick-Knock-V1` domain
+  (`KnockProtocol`, pure and JVM-tested with the shared fixture). A valid one takes a partial
+  wake lock (released at the TV's first catalog, when the knock is answered with nothing to do,
+  when the knock resume fails or the library is refused outright, and otherwise after 20 s — a
+  library dial that keeps failing relies on that cap); if control v2 is up it first pings that
+  line, then redials the library (control to that TV alive), answers busy (control to another
+  TV alive, or to another TV at all while the activity is visible), leaves an earlier knock's
+  resume still dialing the same TV to answer it (`resuming`, lock kept; another TV's knock is busy) or runs the coordinator's silent
+  resume
+  (`CastCoordinator.knockResume`, `refreshTvName`'s shape: no repair mark, no route change) to
+  the stored endpoint, then to the knocker's address at the stored port as a hint behind it. That
+  resume dials stored addresses only, so it does not start an mDNS browse.
+  Idle, the listener is the only thing running: it blocks in `accept` with no wake lock, timer
+  or polling, so nothing wakes the phone until a TV connects. Settings › Show my library on my TV says the TV can
+  wake Flick and offers the battery settings when the exemption is missing.
+- **TV doorbell client** (contract §13.4). Per paired phone the TV remembers `1|host|port[|proven]`
+  in `flick_doorbell` (host of its last authenticated `/library` socket, port of its last
+  `knockAt`, a recency stamp for when that host was last proven; excluded from backup, pruned
+  and deleted with the pairing). An address belongs to the last pairing proven from it. It
+  knocks only while STARTED with the control server listening on the LAN and no phone linked
+  (the TV holds one controller, so it never wakes a second phone): once per STARTED period
+  (again after a rebind, after any round that is out) and on a remote key on the idle screen at
+  most every 10 s. A round knocks one phone at a time, most recently proven first, moving on
+  only when a phone never answered. Connect 2.5 s, hello 1.5 s, `knockOk` 2 s; a second attempt
+  1.5 s later only when the connect failed; start rounds at least 6 s apart, and a phone's first knock waits
+  6 s after the last connect to it (the phone's per-peer gate). These timings live for the TV
+  process, not the screen. An 8-s grace after `knockOk` shows "Waking your phone…"; a failure
+  falls back to today's idle text plus "Couldn't wake your phone. Check it's on this Wi-Fi and
+  Flick's battery is set to Unrestricted."
 - **TV side** (`receiver/.../library/`). `LibraryServer` is the route: the same binding, `Host`
   and private-peer gates as `/control`, its own pre-auth permit pool, a 512-frame outgoing bound.
   `TvLibrary` implements `LibraryHub`: it assembles catalogs, keeps them in memory only (keyed by
@@ -1717,7 +1764,7 @@ adb logcat -s FlickPhone:V
 
 ### Incident journal
 
-The ring is 200 lines of memory and dies with the process, and every drop investigated so far was reconstructed from whatever logcat still held. `IncidentJournal` (one in each module's `util`, tag **`FlickJournal`**) is the sparse channel that survives: one line per incident — process start; cast start, ready, end and failure; rebuffers; load-error streaks and their recovery; every direct-link probe decision, release and teardown with the platform's answer, and the echo watch changing pace (`echo_cadence slow=…`, rate-limited); control loss and reattach; transfer evictions and `503`s; Wi-Fi association edges and channel changes; and, on the phone, the transport of the default network (`wifi`, `vpn`, `cellular`), which is the after-the-fact answer to "where was the control connection actually going" now that it is deliberately not pinned to Wi-Fi. Never one line per tick.
+The ring is 200 lines of memory and dies with the process, and every drop investigated so far was reconstructed from whatever logcat still held. `IncidentJournal` (one in each module's `util`, tag **`FlickJournal`**) is the sparse channel that survives: one line per incident — process start; cast start, ready, end and failure; rebuffers; load-error streaks and their recovery; every direct-link probe decision, release and teardown with the platform's answer, and the echo watch changing pace (`echo_cadence slow=…`, rate-limited); control loss and reattach; transfer evictions and `503`s; Wi-Fi association edges and channel changes; and, on the phone, the transport of the default network (`wifi`, `vpn`, `cellular`), which is the after-the-fact answer to "where was the control connection actually going" now that it is deliberately not pinned to Wi-Fi; and each valid TV doorbell knock with its outcome (`knock`, `knock_resume`). Never one line per tick.
 
 Lines are `<UTC ISO-8601 millis> <event> k=v …`, built by a pure formatter (`JournalLine` / `IncidentLine`) whose value shapes are the redaction contract: a Boolean, an Int, a Long, an enum name, or a token of letters, digits and underscores that starts with a letter; anything else is written as `invalid`. An address, a URL and a MAC cannot be represented. A session token or a network name sometimes can, so for those the protection is the call sites, which pass counters, booleans, enums and exception class names and nothing else — no SSID, BSSID, host, device name or file name, at any call site. Where a cast id appears it is the existing eight-hex fingerprint, never the id.
 
