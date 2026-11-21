@@ -46,6 +46,7 @@ class TvLibrary(
     private val newRequestId: () -> String = { LibraryAuth.randomNonce() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val creditsStorage: CreditsLeadStorage? = null,
 ) : LibraryHub {
 
     private class Phone(val keyId: String) {
@@ -105,6 +106,32 @@ class TvLibrary(
     /** A cast is on screen: shelf rebuilds wait for it to end. */
     private var castLive = false
 
+    private val credits = CreditsLeadBook()
+
+    /** Orders saves of [credits]; taken before [lock], never inside it. */
+    private val creditsSaveLock = Any()
+
+    /** The cast on screen, and the last position the app reported for it (-1 before any). */
+    private var liveCastId: String? = null
+    private var livePosMs = -1L
+    private var liveDurationMs = 0L
+
+    /** Leaving after `ended`, or after an autoplay, says nothing about where the credits start. */
+    private var liveSampleSettled = false
+
+    /** Back hid this cast's card: its tail does not offer it again, though `ended` still does. */
+    private var tailDismissedCastId: String? = null
+
+    /** The card on screen was offered from the tail, before `ended`. */
+    private var offerFromTail = false
+
+    /**
+     * This cast's episode has no next one in this catalog (a finale): its tail does not
+     * scan the catalog again until the catalog or the cast changes.
+     */
+    private var tailNoNextCastId: String? = null
+    private var tailNoNextCatalog: LibraryCatalog? = null
+
     private val _state = MutableStateFlow(LibraryState())
     private val _details = MutableStateFlow<Map<String, LibraryDetail>>(emptyMap())
     private val _seasons = MutableStateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>>(emptyMap())
@@ -116,6 +143,10 @@ class TvLibrary(
     override val seasons: StateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>> = _seasons.asStateFlow()
     override val thumbnails: StateFlow<Map<String, ImageBitmap>> = _thumbnails.asStateFlow()
     override val upNext: StateFlow<UpNextOffer?> = _upNext.asStateFlow()
+
+    init {
+        creditsStorage?.let { storage -> runCatching { storage.load() }.getOrNull()?.let(credits::decode) }
+    }
 
     /** What the session should do after a frame. */
     enum class Verdict { CONTINUE, CLOSE }
@@ -291,6 +322,14 @@ class TvLibrary(
      */
     fun onCastStarted(castId: String) = synchronized(lock) {
         castLive = true
+        if (liveCastId != castId) {
+            sampleLeavingLocked()
+            liveCastId = castId
+            livePosMs = -1L
+            liveDurationMs = 0L
+            liveSampleSettled = false
+            tailDismissedCastId = null
+        }
         playMachine.onCastStarted()
         schedulePlayTimerLocked()
         if (upNextCastId != castId) clearUpNextLocked()
@@ -301,7 +340,20 @@ class TvLibrary(
     /** [castId] reached `ended` on screen. */
     fun onCastEnded(castId: String) = synchronized(lock) {
         lastEndedCastId = castId
+        if (castId == liveCastId) liveSampleSettled = true
+        offerFromTail = false
         offerUpNextLocked(castId)
+    }
+
+    /**
+     * Where the cast on screen is, playing or paused; at most once a second. Near the end,
+     * within the show's credits lead, it offers Up next before `ended`.
+     */
+    fun onCastPosition(castId: String, posMs: Long, durationMs: Long) = synchronized(lock) {
+        if (castId != liveCastId) return@synchronized
+        livePosMs = posMs
+        if (durationMs > 0L) liveDurationMs = durationMs
+        tailLocked(castId)
     }
 
     /** The ended film was replayed or replaced: its card goes. */
@@ -311,8 +363,15 @@ class TvLibrary(
         publishStateLocked()
     }
 
-    /** No cast is on screen any more: its card goes, and shelves held back during it are built. */
-    fun onCastStopped() = synchronized(lock) {
+    /**
+     * No cast is on screen any more: its card goes, and shelves held back during it are built.
+     * [viewerStoppedCastId] is the cast a stop command ended, if one did; only that exit
+     * is a credits sample, never a failure, a lost link or a teardown.
+     */
+    fun onCastStopped(viewerStoppedCastId: String? = null) = synchronized(lock) {
+        if (viewerStoppedCastId != null && viewerStoppedCastId == liveCastId) sampleLeavingLocked()
+        liveCastId = null
+        tailDismissedCastId = null
         castLive = false
         lastEndedCastId = null
         clearUpNextLocked()
@@ -386,18 +445,12 @@ class TvLibrary(
     }
 
     override fun playUpNext() {
-        synchronized(lock) {
-            autoplayTimer?.cancel()
-            autoplayTimer = null
-            val offer = _upNext.value ?: return
-            // The card stays up, and reads the play's own state: asking, or why it failed.
-            _upNext.value = offer.copy(autoplayAtMs = null, stillWatching = false)
-            sendPlayLocked(upNextKeyId?.let(phones::get), offer.next.id, PlayFrom.START)
-        }
+        synchronized(lock) { playUpNextLocked(autoplay = false) }
     }
 
     override fun dismissUpNext() {
         synchronized(lock) {
+            if (_upNext.value != null) tailDismissedCastId = upNextCastId
             lastEndedCastId = null
             clearUpNextLocked()
             publishStateLocked()
@@ -434,7 +487,112 @@ class TvLibrary(
         publishStateLocked()
     }
 
-    private fun offerUpNextLocked(castId: String) {
+    private fun playUpNextLocked(autoplay: Boolean) {
+        autoplayTimer?.cancel()
+        autoplayTimer = null
+        val offer = _upNext.value ?: return
+        if (upNextCastId == liveCastId) {
+            if (autoplay) liveSampleSettled = true else sampleLeavingLocked()
+        }
+        // The card stays up, and reads the play's own state: asking, or why it failed.
+        _upNext.value = offer.copy(autoplayAtMs = null, stillWatching = false)
+        sendPlayLocked(upNextKeyId?.let(phones::get), offer.next.id, PlayFrom.START)
+    }
+
+    /** The catalog episode [castId] plays, from the newest phone whose `casting` named it. */
+    private fun castEpisodeLocked(castId: String): LibraryItem? {
+        val phone = phones.values.filter { it.casting[castId] != null }.maxByOrNull { it.authOrder } ?: return null
+        return phone.casting[castId]?.let { phone.assembler.current?.get(it) }?.takeIf { it.isEpisode }
+    }
+
+    private fun liveRemainingLocked(item: LibraryItem): Long? {
+        if (livePosMs < 0L) return null
+        val duration = liveDurationMs.takeIf { it > 0L } ?: item.durationMs
+        if (duration <= 0L) return null
+        return duration - livePosMs.coerceIn(0L, duration)
+    }
+
+    private fun durationLocked(item: LibraryItem): Long = liveDurationMs.takeIf { it > 0L } ?: item.durationMs
+
+    private fun capLocked(item: LibraryItem, catalog: LibraryCatalog?): Long =
+        CreditsLead.capMs(durationLocked(item), phoneHasTimesLocked(catalog))
+
+    private fun leadLocked(item: LibraryItem, catalog: LibraryCatalog?): Long =
+        CreditsLead.effectiveLeadMs(credits.leadMs(item.showKey!!), durationLocked(item), phoneHasTimesLocked(catalog))
+
+    /** Scanned once per catalog: the tail asks every second. */
+    private var timesCatalog: LibraryCatalog? = null
+    private var timesCatalogHas = false
+
+    private fun phoneHasTimesLocked(catalog: LibraryCatalog?): Boolean {
+        if (catalog == null) return false
+        if (timesCatalog !== catalog) {
+            timesCatalog = catalog
+            timesCatalogHas = catalog.items.any { it.playedAtSeconds != null || it.watchedAtSeconds != null }
+        }
+        return timesCatalogHas
+    }
+
+    private fun tailLocked(castId: String) {
+        if (lastEndedCastId == castId) return
+        val offer = _upNext.value
+        if (offer != null) {
+            if (!offerFromTail || upNextCastId != castId) return
+            val remaining = liveRemainingLocked(offer.ended) ?: return
+            val play = playMachine.state
+            val outstanding = (play is LibraryPlay.Asking && play.id == offer.next.id) ||
+                (play is LibraryPlay.Starting && play.id == offer.next.id)
+            val catalog = phones.values.filter { it.casting[castId] != null }.maxByOrNull { it.authOrder }?.assembler?.current
+            val clearAt = minOf(leadLocked(offer.ended, catalog) + TAIL_CLEAR_SLACK_MS, capLocked(offer.ended, catalog))
+            if (!outstanding && remaining > clearAt) {
+                FlickLog.i("library", "upNext cleared seekBack")
+                clearUpNextLocked()
+                publishStateLocked()
+            }
+            return
+        }
+        if (tailDismissedCastId == castId) return
+        val phone = phones.values.filter { it.casting[castId] != null }.maxByOrNull { it.authOrder } ?: return
+        val catalog = phone.assembler.current ?: return
+        if (tailNoNextCastId == castId && tailNoNextCatalog === catalog) return
+        val item = phone.casting[castId]?.let(catalog::get)?.takeIf { it.isEpisode } ?: return
+        val remaining = liveRemainingLocked(item) ?: return
+        if (remaining > leadLocked(item, catalog)) return
+        // Only a connected phone's answer is final; a disconnected one is asked again.
+        if (phone.link != null && LibraryShelving.following(item, catalog) == null) {
+            tailNoNextCastId = castId
+            tailNoNextCatalog = catalog
+            return
+        }
+        offerUpNextLocked(castId, fromTail = true)
+    }
+
+    /** The live cast is being left before `ended`: where, if it was in the credits, is a sample. */
+    private fun sampleLeavingLocked() {
+        val castId = liveCastId ?: return
+        if (liveSampleSettled) return
+        liveSampleSettled = true
+        // Leaving from the tail card is where the card appeared, not where the credits start.
+        if (offerFromTail && upNextCastId == castId && _upNext.value != null) return
+        val item = castEpisodeLocked(castId) ?: return
+        if (livePosMs < 0L) return
+        val remaining = CreditsLead.sample(livePosMs, durationLocked(item)) ?: return
+        credits.record(item.showKey!!, remaining)
+        FlickLog.i("library", "credits sample remainingS=${remaining / 1_000L}")
+        saveCreditsLocked()
+    }
+
+    private fun saveCreditsLocked() {
+        val storage = creditsStorage ?: return
+        scope.launch(workDispatcher) {
+            synchronized(creditsSaveLock) {
+                val encoded = synchronized(lock) { credits.encode() }
+                runCatching { storage.save(encoded) }
+            }
+        }
+    }
+
+    private fun offerUpNextLocked(castId: String, fromTail: Boolean = false) {
         if (upNextCastId == castId && _upNext.value != null) return
         val phone = phones.values.filter { it.casting[castId] != null }.maxByOrNull { it.authOrder } ?: return
         val catalog = phone.assembler.current
@@ -449,13 +607,14 @@ class TvLibrary(
         ) ?: return
         upNextCastId = castId
         upNextKeyId = phone.keyId
+        offerFromTail = fromTail
         _upNext.value = offer
         // A refusal left over from an earlier ask must not open on the new card.
         if ((playMachine.state as? LibraryPlay.Failed)?.id == offer.next.id) {
             playMachine.clearResult()
             publishStateLocked()
         }
-        FlickLog.i("library", "upNext offered autoplay=${offer.autoplayAtMs != null} stillWatching=${offer.stillWatching}")
+        FlickLog.i("library", "upNext offered autoplay=${offer.autoplayAtMs != null} stillWatching=${offer.stillWatching} tail=$fromTail")
         scheduleAutoplayLocked(offer)
     }
 
@@ -549,14 +708,11 @@ class TvLibrary(
         val due = offer.autoplayAtMs ?: return
         autoplayTimer = scope.launch {
             delay((due - clock()).coerceAtLeast(0L))
-            val fire = synchronized(lock) {
+            synchronized(lock) {
                 if (_upNext.value !== offer) return@launch
                 streak.autoplayed()
-                true
-            }
-            if (fire) {
                 FlickLog.i("library", "upNext autoplay")
-                playUpNext()
+                playUpNextLocked(autoplay = true)
             }
         }
     }
@@ -589,6 +745,7 @@ class TvLibrary(
         autoplayTimer = null
         upNextCastId = null
         upNextKeyId = null
+        offerFromTail = false
         _upNext.value = null
     }
 
@@ -643,6 +800,9 @@ class TvLibrary(
 
         /** An unanswered `detailWant` or `seasonWant` may be sent again after this. */
         const val WANT_RETRY_MS = 30_000L
+
+        /** A tail card stays while the viewer seeks back less than this past the lead. */
+        const val TAIL_CLEAR_SLACK_MS = 10_000L
 
         /** A phone gone this long has stopped sharing as far as the screens are concerned. */
         const val LOST_HIDE_MS = 10 * 60_000L

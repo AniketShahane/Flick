@@ -5,6 +5,7 @@ import com.flick.sender.media.FilmPosterPolicy
 import com.flick.sender.media.FilmPosterQuery
 import com.flick.sender.media.FoldedText
 import com.flick.sender.media.ParsedVideoName
+import com.flick.sender.media.PlaybackCheckpoint
 import com.flick.sender.media.VideoEdition
 import com.flick.sender.media.VideoNames
 import com.flick.sender.media.librarySortTitle
@@ -33,7 +34,10 @@ internal class CatalogInputs(
     val editionLabel: (VideoEdition) -> String,
     /** The phone's own resume rule, or null where the phone would start from the top. */
     val resumeMs: (fingerprint: String, durationMs: Long) -> Long?,
-    val watched: Set<String>,
+    /** The stored checkpoint behind [resumeMs], for its time and for §9's backfill. */
+    val checkpoint: (fingerprint: String) -> PlaybackCheckpoint?,
+    /** The watched ledger: fingerprint to when it was recorded, epoch ms. */
+    val watched: Map<String, Long>,
     /** Keyed by `MediaItem.uriKey`, as the coordinator's marks are. */
     val unplayable: Set<String>,
     val silent: Set<String>,
@@ -106,6 +110,10 @@ internal object LibraryCatalogBuilder {
             in inputs.silent -> CatalogItem.Block.SILENT
             else -> null
         }
+        val resumeMs = inputs.resumeMs(row.fingerprint, row.durationMs)
+        val checkpoint = inputs.checkpoint(row.fingerprint)
+        val watchedAtMs = inputs.watched[row.fingerprint]
+            ?: WatchedLedgerPolicy.backfillAtMs(checkpoint, row.durationMs, recorded = false)
         return CatalogItem(
             id = LibraryProtocol.itemId(row.fingerprint),
             name = row.name,
@@ -124,8 +132,10 @@ internal object LibraryCatalogBuilder {
             width = row.width,
             height = row.height,
             hdr = inputs.hdr(row.uriKey),
-            resumeMs = inputs.resumeMs(row.fingerprint, row.durationMs),
-            watched = row.fingerprint in inputs.watched,
+            resumeMs = resumeMs,
+            playedAtSeconds = checkpoint?.takeIf { resumeMs != null }?.updatedAtEpochMs?.div(1_000L),
+            watched = watchedAtMs != null,
+            watchedAtSeconds = watchedAtMs?.div(1_000L),
             blocked = blocked,
             art = art?.let { CatalogItem.Art(it.tmdbId, artIsShow, it.poster, it.backdrop, it.logo) },
         )

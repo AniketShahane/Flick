@@ -39,7 +39,7 @@ internal class WatchedStore(
     private val wallClockMs: () -> Long = System::currentTimeMillis,
 ) {
     private val dataStore = context.applicationContext.watchedDataStore
-    private val writes = Channel<String>(Channel.UNLIMITED)
+    private val writes = Channel<Write>(Channel.UNLIMITED)
 
     /** Empty until read and on a read failure: a missing mark costs a badge, never a cast. */
     val state: StateFlow<Map<String, Long>> = dataStore.data
@@ -53,19 +53,26 @@ internal class WatchedStore(
 
     init {
         scope.launch {
-            for (fingerprint in writes) persist(fingerprint)
+            for (write in writes) persist(write)
         }
     }
 
     fun mark(fingerprint: String) {
-        writes.trySend(fingerprint)
+        writes.trySend(Write(fingerprint, backfillAtMs = null))
     }
 
-    private suspend fun persist(fingerprint: String) {
+    /** Records [fingerprint] as watched at [atMs] only if the ledger has no record of it yet. */
+    fun backfill(fingerprint: String, atMs: Long) {
+        writes.trySend(Write(fingerprint, backfillAtMs = atMs))
+    }
+
+    private suspend fun persist(write: Write) {
+        val key = longPreferencesKey(KEY_PREFIX + write.fingerprint)
         repeat(MAX_WRITE_ATTEMPTS) { attempt ->
             try {
                 dataStore.edit { preferences ->
-                    preferences[longPreferencesKey(KEY_PREFIX + fingerprint)] = wallClockMs()
+                    if (write.backfillAtMs != null && preferences.contains(key)) return@edit
+                    preferences[key] = write.backfillAtMs ?: wallClockMs()
                     prune(preferences)
                 }
                 return
@@ -87,6 +94,8 @@ internal class WatchedStore(
             if (!key.name.startsWith(KEY_PREFIX) || value !is Long) return@mapNotNull null
             key.name.removePrefix(KEY_PREFIX) to value
         }.toMap()
+
+    private class Write(val fingerprint: String, val backfillAtMs: Long?)
 
     private companion object {
         const val KEY_PREFIX = "w_"

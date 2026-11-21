@@ -180,8 +180,12 @@ class BackupExclusionsTest {
          * TV's launch-strike record. Below Android 10 no grant stands between that
          * choice and a TV that opens itself for casts, so a restore would switch the
          * feature on for a TV whose owner never chose it.
+         *
+         * `flick_credits` is when this viewer leaves each show's episodes, keyed by a
+         * hash of the show key. It names no title, but it is a viewing record
+         * of this household and is no use on another TV.
          */
-        val THIS_TV_ONLY = setOf("flick_open_for_casts")
+        val THIS_TV_ONLY = setOf("flick_open_for_casts", "flick_credits")
 
         /**
          * Prefs files that carry no credential, with the reason each is allowed to
@@ -194,7 +198,7 @@ class BackupExclusionsTest {
                     "prove a key",
             "flick_library" to
                 "the viewer's Autoplay next episode choice. Nothing the phone sends on the " +
-                    "library channel is stored there or anywhere else (library-channel §12)",
+                    "library channel is stored there (library-channel §12)",
             "library_ui" to
                 "the viewer's All videos sort order, stored as a sort enum name. It authorizes " +
                     "nothing and holds nothing the phone sent (library-channel §12)",

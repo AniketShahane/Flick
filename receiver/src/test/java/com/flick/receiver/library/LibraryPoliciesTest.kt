@@ -483,6 +483,85 @@ class LibraryPoliciesTest {
         assertNull(UpNextPolicy.offer(e1.id, null, true, true, UpNextStreak(), 0L))
     }
 
+    // --- Credits lead -------------------------------------------------------------
+
+    @Test
+    fun theLeadIsTheClampedMedianWithThirtySecondsByDefault() {
+        assertEquals(30_000L, CreditsLead.leadMs(emptyList()))
+        assertEquals(60_000L, CreditsLead.leadMs(listOf(60_000L)))
+        assertEquals(70_000L, CreditsLead.leadMs(listOf(60_000L, 80_000L)))
+        assertEquals(90_000L, CreditsLead.leadMs(listOf(170_000L, 6_000L, 90_000L)))
+        assertEquals(20_000L, CreditsLead.leadMs(listOf(6_000L, 8_000L, 10_000L)))
+        assertEquals(180_000L, CreditsLead.leadMs(listOf(180_000L, 180_000L, 179_000L).map { it + 5_000L }))
+    }
+
+    @Test
+    fun theLeadIsCappedInsideThePhonesFinishZone() {
+        val minute = 60_000L
+        assertEquals(63_000L, CreditsLead.effectiveLeadMs(180_000L, 22 * minute))
+        assertEquals(132_000L, CreditsLead.effectiveLeadMs(180_000L, 45 * minute))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(180_000L, 10 * minute))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(30_000L, 0L))
+        // Under the cap the learned lead stands.
+        assertEquals(40_000L, CreditsLead.effectiveLeadMs(40_000L, 22 * minute))
+        assertEquals(20_000L, CreditsLead.effectiveLeadMs(20_000L, 10 * minute))
+    }
+
+    @Test
+    fun aPhoneWithNoTimesCountsOnlyTheLast30Seconds() {
+        val minute = 60_000L
+        assertEquals(177_000L, CreditsLead.capMs(60 * minute, phoneHasTimes = true))
+        assertEquals(27_000L, CreditsLead.capMs(60 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.capMs(10 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(180_000L, 60 * minute, phoneHasTimes = false))
+        assertEquals(27_000L, CreditsLead.effectiveLeadMs(30_000L, 22 * minute, phoneHasTimes = false))
+        assertEquals(20_000L, CreditsLead.effectiveLeadMs(20_000L, 22 * minute, phoneHasTimes = false))
+    }
+
+    @Test
+    fun onlyALeaveInTheLastStretchIsASample() {
+        val hour = 3_600_000L
+        assertEquals(60_000L, CreditsLead.sample(hour - 60_000L, hour))
+        assertEquals(5_000L, CreditsLead.sample(hour - 5_000L, hour))
+        assertEquals(180_000L, CreditsLead.sample(hour - 180_000L, hour))
+        assertNull(CreditsLead.sample(hour - 4_999L, hour))
+        assertNull(CreditsLead.sample(hour - 180_001L, hour))
+        assertNull(CreditsLead.sample(hour, hour))
+        assertNull(CreditsLead.sample(0L, 0L))
+        // A short episode: 85 % is the binding limit, not the three minutes.
+        val short = 600_000L
+        assertEquals(90_000L, CreditsLead.sample(510_000L, short))
+        assertNull(CreditsLead.sample(509_999L, short))
+    }
+
+    @Test
+    fun theBookKeepsThreeSamplesPerShowUnderAHashAndTheNewestShows() {
+        val book = CreditsLeadBook(maxShows = 2)
+        book.record("tv:1", 40_000L)
+        book.record("tv:1", 50_000L)
+        book.record("tv:1", 60_000L)
+        book.record("tv:1", 90_000L)
+        assertEquals(listOf(50_000L, 60_000L, 90_000L), book.samples("tv:1"))
+        assertEquals(60_000L, book.leadMs("tv:1"))
+        assertEquals(30_000L, book.leadMs("tv:2"))
+        val encoded = book.encode()
+        assertFalse(encoded.contains("tv:"))
+        assertTrue(encoded.startsWith(CreditsLeadBook.hash("tv:1") + ":"))
+        assertTrue(Regex("[0-9a-f]{16}").matches(CreditsLeadBook.hash("name:The Lantern Coast")))
+
+        book.record("tv:2", 30_000L)
+        book.record("tv:3", 30_000L)
+        assertEquals(2, book.size)
+        assertTrue(book.samples("tv:1").isEmpty())
+
+        val restored = CreditsLeadBook()
+        restored.decode(book.encode() + ";garbage;0123456789abcdef:1,x,99999999")
+        assertEquals(listOf(30_000L), restored.samples("tv:3"))
+        assertEquals(2, restored.size)
+        restored.decode(null)
+        assertEquals(0, restored.size)
+    }
+
     private companion object {
         const val REQ = "cmVxcmVxcmVxcmVxcmVxcg"
         const val OTHER_REQ = "b3RoZXJvdGhlcm90aGVybw"

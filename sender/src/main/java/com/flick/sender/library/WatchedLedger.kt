@@ -1,5 +1,6 @@
 package com.flick.sender.library
 
+import com.flick.sender.media.PlaybackCheckpoint
 import com.flick.sender.media.PlaybackResumePolicy
 import com.flick.sender.model.PlaybackPhase
 
@@ -11,11 +12,22 @@ import com.flick.sender.model.PlaybackPhase
 internal object WatchedLedgerPolicy {
     const val MAX_RECORDS = 5_000
 
-    /** ENDED, or stopped with no more than the resume policy's end window left. */
+    /** ENDED, or stopped inside the resume policy's finish zone. */
     fun finishedAt(positionMs: Long, durationMs: Long, phase: PlaybackPhase): Boolean {
         if (phase == PlaybackPhase.ENDED) return true
-        if (durationMs <= 0L || positionMs <= 0L) return false
-        return durationMs - positionMs.coerceAtMost(durationMs) <= PlaybackResumePolicy.END_WINDOW_MS
+        if (positionMs <= 0L) return false
+        return PlaybackResumePolicy.inFinishZone(positionMs, durationMs)
+    }
+
+    /**
+     * When a stored checkpoint inside the finish zone says the item was watched, for a ledger
+     * with no record of it: a checkpoint written before the zone widened is a finish the ledger
+     * never saw. Null when the ledger already knows, or the checkpoint is not a finish.
+     */
+    fun backfillAtMs(checkpoint: PlaybackCheckpoint?, durationMs: Long, recorded: Boolean): Long? {
+        if (recorded || checkpoint == null) return null
+        if (!PlaybackResumePolicy.inFinishZone(checkpoint.positionMs, durationMs)) return null
+        return checkpoint.updatedAtEpochMs
     }
 
     /** The keys to drop so that at most [max] remain, oldest first; ties go by key for determinism. */
@@ -32,7 +44,7 @@ internal object WatchedLedgerPolicy {
  * Follows one cast's confirmed position and says, once, when it became watched.
  *
  * Main-confined like the coordinator that feeds it. Armed only once a first frame proved the
- * cast, so a startup that failed in its last thirty seconds of a resume never counts.
+ * cast, so a startup that failed while resuming inside the finish zone never counts.
  */
 internal class WatchedRecorder {
     private var castId: String? = null
@@ -62,7 +74,7 @@ internal class WatchedRecorder {
         return fingerprint
     }
 
-    /** The fingerprint when the cast ends inside its final window and was not already counted. */
+    /** The fingerprint when the cast ends inside its finish zone and was not already counted. */
     fun finish(castId: String): String? {
         if (castId != this.castId) return null
         val owed = fingerprint?.takeIf { !recorded && WatchedLedgerPolicy.finishedAt(positionMs, durationMs, phase) }

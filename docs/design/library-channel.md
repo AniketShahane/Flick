@@ -110,7 +110,7 @@ that phone's library socket together with its control lease.
  "sortKey":"the lantern coast s02e04","find":"thelanterncoasts02e042160pmkv",
  "kind":"episode","show":"The Lantern Coast","showKey":"tv:91234","s":2,"e":4,
  "year":2022,"durMs":3130000,"added":1795000000,"folder":"Movies/Shows/Lantern Coast/",
- "w":3840,"h":2160,"hdr":"dv","resumeMs":1260000,"watched":false,
+ "w":3840,"h":2160,"hdr":"dv","resumeMs":1260000,"playedAt":1795100000,
  "art":{"tmdb":91234,"tv":true,"poster":"/a.jpg","backdrop":"/b.jpg","logo":"/c.png"}}
 ```
 
@@ -131,12 +131,16 @@ that phone's library socket together with its control lease.
 | `w`, `h` | pixels, 0 when unknown. |
 | `hdr` | optional `dv` \| `hdr10` \| `sdr`. Omitted means not probed or not known (a failed probe included), never "SDR". |
 | `resumeMs` | optional; present only when the phone's `PlaybackResumePolicy` would resume. |
-| `watched` | optional `true` when the phone's watched ledger (§9) has it. |
+| `playedAt` | optional; when the checkpoint behind `resumeMs` was written, epoch seconds, integer 1..4102444800. Present only with `resumeMs`. |
+| `watched` | optional `true` when the phone counts the item watched (§9). |
+| `watchedAt` | optional; when it became watched, epoch seconds, integer 1..4102444800. Present only with `watched`. |
 | `blocked` | optional `unplayable` \| `silent`, the phone's existing marks. |
 | `art` | optional object: `tmdb` (optional positive id), `tv` (optional boolean, the TMDB catalogue), and `poster`, `backdrop`, `logo`, each optional but at least one present. TMDB paths only, each matching `^/[A-Za-z0-9_-]+\.(jpg\|jpeg\|png\|webp)$` (the phone's own `FilmPosterPolicy` rule). The TV builds `https://image.tmdb.org/t/p/<size><path>` itself and never fetches a URL it was sent. |
 
-Unknown fields inside an item are ignored, so a later phone can add display fields without a
-coordinated release. Missing required fields or a wrong type reject the whole part.
+Fields appear in the table's order, and an absent optional field is omitted rather than sent
+empty. `playedAt` and `watchedAt` were added within v1: a phone that predates them sends neither,
+and the TV falls back to ordering by `(s,e)` (§10). Unknown fields inside an item are ignored, so
+a later phone can add display fields without a coordinated release. Missing required fields or a wrong type reject the whole part.
 
 ### 5.2 Delivery
 
@@ -339,25 +343,65 @@ stops while it is in a pocket — the moment the library is most needed.
 
 ## 9. Watched ledger (phone)
 
-The phone records an item as watched when its cast reaches `ENDED`, or stops inside the final
-30 s (`PlaybackResumePolicy.END_WINDOW_MS`). Stored by fingerprint with the time, newest 5000
-kept, excluded from backup like the progress store. It feeds `watched` and the TV's Next
-episodes row. It changes nothing on the phone's own screens.
+The phone records an item as watched when its cast reaches `ENDED`, or stops inside the
+**finish zone**: with a known duration, no more than 30 s (`PlaybackResumePolicy.END_WINDOW_MS`)
+or 5 % of it left, whichever is longer (`PlaybackResumePolicy.inFinishZone`). The same zone
+offers no resume and clears the checkpoint, so stopping during the end credits finishes an
+episode. Stored by fingerprint with the time, newest 5000 kept, excluded from backup like the
+progress store; that time is `watchedAt`.
+
+A checkpoint written before the zone widened can sit inside it. When the ledger has no record,
+such a checkpoint makes the item `watched` with `watchedAt` set to the checkpoint's time, derived
+at each catalog build. When a cast of that item reaches its first frame, the phone writes that
+record to the ledger once, before the replay can clear the checkpoint, so the mark survives a
+rewatch. The ledger feeds `watched` and the
+TV's Next episodes row only; it changes nothing on the phone's own screens.
 
 ## 10. TV behaviour that depends on the contract
 
-- **Next episodes:** for each show, take the most recently watched episode by `(s,e)`; the
-  candidate is the first episode after it whose `(s,e)` differs (a second file of the same
-  episode is skipped). The show has a next episode only if that candidate exists, is not
-  watched and has no `resumeMs` (an in-progress one is in Continue watching instead).
-  Continue watching holds items with `resumeMs`.
-- **Up next:** when a cast reaches `ended`, the `casting` frame (§6.6) for its `castId` names an
-  episode, and a next one exists in the same `showKey`, the TV shows the Up next card over the
-  full-size film; its `play` goes to the phone that sent that `casting`. With autoplay on (TV
-  setting, default on) it sends `play` with `from:"start"` after 10 s. The card shows the play's
-  progress and the specific reason if the phone refuses, and Play now retries. After three
-  consecutive autoplays with no remote key press it shows "Still watching?" instead. The film is
-  never scaled.
+- **When an episode was last touched:** `watchedAt` if it is watched, and `playedAt` if it has a
+  `resumeMs` of at least 2 minutes; the later of the two, or none. A play under 2 minutes never
+  moves it. A show's **anchor** is its episode touched last (a tie goes to the later episode by
+  `(s,e)`). A show in which no episode has a time — a phone that predates the fields — is in
+  **legacy** mode: its anchor is the last watched episode by `(s,e)`, and every rule below behaves
+  as it did before the fields existed.
+- **Next episodes:** a show has none when it has no anchor or the anchor has a `resumeMs` (it is
+  in Continue watching). Otherwise the candidate is the first episode after the anchor whose
+  `(s,e)` differs and that is not watched, so a rewatch skips episodes already seen and a finished
+  series stays finished. If that candidate has a `resumeMs` the show has none (a later episode is
+  never offered in its place). The row is ordered by the anchor's time, newest first; shows
+  without one follow in the previous order.
+- **Play on a show:** the anchor if it has a `resumeMs`; else the candidate above (resumed if it
+  has a `resumeMs`); else the first unwatched episode; else the first. Legacy shows keep the
+  previous rule.
+- **Continue watching** holds items with `resumeMs`, newest `playedAt` first, items without one
+  after in the previous order. An episode appears only if it is its show's anchor or the episode
+  Play on the show would resume, so a half-watched episode of a show the viewer has moved past is
+  hidden. Legacy shows keep the previous rule.
+- **Up next:** when a cast whose `casting` frame (§6.6) names an episode, with a next one in the
+  same `showKey`, reaches `ended`, the TV shows the Up next card over the full-size film; its
+  `play` goes to the phone that sent that `casting`. It also offers the card earlier, at the
+  credits: when the remaining time, playing or paused, is no more than the show's **credits
+  lead**. The learned lead is the median of the show's last 3 samples of "time left when the
+  viewer left the episode early", clamped to 20 s..3 min, or 30 s with no samples. The effective
+  lead is capped to the phone's finish zone (§9): min(learned lead, max(20 s, zone − 3 s)), with
+  zone = max(30 s, 5 % of the duration), so a skip from the card always lands inside the zone and
+  the phone counts the episode watched. When none of the casting phone's items carries
+  `playedAt` or `watchedAt` (a phone from before those fields, whose zone is the last 30 s only),
+  the cap is 27 s. Only a viewer exit with no credits card showing is a sample: a `stop` (from the
+  phone or the TV remote), a replacement by a new cast, or Play now, before `ended`; the
+  remaining time is kept only when 5 s..3 min was left and at least 85 % had played. An exit
+  while the credits card is up says nothing new about the credits and is not a sample; nor are
+  errors, link loss, teardown, backgrounding, an autoplay or a natural `ended`. (A phone-side
+  fault that makes the phone send `stop` reads as a stop.) Samples are kept on
+  the TV under a hash of the `showKey` (no title stored), newest 200 shows, not backed up. During
+  the credits the card offers only Play now (no Back to library) and leaves Left/Right to
+  seeking: OK plays now, Back hides it. It clears if the viewer seeks back past the lead plus
+  10 s, or past the cap if that is sooner (unless its `play` is already outstanding); once hidden the credits do not offer it again
+  for that cast, but `ended` still does, with the card as before. With autoplay on (TV setting, default on)
+  it sends `play` with `from:"start"` after 10 s. The card shows the play's progress and the
+  specific reason if the phone refuses, and Play now retries. After three consecutive autoplays
+  with no remote key press it shows "Still watching?" instead. The film is never scaled.
 - Sort, folder scope and search run on the TV over `sortKey`, `added`, `durMs`, `folder` and
   `find`, with the phone's exact semantics (ported `LibraryNameOrder`, stable sort over the
   phone's newest-first order, unknown duration last in Shortest, every query word a substring
@@ -379,3 +423,6 @@ Item id for fingerprint `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`: `nTbULXb5
 Titles, file names, folder names, TMDB paths, item ids and thumbnails never enter logs,
 exceptions, notifications, diagnostics or the incident journal on either device. Logs carry
 frame types, counts, byte sizes and timings only. Nothing in this channel is backed up.
+
+The TV's learned credits lengths (§10) are stored in `flick_credits` keyed by a hash of the
+`showKey`, never the key or a title, and that file is excluded from backup and device transfer.

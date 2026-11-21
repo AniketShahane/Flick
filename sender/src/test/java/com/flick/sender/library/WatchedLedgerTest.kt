@@ -1,5 +1,6 @@
 package com.flick.sender.library
 
+import com.flick.sender.media.PlaybackCheckpoint
 import com.flick.sender.model.PlaybackPhase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,14 +11,32 @@ import org.junit.Test
 class WatchedLedgerTest {
 
     @Test
-    fun endedOrStoppedInTheFinalThirtySecondsIsWatched() {
+    fun endedOrStoppedInTheFinishZoneIsWatched() {
         assertTrue(WatchedLedgerPolicy.finishedAt(0L, 0L, PlaybackPhase.ENDED))
         assertTrue(WatchedLedgerPolicy.finishedAt(5_970_000L, 6_000_000L, PlaybackPhase.PAUSED))
         assertTrue(WatchedLedgerPolicy.finishedAt(6_100_000L, 6_000_000L, PlaybackPhase.PLAYING))
-        assertFalse(WatchedLedgerPolicy.finishedAt(5_969_999L, 6_000_000L, PlaybackPhase.PLAYING))
+        // The last 5 % of a 100-minute film is five minutes of end credits.
+        assertTrue(WatchedLedgerPolicy.finishedAt(5_700_000L, 6_000_000L, PlaybackPhase.PAUSED))
+        assertFalse(WatchedLedgerPolicy.finishedAt(5_699_999L, 6_000_000L, PlaybackPhase.PLAYING))
+        // A short video falls back to the 30 s window.
+        assertTrue(WatchedLedgerPolicy.finishedAt(90_000L, 120_000L, PlaybackPhase.PAUSED))
+        assertFalse(WatchedLedgerPolicy.finishedAt(89_999L, 120_000L, PlaybackPhase.PAUSED))
         // No duration: nothing can be said about the end.
         assertFalse(WatchedLedgerPolicy.finishedAt(5_990_000L, 0L, PlaybackPhase.PAUSED))
         assertFalse(WatchedLedgerPolicy.finishedAt(0L, 20_000L, PlaybackPhase.BUFFERING))
+    }
+
+    @Test
+    fun aFinishZoneCheckpointIsBackfilledOnceAtItsOwnTime() {
+        val credits = PlaybackCheckpoint(positionMs = 5_750_000L, updatedAtEpochMs = 1_700_000_000_000L)
+        assertEquals(1_700_000_000_000L, WatchedLedgerPolicy.backfillAtMs(credits, 6_000_000L, recorded = false))
+        // The ledger already knows: no second write, and its own time stands.
+        assertNull(WatchedLedgerPolicy.backfillAtMs(credits, 6_000_000L, recorded = true))
+        // Mid-film, or nothing stored, or no duration to place the zone: not a finish.
+        val midFilm = PlaybackCheckpoint(positionMs = 5_699_999L, updatedAtEpochMs = 1L)
+        assertNull(WatchedLedgerPolicy.backfillAtMs(midFilm, 6_000_000L, recorded = false))
+        assertNull(WatchedLedgerPolicy.backfillAtMs(null, 6_000_000L, recorded = false))
+        assertNull(WatchedLedgerPolicy.backfillAtMs(credits, 0L, recorded = false))
     }
 
     @Test
@@ -44,7 +63,7 @@ class WatchedLedgerTest {
     fun stoppingNearTheEndRecordsAtTeardown() {
         val recorder = WatchedRecorder()
         recorder.activate("cast", "fp")
-        recorder.onConfirmed("cast", 5_980_000L, 6_000_000L, PlaybackPhase.PAUSED)
+        recorder.onConfirmed("cast", 5_750_000L, 6_000_000L, PlaybackPhase.PAUSED)
         assertNull(recorder.finish("other"))
         assertEquals("fp", recorder.finish("cast"))
         assertNull(recorder.finish("cast"))

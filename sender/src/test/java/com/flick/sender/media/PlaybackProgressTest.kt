@@ -22,6 +22,39 @@ class PlaybackProgressTest {
         assertEquals(130_000L, PlaybackResumePolicy.eligiblePosition(130_000L, 200_000L))
     }
 
+    @Test fun finishZoneIsTheLongerOfThirtySecondsAndFivePercent() {
+        assertTrue(PlaybackResumePolicy.inFinishZone(5_700_000L, 6_000_000L))
+        assertFalse(PlaybackResumePolicy.inFinishZone(5_699_999L, 6_000_000L))
+        assertTrue(PlaybackResumePolicy.inFinishZone(90_000L, 120_000L))
+        assertFalse(PlaybackResumePolicy.inFinishZone(89_999L, 120_000L))
+        assertTrue(PlaybackResumePolicy.inFinishZone(7_000_000L, 6_000_000L))
+        assertFalse(PlaybackResumePolicy.inFinishZone(-1L, 6_000_000L))
+        assertFalse(PlaybackResumePolicy.inFinishZone(5_990_000L, 0L))
+        assertFalse(PlaybackResumePolicy.inFinishZone(5_990_000L, -1L))
+    }
+
+    @Test fun aCheckpointInTheFinishZoneOffersNoResumeAndIsCleared() {
+        assertNull(PlaybackResumePolicy.eligiblePosition(5_700_000L, 6_000_000L))
+        assertEquals(5_699_999L, PlaybackResumePolicy.eligiblePosition(5_699_999L, 6_000_000L))
+        assertEquals(
+            PlaybackProgressMutation.Clear,
+            PlaybackResumePolicy.mutation(5_700_000L, 6_000_000L, PlaybackPhase.PAUSED),
+        )
+        assertEquals(
+            PlaybackProgressMutation.Save(5_699_999L),
+            PlaybackResumePolicy.mutation(5_699_999L, 6_000_000L, PlaybackPhase.PAUSED),
+        )
+        val state = PlaybackProgressState.Ready(mapOf("fp" to PlaybackCheckpoint(5_800_000L, 1L)))
+        assertNull(resumePositionMs(state, "fp", 6_000_000L))
+        assertNull(resumeProgress(state, "fp", 6_000_000L))
+    }
+
+    @Test fun aLiveRetryOnlyTreatsTheLastThirtySecondsAsOver() {
+        assertEquals(5_800_000L, PlaybackResumePolicy.livePosition(5_800_000L, 6_000_000L))
+        assertNull(PlaybackResumePolicy.livePosition(5_970_000L, 6_000_000L))
+        assertNull(PlaybackResumePolicy.livePosition(9_999L, 6_000_000L))
+    }
+
     @Test fun earlyEndedAndNearEndFramesClearOlderProgress() {
         assertEquals(
             PlaybackProgressMutation.Clear,

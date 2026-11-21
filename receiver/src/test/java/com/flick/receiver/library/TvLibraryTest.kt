@@ -34,6 +34,17 @@ class TvLibraryTest {
     private var suspendedMs = 0L
     private val labels = mutableMapOf(KEY_A to "Pixel", KEY_B to "Other")
 
+    private class FakeCredits(var stored: String? = null) : CreditsLeadStorage {
+        val saves = ArrayList<String>()
+        override fun load(): String? = stored
+        override fun save(encoded: String) {
+            saves += encoded
+            stored = encoded
+        }
+    }
+
+    private val credits = FakeCredits()
+
     private val hub = TvLibrary(
         labelOf = { labels[it] },
         autoplayEnabled = { autoplay },
@@ -42,6 +53,7 @@ class TvLibraryTest {
         newRequestId = { "req" + (reqCounter++).toString().padStart(19, '0') },
         scope = scope,
         workDispatcher = dispatcher,
+        creditsStorage = credits,
     )
 
     private fun connect(keyId: String = KEY_A, valid: Boolean = true): FakeLink {
@@ -544,6 +556,309 @@ class TvLibraryTest {
         assertNull(hub.upNext.value)
     }
 
+    // --- Up next at the credits ----------------------------------------------------
+
+    private fun episodePlaying(cast: String = CAST_1): FakeLink {
+        val link = connect()
+        deliver(link, listOf(L1, L2))
+        hub.onFrame(link, PhoneFrame.Casting(cast, L1.id))
+        hub.onCastStarted(cast)
+        return link
+    }
+
+    private fun at(remainingMs: Long, cast: String = CAST_1) = hub.onCastPosition(cast, DUR - remainingMs, DUR)
+
+    private fun savedSamples(): String? = credits.saves.lastOrNull()?.substringAfter(CreditsLeadBook.hash("tv:1") + ":")
+
+    @Test
+    fun theTailOffersUpNextWithinTheLeadPlayingOrPaused() {
+        episodePlaying()
+        at(30_001L)
+        assertNull(hub.upNext.value)
+        at(30_000L)
+        val offer = hub.upNext.value
+        assertEquals(L2, offer?.next)
+        assertEquals(10_000L, offer?.autoplayAtMs)
+        // Still the same card a second later, and at `ended`.
+        at(29_000L)
+        assertTrue(offer === hub.upNext.value)
+        hub.onCastEnded(CAST_1)
+        assertTrue(offer === hub.upNext.value)
+    }
+
+    @Test
+    fun aCastWithNoCastingFrameOrNoNextEpisodeOffersNothingFromTheTail() {
+        val link = connect()
+        deliver(link, listOf(L1, L2))
+        hub.onCastStarted(CAST_1)
+        at(10_000L)
+        assertNull(hub.upNext.value)
+        hub.onFrame(link, PhoneFrame.Casting(CAST_2, L2.id))
+        hub.onCastStarted(CAST_2)
+        at(10_000L, CAST_2)
+        assertNull(hub.upNext.value)
+    }
+
+    @Test
+    fun seekingBackPastTheLeadClearsATailCard() {
+        val link = episodePlaying()
+        at(20_000L)
+        assertNotNull(hub.upNext.value)
+        at(40_000L)
+        assertNotNull(hub.upNext.value)
+        at(40_001L)
+        assertNull(hub.upNext.value)
+        link.sent.clear()
+        scope.advanceTimeBy(20_000L)
+        assertTrue(link.sent.isEmpty())
+        // Not dismissed: reaching the tail again offers it again.
+        at(25_000L)
+        assertNotNull(hub.upNext.value)
+    }
+
+    @Test
+    fun aTailCardWithAPlayOutstandingSurvivesASeekBack() {
+        episodePlaying()
+        at(20_000L)
+        hub.playUpNext()
+        at(600_000L)
+        assertEquals(L2, hub.upNext.value?.next)
+    }
+
+    @Test
+    fun backHidesATailCardUntilEnded() {
+        episodePlaying()
+        at(20_000L)
+        hub.dismissUpNext()
+        assertNull(hub.upNext.value)
+        at(10_000L)
+        assertNull(hub.upNext.value)
+        hub.onCastEnded(CAST_1)
+        assertEquals(L2, hub.upNext.value?.next)
+    }
+
+    @Test
+    fun stoppingInTheCreditsIsASampleThatMovesTheLead() {
+        val link = episodePlaying()
+        at(60_000L)
+        assertNull(hub.upNext.value)
+        hub.onCastStopped(CAST_1)
+        scope.runCurrent()
+        assertEquals("60000", savedSamples())
+        hub.onFrame(link, PhoneFrame.Casting(CAST_2, L1.id))
+        hub.onCastStarted(CAST_2)
+        at(60_001L, CAST_2)
+        assertNull(hub.upNext.value)
+        at(59_000L, CAST_2)
+        assertEquals(L2, hub.upNext.value?.next)
+    }
+
+    @Test
+    fun aFailureOrTeardownInTheCreditsIsNoSample() {
+        val link = episodePlaying()
+        at(60_000L)
+        // The stage left the cast with no stop command: an error, a lost link, a teardown.
+        hub.onCastStopped()
+        hub.onFrame(link, PhoneFrame.Casting(CAST_2, L1.id))
+        hub.onCastStarted(CAST_2)
+        at(60_000L, CAST_2)
+        // A stop of some other cast is not this one's.
+        hub.onCastStopped(CAST_1)
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun theTailLeadIsCappedInsideThePhonesFinishZone() {
+        val book = CreditsLeadBook()
+        book.record("tv:1", 180_000L)
+        val capped = TvLibrary(
+            labelOf = { "Pixel" },
+            autoplayEnabled = { true },
+            decodeThumbnail = { null },
+            clock = { dispatcher.scheduler.currentTime },
+            scope = scope,
+            workDispatcher = dispatcher,
+            creditsStorage = FakeCredits(book.encode()),
+        )
+        val link = FakeLink()
+        capped.onAuthenticated(KEY_A, link) { true }
+        capped.onFrame(link, PhoneFrame.CatBegin(REV1, 2, 1))
+        capped.onFrame(link, PhoneFrame.CatPart(REV1, 0, listOf(L1, L2)))
+        capped.onFrame(link, PhoneFrame.CatEnd(REV1))
+        capped.onFrame(link, PhoneFrame.Casting(CAST_1, L1.id))
+        capped.onCastStarted(CAST_1)
+        // A 22-minute episode: the phone's finish zone is its last 66 s, so the card waits for 63 s.
+        val duration = 22 * 60_000L
+        capped.onCastPosition(CAST_1, duration - 64_000L, duration)
+        assertNull(capped.upNext.value)
+        capped.onCastPosition(CAST_1, duration - 63_000L, duration)
+        assertEquals(L2, capped.upNext.value?.next)
+    }
+
+    private fun hubWithLead(learnedMs: Long): TvLibrary {
+        val book = CreditsLeadBook()
+        book.record("tv:1", learnedMs)
+        return TvLibrary(
+            labelOf = { "Pixel" },
+            autoplayEnabled = { true },
+            decodeThumbnail = { null },
+            clock = { dispatcher.scheduler.currentTime },
+            scope = scope,
+            workDispatcher = dispatcher,
+            creditsStorage = FakeCredits(book.encode()),
+        )
+    }
+
+    private fun TvLibrary.casting(items: List<LibraryItem>) {
+        val link = FakeLink()
+        onAuthenticated(KEY_A, link) { true }
+        onFrame(link, PhoneFrame.CatBegin(REV1, items.size, 1))
+        onFrame(link, PhoneFrame.CatPart(REV1, 0, items))
+        onFrame(link, PhoneFrame.CatEnd(REV1))
+        onFrame(link, PhoneFrame.Casting(CAST_1, items.first().id))
+        onCastStarted(CAST_1)
+    }
+
+    @Test
+    fun aPhoneWithNoTimesGetsTheCardOnlyInItsLast27Seconds() {
+        val legacy = hubWithLead(180_000L)
+        legacy.casting(listOf(L1.copy(playedAtSeconds = null), L2))
+        val duration = 60 * 60_000L
+        legacy.onCastPosition(CAST_1, duration - 27_001L, duration)
+        assertNull(legacy.upNext.value)
+        legacy.onCastPosition(CAST_1, duration - 27_000L, duration)
+        assertEquals(L2, legacy.upNext.value?.next)
+        // Seeking back clears it as soon as it is outside the cap.
+        legacy.onCastPosition(CAST_1, duration - 27_001L, duration)
+        assertNull(legacy.upNext.value)
+    }
+
+    @Test
+    fun seekingBackOutsideTheCapClearsATailCard() {
+        // A 60-minute episode: learned 180 s is capped at 177 s, so 187 s left is outside it.
+        val capped = hubWithLead(180_000L)
+        capped.casting(listOf(L1, L2))
+        val duration = 60 * 60_000L
+        capped.onCastPosition(CAST_1, duration - 177_000L, duration)
+        assertEquals(L2, capped.upNext.value?.next)
+        capped.onCastPosition(CAST_1, duration - 187_000L, duration)
+        assertNull(capped.upNext.value)
+        capped.onCastPosition(CAST_1, duration - 177_000L, duration)
+        assertNotNull(capped.upNext.value)
+        capped.onCastPosition(CAST_1, duration - 177_001L, duration)
+        assertNull(capped.upNext.value)
+    }
+
+    @Test
+    fun aFinaleTailAsksAgainOnlyWhenTheCatalogChanges() {
+        val link = connect()
+        deliver(link, listOf(L1, L2))
+        hub.onFrame(link, PhoneFrame.Casting(CAST_1, L2.id))
+        hub.onCastStarted(CAST_1)
+        at(10_000L)
+        at(9_000L)
+        assertNull(hub.upNext.value)
+        val l3 = episode("s01e03lllll", 3).copy(durationMs = DUR)
+        deliver(link, listOf(L1, L2, l3), REV2)
+        at(8_000L)
+        assertEquals(l3, hub.upNext.value?.next)
+    }
+
+    @Test
+    fun replacingTheCastInTheCreditsIsASample() {
+        episodePlaying()
+        at(100_000L)
+        hub.onCastStarted(CAST_2)
+        scope.runCurrent()
+        assertEquals("100000", savedSamples())
+    }
+
+    @Test
+    fun playNowFromATailCardIsNoSample() {
+        val link = episodePlaying()
+        at(25_000L)
+        hub.playUpNext()
+        hub.onFrame(link, PhoneFrame.PlayAck(lastReq(link), true, null))
+        hub.onCastStarted(CAST_2)
+        hub.onCastStopped()
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun stoppingOrReplacingWhileATailCardIsUpIsNoSample() {
+        episodePlaying()
+        at(25_000L)
+        assertNotNull(hub.upNext.value)
+        hub.onCastStopped(CAST_1)
+        episodePlaying(CAST_2)
+        at(25_000L, CAST_2)
+        assertNotNull(hub.upNext.value)
+        hub.onCastStarted("Y2FzdDNjYXN0M2Nhc3QzYw")
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun stoppingAfterBackHidTheTailCardIsASample() {
+        episodePlaying()
+        at(25_000L)
+        hub.dismissUpNext()
+        hub.onCastStopped(CAST_1)
+        scope.runCurrent()
+        assertEquals("25000", savedSamples())
+    }
+
+    @Test
+    fun anAutoplayIsNoSample() {
+        val link = episodePlaying()
+        at(25_000L)
+        scope.advanceTimeBy(10_001L)
+        assertTrue(link.sent.last().contains(L2.id))
+        hub.onCastStarted(CAST_2)
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun leavingAfterEndedOrBeforeTheCreditsIsNoSample() {
+        episodePlaying()
+        at(10_000L)
+        hub.onCastEnded(CAST_1)
+        hub.onCastNotEnded()
+        hub.onCastStopped(CAST_1)
+        episodePlaying(CAST_2)
+        at(DUR / 2, CAST_2)
+        hub.onCastStopped(CAST_2)
+        scope.runCurrent()
+        assertTrue(credits.saves.isEmpty())
+    }
+
+    @Test
+    fun storedSamplesSetTheLeadOfANewHub() {
+        val book = CreditsLeadBook()
+        book.record("tv:1", 120_000L)
+        val restored = TvLibrary(
+            labelOf = { "Pixel" },
+            autoplayEnabled = { true },
+            decodeThumbnail = { null },
+            clock = { dispatcher.scheduler.currentTime },
+            scope = scope,
+            workDispatcher = dispatcher,
+            creditsStorage = FakeCredits(book.encode()),
+        )
+        val link = FakeLink()
+        restored.onAuthenticated(KEY_A, link) { true }
+        restored.onFrame(link, PhoneFrame.CatBegin(REV1, 2, 1))
+        restored.onFrame(link, PhoneFrame.CatPart(REV1, 0, listOf(L1, L2)))
+        restored.onFrame(link, PhoneFrame.CatEnd(REV1))
+        restored.onFrame(link, PhoneFrame.Casting(CAST_1, L1.id))
+        restored.onCastStarted(CAST_1)
+        restored.onCastPosition(CAST_1, DUR - 120_000L, DUR)
+        assertEquals(L2, restored.upNext.value?.next)
+    }
+
     // --- Two phones, lost phones, empty libraries ---------------------------------
 
     @Test
@@ -744,6 +1059,10 @@ class TvLibraryTest {
 
         val E1 = episode("s01e01xxxxx", 1)
         val E2 = episode("s01e02xxxxx", 2)
+        const val DUR = 3_000_000L
+        // A time marks the phone as one that counts the longer finish zone.
+        val L1 = episode("s01e01lllll", 1).copy(durationMs = DUR, playedAtSeconds = 1L)
+        val L2 = episode("s01e02lllll", 2).copy(durationMs = DUR)
         val FILM = LibraryItem(
             id = "film0000001", name = "f.mkv", title = "F", sortKey = "f", find = "f", kind = LibraryItemKind.FILM,
             art = LibraryArt(1L, false, "/p.jpg", null, null),

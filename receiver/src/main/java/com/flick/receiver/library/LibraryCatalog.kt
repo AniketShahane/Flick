@@ -63,7 +63,11 @@ data class LibraryItem(
     val height: Int = 0,
     val hdr: LibraryHdr? = null,
     val resumeMs: Long? = null,
+    /** When the phone stored [resumeMs], in epoch seconds; an older phone sends none. */
+    val playedAtSeconds: Long? = null,
     val watched: Boolean = false,
+    /** When the phone recorded the item as watched, in epoch seconds; an older phone sends none. */
+    val watchedAtSeconds: Long? = null,
     val blocked: LibraryBlock? = null,
     val art: LibraryArt? = null,
 ) {
@@ -80,6 +84,9 @@ object LibraryWire {
     const val VERSION = 1L
     const val MAX_ITEMS = 20_000
     const val MAX_PARTS = 4_000
+
+    /** 2100-01-01T00:00:00Z: the upper bound of `playedAt` and `watchedAt` (§5.1). */
+    const val MAX_EPOCH_SECONDS = 4_102_444_800L
 
     private val ItemId = Regex("[A-Za-z0-9_-]{11}")
     private val Rev = Regex("[A-Za-z0-9_-]{22}")
@@ -120,6 +127,8 @@ object LibraryWire {
         val folder = o.optionalString("folder") { it.length <= 512 } ?: return null
         val hdr = o.optionalString("hdr") { LibraryHdr.of(it) != null } ?: return null
         val resume = o.optionalLong("resumeMs") { it in 0L..604_800_000L } ?: return null
+        val playedAt = o.optionalLong("playedAt") { it in 1L..MAX_EPOCH_SECONDS } ?: return null
+        val watchedAt = o.optionalLong("watchedAt") { it in 1L..MAX_EPOCH_SECONDS } ?: return null
         val blocked = o.optionalString("blocked") { LibraryBlock.of(it) != null } ?: return null
         val watched = when (val raw = o.fields["watched"]) {
             null -> false
@@ -149,7 +158,9 @@ object LibraryWire {
             height = height,
             hdr = hdr.value?.let(LibraryHdr::of),
             resumeMs = resume.value,
+            playedAtSeconds = playedAt.value,
             watched = watched,
+            watchedAtSeconds = watchedAt.value,
             blocked = blocked.value?.let(LibraryBlock::of),
             art = art,
         )

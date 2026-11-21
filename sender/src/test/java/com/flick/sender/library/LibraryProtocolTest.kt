@@ -51,6 +51,35 @@ class LibraryProtocolTest {
     }
 
     @Test
+    fun theTimestampsFollowTheFieldsTheyDate() {
+        val item = episode("nTbULXb50u0", "x.mkv", season = 2, episode = 4).copy(
+            playedAtSeconds = 1_800_000_000L, watched = true, watchedAtSeconds = 1_790_000_000L, art = null,
+        )
+        assertTrue(
+            CatalogRules.json(item)!!.endsWith(
+                "\"hdr\":\"dv\",\"resumeMs\":1260000,\"playedAt\":1800000000,\"watched\":true,\"watchedAt\":1790000000}",
+            ),
+        )
+    }
+
+    @Test
+    fun aTimestampWithoutItsFieldOrOutOfRangeIsOmitted() {
+        val base = episode("nTbULXb50u0", "x.mkv", season = 2, episode = 4).copy(art = null)
+        val orphaned = CatalogRules.json(base.copy(resumeMs = null, playedAtSeconds = 1_800_000_000L, watchedAtSeconds = 1_790_000_000L))!!
+        assertFalse(orphaned.contains("playedAt"))
+        assertFalse(orphaned.contains("watchedAt"))
+        listOf(0L, -1L, 4_102_444_801L).forEach { bad ->
+            val json = CatalogRules.json(base.copy(playedAtSeconds = bad, watched = true, watchedAtSeconds = bad))!!
+            assertFalse(json.contains("playedAt"))
+            assertFalse(json.contains("watchedAt"))
+            assertTrue(json.contains("\"watched\":true"))
+        }
+        val edges = CatalogRules.json(base.copy(playedAtSeconds = 1L, watched = true, watchedAtSeconds = 4_102_444_800L))!!
+        assertTrue(edges.contains("\"playedAt\":1,"))
+        assertTrue(edges.contains("\"watchedAt\":4102444800"))
+    }
+
+    @Test
     fun anEpisodeMissingItsShowIsSentAsAVideo() {
         val json = CatalogRules.json(episode("nTbULXb50u0", "x.mkv", season = 2, episode = 4).copy(showKey = null))!!
         assertTrue(json.contains("\"kind\":\"video\""))
