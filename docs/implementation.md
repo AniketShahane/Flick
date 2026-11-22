@@ -1642,9 +1642,11 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   paired (`selectDevice`'s code-sheet branch invalidates a running OPEN or PROMPT resume, whose
   `CONNECTING` would otherwise hold the sheet's spinner). The Connect screen's confirm haptic
   reads how the connection was made: `CastCoordinator.connectSilent` is cleared by every
-  `beginPairingAttempt` and set by `silentResume` and `refreshTvName` straight after theirs, so it
-  is settled before control reaches `CONNECTED`; `connectBuzzes(previous, current, silent)` buzzes
-  only on the step into `CONNECTED` when it is false. So no KNOCK, OPEN or PROMPT resume buzzes,
+  `beginPairingAttempt` and set by `silentResume` and `refreshTvName` straight after theirs, and
+  by `beginReattach` (a control recovery's reattach never passes through `beginPairingAttempt`, so
+  it would otherwise inherit whatever the last dial left), so it is settled before control reaches
+  `CONNECTED`; `connectBuzzes(previous, current, silent)` buzzes only on the step into `CONNECTED`
+  when it is false. So no KNOCK, OPEN or PROMPT resume and no automatic reattach buzzes,
   and no screen-local flag can go stale after a dismissed sheet or a cancelled pairing. Starting
   an OPEN or PROMPT resume also clears that TV's "Not now" (`SilentResumeKind.personActed`).
   A knock that reaches an OPEN or PROMPT resume already dialing that TV (`resuming`) leaves its
@@ -1680,8 +1682,10 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   Actions → the non-exported `ConnectPromptReceiver` → `CastCoordinator.onConnectPromptChoice`.
   Connect follows `PromptConnectPolicy.step` (pure): it hands the knock's host to a silent resume
   already dialing that TV (`skipped=resuming`); if connect on open is dialing a different TV and
-  nothing else owns the line, it supersedes that resume (`invalidatePairingAttempt`, which neither
-  abandons a reattach nor ends a block wait; the superseded run journals `open_resume
+  nothing else owns the line, it supersedes that resume (`invalidatePairingAttempt`, which does
+  call `endBlockWait`, and the PROMPT resume's own `beginPairingAttempt` would abandon a reattach;
+  neither ends anything, because the supersede runs only when no other dial is in flight and no
+  cast is live, so no block wait or reattach can exist; the superseded run journals `open_resume
   reason=superseded` and leaves the wake lock to its replacement) and goes on; it starts nothing
   while any other dial, pairing, block wait or resume owns the line (`skipped=busy`); and
   otherwise takes the knock wake lock (`TvReadyService.acquireKnockWake`)
@@ -1704,20 +1708,31 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   already ran this STARTED period) and on a remote key on the idle screen at
   most every 10 s. A start dropped because a phone was linked (`knock_skip reason=linked`) is
   owed again only if the drop that left no link was a **lost** one (a ping timeout, including a
-  settled close code 1011; a socket gone without a Close frame; or `outbox_full`, the phone
-  having stopped reading) in the same STARTED period with no round since. A
-  phone's deliberate close (a Close frame: library setting off, media access revoked, the
-  ready-mode idle hang-up, control lost) and a link the TV closes itself (superseded or forgotten)
+  settled close code 1011; a socket gone without a Close frame; `outbox_full`, the phone
+  having stopped reading; `cancelled`, the TV's own server stopping or rebinding; or
+  `control_lost`, the phone's 1000 close with reason text `control`, sent by `LibraryLink.close`
+  through `LibraryCloseText` when `TvLibrary` closes the link because control v2 was lost) in the
+  same STARTED period with no round since. A
+  phone's deliberate close (any other Close frame: library setting off, media access revoked, the
+  ready-mode idle hang-up; a phone from before `control_lost` sends no text, so its control-lost
+  close still reads as `peer_closed`) and a link the TV closes itself (superseded or forgotten)
   owe nothing: re-knocking then would show a false "Couldn't wake your phone" or undo the
   hang-up. `LibraryServer.serveSession` classifies the end (pure `LibraryClose.of` in
   `LibraryPolicies.kt`) and carries the `lost` flag through
   the hub to `TvDoorbell.onLinkChanged`. The TV pings
   each authenticated `/library` session every 60 s and closes it after 20 s without a pong
   (`LibraryServer`; control v2's settings are unchanged, and the phone's Ktor client answers the
-  pings itself), so a phone gone without a close stops counting as linked. The timeout is caught
-  around the receive loop, so it never escapes as a handler failure. The log line is
-  `close reason=<peer_closed|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`;
-  `peer_closed` is kept for a Close frame from the phone. A round knocks one
+  pings itself), so a phone gone without a close stops counting as linked. Only the receive
+  itself is guarded (`incoming.receiveCatching()`; closed with a cause counts as a failed
+  receive), so a timeout never escapes as a handler failure, while an exception from the loop
+  body (`PhoneFrame.parse`, `readText`, `recordPort`, `hub.onFrame`, `hub.onThumbnail`)
+  propagates and Ktor logs it with its stack trace; such a session still ends as `dropped`
+  (lost), at once, without the 2-s close-code settle. When the receive failed or the end is lost
+  (except `control_lost`, whose close handshake is the phone's), the `finally` cancels the
+  session: a handler that returns normally makes Ktor 3.1.3 join the session, whose reader a dead
+  socket holds for minutes, while the cancel releases the socket at once. The log line is
+  `close reason=<peer_closed|control_lost|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`;
+  `peer_closed` is kept for a Close frame from the phone without the `control` text. A round knocks one
   phone at a time, most recently proven first, moving on when a phone never answered or answered
   `declined`; the outcome ranks `answered` > `asked` > `declined` > failures. Connect 2.5 s, hello 1.5 s, `knockOk` 2 s; a second attempt
   1.5 s later only when the connect failed; start rounds at least 6 s apart, and a phone's first knock waits

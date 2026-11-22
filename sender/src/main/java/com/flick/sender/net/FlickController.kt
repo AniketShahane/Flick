@@ -754,8 +754,8 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
 
     /**
      * Whether the dial that made, or is making, the current connection was nobody's tap: a
-     * knock's, an open's or a prompt's silent resume, or a name refresh. Set when each dial
-     * begins, so it is settled before control reaches CONNECTED.
+     * knock's, an open's or a prompt's silent resume, a reattach, or a name refresh. Set when
+     * each dial begins, so it is settled before control reaches CONNECTED.
      */
     private val _connectSilent = MutableStateFlow(false); val connectSilent = _connectSilent.asStateFlow()
     private val _connectedTv = MutableStateFlow(store.last()?.let { PairedTv(it.name, it.host, it.port, it.tvId) }); val connectedTv = _connectedTv.asStateFlow()
@@ -1287,6 +1287,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         lastReattachAtMs = nowMs
         reattachCastId = castId
         _reattaching.value = true
+        _connectSilent.value = true
         FlickLog.w(
             "cast",
             "control lost castIdFp=${FlickLog.fp(castId)} serving=$servingAtLoss reattach=true attempt=$attempt " +

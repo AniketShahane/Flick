@@ -9,6 +9,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -184,54 +185,67 @@ class LibraryServer(
         }
         var violation: String? = null
         var end = LibraryClose.CANCELLED
+        var threw = false
         try {
-            var threw = false
-            try {
-                for (frame in incoming) {
-                    val verdict = when (frame) {
-                        is Frame.Text -> if (!frame.fin) {
+            while (true) {
+                // Only the receive's own failure (a ping timeout, a broken socket) is the
+                // socket's end; anything the loop body throws is a bug and reaches Ktor's log.
+                val received = incoming.receiveCatching()
+                val frame = received.getOrNull()
+                if (frame == null) {
+                    val cause = received.exceptionOrNull()
+                    if (cause is CancellationException) throw cause
+                    threw = cause != null
+                    break
+                }
+                val verdict = when (frame) {
+                    is Frame.Text -> if (!frame.fin) {
+                        TvLibrary.Verdict.CLOSE
+                    } else {
+                        val parsed = PhoneFrame.parse(frame.readText())
+                        if (parsed is PhoneFrame.KnockAt) knockBook?.recordPort(proven.keyId, parsed.port, stillPaired)
+                        hub.onFrame(link, parsed)
+                    }
+                    is Frame.Binary -> {
+                        val thumb = if (frame.fin) PhoneFrame.thumbnail(frame.data) else null
+                        if (thumb == null) {
                             TvLibrary.Verdict.CLOSE
                         } else {
-                            val parsed = PhoneFrame.parse(frame.readText())
-                            if (parsed is PhoneFrame.KnockAt) knockBook?.recordPort(proven.keyId, parsed.port, stillPaired)
-                            hub.onFrame(link, parsed)
+                            hub.onThumbnail(link, thumb.first, thumb.second)
+                            TvLibrary.Verdict.CONTINUE
                         }
-                        is Frame.Binary -> {
-                            val thumb = if (frame.fin) PhoneFrame.thumbnail(frame.data) else null
-                            if (thumb == null) {
-                                TvLibrary.Verdict.CLOSE
-                            } else {
-                                hub.onThumbnail(link, thumb.first, thumb.second)
-                                TvLibrary.Verdict.CONTINUE
-                            }
-                        }
-                        else -> TvLibrary.Verdict.CLOSE
                     }
-                    if (verdict == TvLibrary.Verdict.CLOSE) {
-                        violation = frame.frameType.name
-                        link.markClosing()
-                        closePolicy("library_violation")
-                        break
-                    }
+                    else -> TvLibrary.Verdict.CLOSE
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                // A ping timeout or a broken socket. Caught so Ktor logs no handler failure.
-                threw = true
+                if (verdict == TvLibrary.Verdict.CLOSE) {
+                    violation = frame.frameType.name
+                    link.markClosing()
+                    closePolicy("library_violation")
+                    break
+                }
             }
             end = if (violation != null) {
                 LibraryClose.VIOLATION
             } else {
                 val tvClosed = link.closedByTv
                 // Ktor settles the close code on its writer, which can lag `incoming` closing.
-                val code = if (tvClosed != null) null else withTimeoutOrNull(CLOSE_SETTLE_MS) { closeReason.await() }?.code
-                LibraryClose.of(tvClosed, threw, code?.toInt())
+                val reason = if (tvClosed != null) null else withTimeoutOrNull(CLOSE_SETTLE_MS) { closeReason.await() }
+                LibraryClose.of(tvClosed, threw, reason?.code?.toInt(), reason?.message)
             }
+        } catch (failure: Throwable) {
+            // A bug in the loop body: the socket may be healthy, so no close code is coming.
+            if (failure !is CancellationException) {
+                threw = true
+                end = LibraryClose.of(link.closedByTv, threw = true, closeCode = null, closeText = null)
+            }
+            throw failure
         } finally {
             hub.onClosed(link, end.lost)
             link.markClosing()
             writer.cancel()
+            // Returning normally makes Ktor wait for its reader, which a dead socket holds for
+            // minutes. A phone's own close still has its close handshake to finish.
+            if (threw || (end.lost && end != LibraryClose.CONTROL_LOST)) cancel()
             val frame = violation?.let { " frame=$it" } ?: ""
             FlickLog.i("library", "close reason=${end.wire}$frame keyIdFp=${FlickLog.fp(proven.keyId)}")
         }

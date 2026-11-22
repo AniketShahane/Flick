@@ -255,7 +255,7 @@ internal class LibraryLink(
         val session = socket ?: return
         detach()
         FlickLog.i("library", "closed by phone reason=$reason")
-        closeQuietly(session)
+        closeQuietly(session, LibraryCloseText.of(reason))
     }
 
     private fun violated(session: DefaultClientWebSocketSession) {
@@ -280,8 +280,8 @@ internal class LibraryLink(
         running.forEach { it.cancel() }
     }
 
-    private fun closeQuietly(session: DefaultClientWebSocketSession) {
-        scope.launch { runCatching { session.close() } }
+    private fun closeQuietly(session: DefaultClientWebSocketSession, text: String = "") {
+        scope.launch { runCatching { session.close(CloseReason(CloseReason.Codes.NORMAL, text)) } }
     }
 
     private fun Outcome.logName(): String = when (this) {

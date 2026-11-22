@@ -439,7 +439,7 @@ internal fun pairAttemptInFlight(connection: ConnectionStatus): Boolean =
 /**
  * Whether this connection change earns the confirm haptic: reaching CONNECTED, by a dial that
  * was not [silent] (the coordinator's `connectSilent`: a knock's, an open's or a prompt's
- * resume, or a name refresh).
+ * resume, a reattach, or a name refresh).
  */
 internal fun connectBuzzes(previous: ConnectionStatus, current: ConnectionStatus, silent: Boolean): Boolean =
     current == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED && !silent

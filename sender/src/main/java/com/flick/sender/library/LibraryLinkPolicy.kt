@@ -133,6 +133,17 @@ internal object LibraryHdr {
     }
 }
 
+/** The reason text of the phone's own normal (1000) close of `/library`. */
+internal object LibraryCloseText {
+    const val CONTROL = "control"
+
+    /**
+     * Only a close for lost control v2 says why: the TV reads it as the link lost rather
+     * than hung up on purpose. A TV from before this reads any 1000 close as deliberate.
+     */
+    fun of(reason: String): String = if (reason == CONTROL) CONTROL else ""
+}
+
 /** One pass per [intervalMs]. */
 internal class MinIntervalGate(private val intervalMs: Long) {
     private var lastPassMs: Long? = null

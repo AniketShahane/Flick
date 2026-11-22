@@ -55,8 +55,8 @@ path, content URI, media URL or token on this channel.
   shows an error; a dial the person starts supersedes it, and so does tapping a TV that is not
   yet paired (its code sheet would otherwise sit on that resume's `CONNECTING`). The Connect
   screen's confirm haptic follows how the connection was made: when each dial begins, the phone
-  records whether it is a silent resume (a knock's, connect on open's or the prompt's) or a name
-  refresh, and reaching CONNECTED buzzes only when it is neither. No silent resume buzzes, and a
+  records whether it is a silent resume (a knock's, connect on open's or the prompt's), an
+  automatic reattach, or a name refresh, and reaching CONNECTED buzzes only when it is none of them. No silent resume buzzes, and a
   dismissed sheet or a cancelled pairing cannot make a later one buzz. Once control authenticates, the
   library opens by the first rule above. So a TV's idle text "open Flick on your phone" is true.
 - It closes `/library` whenever control v2 loses authentication, the setting is turned off,
@@ -67,8 +67,12 @@ path, content URI, media URL or token on this channel.
   (a Wi-Fi drop, a killed process) stops counting as linked and holding knocks off (§13.4). The
   phone's Ktor client answers those pings itself. Every close above is a Close frame from the
   phone, which the TV reads as deliberate: the link was **closed**, not **lost**, and it owes no
-  knock for it (§13.4). Only a ping timeout or a socket that ends without a Close frame is a lost
-  link.
+  knock for it (§13.4) — except the close for lost control v2, which the phone sends with the
+  normal code 1000 and the reason text `control`, and which the TV reads as **lost**
+  (`control_lost`): nobody hung up, the line just went. A phone from before this sends no text,
+  so that close reads as deliberate, as it always did. Otherwise only a ping timeout, a socket
+  that ends without a Close frame, an overflowing outgoing queue, or the TV's own server
+  stopping is a lost link.
 - **Opting out is said, not implied.** Before closing because the setting was turned off or
   media access was revoked, the phone sends an empty full catalog
   (`catBegin count:0 parts:0`, `catEnd`). A TV holding an empty catalog shows no library, so
@@ -529,11 +533,15 @@ per round, with the best outcome across its phones (`sweep`: `none` when no port
 better), and `knock_skip reason=<linked|no_target|no_lan|not_ready|gap>`
 when a start round was owed but did not run, at most once per reason per STARTED period. The
 TV's log line for the end of an authenticated `/library` session is
-`close reason=<peer_closed|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`
-(receiver `LibraryClose.of`): `peer_closed` only for a Close frame from the phone,
+`close reason=<peer_closed|control_lost|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`
+(receiver `LibraryClose.of`): `peer_closed` only for a Close frame from the phone, `control_lost`
+for the phone's normal (1000) close whose reason text is `control` (§3),
 `ping_timeout` when the 60-s ping went unanswered or the session settled close code 1011 (§3),
-`dropped` for a socket that ended without a Close frame, `outbox_full` when the phone stopped
-reading. A timeout is caught inside the session, never escaping as a handler failure. Refused and invalid knocks reach the log ring by
+`dropped` for a socket that ended without a Close frame, `cancelled` when the TV's own server
+stopped or rebound, `outbox_full` when the phone stopped
+reading. A timeout is caught inside the session, never escaping as a handler failure; a fault in
+the TV's own frame handling is not caught, so it is logged with its stack trace, and that session
+ends as `dropped`. Refused and invalid knocks reach the log ring by
 reason only (`rate`, `proof`, dropped connections); each of those three is logged at most once
 a minute, the next such line carrying how many went unlogged, so one noisy device cannot flush
 the 200-line ring. No peer or
@@ -721,11 +729,14 @@ second phone would displace the first), and a phone has both halves of a stored 
 owed while a phone is linked is dropped (`knock_skip reason=linked`), unless the last link is
 **lost** in the same STARTED period with no round run since: then that start is owed again, still
 within the gaps. Lost means the 60-s `/library` ping went unanswered for 20 s (§3; a close code
-of 1011 counts as that), the socket ended without a Close frame, or the TV's outgoing queue
-overflowed because the phone stopped reading (`ping_timeout`, `dropped`, `outbox_full` in the
-§12 log line). A link the phone **closed** on purpose (a
-Close frame: the setting turned off, media access revoked, the ready-mode idle hang-up of §8.1,
-control v2 lost) owes nothing, since knocking then would show a false "Couldn't wake your phone"
+of 1011 counts as that), the socket ended without a Close frame, the TV's outgoing queue
+overflowed because the phone stopped reading, the TV's own server stopped or rebound, or the
+phone closed because it lost control v2 (`ping_timeout`, `dropped`, `outbox_full`, `cancelled`,
+`control_lost` in the §12 log line). The phone marks that last close by sending reason text
+`control` with the normal code 1000; a phone from before this sends no text, so its close reads
+as deliberate. A link the phone **closed** on purpose (any other
+Close frame: the setting turned off, media access revoked, the ready-mode idle hang-up of §8.1)
+owes nothing, since knocking then would show a false "Couldn't wake your phone"
 or undo the hang-up; nor does a link the TV closes itself (superseded by a newer one from the same
 phone, or its phone forgotten). A phone gone without a close counts as linked until that ping
 timeout.
@@ -856,7 +867,9 @@ the person acting on the app's UI, which exempts starting work from the backgrou
   takes the knock's wake lock and hands that resume the remembered host
   (`prompt choice=connect skipped=resuming`); when connect on open is dialing a **different**
   TV and nothing else owns the line, it cancels that resume (journaled `open_resume ...
-  reason=superseded`; no reattach is abandoned and no block wait ended) and goes on as below; when
+  reason=superseded`; that path does end any block wait and the resume would abandon a reattach,
+  but it runs only when no other dial is in flight and no cast is live, so there is none to end)
+  and goes on as below; when
   any other dial, pairing, block wait or resume owns the line, it starts nothing (`skipped=busy`);
   otherwise it takes the
   knock's 20-s wake lock and runs the silent resume with the remembered host as its hint

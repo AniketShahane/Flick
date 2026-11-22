@@ -271,7 +271,7 @@ internal class TvLibrary(
         // Connected by any path, so asking is moot.
         endpoint?.let { cancelPrompt(it.tvId) }
         if (endpoint == null) {
-            closeLink("control")
+            closeLink(LibraryCloseText.CONTROL)
             readyWindow.controlLost(now())
             scheduleReadyDeadline()
             return
