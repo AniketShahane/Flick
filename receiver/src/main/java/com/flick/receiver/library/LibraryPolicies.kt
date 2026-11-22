@@ -528,3 +528,51 @@ interface CreditsLeadStorage {
     fun load(): String?
     fun save(encoded: String)
 }
+
+/** How an authenticated `/library` session ended: the log's `close reason=` and whether the link was lost. */
+enum class LibraryClose(val wire: String, val lost: Boolean) {
+    /** The phone sent a Close frame: it hung up on purpose. */
+    PEER_CLOSED("peer_closed", false),
+    PING_TIMEOUT("ping_timeout", true),
+
+    /** The socket went with no Close frame, or failed. */
+    DROPPED("dropped", true),
+
+    /** The TV tore the session down (its server stopping). */
+    CANCELLED("cancelled", true),
+    VIOLATION("violation", false),
+    SUPERSEDED("superseded", false),
+    FORGOTTEN("forgotten", false),
+
+    /** The phone stopped reading without closing. */
+    OUTBOX_FULL("outbox_full", true),
+    TV_CLOSED("tv_closed", false),
+    ;
+
+    companion object {
+        private const val CLOSED_ABNORMALLY = 1006
+        private const val INTERNAL_ERROR = 1011
+
+        /**
+         * [tvClosed]: the reason the TV gave when it closed the socket itself, or null.
+         * [threw]: the receive loop ended with an exception rather than the channel closing.
+         * [closeCode]: the session's close code once settled, or null if it never settled.
+         *
+         * Ktor 3.1.3 settles 1006 when the socket ends without a Close frame, and its pinger
+         * settles 1011 on a ping timeout. It may close `incoming` normally rather than with
+         * the timeout's exception if the socket ended first, so 1011 is a timeout either way.
+         * The phone sends only 1000 and 1008 on purpose.
+         */
+        fun of(tvClosed: String?, threw: Boolean, closeCode: Int?): LibraryClose = when {
+            tvClosed != null -> when (tvClosed) {
+                SUPERSEDED.wire -> SUPERSEDED
+                FORGOTTEN.wire -> FORGOTTEN
+                OUTBOX_FULL.wire -> OUTBOX_FULL
+                else -> TV_CLOSED
+            }
+            closeCode == INTERNAL_ERROR -> PING_TIMEOUT
+            threw || closeCode == null || closeCode == CLOSED_ABNORMALLY -> DROPPED
+            else -> PEER_CLOSED
+        }
+    }
+}

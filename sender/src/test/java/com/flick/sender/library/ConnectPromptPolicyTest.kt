@@ -60,7 +60,41 @@ class ConnectPromptPolicyTest {
 
     @Test fun aKnockDuringASilentResumeToThatTvIsToldConnect() {
         assertEquals(KnockReply.CONNECT, reply(resuming = true))
-        assertEquals(KnockReply.DECLINED, reply(resuming = true, snoozed = true))
+        // The resume answers the knock whatever "Not now" said: the phone is already dialing.
+        assertEquals(KnockReply.CONNECT, reply(resuming = true, snoozed = true))
+        assertEquals(KnockReply.CONNECT, reply(resuming = true, snoozed = true, visible = true))
+    }
+
+    @Test fun onlyAResumeThePersonCausedLiftsNotNow() {
+        assertTrue(SilentResumeKind.OPEN.personActed)
+        assertTrue(SilentResumeKind.PROMPT.personActed)
+        assertFalse(SilentResumeKind.KNOCK.personActed)
+        // The knock's journal event is unchanged.
+        assertEquals("knock_resume", SilentResumeKind.KNOCK.journalEvent)
+    }
+
+    private fun promptStep(
+        tvId: String = "tv-a",
+        resumingTv: String? = null,
+        kind: SilentResumeKind? = null,
+        dialing: Boolean = resumingTv != null,
+        other: Boolean = false,
+    ) = PromptConnectPolicy.step(tvId, resumingTv, kind, dialing, other)
+
+    @Test fun connectOnThePromptJoinsReplacesOrWaitsOnTheDialInFlight() {
+        assertEquals(PromptConnectPolicy.Step.START, promptStep())
+        // Connect-on-open or a knock already dialing the tapped TV takes the hint.
+        assertEquals(PromptConnectPolicy.Step.JOIN, promptStep(resumingTv = "tv-a", kind = SilentResumeKind.OPEN))
+        assertEquals(PromptConnectPolicy.Step.JOIN, promptStep(resumingTv = "tv-a", kind = SilentResumeKind.KNOCK))
+        // Connect-on-open dialing another TV gives way to the tap.
+        assertEquals(PromptConnectPolicy.Step.SUPERSEDE, promptStep(resumingTv = "tv-b", kind = SilentResumeKind.OPEN))
+        // Unless something else owns the line too.
+        assertEquals(PromptConnectPolicy.Step.BUSY, promptStep(resumingTv = "tv-b", kind = SilentResumeKind.OPEN, other = true))
+        // A knock's or another prompt's resume to another TV is never replaced.
+        assertEquals(PromptConnectPolicy.Step.BUSY, promptStep(resumingTv = "tv-b", kind = SilentResumeKind.KNOCK))
+        assertEquals(PromptConnectPolicy.Step.BUSY, promptStep(resumingTv = "tv-b", kind = SilentResumeKind.PROMPT))
+        // A dial, pairing or block wait with no silent resume.
+        assertEquals(PromptConnectPolicy.Step.BUSY, promptStep(dialing = true, other = true))
     }
 
     @Test fun aLateHintIsDialedOnceAtTheStoredPortAndOnlyIfNew() {
@@ -79,11 +113,32 @@ class ConnectPromptPolicyTest {
         assertFalse(LateResumeHint.accepts(SilentResumeKind.KNOCK))
     }
 
+    private val token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+
     @Test fun theBodyTapConnectsOnceAndNeverOnARecreation() {
-        assertEquals("tv-a", ConnectPromptTap.tvId("tv-a", restored = false))
-        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = true))
-        assertEquals(null, ConnectPromptTap.tvId(null, restored = false))
-        assertEquals(null, ConnectPromptTap.tvId(" ", restored = false))
+        assertEquals("tv-a", ConnectPromptTap.tvId("tv-a", restored = false, token, token))
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = true, token, token))
+        assertEquals(null, ConnectPromptTap.tvId(null, restored = false, token, token))
+        assertEquals(null, ConnectPromptTap.tvId(" ", restored = false, token, token))
+    }
+
+    @Test fun aTapWithoutThisInstallsTokenIsDropped() {
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = false, null, token))
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = false, token.dropLast(1) + "A", token))
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = false, token.dropLast(1), token))
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = false, "", ""))
+        assertEquals(null, ConnectPromptTap.tvId("tv-a", restored = false, token, null))
+        assertFalse(ConnectPromptTap.tokenMatches(null, null))
+    }
+
+    @Test fun theTokenIsThirtyTwoRandomBytesInBase64Url() {
+        val fixed = java.util.Random(7)
+        val first = ConnectPromptTap.newToken(fixed)
+        assertEquals(43, first.length)
+        assertTrue(first, first.matches(Regex("[A-Za-z0-9_-]{43}")))
+        assertEquals(32, java.util.Base64.getUrlDecoder().decode(first).size)
+        assertNotEquals(ConnectPromptTap.newToken(), ConnectPromptTap.newToken())
+        assertTrue(ConnectPromptTap.tokenMatches(first, String(first.toCharArray())))
     }
 
     @Test fun notNowLastsTenMinutesPerTv() {

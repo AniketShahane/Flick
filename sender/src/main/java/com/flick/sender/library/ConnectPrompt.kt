@@ -20,6 +20,13 @@ internal object ConnectPrompt {
 
     /** On the body tap's MainActivity Intent: the TV to connect, as the Connect action does. */
     const val EXTRA_OPEN_TV_ID = "com.flick.sender.extra.PROMPT_OPEN_TV_ID"
+
+    /** Beside [EXTRA_OPEN_TV_ID]: proves the Intent came from this prompt (see [tapToken]). */
+    const val EXTRA_TAP_TOKEN = "com.flick.sender.extra.PROMPT_TAP_TOKEN"
+
+    /** Excluded from backup and device transfer: a restored token would be another install's. */
+    private const val TOKEN_PREFS = "flick_prompt_token"
+    private const val TOKEN_KEY = "tap_token"
     private const val TIMEOUT_MS = 60_000L
 
     /** Idempotent: an existing channel keeps whatever the person set on it. */
@@ -55,6 +62,7 @@ internal object ConnectPrompt {
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_OPEN_TV_ID, tvId)
+                putExtra(EXTRA_TAP_TOKEN, tapToken(context))
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -81,6 +89,19 @@ internal object ConnectPrompt {
             // POST_NOTIFICATIONS withdrawn between the check and the post.
             false
         }
+    }
+
+    /**
+     * This install's body-tap token, created on first use. MainActivity is exported, so any
+     * app can send it [EXTRA_OPEN_TV_ID]; only the prompt's PendingIntent carries this.
+     */
+    @Synchronized
+    fun tapToken(context: Context): String {
+        val prefs = context.applicationContext.getSharedPreferences(TOKEN_PREFS, Context.MODE_PRIVATE)
+        prefs.getString(TOKEN_KEY, null)?.takeIf { it.isNotEmpty() }?.let { return it }
+        val token = ConnectPromptTap.newToken()
+        prefs.edit().putString(TOKEN_KEY, token).commit()
+        return token
     }
 
     fun cancel(context: Context, tvId: String) {

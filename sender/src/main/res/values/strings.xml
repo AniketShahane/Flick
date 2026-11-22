@@ -338,7 +338,7 @@
     <string name="tv_connect_channel_desc">Asks before connecting when your TV opens Flick</string>
     <string name="tv_connect_title">Connect to %1$s?</string>
     <string name="tv_connect_fallback_name">your TV</string>
-    <string name="tv_connect_text">Your TV just opened Flick.</string>
+    <string name="tv_connect_text">Flick is open on your TV.</string>
     <string name="tv_connect_action_connect">Connect</string>
     <string name="tv_connect_action_later">Not now</string>
     <!-- The ready window's notification. It names the TV and never a film: titles stay off

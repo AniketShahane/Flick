@@ -2,6 +2,10 @@ package com.flick.sender.library
 
 import com.flick.sender.net.PairLaunch
 import com.flick.sender.net.ResumeCandidates
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
+import java.util.Random
 
 /** What `knockOk` tells the TV (contract §13.5), decided before the knock is acted on. */
 internal enum class KnockReply {
@@ -29,15 +33,15 @@ enum class TvConnectMode(internal val stored: String) {
 }
 
 /** Why a phone-side resume without a tap on the Connect screen started. */
-internal enum class SilentResumeKind(val journalEvent: String, val logName: String) {
+internal enum class SilentResumeKind(val journalEvent: String, val logName: String, val personActed: Boolean) {
     /** A TV's verified knock. */
-    KNOCK("knock_resume", "knock resume"),
+    KNOCK("knock_resume", "knock resume", personActed = false),
 
     /** The app came to the foreground. */
-    OPEN("open_resume", "open resume"),
+    OPEN("open_resume", "open resume", personActed = true),
 
     /** "Connect" on the prompt. */
-    PROMPT("prompt_resume", "prompt resume"),
+    PROMPT("prompt_resume", "prompt resume", personActed = true),
 }
 
 internal object KnockReplyPolicy {
@@ -52,9 +56,9 @@ internal object KnockReplyPolicy {
         notificationsAvailable: Boolean,
         resumingThatTv: Boolean = false,
     ): KnockReply = when {
-        snoozed -> KnockReply.DECLINED
         // A silent resume to that TV is dialing already: nothing would ask, and it answers this knock.
         resumingThatTv -> KnockReply.CONNECT
+        snoozed -> KnockReply.DECLINED
         mode == TvConnectMode.AUTO -> KnockReply.CONNECT
         visible -> KnockReply.CONNECT
         !notificationsAvailable -> KnockReply.CONNECT
@@ -152,11 +156,61 @@ internal object LateResumeHint {
 
 /** The prompt's body tap, as MainActivity receives it. */
 internal object ConnectPromptTap {
+    private const val TOKEN_BYTES = 32
+
     /**
      * The tvId to connect, or null. [restored] is a recreation from saved state, which
-     * re-delivers the launching Intent and must not connect a second time.
+     * re-delivers the launching Intent and must not connect a second time. MainActivity is
+     * exported, so the extra alone proves nothing: only an Intent carrying this install's
+     * [expectedToken], which only the prompt's own PendingIntent holds, is acted on.
      */
-    fun tvId(extra: String?, restored: Boolean): String? = extra?.takeIf { !restored && it.isNotBlank() }
+    fun tvId(extra: String?, restored: Boolean, presentedToken: String?, expectedToken: String?): String? =
+        extra?.takeIf { !restored && it.isNotBlank() && tokenMatches(presentedToken, expectedToken) }
+
+    /** The per-install token: 32 random bytes, base64url without padding. */
+    fun newToken(random: Random = SecureRandom()): String {
+        val bytes = ByteArray(TOKEN_BYTES).also(random::nextBytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    /** Constant-time, so a caller probing the exported activity learns nothing from timing. */
+    fun tokenMatches(presented: String?, expected: String?): Boolean {
+        if (presented == null || expected.isNullOrEmpty()) return false
+        return MessageDigest.isEqual(presented.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
+    }
+}
+
+/** What "Connect" on the prompt does with whatever dial is already running (§13.5). */
+internal object PromptConnectPolicy {
+    enum class Step {
+        /** A silent resume to the tapped TV is dialing: it takes the prompt's hint. */
+        JOIN,
+
+        /** Connect-on-open is dialing a different TV: the tap replaces it. */
+        SUPERSEDE,
+
+        /** Something else owns the line. */
+        BUSY,
+        START,
+    }
+
+    /**
+     * [resumingTv] and [resumingKind] describe the silent resume still dialing, if any.
+     * [dialing] is anything owning control v2, that resume included; [otherDialing] is a
+     * dial, pairing, block wait or pair sheet besides it.
+     */
+    fun step(
+        tvId: String,
+        resumingTv: String?,
+        resumingKind: SilentResumeKind?,
+        dialing: Boolean,
+        otherDialing: Boolean,
+    ): Step = when {
+        resumingTv == tvId -> Step.JOIN
+        !dialing -> Step.START
+        resumingTv != null && resumingKind == SilentResumeKind.OPEN && !otherDialing -> Step.SUPERSEDE
+        else -> Step.BUSY
+    }
 }
 
 internal object OpenResumePolicy {

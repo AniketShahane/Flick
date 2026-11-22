@@ -510,7 +510,7 @@ class TvDoorbellTest {
         h.start()
         advanceTimeBy(200)
         runCurrent()
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         advanceUntilIdle()
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
     }
@@ -624,7 +624,7 @@ class TvDoorbellTest {
         advanceTimeBy(500)
         runCurrent()
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         advanceUntilIdle()
         assertEquals(listOf(otherKeyId), h.knocked)
     }
@@ -690,8 +690,8 @@ class TvDoorbellTest {
         answered.start()
         advanceTimeBy(200)
         runCurrent()
-        answered.doorbell.onLinkChanged(true)
-        answered.doorbell.onLinkChanged(false)
+        answered.doorbell.onLinkChanged(true, lost = false)
+        answered.doorbell.onLinkChanged(false, lost = true)
         assertEquals(DoorbellFace.QUIET, answered.doorbell.face.value)
         advanceUntilIdle()
         assertEquals(DoorbellFace.QUIET, answered.doorbell.face.value)
@@ -700,8 +700,8 @@ class TvDoorbellTest {
         failed.start()
         advanceUntilIdle()
         assertEquals(DoorbellFace.UNANSWERED, failed.doorbell.face.value)
-        failed.doorbell.onLinkChanged(true)
-        failed.doorbell.onLinkChanged(false)
+        failed.doorbell.onLinkChanged(true, lost = false)
+        failed.doorbell.onLinkChanged(false, lost = true)
         assertEquals(DoorbellFace.QUIET, failed.doorbell.face.value)
     }
 
@@ -711,8 +711,8 @@ class TvDoorbellTest {
         h.start()
         advanceTimeBy(50)
         runCurrent()
-        h.doorbell.onLinkChanged(true)
-        h.doorbell.onLinkChanged(false)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.doorbell.onLinkChanged(false, lost = true)
         advanceUntilIdle()
         assertEquals(1, h.calls.size)
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
@@ -936,7 +936,7 @@ class TvDoorbellTest {
         advanceTimeBy(200)
         runCurrent()
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
     }
 
@@ -1124,13 +1124,13 @@ class TvDoorbellTest {
         h.doorbell.onStopped()
         advanceTimeBy(1_000)
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         h.resume()
         advanceUntilIdle()
         assertEquals(listOf(0L), h.calls)
         advanceTimeBy(1_000)
         h.linked = emptySet()
-        h.doorbell.onLinkChanged(false)
+        h.doorbell.onLinkChanged(false, lost = true)
         runCurrent()
         // Still inside the start gap from the round at 0.
         assertEquals(listOf(0L), h.calls)
@@ -1138,9 +1138,9 @@ class TvDoorbellTest {
         assertEquals(listOf(0L, KnockPolicy.START_GAP_MS), h.calls)
         // Owed once: a link that comes and goes after that round knocks nothing more.
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         h.linked = emptySet()
-        h.doorbell.onLinkChanged(false)
+        h.doorbell.onLinkChanged(false, lost = true)
         advanceUntilIdle()
         assertEquals(2, h.calls.size)
         assertEquals(
@@ -1159,15 +1159,63 @@ class TvDoorbellTest {
         // STARTED before the server is bound: the start is owed.
         h.doorbell.onStarted()
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         h.doorbell.onServer(bound = true, rebound = false)
         advanceUntilIdle()
         assertTrue(h.calls.isEmpty())
         assertEquals(listOf("knock_skip reason=linked"), h.journal)
         h.linked = emptySet()
-        h.doorbell.onLinkChanged(false)
+        h.doorbell.onLinkChanged(false, lost = true)
         advanceUntilIdle()
         assertEquals(1, h.calls.size)
+    }
+
+    @Test
+    fun aStartDroppedForALinkIsNotOwedWhenThePhoneClosesTheLink() = runTest {
+        val h = Harness(this, List(3) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        h.doorbell.onStopped()
+        advanceTimeBy(1_000)
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.resume()
+        advanceUntilIdle()
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = false)
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+        // The closed drop used it up: a later link lost in the same period owes nothing either.
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = true)
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        assertEquals(
+            listOf(
+                "knock_round trigger=start phones=1 outcome=silent sweep=none",
+                "knock_skip reason=linked",
+            ),
+            h.journal,
+        )
+    }
+
+    @Test
+    fun anOwedStartHeldOffByALinkIsDroppedWhenThePhoneClosesIt() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.SILENT), setOf(keyId))
+        h.doorbell.onStarted()
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.doorbell.onServer(bound = true, rebound = false)
+        advanceUntilIdle()
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = false)
+        advanceUntilIdle()
+        assertTrue(h.calls.isEmpty())
+        assertEquals(listOf("knock_skip reason=linked"), h.journal)
     }
 
     @Test

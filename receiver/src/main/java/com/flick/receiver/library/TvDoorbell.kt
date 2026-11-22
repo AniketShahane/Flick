@@ -596,7 +596,7 @@ class TvDoorbell(
     /** A start or key round has made this STARTED period's start, so a later server round is a rebind. */
     private var startMadeThisPeriod = false
 
-    /** This period's start was dropped because a phone was linked; it is owed again if the last link drops first. */
+    /** This period's start was dropped because a phone was linked; it is owed again if the last link is lost first. */
     private var linkedSkipOwed = false
 
     /** Why the owed start last waited, journaled if the STARTED period ends with it still owed. */
@@ -666,9 +666,10 @@ class TvDoorbell(
     /**
      * Whether any phone's library socket is authenticated. A link ends the round: once it
      * drops, the screen says nothing about a knock until a new round begins. A start the link
-     * held off is owed again when the last link drops, unless a round has run since.
+     * held off is owed again when the last link is [lost] (no close from the phone), unless a
+     * round has run since: a phone that closed its socket on purpose is not knocked back.
      */
-    fun onLinkChanged(anyLinked: Boolean) {
+    fun onLinkChanged(anyLinked: Boolean, lost: Boolean) {
         val owedAgain = synchronized(lock) {
             linked = anyLinked
             if (anyLinked) {
@@ -682,7 +683,7 @@ class TvDoorbell(
                 false
             } else {
                 publishLocked()
-                (started && linkedSkipOwed).also { owed ->
+                (started && linkedSkipOwed && lost).also { owed ->
                     linkedSkipOwed = false
                     if (owed) startOwed = true
                 }

@@ -166,29 +166,17 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
     // when an attempt ends. Seeding the previous value keeps the first composition —
     // including a screen entered with a stale error already on it — silent.
     var lastConnection by remember { mutableStateOf(connection) }
-    // The confirm is for a connect the person started. A knock's, an open's or a prompt's
-    // resume never passes through PAIRING and no tap here raised this.
-    var personDialed by remember { mutableStateOf(false) }
-    var sawPairing by remember { mutableStateOf(false) }
     LaunchedEffect(connection) {
         val previous = lastConnection
         lastConnection = connection
-        if (connection == ConnectionStatus.PAIRING || connection == ConnectionStatus.CONFIRM_ON_TV) sawPairing = true
-        if (connection == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED) {
-            if (connectBuzzes(personDialed, sawPairing)) haptics.confirm()
-            personDialed = false
-            sawPairing = false
-        }
+        // Read now rather than collected: the coordinator settles it before the dial connects.
+        if (connectBuzzes(previous, connection, controller.connectSilent.value)) haptics.confirm()
     }
     var lastPairError by remember { mutableStateOf(pairError) }
     LaunchedEffect(pairError) {
         val previous = lastPairError
         lastPairError = pairError
-        if (pairError != null && previous != pairError) {
-            haptics.reject()
-            personDialed = false
-            sawPairing = false
-        }
+        if (pairError != null && previous != pairError) haptics.reject()
     }
 
     LaunchedEffect(Unit) { controller.onStart() }
@@ -322,10 +310,7 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
                         tv = tv,
                         featured = tv.host == featuredHost,
                         connected = isConnectedDevice(connection, connectedTv, tv),
-                        onClick = {
-                            personDialed = true
-                            controller.selectDevice(tv)
-                        },
+                        onClick = { controller.selectDevice(tv) },
                     )
                 }
             }
@@ -353,7 +338,6 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
             // The whole confirmed record is submitted, not just its id: the endpoint
             // rendered above is the only one the typed code may be sent to.
             onSubmit = { code ->
-                personDialed = true
                 controller.submitDiscoveredPair(target, code)
             },
             onDismiss = { controller.cancelPairing() },
@@ -374,10 +358,7 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
             awaitingTvConfirmation = awaitingTvConfirmation,
             // Only this tap spends the code. The scan proved a QR was in front of the
             // camera; the confirmation is the user saying it was on their own TV.
-            onPair = {
-                personDialed = true
-                controller.confirmScannedPair(scanned.eventId)
-            },
+            onPair = { controller.confirmScannedPair(scanned.eventId) },
             onDismiss = { controller.dismissPairLaunch(scanned.eventId) },
         )
     } else if (manual.composed) {
@@ -397,7 +378,6 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
                 manualPairAttempt = manualPairAttempt,
                 codeRevision = codeRevision,
                 onConnect = { host, port, code ->
-                    personDialed = true
                     controller.submitTvDisplayedPair(
                         eventId = launchId ?: 0L,
                         host = host,
@@ -457,10 +437,12 @@ internal fun pairAttemptInFlight(connection: ConnectionStatus): Boolean =
         connection == ConnectionStatus.CONFIRM_ON_TV
 
 /**
- * Whether reaching CONNECTED earns the confirm haptic: only for a connect the person started,
- * by a tap on this screen ([personDialed]) or a code that went through pairing ([sawPairing]).
+ * Whether this connection change earns the confirm haptic: reaching CONNECTED, by a dial that
+ * was not [silent] (the coordinator's `connectSilent`: a knock's, an open's or a prompt's
+ * resume, or a name refresh).
  */
-internal fun connectBuzzes(personDialed: Boolean, sawPairing: Boolean): Boolean = personDialed || sawPairing
+internal fun connectBuzzes(previous: ConnectionStatus, current: ConnectionStatus, silent: Boolean): Boolean =
+    current == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED && !silent
 
 /** A paired record only describes a live TV while the control link is actually up. */
 internal fun linkLive(connection: ConnectionStatus, connected: PairedTv?): Boolean =

@@ -38,11 +38,14 @@ class PairAttemptInFlightTest {
         assertFalse(linkLive(ConnectionStatus.CONFIRM_ON_TV, paired()))
     }
 
-    /** A knock's, an open's or a prompt's resume reaches CONNECTED with neither: no confirm. */
+    /** A knock's, an open's or a prompt's resume reaches CONNECTED silently: no confirm. */
     @Test fun onlyAConnectThePersonStartedBuzzes() {
-        assertFalse(connectBuzzes(personDialed = false, sawPairing = false))
-        assertTrue(connectBuzzes(personDialed = true, sawPairing = false))
-        assertTrue(connectBuzzes(personDialed = false, sawPairing = true))
+        assertTrue(connectBuzzes(ConnectionStatus.CONNECTING, ConnectionStatus.CONNECTED, silent = false))
+        assertTrue(connectBuzzes(ConnectionStatus.CONFIRM_ON_TV, ConnectionStatus.CONNECTED, silent = false))
+        assertFalse(connectBuzzes(ConnectionStatus.CONNECTING, ConnectionStatus.CONNECTED, silent = true))
+        assertFalse(connectBuzzes(ConnectionStatus.CONNECTED, ConnectionStatus.CONNECTED, silent = false))
+        assertFalse(connectBuzzes(ConnectionStatus.CONNECTING, ConnectionStatus.PAIRING, silent = false))
+        assertFalse(connectBuzzes(ConnectionStatus.CONNECTED, ConnectionStatus.DISCONNECTED, silent = false))
     }
 
     private fun paired() = PairedTv(

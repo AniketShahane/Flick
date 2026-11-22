@@ -751,6 +751,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _libraryLoading = MutableStateFlow(false); val libraryLoading = _libraryLoading.asStateFlow()
     private val _mediaAccess = MutableStateFlow(MediaAccess.NONE); val mediaAccess = _mediaAccess.asStateFlow()
     val connection = control.connection
+
+    /**
+     * Whether the dial that made, or is making, the current connection was nobody's tap: a
+     * knock's, an open's or a prompt's silent resume, or a name refresh. Set when each dial
+     * begins, so it is settled before control reaches CONNECTED.
+     */
+    private val _connectSilent = MutableStateFlow(false); val connectSilent = _connectSilent.asStateFlow()
     private val _connectedTv = MutableStateFlow(store.last()?.let { PairedTv(it.name, it.host, it.port, it.tvId) }); val connectedTv = _connectedTv.asStateFlow()
 
     /**
@@ -925,6 +932,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         override fun silentResume(pairing: PairingStore.Pairing, hintHost: String?, kind: SilentResumeKind) =
             this@CastCoordinator.silentResume(pairing, hintHost, kind)
         override fun silentResumeTv() = silentRun?.tvId
+        override fun silentResumeKind() = silentRun?.kind?.takeIf { knockResumeJob?.isActive == true }
+        override fun dialingBesidesSilentResume() = blockJob?.isActive == true ||
+            _pairTarget.value != null || _pendingPairLaunch.value != null ||
+            (pairingJob?.isActive == true && pairingJob !== knockResumeJob)
+        override fun supersedeSilentResume() {
+            if (knockResumeJob?.isActive == true && pairingJob === knockResumeJob) invalidatePairingAttempt()
+        }
         override fun lateResumeHint(tvId: String, host: String?) {
             if (host == null || knockResumeJob?.isActive != true) return
             silentRun?.takeIf { it.tvId == tvId && LateResumeHint.accepts(it.kind) }?.lateHint = host
@@ -977,8 +991,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if (pairingJob?.isActive == true) return false
         val candidates = ArrayDeque(ResumeCandidates.forKnock(pairing.host, pairing.port, pairing.tvId, knockHost))
         val attempt = beginPairingAttempt()
+        _connectSilent.value = true
         val run = SilentResumeRun(pairing.tvId, kind)
         silentRun = run
+        if (kind.personActed) tvLibrary.onPersonResume(pairing.tvId)
         val job = scope.launch {
             var outcome = "failed"
             var dials = 0
@@ -1017,11 +1033,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             } finally {
                 // A dial the person started cancels this one through the same gate.
                 if (outcome == "failed" && !pairingGate.isCurrent(attempt)) outcome = "superseded"
+                // A prompt's tap that replaced this run holds the knock's wake lock for itself now.
+                val replaced = silentRun.let { it != null && it !== run }
                 if (silentRun === run) silentRun = null
                 val ok = outcome == "ok"
                 IncidentJournal.record(kind.journalEvent, "ok" to ok, "reason" to outcome, "dials" to dials)
                 // On success the library holds it until the TV's first catalog.
-                if (!ok) TvReadyService.releaseKnockWake()
+                if (!ok && !replaced) TvReadyService.releaseKnockWake()
             }
         }
         knockResumeJob = job
@@ -2767,6 +2785,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
      */
     private fun refreshTvName(pairing: PairingStore.Pairing) {
         val attempt = beginPairingAttempt()
+        _connectSilent.value = true
         pairingJob = scope.launch {
             val endpoint = (control.resume(pairing) as? ControlClient.Result.Resumed)?.endpoint
             if (endpoint == null || !pairingGate.isCurrent(attempt)) return@launch
@@ -3889,7 +3908,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     private val _pairCodeRevision = MutableStateFlow(0L); val pairCodeRevision = _pairCodeRevision.asStateFlow()
     private fun clearEnteredCode() { _pairCodeRevision.value = pairCodeReset.clear() }
     private fun castProbeRunning(): Boolean = castProbeAttempt?.let(pairingGate::isCurrent) == true
-    private fun beginPairingAttempt(): Long { abandonReattach(); invalidatePairingAttempt(); return pairingGate.begin() }
+    private fun beginPairingAttempt(): Long {
+        abandonReattach(); invalidatePairingAttempt(); _connectSilent.value = false; return pairingGate.begin()
+    }
     private fun beginManualPairAttempt(): Long = manualPairAttemptLedger.begin().also {
         _manualPairAttempt.value = manualPairAttemptLedger.event
     }

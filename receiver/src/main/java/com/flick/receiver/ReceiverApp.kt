@@ -498,7 +498,7 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
     val doorbellFace by doorbell.face.collectAsState()
     val libraryState = library.state.collectAsState()
     LaunchedEffect(doorbell) {
-        library.anyLinked.collect { doorbell.onLinkChanged(it) }
+        library.links.collect { doorbell.onLinkChanged(it.anyLinked, it.lost) }
     }
     // Knocks only while STARTED: a stop cancels any knock still out.
     LaunchedEffect(doorbell, lifecycleOwner) {

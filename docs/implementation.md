@@ -1641,17 +1641,21 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   A person's dial supersedes it through `pairingGate`, and so does tapping a TV that is not yet
   paired (`selectDevice`'s code-sheet branch invalidates a running OPEN or PROMPT resume, whose
   `CONNECTING` would otherwise hold the sheet's spinner). The Connect screen's confirm haptic
-  fires only for a connect the person started there (a tap on a row or a sheet) or one that went
-  through `PAIRING` (`connectBuzzes`), so no KNOCK, OPEN or PROMPT resume buzzes.
+  reads how the connection was made: `CastCoordinator.connectSilent` is cleared by every
+  `beginPairingAttempt` and set by `silentResume` and `refreshTvName` straight after theirs, so it
+  is settled before control reaches `CONNECTED`; `connectBuzzes(previous, current, silent)` buzzes
+  only on the step into `CONNECTED` when it is false. So no KNOCK, OPEN or PROMPT resume buzzes,
+  and no screen-local flag can go stale after a dismissed sheet or a cancelled pairing. Starting
+  an OPEN or PROMPT resume also clears that TV's "Not now" (`SilentResumeKind.personActed`).
   A knock that reaches an OPEN or PROMPT resume already dialing that TV (`resuming`) leaves its
   host with it as a late hint (`LateResumeHint`): after its own candidates the resume dials that
   host once, at the stored port, unless it already has. While any silent resume runs, its tvId is
   `@Volatile` (`silentRun`), and `knockReply` answers that TV plain rather than `ask`.
 - **The "Connect?" prompt** (contract §13.5). The listener decides the `knockOk` before anything
   acts on the knock, through `TvDoorbell`'s `replyFor` → `TvLibrary.knockReply`
-  (`KnockReplyPolicy`, pure): `declined` within 10 min of "Not now" for that TV (`PromptSnooze`,
-  in memory, `elapsedRealtime`), plain while a silent resume to that TV is dialing, under
-  "Automatic", with the activity visible (`foreground` is `@Volatile` for this read), or with
+  (`KnockReplyPolicy`, pure, in this order): plain while a silent resume to that TV is dialing
+  (even within a "Not now"), `declined` within 10 min of "Not now" for that TV (`PromptSnooze`,
+  in memory, `elapsedRealtime`), plain under "Automatic", with the activity visible (`foreground` is `@Volatile` for this read), or with
   notifications unavailable; `ask` otherwise. On main, a `declined` knock journals
   `knock outcome=declined` and stops; a non-resume action is carried out as before whatever the
   reply; a resume with `ask` connects if the activity became visible, otherwise posts
@@ -1660,16 +1664,27 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   re-checks the prompt too, and journals `prompt_unavailable` when it is still unavailable
   (`KnockReplyPolicy.resumeStep`). The notification is on
   channel `tv_connect_requests` ("TV connection requests", `IMPORTANCE_HIGH`, created beside the
-  ready channels), one id per TV (`ConnectPromptIds`, above the fixed 42/43), "Connect to <TV>?",
-  public, auto-cancel, alert once, 60-s timeout; never a full-screen intent (limited to calling and
+  ready channels), one id per TV (`ConnectPromptIds`, above the fixed 42/43), "Connect to <TV>?" /
+  "Flick is open on your TV.", public, auto-cancel, alert once, 60-s timeout; never a full-screen intent (limited to calling and
   alarm apps on Android 14+). Body → an explicit, immutable `MainActivity` intent carrying the
-  tvId (`ConnectPrompt.EXTRA_OPEN_TV_ID`, its own request code): `onCreate` (only without saved
-  state) and `onNewIntent` remove the extra and call `onConnectPromptChoice(tvId, connect = true)`
-  before `ON_START`'s connect on open, which then sees the dial in flight (`ConnectPromptTap`).
-  Actions → the non-exported `ConnectPromptReceiver` → `CastCoordinator.onConnectPromptChoice`:
-  Connect hands the knock's host to a silent resume already dialing that TV
-  (`skipped=resuming`), starts nothing while a dial, pairing or block wait owns the line
-  (`skipped=busy`), and otherwise takes the knock wake lock (`TvReadyService.acquireKnockWake`)
+  tvId (`ConnectPrompt.EXTRA_OPEN_TV_ID`, its own request code) and the install's tap token
+  (`EXTRA_TAP_TOKEN`). `MainActivity` is exported, so the token is what proves the intent came
+  from the prompt: 32 `SecureRandom` bytes, base64url, made once (`ConnectPrompt.tapToken`) in
+  app-private `flick_prompt_token`, excluded from backup and device transfer, never logged.
+  `onCreate` (only without saved state) and `onNewIntent` remove both extras and call
+  `onConnectPromptChoice(tvId, connect = true)` only when the token matches (constant-time,
+  `ConnectPromptTap.tvId`); otherwise the extras are just dropped. From `onCreate` that runs
+  before `ON_START`'s connect on open, which then sees the dial in flight. A stopped `singleTask`
+  activity gets `onRestart`, `onStart` (connect on open dials the last TV) and only then
+  `onNewIntent`, so the tap meets that dial instead (`PromptConnectPolicy` below).
+  Actions → the non-exported `ConnectPromptReceiver` → `CastCoordinator.onConnectPromptChoice`.
+  Connect follows `PromptConnectPolicy.step` (pure): it hands the knock's host to a silent resume
+  already dialing that TV (`skipped=resuming`); if connect on open is dialing a different TV and
+  nothing else owns the line, it supersedes that resume (`invalidatePairingAttempt`, which neither
+  abandons a reattach nor ends a block wait; the superseded run journals `open_resume
+  reason=superseded` and leaves the wake lock to its replacement) and goes on; it starts nothing
+  while any other dial, pairing, block wait or resume owns the line (`skipped=busy`); and
+  otherwise takes the knock wake lock (`TvReadyService.acquireKnockWake`)
   and runs the silent resume (kind `PROMPT`) with the knock's host as hint
   (`prompt choice=connect`, or `skipped=<no_pairing|cast_live|setting|linked|other_tv|busy|
   resuming>`); Not now snoozes that TV for 10 min
@@ -1688,10 +1703,21 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   (again after a rebind, after any round that is out; journaled `rebind` only if a start round
   already ran this STARTED period) and on a remote key on the idle screen at
   most every 10 s. A start dropped because a phone was linked (`knock_skip reason=linked`) is
-  owed again if the last link drops in the same STARTED period with no round since. The TV pings
+  owed again only if the drop that left no link was a **lost** one (a ping timeout, including a
+  settled close code 1011; a socket gone without a Close frame; or `outbox_full`, the phone
+  having stopped reading) in the same STARTED period with no round since. A
+  phone's deliberate close (a Close frame: library setting off, media access revoked, the
+  ready-mode idle hang-up, control lost) and a link the TV closes itself (superseded or forgotten)
+  owe nothing: re-knocking then would show a false "Couldn't wake your phone" or undo the
+  hang-up. `LibraryServer.serveSession` classifies the end (pure `LibraryClose.of` in
+  `LibraryPolicies.kt`) and carries the `lost` flag through
+  the hub to `TvDoorbell.onLinkChanged`. The TV pings
   each authenticated `/library` session every 60 s and closes it after 20 s without a pong
   (`LibraryServer`; control v2's settings are unchanged, and the phone's Ktor client answers the
-  pings itself), so a phone gone without a close stops counting as linked. A round knocks one
+  pings itself), so a phone gone without a close stops counting as linked. The timeout is caught
+  around the receive loop, so it never escapes as a handler failure. The log line is
+  `close reason=<peer_closed|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`;
+  `peer_closed` is kept for a Close frame from the phone. A round knocks one
   phone at a time, most recently proven first, moving on when a phone never answered or answered
   `declined`; the outcome ranks `answered` > `asked` > `declined` > failures. Connect 2.5 s, hello 1.5 s, `knockOk` 2 s; a second attempt
   1.5 s later only when the connect failed; start rounds at least 6 s apart, and a phone's first knock waits

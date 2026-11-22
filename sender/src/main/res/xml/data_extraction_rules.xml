@@ -32,6 +32,8 @@
         <!-- The TV library channel: fingerprint-keyed watched marks, and the season cache. -->
         <exclude domain="file" path="datastore/flick_watched.preferences_pb" />
         <exclude domain="sharedpref" path="flick_tv_seasons.xml" />
+        <!-- The connect prompt's tap token belongs to this install alone. -->
+        <exclude domain="sharedpref" path="flick_prompt_token.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="flick_pairings.xml" />
@@ -43,5 +45,6 @@
         <exclude domain="file" path="subtitle_memory" />
         <exclude domain="file" path="datastore/flick_watched.preferences_pb" />
         <exclude domain="sharedpref" path="flick_tv_seasons.xml" />
+        <exclude domain="sharedpref" path="flick_prompt_token.xml" />
     </device-transfer>
 </data-extraction-rules>

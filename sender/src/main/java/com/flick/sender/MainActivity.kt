@@ -174,14 +174,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * The connect prompt's body tap. Before ON_START's connect-on-open, so the one dial that
-     * runs carries the knock's address. The extra is spent here, so a recreation never repeats it.
+     * The connect prompt's body tap. From onCreate it runs before ON_START's connect-on-open,
+     * which then finds the dial in flight. A stopped activity gets onRestart, onStart and only
+     * then onNewIntent, so connect-on-open dials first and the tap joins or replaces it
+     * ([com.flick.sender.library.PromptConnectPolicy]). The extras are spent here, so a
+     * recreation never repeats them; one without this install's token is only dropped.
      */
     private fun acceptPromptTap(incoming: Intent?, restored: Boolean) {
         val extra = incoming?.getStringExtra(ConnectPrompt.EXTRA_OPEN_TV_ID) ?: return
+        val token = incoming.getStringExtra(ConnectPrompt.EXTRA_TAP_TOKEN)
         incoming.removeExtra(ConnectPrompt.EXTRA_OPEN_TV_ID)
+        incoming.removeExtra(ConnectPrompt.EXTRA_TAP_TOKEN)
         setIntent(incoming)
-        val tvId = ConnectPromptTap.tvId(extra, restored) ?: return
+        val tvId = ConnectPromptTap.tvId(extra, restored, token, ConnectPrompt.tapToken(this)) ?: return
         (application as FlickApplication).coordinator.onConnectPromptChoice(tvId, connect = true)
     }
 

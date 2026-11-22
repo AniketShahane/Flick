@@ -54,8 +54,10 @@ path, content URI, media URL or token on this channel.
   Like a knock's resume it never marks the pairing for repair, never moves the screen and never
   shows an error; a dial the person starts supersedes it, and so does tapping a TV that is not
   yet paired (its code sheet would otherwise sit on that resume's `CONNECTING`). The Connect
-  screen's confirm haptic is kept for connects the person started (a tap there, or a code that
-  went through pairing); no silent resume buzzes. Once control authenticates, the
+  screen's confirm haptic follows how the connection was made: when each dial begins, the phone
+  records whether it is a silent resume (a knock's, connect on open's or the prompt's) or a name
+  refresh, and reaching CONNECTED buzzes only when it is neither. No silent resume buzzes, and a
+  dismissed sheet or a cancelled pairing cannot make a later one buzz. Once control authenticates, the
   library opens by the first rule above. So a TV's idle text "open Flick on your phone" is true.
 - It closes `/library` whenever control v2 loses authentication, the setting is turned off,
   media access is revoked, or the TV is forgotten; it reopens after the next control-v2
@@ -63,7 +65,10 @@ path, content URI, media URL or token on this channel.
   its Ktor client sets no ping interval. The TV does: it pings each authenticated `/library`
   session every 60 s and closes it when a pong is 20 s late, so a phone gone without a close
   (a Wi-Fi drop, a killed process) stops counting as linked and holding knocks off (§13.4). The
-  phone's Ktor client answers those pings itself.
+  phone's Ktor client answers those pings itself. Every close above is a Close frame from the
+  phone, which the TV reads as deliberate: the link was **closed**, not **lost**, and it owes no
+  knock for it (§13.4). Only a ping timeout or a socket that ends without a Close frame is a lost
+  link.
 - **Opting out is said, not implied.** Before closing because the setting was turned off or
   media access was revoked, the phone sends an empty full catalog
   (`catBegin count:0 parts:0`, `catEnd`). A TV holding an empty catalog shows no library, so
@@ -522,7 +527,13 @@ journals one `knock_round trigger=<start|key|rebind> phones=<n> outcome=<answere
 per round, with the best outcome across its phones (`sweep`: `none` when no port sweep ran,
 `found` when the outcome came from a swept port, `missed` when a sweep ran and found nothing
 better), and `knock_skip reason=<linked|no_target|no_lan|not_ready|gap>`
-when a start round was owed but did not run, at most once per reason per STARTED period. Refused and invalid knocks reach the log ring by
+when a start round was owed but did not run, at most once per reason per STARTED period. The
+TV's log line for the end of an authenticated `/library` session is
+`close reason=<peer_closed|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`
+(receiver `LibraryClose.of`): `peer_closed` only for a Close frame from the phone,
+`ping_timeout` when the 60-s ping went unanswered or the session settled close code 1011 (§3),
+`dropped` for a socket that ended without a Close frame, `outbox_full` when the phone stopped
+reading. A timeout is caught inside the session, never escaping as a handler failure. Refused and invalid knocks reach the log ring by
 reason only (`rate`, `proof`, dropped connections); each of those three is logged at most once
 a minute, the next such line carrying how many went unlogged, so one noisy device cannot flush
 the 200-line ring. No peer or
@@ -530,7 +541,9 @@ local address, tvId, keyId, nonce or proof enters a log or the journal, on eithe
 
 What each side stores for it:
 
-- **Phone:** nothing new beyond the **When your TV opens Flick** choice (§13.5). The knocking
+- **Phone:** the **When your TV opens Flick** choice (§13.5), and the prompt's body-tap token in
+  `flick_prompt_token`: 32 random bytes from `SecureRandom`, base64url, made once per install,
+  excluded from backup and device transfer, never logged (§13.5). The knocking
   peer's address is held only in memory for the one resume it hints (§13.3), or while that knock's
   prompt is up (§13.5); "Not now" is held only in memory. A resume that succeeds updates the pairing's stored endpoint exactly as any
   resume does; a knock never writes to the pairing store itself.
@@ -662,7 +675,7 @@ stored endpoint (step 3), never written to the pairing store by the knock:
      left to answer this knock too, keeping the wake lock (`resuming`). An open or prompt resume
      also takes this knock's address and dials it once, at the stored port, after its own
      candidates, unless it has dialed it already. While such a resume is running the phone
-     replies plain, never `ask` (§13.5). Dialing a different TV → `busy`;
+     replies plain, never `ask` or `declined` (§13.5). Dialing a different TV → `busy`;
    - control to that TV answered and the library socket looks open → that socket is dead, so it
      is closed and the library dialled again (`linked`);
    - control to that TV answered without a library socket → the library is dialled now,
@@ -705,10 +718,17 @@ all delete them. Addresses, keyIds and titles are never logged.
 **When it knocks.** Only while the TV app is STARTED, its control server is listening on the LAN,
 no phone's `/library` socket is authenticated (the TV holds one controller at a time, so waking a
 second phone would displace the first), and a phone has both halves of a stored address. A start
-owed while a phone is linked is dropped (`knock_skip reason=linked`), unless the last link drops
-in the same STARTED period with no round run since: then that start is owed again, still within
-the gaps. A phone gone without a close counts as linked until the TV's 60-s `/library` ping goes
-unanswered for 20 s (§3).
+owed while a phone is linked is dropped (`knock_skip reason=linked`), unless the last link is
+**lost** in the same STARTED period with no round run since: then that start is owed again, still
+within the gaps. Lost means the 60-s `/library` ping went unanswered for 20 s (§3; a close code
+of 1011 counts as that), the socket ended without a Close frame, or the TV's outgoing queue
+overflowed because the phone stopped reading (`ping_timeout`, `dropped`, `outbox_full` in the
+§12 log line). A link the phone **closed** on purpose (a
+Close frame: the setting turned off, media access revoked, the ready-mode idle hang-up of §8.1,
+control v2 lost) owes nothing, since knocking then would show a false "Couldn't wake your phone"
+or undo the hang-up; nor does a link the TV closes itself (superseded by a newer one from the same
+phone, or its phone forgotten). A phone gone without a close counts as linked until that ping
+timeout.
 
 **Which phone.** Targets are paired, unlinked phones with a full stored address, one keyId per
 host (the most recently proven at that host). A round knocks them one at a time, most recently
@@ -776,7 +796,8 @@ empty library.
 - A round that ended `declined` (some phone declined and none answered plainly or `ask`): today's
   quiet text, and no more automatic rounds for the rest of that STARTED period.
 - Today's quiet text otherwise: no round yet, no LAN, no stored address or key, after a link
-  comes up, and after that link later drops.
+  comes up, and after that link is later closed by the phone. When the last link is lost instead,
+  a start dropped for "linked" may be owed again (above), and the face then follows that round.
 
 ### 13.5 The phone's reply and the "Connect?" prompt
 
@@ -784,8 +805,9 @@ The phone decides which `knockOk` to send on the listener thread, after the proo
 before anything acts on the knock, so it reads only state that is safe there (a StateFlow's value,
 a volatile flag, a synchronized map):
 
-1. the owner chose "Not now" for this TV within the last **10 minutes** → `declined`;
-2. a silent resume to this TV (§13.3) is already dialing → plain: it answers this knock;
+1. a silent resume to this TV (§13.3) is already dialing → plain: it answers this knock, even
+   within a "Not now";
+2. the owner chose "Not now" for this TV within the last **10 minutes** → `declined`;
 3. **When your TV opens Flick** is "Automatic" → plain (connect);
 4. the activity is visible → plain;
 5. notifications are unavailable (`areNotificationsEnabled()` false, or the prompt's channel set
@@ -796,6 +818,7 @@ a volatile flag, a synchronized map):
 The setting lives in `flick_tv_library` as `connect_mode` (`ask`, the default, or `auto`) and is
 shown under **Show my library on my TV**, only while that is on. "Not now" is held in memory per
 tvId on `elapsedRealtime`; process death forgets it, which only means the next knock asks again.
+Starting a connect on open or prompt resume to that TV clears it: the person acted.
 
 On main the knock then runs §13.3 with fresh state; minor races are accepted. A `declined` knock
 does nothing more. If the action computed in §13.3 is anything but the resume, it is carried out
@@ -809,24 +832,33 @@ exactly as there, whatever the reply was. For the resume:
   `prompt_unavailable`.
 
 **The prompt.** A heads-up notification on its own channel `tv_connect_requests` ("TV connection
-requests", `IMPORTANCE_HIGH`), one per TV: "Connect to <TV name>?" / "Your TV just opened
-Flick.", public on the lock screen (it names only the TV), auto-cancelled, alerting once, and
+requests", `IMPORTANCE_HIGH`), one per TV: "Connect to <TV name>?" / "Flick is open on your
+TV." (always true: the TV knocks only while Flick is open on it, though a knock after a lost link
+may come long after it opened), public on the lock screen (it names only the TV), auto-cancelled, alerting once, and
 timing out after 60 s. Not a full-screen intent: Android 14+ limits `USE_FULL_SCREEN_INTENT` to
 calling and alarm apps (source.android.com, "Full-screen intent limits"), and a heads-up on a HIGH
 channel is the documented surface for a time-sensitive ask. Its body opens the app through an
-explicit, immutable activity intent carrying the tvId, and the activity runs **Connect** below for
-it, with the remembered host, before its own connect on open (§3), which then finds that dial
-running; the tap is handled once (the extra is removed, and a recreation from saved state never
-repeats it). Connect on open's 15-s throttle therefore cannot swallow the tap, and the knock's
-address is never lost on the way. Its actions go to a non-exported receiver through immutable
+explicit, immutable activity intent carrying the tvId and this install's body-tap token, and the
+activity runs **Connect** below for it, with the remembered host. The activity is exported, so any
+app could send it a tvId: an intent whose token does not match (constant-time compare) has its
+extras dropped and does nothing. When the tap starts the activity, Connect runs in `onCreate`,
+before its own connect on open (§3), which then finds that dial running. When the activity was
+stopped in the background, Android calls `onRestart`, then `onStart` (connect on open dials the
+last TV), and only then `onNewIntent`, so Connect meets that dial: it joins it for the same TV and
+replaces it for another (below). The tap is handled once (the extras are removed, and a recreation
+from saved state never repeats it). Connect on open's 15-s throttle therefore cannot swallow the
+tap, and the knock's address is never lost on the way. Its actions go to a non-exported receiver through immutable
 PendingIntents (request codes distinct per TV and action, the body's included); a tap counts as
 the person acting on the app's UI, which exempts starting work from the background:
 
 - **Connect** → cancels the prompt; if the pairing is still verified, no cast is live, the setting
   is on and control is not already up: when a silent resume to that TV is already dialing, it
   takes the knock's wake lock and hands that resume the remembered host
-  (`prompt choice=connect skipped=resuming`); when a dial,
-  pairing or block wait owns the line, it starts nothing (`skipped=busy`); otherwise it takes the
+  (`prompt choice=connect skipped=resuming`); when connect on open is dialing a **different**
+  TV and nothing else owns the line, it cancels that resume (journaled `open_resume ...
+  reason=superseded`; no reattach is abandoned and no block wait ended) and goes on as below; when
+  any other dial, pairing, block wait or resume owns the line, it starts nothing (`skipped=busy`);
+  otherwise it takes the
   knock's 20-s wake lock and runs the silent resume with the remembered host as its hint
   (`prompt choice=connect`, then `prompt_resume`). The wake lock is released as for a knock: the
   first catalog, or the resume's failure. Otherwise it journals

@@ -127,6 +127,15 @@ internal interface LibraryPhone {
      */
     fun lateResumeHint(tvId: String, host: String?)
 
+    /** The kind of the silent resume still dialing (as [knockResumingTv]), or null. On main. */
+    fun silentResumeKind(): SilentResumeKind?
+
+    /** A dial, pairing, block wait or pair sheet owns control v2 besides any silent resume. */
+    fun dialingBesidesSilentResume(): Boolean
+
+    /** Cancel the silent resume still dialing; it journals itself as superseded. */
+    fun supersedeSilentResume()
+
     /** Close control v2 with no face, no haptic and no redial. */
     fun hangUpControl()
 }
@@ -1080,16 +1089,27 @@ internal class TvLibrary(
             return
         }
         touchReadyWindow()
-        // A body tap can land after connect-on-open has started for this TV: that dial takes the hint.
-        if (phone.knockResumingTv() == tvId) {
-            TvReadyService.acquireKnockWake(context)
-            phone.lateResumeHint(tvId, hint)
-            journalPrompt("connect", "resuming")
-            return
-        }
-        if (phone.dialing()) {
-            journalPrompt("connect", "busy")
-            return
+        // A body tap reaches a stopped activity after onStart's connect-on-open has dialed.
+        val step = PromptConnectPolicy.step(
+            tvId = tvId,
+            resumingTv = phone.knockResumingTv(),
+            resumingKind = phone.silentResumeKind(),
+            dialing = phone.dialing(),
+            otherDialing = phone.dialingBesidesSilentResume(),
+        )
+        when (step) {
+            PromptConnectPolicy.Step.JOIN -> {
+                TvReadyService.acquireKnockWake(context)
+                phone.lateResumeHint(tvId, hint)
+                journalPrompt("connect", "resuming")
+                return
+            }
+            PromptConnectPolicy.Step.BUSY -> {
+                journalPrompt("connect", "busy")
+                return
+            }
+            PromptConnectPolicy.Step.SUPERSEDE -> phone.supersedeSilentResume()
+            PromptConnectPolicy.Step.START -> Unit
         }
         // The resume's failure path releases it, the library's first catalog its success.
         TvReadyService.acquireKnockWake(context)
@@ -1115,6 +1135,11 @@ internal class TvLibrary(
         FlickLog.i("library", "prompt choice=$choice${skipped?.let { " skipped=$it" } ?: ""}")
         if (skipped == null) IncidentJournal.record("prompt", "choice" to choice)
         else IncidentJournal.record("prompt", "choice" to choice, "skipped" to skipped)
+    }
+
+    /** An OPEN or PROMPT resume to [tvId] started: the person acted, so "Not now" no longer holds. */
+    fun onPersonResume(tvId: String) {
+        promptSnooze.clear(tvId)
     }
 
     // --- Helpers ------------------------------------------------------------
