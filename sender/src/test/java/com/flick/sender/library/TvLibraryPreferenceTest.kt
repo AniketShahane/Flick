@@ -22,4 +22,17 @@ class TvLibraryPreferenceTest {
         assertEquals(false, controller.enabled.value)
         assertEquals(listOf(false), writes)
     }
+
+    @Test
+    fun theConnectModeStartsAtAskAndPersistsEachChangeOnce() {
+        val writes = mutableListOf<TvConnectMode>()
+        val controller = TvConnectModeController(initial = TvConnectMode.DEFAULT, persist = writes::add)
+        assertEquals(TvConnectMode.ASK, controller.mode.value)
+
+        controller.select(TvConnectMode.AUTO)
+        controller.select(TvConnectMode.AUTO)
+
+        assertEquals(TvConnectMode.AUTO, controller.mode.value)
+        assertEquals(listOf(TvConnectMode.AUTO), writes)
+    }
 }

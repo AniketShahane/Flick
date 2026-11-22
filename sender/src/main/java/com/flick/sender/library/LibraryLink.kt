@@ -299,7 +299,8 @@ internal class LibraryLink(
 
         /**
          * Its own client, never control v2's: that one pings every 15 s, and the library socket
-         * needs no liveness probe of its own — it closes whenever control v2 does.
+         * needs no liveness probe of its own — it closes whenever control v2 does. The TV pings it
+         * (60 s, 20-s timeout) to find a half-open link; Ktor answers those pings itself.
          */
         fun newClient(): HttpClient = HttpClient(CIO) {
             install(WebSockets) {

@@ -58,6 +58,15 @@ class LibraryServer(
         knockBook?.forgetAll()
     }
 
+    /**
+     * A phone proven on control v2 from [peer]. The phone listens for knocks on that same
+     * host, and a DHCP move is otherwise learned only when `/library` opens, which needs a
+     * knock that reaches it first. Call with no lock of the control server held.
+     */
+    fun onControlProven(keyId: String, peer: String) {
+        knockBook?.recordPeer(keyId, peer) { findKey(tvId(), keyId) != null }
+    }
+
     /** One `/library` socket that has passed the control server's binding, Host and peer gates. */
     suspend fun serve(session: DefaultWebSocketSession, peer: String, host: String, port: Int) {
         val permit = when (val decision = permits.tryAcquire(peer)) {
@@ -157,6 +166,10 @@ class LibraryServer(
             return closePolicy("auth_forgotten")
         }
         FlickLog.i("library", "auth ok keyIdFp=${FlickLog.fp(proven.keyId)}")
+        // A phone gone without a close (Wi-Fi drop, process kill) otherwise stays linked, and
+        // a linked phone holds every knock off. The phone's Ktor client answers pings itself.
+        timeoutMillis = PING_TIMEOUT_MS
+        pingIntervalMillis = PING_INTERVAL_MS
         val stillPaired = { findKey(tvId(), proven.keyId) != null }
         knockBook?.recordPeer(proven.keyId, peer, stillPaired)
         // runCatching: a send that fails because the socket went is the reader's to report.
@@ -204,6 +217,8 @@ class LibraryServer(
         const val MAX_PREAUTH_CONNECTIONS = 2
         const val MAX_PREAUTH_CONNECTIONS_PER_PEER = 1
         const val AUTH_TIMEOUT_MS = 6_000L
+        const val PING_INTERVAL_MS = 60_000L
+        const val PING_TIMEOUT_MS = 20_000L
 
         /** Far above any burst the hub sends; reaching it means the phone stopped reading. */
         const val OUTBOX_CAPACITY = 512

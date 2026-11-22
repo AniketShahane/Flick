@@ -121,11 +121,12 @@ class TvReadyService : Service() {
         val store = PairingStore(this)
         val bell = TvDoorbell(
             keyFor = { tvId, keyId -> store.get(tvId)?.takeIf { it.keyId == keyId && !it.needsRepair }?.key },
-            onKnock = { tvId, keyId, peerHost ->
-                acquireKnockWake()
-                main.post { coordinator()?.onDoorbellKnock(tvId, keyId, peerHost) ?: releaseKnockWake() }
+            onKnock = { tvId, keyId, peerHost, reply ->
+                acquireKnockWake(this@TvReadyService)
+                main.post { coordinator()?.onDoorbellKnock(tvId, keyId, peerHost, reply) ?: releaseKnockWake() }
             },
             nowMs = { SystemClock.elapsedRealtime() },
+            replyFor = { tvId, _ -> coordinator()?.knockReply(tvId) ?: KnockReply.CONNECT },
         )
         doorbell = bell
         val callback = DoorbellNetworks(bell, store)
@@ -226,18 +227,6 @@ class TvReadyService : Service() {
         main.post { if (doorbell === bell) coordinator()?.onDoorbellPort(port) }
     }
 
-    private fun acquireKnockWake() {
-        synchronized(wakeGuard) {
-            // The application's: the lock outlives this Service instance.
-            val lock = knockWake ?: applicationContext.getSystemService(PowerManager::class.java)
-                ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG)
-                ?.apply { setReferenceCounted(false) }
-                ?: return
-            knockWake = lock
-            lock.acquire(KNOCK_WAKE_MS)
-        }
-    }
-
     private fun coordinator() = (application as? FlickApplication)?.coordinator
 
     private fun notification(device: String, readyMode: Boolean): Notification {
@@ -296,6 +285,7 @@ class TvReadyService : Service() {
                 setShowBadge(false)
             },
         )
+        ConnectPrompt.createChannel(this)
     }
 
     /** How the service ended from inside. */
@@ -322,6 +312,22 @@ class TvReadyService : Service() {
 
         private val wakeGuard = Any()
         private var knockWake: PowerManager.WakeLock? = null
+
+        /**
+         * Held for at most [KNOCK_WAKE_MS] while a knock, or the prompt's Connect, brings the
+         * library back; [releaseKnockWake] lets it go sooner.
+         */
+        internal fun acquireKnockWake(context: Context) {
+            synchronized(wakeGuard) {
+                // The application's: the lock outlives any Service instance.
+                val lock = knockWake ?: context.applicationContext.getSystemService(PowerManager::class.java)
+                    ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG)
+                    ?.apply { setReferenceCounted(false) }
+                    ?: return
+                knockWake = lock
+                lock.acquire(KNOCK_WAKE_MS)
+            }
+        }
 
         /** The knock has been answered: the TV has a catalog, or there was nothing to dial. */
         internal fun releaseKnockWake() {

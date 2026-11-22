@@ -602,6 +602,7 @@ class ControlServer(
                     FlickLog.i("ws", "takeover keyIdFp=${FlickLog.fp(auth.record.keyId)} castIdFp=${inherited?.let(FlickLog::fp) ?: "none"} peer=$peer")
                 LeaseAdmission.INSTALL -> Unit
             }
+            library?.onControlProven(auth.record.keyId, peer)
             // Published as soon as the lease is this connection's, so a screen raised by
             // the very first command on it already names the phone that sent it. The key
             // id rides along in the same value rather than in a field beside it: this

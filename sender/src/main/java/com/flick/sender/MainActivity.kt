@@ -44,6 +44,8 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.flick.sender.library.ConnectPrompt
+import com.flick.sender.library.ConnectPromptTap
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.mediaPermissionState
 import com.flick.sender.net.IncomingPairEvent
@@ -139,6 +141,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
+        acceptPromptTap(intent, restored = savedInstanceState != null)
         acceptPairIntent(intent)
         // Before the first composition, not from an effect inside it: a fresh process holds
         // MediaAccess.NONE until told otherwise, the library reads that as "nothing to show",
@@ -166,7 +169,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        acceptPromptTap(intent, restored = false)
         acceptPairIntent(intent)
+    }
+
+    /**
+     * The connect prompt's body tap. Before ON_START's connect-on-open, so the one dial that
+     * runs carries the knock's address. The extra is spent here, so a recreation never repeats it.
+     */
+    private fun acceptPromptTap(incoming: Intent?, restored: Boolean) {
+        val extra = incoming?.getStringExtra(ConnectPrompt.EXTRA_OPEN_TV_ID) ?: return
+        incoming.removeExtra(ConnectPrompt.EXTRA_OPEN_TV_ID)
+        setIntent(incoming)
+        val tvId = ConnectPromptTap.tvId(extra, restored) ?: return
+        (application as FlickApplication).coordinator.onConnectPromptChoice(tvId, connect = true)
     }
 
     /**

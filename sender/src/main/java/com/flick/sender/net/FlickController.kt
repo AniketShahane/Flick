@@ -19,7 +19,12 @@ import com.flick.sender.SourceServerTerminalKind
 import com.flick.sender.preferredTerminalCode
 import com.flick.sender.SubtitleServingState
 import com.flick.sender.TransferTelemetry
+import com.flick.sender.library.KnockReply
+import com.flick.sender.library.LateResumeHint
 import com.flick.sender.library.LibraryPhone
+import com.flick.sender.library.OpenResumePolicy
+import com.flick.sender.library.SilentResumeKind
+import com.flick.sender.library.TvConnectMode
 import com.flick.sender.library.TvLibrary
 import com.flick.sender.library.TvReadyService
 import com.flick.sender.WifiAssociationMonitor
@@ -509,14 +514,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         FilmPosterPreferenceController(filmPosterStore.enabled(), filmPosterStore::save)
     private val deviceLabel = ControlProtocolV2.normalizedLabel(Build.MODEL, 80)
         ?: appContext.getString(R.string.sender_device_generic)
-    // Whether the activity is started; main-confined, like the rest of this class.
-    private var foreground = false
+    // Whether the activity is started. Written on main only; volatile because the doorbell's
+    // listener thread reads it to choose a knock's reply.
+    @Volatile private var foreground = false
     // Every dial, resume and name refresh runs here; its run keeps discovery wanted, except
-    // [knockResumeJob]'s: a knock's resume dials stored addresses only and reads no browse.
+    // [knockResumeJob]'s: a silent resume dials stored addresses only and reads no browse.
     private var pairingJob: Job? = null
         set(value) { field = value; trackDiscoveryDemand(value) }
     private var knockResumeJob: Job? = null
     private var knockResumeTvId: String? = null
+    // The silent resume running now. Volatile because the doorbell's listener thread reads its
+    // tvId to choose a knock's reply; [SilentResumeRun.lateHint] is main-only.
+    @Volatile private var silentRun: SilentResumeRun? = null
+    // When the last connect-on-open resume started, on elapsedRealtime; null before the first.
+    private var lastOpenResumeAtMs: Long? = null
     private var castJob: Job? = null
     private var directLinkWatch: Job? = null
     private var directLinkReleasedFor: ControlClient.OutstandingPing? = null
@@ -911,8 +922,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         override fun dialInFlight() = pairingJob?.isActive == true || blockJob?.isActive == true ||
             knockResumeJob?.isActive == true
         override fun knockResumingTv() = knockResumeTvId?.takeIf { knockResumeJob?.isActive == true }
-        override fun knockResume(pairing: PairingStore.Pairing, knockHost: String?) =
-            this@CastCoordinator.knockResume(pairing, knockHost)
+        override fun silentResume(pairing: PairingStore.Pairing, hintHost: String?, kind: SilentResumeKind) =
+            this@CastCoordinator.silentResume(pairing, hintHost, kind)
+        override fun silentResumeTv() = silentRun?.tvId
+        override fun lateResumeHint(tvId: String, host: String?) {
+            if (host == null || knockResumeJob?.isActive != true) return
+            silentRun?.takeIf { it.tvId == tvId && LateResumeHint.accepts(it.kind) }?.lateHint = host
+        }
         override fun hangUpControl() {
             if (currentCastId == null && pendingCast == null && !castProbeRunning()) control.close()
         }
@@ -923,9 +939,20 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
 
     fun selectTvLibrary(enabled: Boolean) = tvLibrary.select(enabled)
 
+    /** "When your TV opens Flick" (library contract §13.5). */
+    val tvConnectMode: StateFlow<TvConnectMode> = tvLibrary.connectMode
+
+    fun selectTvConnectMode(mode: TvConnectMode) = tvLibrary.selectConnectMode(mode)
+
+    /** The `knockOk` a verified knock gets; on the doorbell's listener thread, not main. */
+    internal fun knockReply(tvId: String): KnockReply = tvLibrary.knockReply(tvId)
+
     /** A verified doorbell knock (library contract §13), on the main thread. */
-    internal fun onDoorbellKnock(tvId: String, keyId: String, peerHost: String?) =
-        tvLibrary.onKnock(tvId, keyId, peerHost)
+    internal fun onDoorbellKnock(tvId: String, keyId: String, peerHost: String?, reply: KnockReply) =
+        tvLibrary.onKnock(tvId, keyId, peerHost, reply)
+
+    /** "Connect" or "Not now" on the connect prompt, on the main thread. */
+    internal fun onConnectPromptChoice(tvId: String, connect: Boolean) = tvLibrary.onPromptChoice(tvId, connect)
 
     internal fun onDoorbellPort(port: Int?) = tvLibrary.onDoorbellPort(port)
 
@@ -935,24 +962,33 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
     internal fun readyServiceRestarted(): String? = tvLibrary.readyServiceRestarted()
 
     /**
-     * The knock's resume: [refreshTvName]'s shape. Nobody asked for it on this phone, so a
-     * failure is silent, never marks the pairing for repair and never moves the route.
+     * The silent resume for a knock, the app coming to the foreground, or the prompt's
+     * Connect: [refreshTvName]'s shape. Nobody tapped Connect for it, so a failure is silent,
+     * never marks the pairing for repair and never moves the route.
      *
      * [knockHost] proved the pairing key by knocking, and control v2 authenticates whatever
      * answers there, so it is tried — at the stored port, after the stored endpoint has
      * failed — for a TV whose address changed; [ResumeCandidates] never puts a different
      * host ahead of the verified one. Only a resume that succeeds there writes it, as any
-     * resume does. Every way out journals once; every failure lets the knock's wake lock go.
+     * resume does. Every way out journals once; every failure lets the knock's wake lock go,
+     * since a knock that arrived meanwhile from the same TV waits on this resume.
      */
-    private fun knockResume(pairing: PairingStore.Pairing, knockHost: String?): Boolean {
+    private fun silentResume(pairing: PairingStore.Pairing, knockHost: String?, kind: SilentResumeKind): Boolean {
         if (pairingJob?.isActive == true) return false
-        val candidates = ResumeCandidates.forKnock(pairing.host, pairing.port, pairing.tvId, knockHost)
+        val candidates = ArrayDeque(ResumeCandidates.forKnock(pairing.host, pairing.port, pairing.tvId, knockHost))
         val attempt = beginPairingAttempt()
+        val run = SilentResumeRun(pairing.tvId, kind)
+        silentRun = run
         val job = scope.launch {
             var outcome = "failed"
             var dials = 0
+            val dialed = HashSet<Pair<String, Int>>()
             try {
-                for (endpoint in candidates) {
+                while (true) {
+                    val endpoint = candidates.removeFirstOrNull()
+                        ?: LateResumeHint.endpoint(run.lateHint, pairing.port, dialed)?.also { run.lateHint = null }
+                        ?: break
+                    dialed += endpoint.address
                     dials += 1
                     val result = control.resume(pairing, endpoint.host, endpoint.port)
                     if (!pairingGate.isCurrent(attempt)) {
@@ -961,7 +997,7 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                     }
                     val resumed = (result as? ControlClient.Result.Resumed)?.endpoint
                     if (resumed == null) {
-                        FlickLog.w("ws", "knock resume dial=$dials -> ${result.javaClass.simpleName}")
+                        FlickLog.w("ws", "${kind.logName} dial=$dials -> ${result.javaClass.simpleName}")
                         continue
                     }
                     val committed = PairingPersistence.commit {
@@ -981,8 +1017,9 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
             } finally {
                 // A dial the person started cancels this one through the same gate.
                 if (outcome == "failed" && !pairingGate.isCurrent(attempt)) outcome = "superseded"
+                if (silentRun === run) silentRun = null
                 val ok = outcome == "ok"
-                IncidentJournal.record("knock_resume", "ok" to ok, "reason" to outcome, "dials" to dials)
+                IncidentJournal.record(kind.journalEvent, "ok" to ok, "reason" to outcome, "dials" to dials)
                 // On success the library holds it until the TV's first catalog.
                 if (!ok) TvReadyService.releaseKnockWake()
             }
@@ -1785,6 +1822,33 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         tvLibrary.onAppForeground()
         reconcileDiscovery()
         checkHeldLine()
+        maybeOpenResume()
+    }
+
+    /**
+     * Connect on open (library contract §8): with the library on, opening the app dials the
+     * last TV quietly, so a TV showing its idle screen gets the library without a tap here.
+     * Throttled so switching apps back and forth does not dial each time.
+     */
+    private fun maybeOpenResume() {
+        val pairing = store.last()?.takeIf { !it.needsRepair }
+        val nowMs = SystemClock.elapsedRealtime()
+        val start = OpenResumePolicy.shouldResume(
+            libraryEnabled = tvLibrary.enabled.value,
+            readyPairing = pairing != null,
+            mediaAccess = currentVideoAccess(appContext) != MediaAccess.NONE,
+            controlIdle = control.connection.value == ConnectionStatus.DISCONNECTED,
+            castLive = currentCastId != null || castProbeRunning() || pendingCast != null ||
+                reattachCastId != null || reattachJob?.isActive == true,
+            castStarting = castStartInFlight(),
+            dialInFlight = pairingJob?.isActive == true || blockJob?.isActive == true ||
+                knockResumeJob?.isActive == true,
+            pairUiOpen = _pairTarget.value != null || _pendingPairLaunch.value != null,
+            lastAttemptAtMs = lastOpenResumeAtMs,
+            nowMs = nowMs,
+        )
+        if (!start || pairing == null) return
+        if (silentResume(pairing, null, SilentResumeKind.OPEN)) lastOpenResumeAtMs = nowMs
     }
 
     /** The app left the viewer's sight: discovery runs on only for what still needs it. */
@@ -1856,7 +1920,11 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
                 dialing = pairingJob?.isActive == true,
                 checking = false,
             )
-            if (stillIdle && control.retire(line)) FlickLog.w("ws", "line retired reason=idle_unanswered")
+            if (stillIdle && control.retire(line)) {
+                FlickLog.w("ws", "line retired reason=idle_unanswered")
+                // The line that kept connect-on-open from dialing is gone; still in front, dial now.
+                if (foreground) maybeOpenResume()
+            }
         }
     }
     fun selectSimplifiedVideoNames(simplified: Boolean) =
@@ -2299,6 +2367,10 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         if ((tv.protocolVersion ?: 0) < ControlProtocolV2.VERSION) { _pairError.value = PairErrorKind.UPDATE_REQUIRED; _route.value = Route.Connect; return }
         val paired = store.last()?.takeIf { it.tvId == tv.tvId && !it.needsRepair }
         if (paired != null) { resume(paired, userDial = true); return }
+        // The sheet's spinner follows control's state, which a quiet open or prompt resume holds at CONNECTING.
+        if (silentRun?.kind?.let(LateResumeHint::accepts) == true && knockResumeJob?.isActive == true) {
+            invalidatePairingAttempt()
+        }
         // The tapped row is the only component that knows the TV's live control
         // endpoint; keep it so the code sheet can dial it without the user retyping.
         if (tv.tvId != null) {
@@ -3840,9 +3912,13 @@ class CastCoordinator(private val appContext: Context, private val scope: Corout
         // as a cast still on its way to every idle test that asks after [pendingCast].
         if (castProbeRunning()) pendingCast = null
         castProbeAttempt = null
-        pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; control.cancelUnauthenticated()
+        pairingGate.invalidate(); pairingJob?.cancel(); pairingJob = null; silentRun = null; control.cancelUnauthenticated()
     }
     private class CastStartupFailure(val code: String) : RuntimeException()
+
+    private class SilentResumeRun(val tvId: String, val kind: SilentResumeKind) {
+        var lateHint: String? = null
+    }
 
     private companion object {
         const val NSD_RESNAPSHOT_MS = 1_500L

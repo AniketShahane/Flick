@@ -328,6 +328,19 @@
     <string name="settings_tv_library_title">Show my library on my TV</string>
     <string name="settings_tv_library_summary">Browse and play this phone\'s videos from your TV while the two are connected.</string>
     <string name="settings_tv_library_wake">Your TV can wake Flick when you open it. For that, set Flick\'s battery use to Unrestricted (on Samsung, also add Flick to Never sleeping apps).</string>
+    <string name="settings_tv_connect_title">When your TV opens Flick</string>
+    <string name="settings_tv_connect_ask">Ask me first</string>
+    <string name="settings_tv_connect_auto">Automatic</string>
+    <string name="settings_tv_connect_a11y">%1$s: %2$s</string>
+    <!-- The "Connect?" prompt (library contract §13.5). A heads-up shown on the lock screen
+         too, so it names the TV and nothing else. -->
+    <string name="tv_connect_channel_name">TV connection requests</string>
+    <string name="tv_connect_channel_desc">Asks before connecting when your TV opens Flick</string>
+    <string name="tv_connect_title">Connect to %1$s?</string>
+    <string name="tv_connect_fallback_name">your TV</string>
+    <string name="tv_connect_text">Your TV just opened Flick.</string>
+    <string name="tv_connect_action_connect">Connect</string>
+    <string name="tv_connect_action_later">Not now</string>
     <!-- The ready window's notification. It names the TV and never a film: titles stay off
          every surface the library channel touches. -->
     <string name="tv_ready_channel_name">TV library</string>
