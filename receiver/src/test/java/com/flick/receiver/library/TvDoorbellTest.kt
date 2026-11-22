@@ -98,6 +98,22 @@ class TvDoorbellTest {
     }
 
     @Test
+    fun knockOkSaysWhetherThePhoneConnectsAsksOrDeclines() {
+        assertEquals(KnockOutcome.ANSWERED, KnockWire.reply("{\"t\":\"knockOk\",\"v\":1}"))
+        assertEquals(KnockOutcome.ASKED, KnockWire.reply("{\"t\":\"knockOk\",\"v\":1,\"ask\":true}"))
+        assertEquals(KnockOutcome.DECLINED, KnockWire.reply("{\"t\":\"knockOk\",\"v\":1,\"declined\":true}"))
+        assertEquals(KnockOutcome.DECLINED, KnockWire.reply("{\"t\":\"knockOk\",\"v\":1,\"ask\":true,\"declined\":true}"))
+        // Missing, false or not a boolean is false; unknown fields are ignored.
+        listOf("\"ask\":false", "\"ask\":\"true\"", "\"ask\":1", "\"ask\":null", "\"declined\":\"true\"", "\"later\":2").forEach {
+            assertEquals(it, KnockOutcome.ANSWERED, KnockWire.reply("{\"t\":\"knockOk\",\"v\":1,$it}"))
+        }
+        assertTrue(KnockWire.isOk("{\"t\":\"knockOk\",\"v\":1,\"ask\":true}"))
+        assertNull(KnockWire.reply("{\"t\":\"knockOk\",\"v\":2,\"ask\":true}"))
+        assertNull(KnockWire.reply("{\"t\":\"knockOk\",\"v\":1,\"ask\":true,\"ask\":true}"))
+        assertNull(KnockWire.reply("{\"t\":\"knockHello\",\"v\":1}"))
+    }
+
+    @Test
     fun knockFrameCarriesEveryFieldAndFitsALine() {
         val proof = KnockWire.proof(key, tvId, keyId, phoneNonce, tvNonce, "192.168.1.20", 47670)
         val frame = KnockWire.knock(tvId, keyId, phoneNonce, tvNonce, proof)!!
@@ -278,9 +294,12 @@ class TvDoorbellTest {
     }
 
     @Test
-    fun onlyAPhoneThatNeverAnsweredMakesWayForTheNext() {
+    fun onlyAPhoneThatWillNotConnectMakesWayForTheNext() {
         val movesOn = KnockOutcome.entries.filter(KnockPolicy::triesNext).toSet()
-        assertEquals(setOf(KnockOutcome.UNREACHABLE, KnockOutcome.NO_HELLO, KnockOutcome.SILENT, KnockOutcome.NO_KEY), movesOn)
+        assertEquals(
+            setOf(KnockOutcome.UNREACHABLE, KnockOutcome.NO_HELLO, KnockOutcome.SILENT, KnockOutcome.NO_KEY, KnockOutcome.DECLINED),
+            movesOn,
+        )
     }
 
     @Test
@@ -330,6 +349,51 @@ class TvDoorbellTest {
         assertTrue(KnockPolicy.ADMISSION_GAP_MS >= 6_000)
     }
 
+    @Test
+    fun aPhoneThatHeardTheKnockEarnsNoHintAndNoRetry() {
+        listOf(KnockOutcome.ASKED, KnockOutcome.DECLINED).forEach {
+            assertFalse(KnockPolicy.hints(it))
+            assertFalse(KnockPolicy.retries(it, 1))
+        }
+        assertFalse(KnockPolicy.triesNext(KnockOutcome.ASKED))
+    }
+
+    @Test
+    fun faceSaysCheckYourPhoneUntilTheAskWindowEnds() {
+        assertEquals(DoorbellFace.ASKING, KnockPolicy.face(0, false, false, false, true, hinted = true, asked = true))
+        assertEquals(DoorbellFace.QUIET, KnockPolicy.face(0, false, false, false, true, hinted = true, asked = true, askOver = true))
+        assertEquals(DoorbellFace.WAKING, KnockPolicy.face(1, false, false, false, true, hinted = false, asked = true))
+        assertEquals(DoorbellFace.QUIET, KnockPolicy.face(0, false, false, true, true, hinted = false, asked = true))
+        // An answer anywhere in the round wins over an ask.
+        assertEquals(DoorbellFace.WAKING, KnockPolicy.face(0, true, false, false, true, hinted = false, asked = true))
+        assertEquals(DoorbellFace.QUIET, KnockPolicy.face(0, false, false, false, true, hinted = true, declined = true))
+        // One phone asking outranks another declining.
+        assertEquals(DoorbellFace.ASKING, KnockPolicy.face(0, false, false, false, true, hinted = false, asked = true, declined = true))
+    }
+
+    @Test
+    fun theSweepTriesEveryOtherListenerPortInBindOrder() {
+        assertEquals((47_671..47_679).toList(), KnockPolicy.sweepPorts(47_670))
+        assertEquals(listOf(47_670, 47_671, 47_672, 47_674, 47_675, 47_676, 47_677, 47_678, 47_679), KnockPolicy.sweepPorts(47_673))
+        assertEquals((47_670..47_679).toList(), KnockPolicy.sweepPorts(50_123))
+        assertEquals(
+            setOf(KnockOutcome.ANSWERED, KnockOutcome.ASKED, KnockOutcome.DECLINED),
+            KnockOutcome.entries.filter(KnockPolicy::sweepFound).toSet(),
+        )
+        assertEquals(setOf(KnockOutcome.UNREACHABLE, KnockOutcome.NO_HELLO), KnockOutcome.entries.filter(KnockPolicy::sweepGoesOn).toSet())
+    }
+
+    @Test
+    fun aRoundReportsItsOutcomeClosestToALink() {
+        assertNull(KnockPolicy.best(emptyList()))
+        assertEquals(KnockOutcome.ASKED, KnockPolicy.best(listOf(KnockOutcome.UNREACHABLE, KnockOutcome.ASKED)))
+        assertEquals(KnockOutcome.SILENT, KnockPolicy.best(listOf(KnockOutcome.UNREACHABLE, KnockOutcome.SILENT, KnockOutcome.NO_HELLO)))
+        assertEquals(KnockOutcome.UNREACHABLE, KnockPolicy.best(listOf(KnockOutcome.NO_KEY, KnockOutcome.UNREACHABLE)))
+        assertEquals(KnockOutcome.ANSWERED, KnockPolicy.best(KnockOutcome.entries))
+        assertEquals(KnockOutcome.ASKED, KnockPolicy.best(listOf(KnockOutcome.DECLINED, KnockOutcome.ASKED)))
+        assertEquals(KnockOutcome.DECLINED, KnockPolicy.best(listOf(KnockOutcome.SILENT, KnockOutcome.DECLINED, KnockOutcome.UNREACHABLE)))
+    }
+
     // --- Scheduling ------------------------------------------------------------
 
     private class Harness(
@@ -342,6 +406,17 @@ class TvDoorbellTest {
     ) {
         val calls = mutableListOf<Long>()
         val knocked = mutableListOf<String>()
+
+        /** Knocks at a port other than the stored one: (time, port). */
+        val swept = mutableListOf<Pair<Long, Int>>()
+
+        /** What a listener at a swept port replies; a port missing here refuses at once. */
+        val listening = mutableMapOf<Int, KnockOutcome>()
+        val journal = mutableListOf<String>()
+        val sweepTimeouts = mutableListOf<Int>()
+
+        /** How long a swept port's connect takes to fail: 0 is a refusal, more a host that drops it. */
+        var sweepDropMs = 0L
         var local: String? = "192.168.1.30"
         var key: String? = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
         private val script = ArrayDeque(outcomes)
@@ -364,8 +439,19 @@ class TvDoorbellTest {
             transport = object : KnockTransport {
                 override suspend fun knock(
                     host: String, port: Int, localHost: String, tvId: String, keyId: String, key: String,
-                    connected: () -> Unit, mayProve: () -> Boolean,
+                    connectTimeoutMs: Int, connected: () -> Unit, mayProve: () -> Boolean,
                 ): KnockOutcome {
+                    if (port != 47670) {
+                        swept += test.testScheduler.currentTime to port
+                        sweepTimeouts += connectTimeoutMs
+                        val reply = listening[port] ?: run {
+                            if (sweepDropMs > 0) delay(minOf(sweepDropMs, connectTimeoutMs.toLong()))
+                            return KnockOutcome.UNREACHABLE
+                        }
+                        connected()
+                        delay(100)
+                        return if (!mayProve()) KnockOutcome.NOT_STARTED else reply
+                    }
                     calls += test.testScheduler.currentTime
                     knocked += keyId
                     if ((script.firstOrNull() ?: KnockOutcome.UNREACHABLE) != KnockOutcome.UNREACHABLE) connected()
@@ -377,12 +463,19 @@ class TvDoorbellTest {
             scope = test,
             work = StandardTestDispatcher(test.testScheduler),
             times = times,
+            journal = { event, fields -> journal += (listOf(event) + fields.map { (k, v) -> "$k=$v" }).joinToString(" ") },
         )
 
-        /** STARTED with the control server freshly bound. */
+        /** STARTED, then the bind loop's first pass binds the server: a cold start's order. */
         fun start() {
-            doorbell.onServer(bound = true, rebound = true)
             doorbell.onStarted()
+            doorbell.onServer(bound = true, rebound = true)
+        }
+
+        /** STARTED again, then the bind loop finds the server still bound: a return's order. */
+        fun resume() {
+            doorbell.onStarted()
+            doorbell.onServer(bound = true, rebound = false)
         }
     }
 
@@ -417,7 +510,7 @@ class TvDoorbellTest {
         h.start()
         advanceTimeBy(200)
         runCurrent()
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         advanceUntilIdle()
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
     }
@@ -531,7 +624,7 @@ class TvDoorbellTest {
         advanceTimeBy(500)
         runCurrent()
         h.linked = setOf(keyId)
-        h.doorbell.onLinkChanged(true)
+        h.doorbell.onLinkChanged(true, lost = false)
         advanceUntilIdle()
         assertEquals(listOf(otherKeyId), h.knocked)
     }
@@ -557,7 +650,8 @@ class TvDoorbellTest {
         h.doorbell.onStopped()
         advanceTimeBy(1_000)
         runCurrent()
-        h.start()
+        h.doorbell.onServer(bound = true, rebound = true)
+        h.doorbell.onStarted()
         advanceUntilIdle()
         assertEquals(1, h.calls.size)
     }
@@ -596,8 +690,8 @@ class TvDoorbellTest {
         answered.start()
         advanceTimeBy(200)
         runCurrent()
-        answered.doorbell.onLinkChanged(true)
-        answered.doorbell.onLinkChanged(false)
+        answered.doorbell.onLinkChanged(true, lost = false)
+        answered.doorbell.onLinkChanged(false, lost = true)
         assertEquals(DoorbellFace.QUIET, answered.doorbell.face.value)
         advanceUntilIdle()
         assertEquals(DoorbellFace.QUIET, answered.doorbell.face.value)
@@ -606,8 +700,8 @@ class TvDoorbellTest {
         failed.start()
         advanceUntilIdle()
         assertEquals(DoorbellFace.UNANSWERED, failed.doorbell.face.value)
-        failed.doorbell.onLinkChanged(true)
-        failed.doorbell.onLinkChanged(false)
+        failed.doorbell.onLinkChanged(true, lost = false)
+        failed.doorbell.onLinkChanged(false, lost = true)
         assertEquals(DoorbellFace.QUIET, failed.doorbell.face.value)
     }
 
@@ -617,8 +711,8 @@ class TvDoorbellTest {
         h.start()
         advanceTimeBy(50)
         runCurrent()
-        h.doorbell.onLinkChanged(true)
-        h.doorbell.onLinkChanged(false)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.doorbell.onLinkChanged(false, lost = true)
         advanceUntilIdle()
         assertEquals(1, h.calls.size)
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
@@ -664,7 +758,7 @@ class TvDoorbellTest {
         h.doorbell.onStopped()
         advanceTimeBy(500)
         runCurrent()
-        h.start()
+        h.resume()
         runCurrent()
         assertEquals(listOf(0L), h.calls)
         advanceTimeBy(KnockPolicy.START_GAP_MS - 1_000)
@@ -682,7 +776,7 @@ class TvDoorbellTest {
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
         advanceTimeBy(1_000)
         runCurrent()
-        h.start()
+        h.resume()
         assertEquals(DoorbellFace.WAKING, h.doorbell.face.value)
         // Answered at 100 ms: the grace runs from the answer, not from the return.
         advanceTimeBy(100 + KnockPolicy.CONNECTING_GRACE_MS - 2_000 - 1)
@@ -768,7 +862,7 @@ class TvDoorbellTest {
         h.doorbell = h.newDoorbell()
         advanceTimeBy(1_000)
         runCurrent()
-        h.start()
+        h.resume()
         assertEquals(DoorbellFace.WAKING, h.doorbell.face.value)
         advanceUntilIdle()
         assertEquals(DoorbellFace.UNANSWERED, h.doorbell.face.value)
@@ -802,6 +896,405 @@ class TvDoorbellTest {
         advanceUntilIdle()
         assertEquals(1, h.calls.size)
         assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+    }
+
+    @Test
+    fun anAskingPhoneShowsCheckYourPhoneForSixtySecondsThenQuiet() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.ASKED), setOf(keyId))
+        h.start()
+        advanceTimeBy(200)
+        runCurrent()
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        advanceTimeBy(KnockPolicy.ASK_WINDOW_MS - 500)
+        runCurrent()
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        advanceUntilIdle()
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=asked sweep=none"), h.journal)
+    }
+
+    @Test
+    fun whileAskingOnlyAKeyKnocksAgain() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.ASKED, KnockOutcome.ASKED), setOf(keyId))
+        h.start()
+        advanceTimeBy(200)
+        runCurrent()
+        h.doorbell.onServer(bound = true, rebound = true)
+        advanceTimeBy(KnockPolicy.START_GAP_MS * 2)
+        runCurrent()
+        assertEquals(1, h.calls.size)
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        h.doorbell.onIdleKey()
+        runCurrent()
+        assertEquals(2, h.calls.size)
+    }
+
+    @Test
+    fun anAskingPhoneThatLinksQuietsTheScreen() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.ASKED), setOf(keyId))
+        h.start()
+        advanceTimeBy(200)
+        runCurrent()
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+    }
+
+    @Test
+    fun aDeclineQuietsTheScreenAndEndsAutomaticRoundsForTheStartedPeriod() = runTest {
+        val h = Harness(this, List(4) { KnockOutcome.DECLINED }, setOf(keyId, otherKeyId))
+        h.start()
+        advanceUntilIdle()
+        // A decline makes way for the next phone.
+        assertEquals(listOf(otherKeyId, keyId), h.knocked)
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+        h.doorbell.onServer(bound = true, rebound = true)
+        advanceUntilIdle()
+        assertEquals(2, h.calls.size)
+        // The next STARTED period knocks again.
+        h.doorbell.onStopped()
+        h.start()
+        advanceUntilIdle()
+        assertEquals(4, h.calls.size)
+        assertEquals(
+            listOf(
+                "knock_round trigger=start phones=2 outcome=declined sweep=none",
+                "knock_round trigger=start phones=2 outcome=declined sweep=none",
+            ),
+            h.journal,
+        )
+    }
+
+    @Test
+    fun aListenerThatMovedPortIsFoundAndRemembered() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        h.listening[47_672] = KnockOutcome.ANSWERED
+        h.start()
+        advanceTimeBy(1_700)
+        runCurrent()
+        // The stored port twice, as before; then the sweep, which refusals cost nothing.
+        assertEquals(listOf(0L, 1_600L), h.calls)
+        assertEquals(listOf(1_700L to 47_671, 1_700L to 47_672), h.swept)
+        advanceTimeBy(200)
+        runCurrent()
+        assertEquals(DoorbellFace.WAKING, h.doorbell.face.value)
+        assertEquals(47_672, h.book.snapshot()[keyId]?.port)
+        assertEquals("192.168.1.20", h.book.snapshot()[keyId]?.host)
+        advanceUntilIdle()
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=answered sweep=found"), h.journal)
+    }
+
+    @Test
+    fun anAskFromASweptPortIsRememberedButARefusedProofIsNot() = runTest {
+        val asked = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        asked.listening[47_679] = KnockOutcome.ASKED
+        asked.start()
+        advanceUntilIdle()
+        assertEquals(47_679, asked.book.snapshot()[keyId]?.port)
+
+        val silent = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        silent.listening[47_671] = KnockOutcome.SILENT
+        silent.listening[47_672] = KnockOutcome.ANSWERED
+        silent.start()
+        advanceUntilIdle()
+        // A connection ends the sweep: the phone counted its admission there.
+        assertEquals(listOf(47_671), silent.swept.map { it.second })
+        assertEquals(47_670, silent.book.snapshot()[keyId]?.port)
+        assertEquals(DoorbellFace.UNANSWERED, silent.doorbell.face.value)
+    }
+
+    @Test
+    fun aSweepThatFindsNothingKeepsTheStoredPortAndHints() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        assertEquals((47_671..47_679).toList(), h.swept.map { it.second })
+        assertEquals(47_670, h.book.snapshot()[keyId]?.port)
+        assertEquals(DoorbellFace.UNANSWERED, h.doorbell.face.value)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=unreachable sweep=missed"), h.journal)
+    }
+
+    @Test
+    fun aSweepOfAHostThatDropsConnectsKeepsToItsBudget() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        h.sweepDropMs = KnockPolicy.CONNECT_TIMEOUT_MS.toLong()
+        h.start()
+        advanceUntilIdle()
+        assertEquals(listOf(KnockPolicy.CONNECT_TIMEOUT_MS, (KnockPolicy.SWEEP_BUDGET_MS - KnockPolicy.CONNECT_TIMEOUT_MS).toInt()), h.sweepTimeouts)
+        assertEquals(DoorbellFace.UNANSWERED, h.doorbell.face.value)
+    }
+
+    @Test
+    fun aSweepStopsWhenTheAppStops() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        h.sweepDropMs = 1_000
+        h.start()
+        advanceTimeBy(2_000)
+        runCurrent()
+        h.doorbell.onStopped()
+        advanceUntilIdle()
+        assertEquals(1, h.swept.size)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=not_started sweep=missed"), h.journal)
+    }
+
+    @Test
+    fun aReturnWithTheServerStillBoundKnocksAgain() = runTest {
+        val h = Harness(this, List(2) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        h.doorbell.onStopped()
+        advanceTimeBy(60_000)
+        // ON_START before the bind loop's first pass, which finds the same address still bound.
+        h.doorbell.onStarted()
+        h.doorbell.onServer(bound = true, rebound = false)
+        advanceUntilIdle()
+        assertEquals(2, h.calls.size)
+        assertEquals(DoorbellFace.UNANSWERED, h.doorbell.face.value)
+    }
+
+    @Test
+    fun skippedStartsAreJournaledOncePerReasonPerStartedPeriod() = runTest {
+        val bare = Harness(this, emptyList(), emptySet())
+        bare.start()
+        bare.doorbell.onServer(bound = true, rebound = true)
+        advanceUntilIdle()
+        assertEquals(listOf("knock_skip reason=no_target"), bare.journal)
+        bare.doorbell.onStopped()
+        bare.start()
+        advanceUntilIdle()
+        assertEquals(listOf("knock_skip reason=no_target", "knock_skip reason=no_target"), bare.journal)
+
+        val linked = Harness(this, emptyList(), setOf(keyId), linked = setOf(keyId))
+        linked.start()
+        advanceUntilIdle()
+        assertEquals(listOf("knock_skip reason=linked"), linked.journal)
+
+        val unbound = Harness(this, emptyList(), setOf(keyId))
+        unbound.doorbell.onStarted()
+        advanceUntilIdle()
+        assertTrue(unbound.journal.isEmpty())
+        unbound.doorbell.onStopped()
+        assertEquals(listOf("knock_skip reason=not_ready"), unbound.journal)
+
+        val noLan = Harness(this, emptyList(), setOf(keyId))
+        noLan.local = null
+        noLan.start()
+        noLan.doorbell.onServer(bound = true, rebound = false)
+        advanceUntilIdle()
+        noLan.doorbell.onStopped()
+        assertEquals(listOf("knock_skip reason=no_lan"), noLan.journal)
+    }
+
+    @Test
+    fun aStartPostponedPastTheStopIsJournaledAsTheGap() = runTest {
+        val h = Harness(this, List(2) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        h.doorbell.onStopped()
+        h.start()
+        runCurrent()
+        h.doorbell.onStopped()
+        advanceUntilIdle()
+        assertEquals(1, h.calls.size)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=silent sweep=none", "knock_skip reason=gap"), h.journal)
+    }
+
+    @Test
+    fun roundsAreJournaledWithTheirTrigger() = runTest {
+        val h = Harness(this, List(3) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        h.doorbell.onServer(bound = true, rebound = true)
+        advanceUntilIdle()
+        advanceTimeBy(KnockPolicy.KEY_GAP_MS)
+        h.doorbell.onIdleKey()
+        advanceUntilIdle()
+        assertEquals(
+            listOf("start", "rebind", "key").map { "knock_round trigger=$it phones=1 outcome=silent sweep=none" },
+            h.journal,
+        )
+    }
+
+    @Test
+    fun aStartDroppedForALinkIsOwedWhenTheLastLinkDrops() = runTest {
+        val h = Harness(this, List(3) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        h.doorbell.onStopped()
+        advanceTimeBy(1_000)
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.resume()
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        advanceTimeBy(1_000)
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = true)
+        runCurrent()
+        // Still inside the start gap from the round at 0.
+        assertEquals(listOf(0L), h.calls)
+        advanceUntilIdle()
+        assertEquals(listOf(0L, KnockPolicy.START_GAP_MS), h.calls)
+        // Owed once: a link that comes and goes after that round knocks nothing more.
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = true)
+        advanceUntilIdle()
+        assertEquals(2, h.calls.size)
+        assertEquals(
+            listOf(
+                "knock_round trigger=start phones=1 outcome=silent sweep=none",
+                "knock_skip reason=linked",
+                "knock_round trigger=start phones=1 outcome=silent sweep=none",
+            ),
+            h.journal,
+        )
+    }
+
+    @Test
+    fun aLinkArrivingWhileTheStartIsOwedSkipsItAsLinkedUntilItDrops() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.SILENT), setOf(keyId))
+        // STARTED before the server is bound: the start is owed.
+        h.doorbell.onStarted()
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.doorbell.onServer(bound = true, rebound = false)
+        advanceUntilIdle()
+        assertTrue(h.calls.isEmpty())
+        assertEquals(listOf("knock_skip reason=linked"), h.journal)
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = true)
+        advanceUntilIdle()
+        assertEquals(1, h.calls.size)
+    }
+
+    @Test
+    fun aStartDroppedForALinkIsNotOwedWhenThePhoneClosesTheLink() = runTest {
+        val h = Harness(this, List(3) { KnockOutcome.SILENT }, setOf(keyId))
+        h.start()
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        h.doorbell.onStopped()
+        advanceTimeBy(1_000)
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.resume()
+        advanceUntilIdle()
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = false)
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+        // The closed drop used it up: a later link lost in the same period owes nothing either.
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = true)
+        advanceUntilIdle()
+        assertEquals(listOf(0L), h.calls)
+        assertEquals(
+            listOf(
+                "knock_round trigger=start phones=1 outcome=silent sweep=none",
+                "knock_skip reason=linked",
+            ),
+            h.journal,
+        )
+    }
+
+    @Test
+    fun anOwedStartHeldOffByALinkIsDroppedWhenThePhoneClosesIt() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.SILENT), setOf(keyId))
+        h.doorbell.onStarted()
+        h.linked = setOf(keyId)
+        h.doorbell.onLinkChanged(true, lost = false)
+        h.doorbell.onServer(bound = true, rebound = false)
+        advanceUntilIdle()
+        h.linked = emptySet()
+        h.doorbell.onLinkChanged(false, lost = false)
+        advanceUntilIdle()
+        assertTrue(h.calls.isEmpty())
+        assertEquals(listOf("knock_skip reason=linked"), h.journal)
+    }
+
+    @Test
+    fun theAskWindowEndsSixtySecondsAfterTheAsk() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.ASKED), setOf(keyId))
+        h.start()
+        advanceTimeBy(100)
+        runCurrent()
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        // Asked at 100 ms.
+        advanceTimeBy(KnockPolicy.ASK_WINDOW_MS - 1)
+        runCurrent()
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+    }
+
+    @Test
+    fun aRebindDuringTheAskWindowKnocksWhenItEnds() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.ASKED, KnockOutcome.SILENT), setOf(keyId))
+        h.start()
+        advanceTimeBy(200)
+        runCurrent()
+        h.doorbell.onServer(bound = true, rebound = true)
+        h.doorbell.onServer(bound = true, rebound = false)
+        advanceTimeBy(KnockPolicy.ASK_WINDOW_MS - 1_000)
+        runCurrent()
+        assertEquals(1, h.calls.size)
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        advanceUntilIdle()
+        assertEquals(listOf(0L, 100L + KnockPolicy.ASK_WINDOW_MS), h.calls)
+        assertEquals(
+            listOf(
+                "knock_round trigger=start phones=1 outcome=asked sweep=none",
+                "knock_round trigger=rebind phones=1 outcome=silent sweep=none",
+            ),
+            h.journal,
+        )
+    }
+
+    @Test
+    fun aDeclineMakesWayAndAnAskAfterItKeepsAutomaticRounds() = runTest {
+        val h = Harness(
+            this, listOf(KnockOutcome.DECLINED, KnockOutcome.ASKED, KnockOutcome.ANSWERED), setOf(keyId, otherKeyId),
+        )
+        h.start()
+        advanceTimeBy(300)
+        runCurrent()
+        assertEquals(listOf(otherKeyId, keyId), h.knocked)
+        assertEquals(DoorbellFace.ASKING, h.doorbell.face.value)
+        advanceUntilIdle()
+        assertEquals(DoorbellFace.QUIET, h.doorbell.face.value)
+        assertEquals(listOf("knock_round trigger=start phones=2 outcome=asked sweep=none"), h.journal)
+        // Not declined for the STARTED period: a rebind still knocks.
+        h.doorbell.onServer(bound = true, rebound = true)
+        advanceUntilIdle()
+        assertEquals(listOf(otherKeyId, keyId, otherKeyId), h.knocked)
+    }
+
+    @Test
+    fun theSweepGoesPastAListenerThatNeverSaysHello() = runTest {
+        val h = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        h.listening[47_671] = KnockOutcome.NO_HELLO
+        h.listening[47_673] = KnockOutcome.ANSWERED
+        h.start()
+        advanceUntilIdle()
+        assertEquals(listOf(47_671, 47_672, 47_673), h.swept.map { it.second })
+        assertEquals(47_673, h.book.snapshot()[keyId]?.port)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=answered sweep=found"), h.journal)
+
+        val none = Harness(this, listOf(KnockOutcome.UNREACHABLE, KnockOutcome.UNREACHABLE), setOf(keyId))
+        none.listening[47_671] = KnockOutcome.NO_HELLO
+        none.start()
+        advanceUntilIdle()
+        assertEquals((47_671..47_679).toList(), none.swept.map { it.second })
+        assertEquals(47_670, none.book.snapshot()[keyId]?.port)
+        assertEquals(DoorbellFace.UNANSWERED, none.doorbell.face.value)
+        assertEquals(listOf("knock_round trigger=start phones=1 outcome=unreachable sweep=missed"), none.journal)
     }
 
     // --- Socket client against a loopback phone --------------------------------
@@ -854,6 +1347,28 @@ class TvDoorbellTest {
             phone.join()
             assertEquals(KnockOutcome.ANSWERED, outcome)
             assertTrue(seen!!.contains("\"phoneNonce\":\"$phoneNonce\""))
+        }
+    }
+
+    @Test
+    fun clientReadsAnAskAndADecline() = runBlocking {
+        val loopback = InetAddress.getLoopbackAddress()
+        listOf(
+            "{\"t\":\"knockOk\",\"v\":1,\"ask\":true}" to KnockOutcome.ASKED,
+            "{\"t\":\"knockOk\",\"v\":1,\"declined\":true}" to KnockOutcome.DECLINED,
+        ).forEach { (reply, expected) ->
+            ServerSocket(0, 1, loopback).use { server ->
+                val phone = thread {
+                    server.accept().use { s ->
+                        s.getOutputStream().write("{\"t\":\"knockHello\",\"v\":1,\"phoneNonce\":\"$phoneNonce\"}\n".toByteArray())
+                        BufferedReader(InputStreamReader(s.getInputStream())).readLine()
+                        s.getOutputStream().write("$reply\n".toByteArray())
+                    }
+                }
+                val outcome = SocketKnockTransport().knock(loopback.hostAddress!!, server.localPort, loopback.hostAddress!!, tvId, keyId, key) { true }
+                phone.join()
+                assertEquals(expected, outcome)
+            }
         }
     }
 

@@ -122,6 +122,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- The "Connect to your TV?" prompt's two actions. Only this app's own immutable
+             PendingIntents reach it. -->
+        <receiver
+            android:name=".library.ConnectPromptReceiver"
+            android:exported="false" />
+
         <!-- Starts ready mode after a reboot or an update, only when it holds. -->
         <receiver
             android:name=".library.TvReadyBootReceiver"

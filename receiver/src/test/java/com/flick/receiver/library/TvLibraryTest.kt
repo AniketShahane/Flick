@@ -142,6 +142,49 @@ class TvLibraryTest {
     }
 
     @Test
+    fun onlyTheCloseThatLeavesNoLinkSaysWhetherTheLinkWasLost() {
+        val idle = TvLibrary.LinkPresence(anyLinked = false, lost = false)
+        val linked = TvLibrary.LinkPresence(anyLinked = true, lost = false)
+        val lostLast = TvLibrary.LinkPresence(anyLinked = false, lost = true)
+        assertEquals(idle, hub.links.value)
+
+        val a = connect(KEY_A)
+        assertEquals(linked, hub.links.value)
+        hub.onClosed(a, lost = false)
+        assertEquals(idle, hub.links.value)
+
+        val again = connect(KEY_A)
+        hub.onClosed(again, lost = true)
+        assertEquals(lostLast, hub.links.value)
+
+        // A lost link while another stays up, then the other closed by its phone: not lost.
+        val b = connect(KEY_A)
+        val c = connect(KEY_B)
+        hub.onClosed(b, lost = true)
+        assertEquals(linked, hub.links.value)
+        hub.onClosed(c, lost = false)
+        assertEquals(idle, hub.links.value)
+    }
+
+    @Test
+    fun linksTheTvClosesItselfAreNotLost() {
+        val idle = TvLibrary.LinkPresence(anyLinked = false, lost = false)
+        val older = connect(KEY_A)
+        connect(KEY_A)
+        // The superseded socket's session reports its end too; the phone still holds a link.
+        hub.onClosed(older, lost = true)
+        assertEquals(TvLibrary.LinkPresence(anyLinked = true, lost = false), hub.links.value)
+        hub.forget(KEY_A)
+        assertEquals(idle, hub.links.value)
+
+        val lostFirst = connect(KEY_A)
+        hub.onClosed(lostFirst, lost = true)
+        connect(KEY_B)
+        hub.forgetAll()
+        assertEquals(idle, hub.links.value)
+    }
+
+    @Test
     fun theMostRecentlyAuthenticatedPhoneIsShownAndForgettingItFallsBack() {
         val a = connect(KEY_A)
         deliver(a, listOf(E1))

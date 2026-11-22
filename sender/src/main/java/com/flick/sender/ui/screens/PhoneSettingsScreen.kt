@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flick.sender.R
+import com.flick.sender.library.TvConnectMode
 import com.flick.sender.net.FilmPosters
 import com.flick.sender.net.FlickController
 import com.flick.sender.ui.components.LocalNavMetrics
@@ -92,6 +93,7 @@ fun PhoneSettingsScreen(
     val simplifiedVideoNames by controller.simplifiedVideoNames.collectAsState()
     val filmPosters by controller.filmPosters.collectAsState()
     val tvLibrary by controller.tvLibraryEnabled.collectAsState()
+    val tvConnectMode by controller.tvConnectMode.collectAsState()
 
     // The dock floats over this surface too, above the nav, so the foot of the scroll has
     // to clear both of them while a cast is live — otherwise the screen's final controls sit
@@ -162,6 +164,8 @@ fun PhoneSettingsScreen(
         TvLibrarySection(
             enabled = tvLibrary,
             onSelect = controller::selectTvLibrary,
+            connectMode = tvConnectMode,
+            onSelectConnectMode = controller::selectTvConnectMode,
             batteryExempt = batteryExempt,
             onRequestBatteryExemption = onRequestBatteryExemption,
         )
@@ -330,6 +334,8 @@ internal fun FilmPostersSection(enabled: Boolean, onSelect: (Boolean) -> Unit) {
 internal fun TvLibrarySection(
     enabled: Boolean,
     onSelect: (Boolean) -> Unit,
+    connectMode: TvConnectMode,
+    onSelectConnectMode: (TvConnectMode) -> Unit,
     batteryExempt: Boolean,
     onRequestBatteryExemption: () -> Unit,
 ) {
@@ -342,6 +348,7 @@ internal fun TvLibrarySection(
             onSelect = onSelect,
         )
         if (enabled) {
+            ConnectModeChoice(selected = connectMode, onSelect = onSelectConnectMode)
             Text(
                 text = stringResource(R.string.settings_tv_library_wake),
                 style = FlickText.bodyMedium.copy(color = colors.onSurfaceDim),
@@ -446,27 +453,67 @@ private fun AppearanceSection(preference: ThemePreference, onSelect: (ThemePrefe
  * The three options as a connected button group — Material Expressive's own answer for a
  * handful of mutually exclusive choices, and the same `ButtonGroup` the remote's transport
  * is built from.
- *
+ */
+@Composable
+private fun ThemeChoice(selected: ThemePreference, onSelect: (ThemePreference) -> Unit) {
+    SegmentedChoice(
+        options = ThemePreference.entries,
+        selected = selected,
+        label = { labelOf(it) },
+        onSelect = onSelect,
+    )
+}
+
+/**
+ * "When your TV opens Flick", under the library switch it only means anything with. Its own
+ * label rather than a SwitchRow: both answers are ways of connecting, not on and off.
+ */
+@Composable
+private fun ConnectModeChoice(selected: TvConnectMode, onSelect: (TvConnectMode) -> Unit) {
+    val colors = LocalFlickColors.current
+    val title = stringResource(R.string.settings_tv_connect_title)
+    val spoken = stringResource(R.string.settings_tv_connect_a11y, title, stringResource(connectModeLabel(selected)))
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = title,
+            style = FlickText.bodyMedium.copy(color = colors.onSurface),
+            modifier = Modifier.semantics { contentDescription = spoken },
+        )
+        SegmentedChoice(
+            options = TvConnectMode.entries,
+            selected = selected,
+            label = { connectModeLabel(it) },
+            onSelect = onSelect,
+        )
+    }
+}
+
+/**
  * [ToggleButton] is a toggle rather than a radio, so a tap on the segment that is already
  * lit arrives as `false`. Dropping it is what keeps the group from landing on no choice at
  * all, and it also means the haptic only fires when something actually moved.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ThemeChoice(selected: ThemePreference, onSelect: (ThemePreference) -> Unit) {
+private fun <T> SegmentedChoice(
+    options: List<T>,
+    selected: T,
+    label: (T) -> Int,
+    onSelect: (T) -> Unit,
+) {
     val haptics = rememberFlickTouchHaptics()
     // One source per segment, held for the life of the control: the group reads the
     // press off it to widen that segment and squeeze its neighbours, and a fresh
     // instance per recomposition would leave the squeeze with nothing to follow.
-    val sources = remember { List(ThemePreference.entries.size) { MutableInteractionSource() } }
+    val sources = remember(options.size) { List(options.size) { MutableInteractionSource() } }
     ButtonGroup(
-        // Three fixed options that are the whole preference. There is nothing to overflow
-        // into a menu, and an appearance the user cannot see offered is not a choice.
+        // A few fixed options that are the whole preference. There is nothing to overflow
+        // into a menu, and a choice the user cannot see offered is not a choice.
         overflowIndicator = {},
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
     ) {
-        ThemePreference.entries.forEachIndexed { index, option ->
+        options.forEachIndexed { index, option ->
             val source = sources[index]
             customItem(
                 buttonGroupContent = {
@@ -480,8 +527,7 @@ private fun ThemeChoice(selected: ThemePreference, onSelect: (ThemePreference) -
                         },
                         shapes = when (index) {
                             0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                            ThemePreference.entries.lastIndex ->
-                                ButtonGroupDefaults.connectedTrailingButtonShapes()
+                            options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                             else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                         },
                         // Tighter than the Material default because a third of a 360 dp
@@ -495,7 +541,7 @@ private fun ThemeChoice(selected: ThemePreference, onSelect: (ThemePreference) -
                             .heightIn(min = 48.dp),
                     ) {
                         Text(
-                            text = stringResource(labelOf(option)),
+                            text = stringResource(label(option)),
                             style = FlickText.labelMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -515,4 +561,10 @@ private fun labelOf(preference: ThemePreference): Int = when (preference) {
     ThemePreference.SYSTEM -> R.string.settings_theme_system
     ThemePreference.LIGHT -> R.string.settings_theme_light
     ThemePreference.DARK -> R.string.settings_theme_dark
+}
+
+@StringRes
+private fun connectModeLabel(mode: TvConnectMode): Int = when (mode) {
+    TvConnectMode.ASK -> R.string.settings_tv_connect_ask
+    TvConnectMode.AUTO -> R.string.settings_tv_connect_auto
 }

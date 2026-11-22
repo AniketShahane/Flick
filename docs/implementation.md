@@ -1621,26 +1621,135 @@ contract is [library-channel.md](design/library-channel.md); this section says w
   TV alive, or to another TV at all while the activity is visible), leaves an earlier knock's
   resume still dialing the same TV to answer it (`resuming`, lock kept; another TV's knock is busy) or runs the coordinator's silent
   resume
-  (`CastCoordinator.knockResume`, `refreshTvName`'s shape: no repair mark, no route change) to
-  the stored endpoint, then to the knocker's address at the stored port as a hint behind it. That
-  resume dials stored addresses only, so it does not start an mDNS browse.
+  (`CastCoordinator.silentResume` with kind `KNOCK`, `refreshTvName`'s shape: no repair mark, no
+  route change) to the stored endpoint, then to the knocker's address at the stored port as a
+  hint behind it. That resume dials stored addresses only, so it does not start an mDNS browse.
+  The same resume, journaled per kind (`knock_resume`, `open_resume`, `prompt_resume`), also
+  serves connect on open and the prompt's Connect below. Every failure releases the knock's wake
+  lock, since a knock from the same TV that arrived meanwhile waits on it (`resuming`).
   Idle, the listener is the only thing running: it blocks in `accept` with no wake lock, timer
   or polling, so nothing wakes the phone until a TV connects. Settings › Show my library on my TV says the TV can
   wake Flick and offers the battery settings when the exemption is missing.
+- **Connect on open** (contract §3). `CastCoordinator.onForeground` runs the silent resume (kind
+  `OPEN`, no knock host, no wake lock) to the last TV when `OpenResumePolicy.shouldResume` holds:
+  the library setting on, a ready pairing (last, not `needsRepair`), media access granted,
+  control v2 `DISCONNECTED`, no cast live, queued, starting or reattaching, no dial, resume or
+  block wait running, no pair sheet or scanned-code card open, and none started in the last 15 s
+  (`elapsedRealtime`). If foregrounding's held-line check retires a dead line, it asks again.
+  Once control authenticates, `TvLibrary.reconcile` (it collects the connection state) opens
+  `/library`. Journal: `open_resume ok=<bool> reason=<ok|failed|superseded|commit> dials=<n>`.
+  A person's dial supersedes it through `pairingGate`, and so does tapping a TV that is not yet
+  paired (`selectDevice`'s code-sheet branch invalidates a running OPEN or PROMPT resume, whose
+  `CONNECTING` would otherwise hold the sheet's spinner). The Connect screen's confirm haptic
+  reads how the connection was made: `CastCoordinator.connectSilent` is cleared by every
+  `beginPairingAttempt` and set by `silentResume` and `refreshTvName` straight after theirs, and
+  by `beginReattach` (a control recovery's reattach never passes through `beginPairingAttempt`, so
+  it would otherwise inherit whatever the last dial left), so it is settled before control reaches
+  `CONNECTED`; `connectBuzzes(previous, current, silent)` buzzes only on the step into `CONNECTED`
+  when it is false. So no KNOCK, OPEN or PROMPT resume and no automatic reattach buzzes,
+  and no screen-local flag can go stale after a dismissed sheet or a cancelled pairing. Starting
+  an OPEN or PROMPT resume also clears that TV's "Not now" (`SilentResumeKind.personActed`).
+  A knock that reaches an OPEN or PROMPT resume already dialing that TV (`resuming`) leaves its
+  host with it as a late hint (`LateResumeHint`): after its own candidates the resume dials that
+  host once, at the stored port, unless it already has. While any silent resume runs, its tvId is
+  `@Volatile` (`silentRun`), and `knockReply` answers that TV plain rather than `ask`.
+- **The "Connect?" prompt** (contract §13.5). The listener decides the `knockOk` before anything
+  acts on the knock, through `TvDoorbell`'s `replyFor` → `TvLibrary.knockReply`
+  (`KnockReplyPolicy`, pure, in this order): plain while a silent resume to that TV is dialing
+  (even within a "Not now"), `declined` within 10 min of "Not now" for that TV (`PromptSnooze`,
+  in memory, `elapsedRealtime`), plain under "Automatic", with the activity visible (`foreground` is `@Volatile` for this read), or with
+  notifications unavailable; `ask` otherwise. On main, a `declined` knock journals
+  `knock outcome=declined` and stops; a non-resume action is carried out as before whatever the
+  reply; a resume with `ask` connects if the activity became visible, otherwise posts
+  `ConnectPrompt` (journal `knock outcome=asked`, wake lock released), or connects and journals
+  `prompt_unavailable` if it cannot. A plain resume in ask mode with the activity hidden
+  re-checks the prompt too, and journals `prompt_unavailable` when it is still unavailable
+  (`KnockReplyPolicy.resumeStep`). The notification is on
+  channel `tv_connect_requests` ("TV connection requests", `IMPORTANCE_HIGH`, created beside the
+  ready channels), one id per TV (`ConnectPromptIds`, above the fixed 42/43), "Connect to <TV>?" /
+  "Flick is open on your TV.", public, auto-cancel, alert once, 60-s timeout; never a full-screen intent (limited to calling and
+  alarm apps on Android 14+). Body → an explicit, immutable `MainActivity` intent carrying the
+  tvId (`ConnectPrompt.EXTRA_OPEN_TV_ID`, its own request code) and the install's tap token
+  (`EXTRA_TAP_TOKEN`). `MainActivity` is exported, so the token is what proves the intent came
+  from the prompt: 32 `SecureRandom` bytes, base64url, made once (`ConnectPrompt.tapToken`) in
+  app-private `flick_prompt_token`, excluded from backup and device transfer, never logged.
+  `onCreate` (only without saved state) and `onNewIntent` remove both extras and call
+  `onConnectPromptChoice(tvId, connect = true)` only when the token matches (constant-time,
+  `ConnectPromptTap.tvId`); otherwise the extras are just dropped. From `onCreate` that runs
+  before `ON_START`'s connect on open, which then sees the dial in flight. A stopped `singleTask`
+  activity gets `onRestart`, `onStart` (connect on open dials the last TV) and only then
+  `onNewIntent`, so the tap meets that dial instead (`PromptConnectPolicy` below).
+  Actions → the non-exported `ConnectPromptReceiver` → `CastCoordinator.onConnectPromptChoice`.
+  Connect follows `PromptConnectPolicy.step` (pure): it hands the knock's host to a silent resume
+  already dialing that TV (`skipped=resuming`); if connect on open is dialing a different TV and
+  nothing else owns the line, it supersedes that resume (`invalidatePairingAttempt`, which does
+  call `endBlockWait`, and the PROMPT resume's own `beginPairingAttempt` would abandon a reattach;
+  neither ends anything, because the supersede runs only when no other dial is in flight and no
+  cast is live, so no block wait or reattach can exist; the superseded run journals `open_resume
+  reason=superseded` and leaves the wake lock to its replacement) and goes on; it starts nothing
+  while any other dial, pairing, block wait or resume owns the line (`skipped=busy`); and
+  otherwise takes the knock wake lock (`TvReadyService.acquireKnockWake`)
+  and runs the silent resume (kind `PROMPT`) with the knock's host as hint
+  (`prompt choice=connect`, or `skipped=<no_pairing|cast_live|setting|linked|other_tv|busy|
+  resuming>`); Not now snoozes that TV for 10 min
+  (`prompt choice=later`). The prompt is cancelled when control authenticates to that TV, when
+  the setting goes off, or when a knock finds the pairing gone. Settings › Show my library on my
+  TV › When your TV opens Flick: "Ask me first" (default) / "Automatic", persisted as
+  `connect_mode` in `flick_tv_library`.
 - **TV doorbell client** (contract §13.4). Per paired phone the TV remembers `1|host|port[|proven]`
-  in `flick_doorbell` (host of its last authenticated `/library` socket, port of its last
-  `knockAt`, a recency stamp for when that host was last proven; excluded from backup, pruned
-  and deleted with the pairing). An address belongs to the last pairing proven from it. It
+  in `flick_doorbell` (host of its last authenticated control-v2 or `/library` connection —
+  `LibraryServer.onControlProven` records it from control too, so a DHCP move is learned without
+  a knock first reaching the old host — port of its last `knockAt`, a recency stamp for when
+  that host was last proven; excluded from backup, pruned and deleted with the pairing). An
+  address belongs to the last pairing proven from it. It
   knocks only while STARTED with the control server listening on the LAN and no phone linked
   (the TV holds one controller, so it never wakes a second phone): once per STARTED period
-  (again after a rebind, after any round that is out) and on a remote key on the idle screen at
-  most every 10 s. A round knocks one phone at a time, most recently proven first, moving on
-  only when a phone never answered. Connect 2.5 s, hello 1.5 s, `knockOk` 2 s; a second attempt
+  (again after a rebind, after any round that is out; journaled `rebind` only if a start round
+  already ran this STARTED period) and on a remote key on the idle screen at
+  most every 10 s. A start dropped because a phone was linked (`knock_skip reason=linked`) is
+  owed again only if the drop that left no link was a **lost** one (a ping timeout, including a
+  settled close code 1011; a socket gone without a Close frame; `outbox_full`, the phone
+  having stopped reading; `cancelled`, the TV's own server stopping or rebinding; or
+  `control_lost`, the phone's 1000 close with reason text `control`, sent by `LibraryLink.close`
+  through `LibraryCloseText` when `TvLibrary` closes the link because control v2 was lost) in the
+  same STARTED period with no round since. A
+  phone's deliberate close (any other Close frame: library setting off, media access revoked, the
+  ready-mode idle hang-up; a phone from before `control_lost` sends no text, so its control-lost
+  close still reads as `peer_closed`) and a link the TV closes itself (superseded or forgotten)
+  owe nothing: re-knocking then would show a false "Couldn't wake your phone" or undo the
+  hang-up. `LibraryServer.serveSession` classifies the end (pure `LibraryClose.of` in
+  `LibraryPolicies.kt`) and carries the `lost` flag through
+  the hub to `TvDoorbell.onLinkChanged`. The TV pings
+  each authenticated `/library` session every 60 s and closes it after 20 s without a pong
+  (`LibraryServer`; control v2's settings are unchanged, and the phone's Ktor client answers the
+  pings itself), so a phone gone without a close stops counting as linked. Only the receive
+  itself is guarded (`incoming.receiveCatching()`; closed with a cause counts as a failed
+  receive), so a timeout never escapes as a handler failure, while an exception from the loop
+  body (`PhoneFrame.parse`, `readText`, `recordPort`, `hub.onFrame`, `hub.onThumbnail`)
+  propagates and Ktor logs it with its stack trace; such a session still ends as `dropped`
+  (lost), at once, without the 2-s close-code settle. When the receive failed or the end is lost
+  (except `control_lost`, whose close handshake is the phone's), the `finally` cancels the
+  session: a handler that returns normally makes Ktor 3.1.3 join the session, whose reader a dead
+  socket holds for minutes, while the cancel releases the socket at once. The log line is
+  `close reason=<peer_closed|control_lost|ping_timeout|dropped|cancelled|violation|superseded|forgotten|outbox_full|tv_closed>`;
+  `peer_closed` is kept for a Close frame from the phone without the `control` text. A round knocks one
+  phone at a time, most recently proven first, moving on when a phone never answered or answered
+  `declined`; the outcome ranks `answered` > `asked` > `declined` > failures. Connect 2.5 s, hello 1.5 s, `knockOk` 2 s; a second attempt
   1.5 s later only when the connect failed; start rounds at least 6 s apart, and a phone's first knock waits
   6 s after the last connect to it (the phone's per-peer gate). These timings live for the TV
   process, not the screen. An 8-s grace after `knockOk` shows "Waking your phone…"; a failure
   falls back to today's idle text plus "Couldn't wake your phone. Check it's on this Wi-Fi and
-  Flick's battery is set to Unrestricted."
+  Flick's battery is set to Unrestricted." A phone whose stored port stays unreachable has its
+  other listener ports (47670..47679) swept on the same host, 4 s in all, going on past a port
+  that connects but sends no hello and stopping at one that sends a hello and then any `knockOk`
+  or silence; a port the phone answers becomes the stored one. A round answered only with `knockOk` `ask` shows
+  "Check your phone to connect" (a steady dot) until a phone links or 60 s pass, then the quiet
+  text without the hint, and starts no automatic round meanwhile (an owed rebind round is kept
+  and runs when the window ends); one where a phone declined and none answered or asked goes
+  quiet and starts no more automatic rounds that STARTED period. The TV journals
+  `knock_round trigger=<start|key|rebind> phones=<n> outcome=<answered|asked|declined|unreachable|no_hello|silent|no_key|no_lan|not_started> sweep=<none|missed|found>`
+  once per round and `knock_skip reason=<linked|no_target|no_lan|not_ready|gap>` when an owed
+  start round did not run (once per reason per STARTED period).
 - **TV side** (`receiver/.../library/`). `LibraryServer` is the route: the same binding, `Host`
   and private-peer gates as `/control`, its own pre-auth permit pool, a 512-frame outgoing bound.
   `TvLibrary` implements `LibraryHub`: it assembles catalogs, keeps them in memory only (keyed by
@@ -1764,7 +1873,9 @@ adb logcat -s FlickPhone:V
 
 ### Incident journal
 
-The ring is 200 lines of memory and dies with the process, and every drop investigated so far was reconstructed from whatever logcat still held. `IncidentJournal` (one in each module's `util`, tag **`FlickJournal`**) is the sparse channel that survives: one line per incident — process start; cast start, ready, end and failure; rebuffers; load-error streaks and their recovery; every direct-link probe decision, release and teardown with the platform's answer, and the echo watch changing pace (`echo_cadence slow=…`, rate-limited); control loss and reattach; transfer evictions and `503`s; Wi-Fi association edges and channel changes; and, on the phone, the transport of the default network (`wifi`, `vpn`, `cellular`), which is the after-the-fact answer to "where was the control connection actually going" now that it is deliberately not pinned to Wi-Fi; and each valid TV doorbell knock with its outcome (`knock`, `knock_resume`). Never one line per tick.
+The ring is 200 lines of memory and dies with the process, and every drop investigated so far was reconstructed from whatever logcat still held. `IncidentJournal` (one in each module's `util`, tag **`FlickJournal`**) is the sparse channel that survives: one line per incident — process start; cast start, ready, end and failure; rebuffers; load-error streaks and their recovery; every direct-link probe decision, release and teardown with the platform's answer, and the echo watch changing pace (`echo_cadence slow=…`, rate-limited); control loss and reattach; transfer evictions and `503`s; Wi-Fi association edges and channel changes; and, on the phone, the transport of the default network (`wifi`, `vpn`, `cellular`), which is the after-the-fact answer to "where was the control connection actually going" now that it is deliberately not pinned to Wi-Fi; and each valid TV doorbell knock with its outcome (`knock`, `knock_resume`), the phone's other
+silent resumes (`open_resume`, `prompt_resume`), the connect prompt (`prompt`,
+`prompt_unavailable`) and, on the TV, each knock round (`knock_round`, `knock_skip`). Never one line per tick.
 
 Lines are `<UTC ISO-8601 millis> <event> k=v …`, built by a pure formatter (`JournalLine` / `IncidentLine`) whose value shapes are the redaction contract: a Boolean, an Int, a Long, an enum name, or a token of letters, digits and underscores that starts with a letter; anything else is written as `invalid`. An address, a URL and a MAC cannot be represented. A session token or a network name sometimes can, so for those the protection is the call sites, which pass counters, booleans, enums and exception class names and nothing else — no SSID, BSSID, host, device name or file name, at any call site. Where a cast id appears it is the existing eight-hex fingerprint, never the id.
 

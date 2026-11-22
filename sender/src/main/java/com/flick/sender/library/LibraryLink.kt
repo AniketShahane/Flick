@@ -255,7 +255,7 @@ internal class LibraryLink(
         val session = socket ?: return
         detach()
         FlickLog.i("library", "closed by phone reason=$reason")
-        closeQuietly(session)
+        closeQuietly(session, LibraryCloseText.of(reason))
     }
 
     private fun violated(session: DefaultClientWebSocketSession) {
@@ -280,8 +280,8 @@ internal class LibraryLink(
         running.forEach { it.cancel() }
     }
 
-    private fun closeQuietly(session: DefaultClientWebSocketSession) {
-        scope.launch { runCatching { session.close() } }
+    private fun closeQuietly(session: DefaultClientWebSocketSession, text: String = "") {
+        scope.launch { runCatching { session.close(CloseReason(CloseReason.Codes.NORMAL, text)) } }
     }
 
     private fun Outcome.logName(): String = when (this) {
@@ -299,7 +299,8 @@ internal class LibraryLink(
 
         /**
          * Its own client, never control v2's: that one pings every 15 s, and the library socket
-         * needs no liveness probe of its own — it closes whenever control v2 does.
+         * needs no liveness probe of its own — it closes whenever control v2 does. The TV pings it
+         * (60 s, 20-s timeout) to find a half-open link; Ktor answers those pings itself.
          */
         fun newClient(): HttpClient = HttpClient(CIO) {
             install(WebSockets) {

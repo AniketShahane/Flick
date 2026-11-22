@@ -103,14 +103,38 @@ internal interface LibraryPhone {
      */
     fun dialInFlight(): Boolean
 
-    /** The tvId a knock's own resume ([knockResume]) is still dialing, or null. */
+    /**
+     * The tvId a silent resume ([silentResume], of any kind) is still dialing, or null. A knock
+     * from that TV is answered by it; it releases the knock's wake lock if it fails.
+     */
     fun knockResumingTv(): String?
 
     /**
-     * The quiet, non-user resume to [pairing]'s stored endpoint, then [knockHost] (where the
+     * The quiet, non-user resume to [pairing]'s stored endpoint, then [hintHost] (where a
      * knock came from) behind it. False when it did not start.
      */
-    fun knockResume(pairing: PairingStore.Pairing, knockHost: String?): Boolean
+    fun silentResume(pairing: PairingStore.Pairing, hintHost: String?, kind: SilentResumeKind): Boolean
+
+    /**
+     * The tvId of the silent resume still dialing, or null. Unlike [knockResumingTv], safe to
+     * read off main: the doorbell's listener thread asks it before answering a knock.
+     */
+    fun silentResumeTv(): String?
+
+    /**
+     * A knock's address for the OPEN or PROMPT resume dialing [tvId], tried once after its own
+     * candidates. Ignored when no such resume is running.
+     */
+    fun lateResumeHint(tvId: String, host: String?)
+
+    /** The kind of the silent resume still dialing (as [knockResumingTv]), or null. On main. */
+    fun silentResumeKind(): SilentResumeKind?
+
+    /** A dial, pairing, block wait or pair sheet owns control v2 besides any silent resume. */
+    fun dialingBesidesSilentResume(): Boolean
+
+    /** Cancel the silent resume still dialing; it journals itself as superseded. */
+    fun supersedeSilentResume()
 
     /** Close control v2 with no face, no haptic and no redial. */
     fun hangUpControl()
@@ -133,6 +157,18 @@ internal class TvLibrary(
 
     /** "Show my library on my TV". */
     val enabled: StateFlow<Boolean> = preference.enabled
+
+    private val connectModePreference =
+        TvConnectModeController(preferenceStore.connectMode(), preferenceStore::saveConnectMode)
+
+    /** "When your TV opens Flick". Read off main by [knockReply]: a StateFlow's value is safe there. */
+    val connectMode: StateFlow<TvConnectMode> = connectModePreference.mode
+
+    // "Not now" per TV, read on the doorbell's listener thread.
+    private val promptSnooze = PromptSnooze()
+
+    // TVs with a prompt up, each with the address its knock came from (a hint only).
+    private val promptHints = HashMap<String, String?>()
 
     private val watchedStore = WatchedStore(context, scope)
     private val watchedRecorder = WatchedRecorder()
@@ -218,15 +254,24 @@ internal class TvLibrary(
 
     fun select(enabled: Boolean) = preference.select(enabled)
 
+    fun selectConnectMode(mode: TvConnectMode) = connectModePreference.select(mode)
+
     // --- Link lifecycle (contract §3) ---------------------------------------
 
     private fun reconcile() {
         // Off ends the window whatever control v2 is doing (contract §8).
-        if (!preference.enabled.value) closeReadyWindow("setting") else reconcileReadyMode()
+        if (!preference.enabled.value) {
+            closeReadyWindow("setting")
+            cancelPrompts()
+        } else {
+            reconcileReadyMode()
+        }
         val endpoint = phone.control.authenticatedEndpoint()
             ?.takeIf { phone.control.connection.value == ConnectionStatus.CONNECTED }
+        // Connected by any path, so asking is moot.
+        endpoint?.let { cancelPrompt(it.tvId) }
         if (endpoint == null) {
-            closeLink("control")
+            closeLink(LibraryCloseText.CONTROL)
             readyWindow.controlLost(now())
             scheduleReadyDeadline()
             return
@@ -886,15 +931,34 @@ internal class TvLibrary(
     }
 
     /**
+     * Which `knockOk` a verified knock from [tvId] gets. On the doorbell's listener thread,
+     * before [onKnock]: everything read here is safe off main.
+     */
+    fun knockReply(tvId: String): KnockReply = KnockReplyPolicy.reply(
+        snoozed = promptSnooze.isSnoozed(tvId, now()),
+        mode = connectMode.value,
+        visible = phone.visible(),
+        notificationsAvailable = ConnectPrompt.available(context),
+        resumingThatTv = phone.silentResumeTv() == tvId,
+    )
+
+    /**
      * A verified knock from (tvId, keyId), with the knock's wake lock held. Nothing here
      * moves the visible screen: the resume is the silent one, and the library opens behind it.
      * [knockHost] is where the knock came from: a candidate behind the stored endpoint only.
+     * [reply] is what the TV was already told.
      */
-    fun onKnock(tvId: String, keyId: String, knockHost: String?) {
+    fun onKnock(tvId: String, keyId: String, knockHost: String?, reply: KnockReply) {
         phone.ensureMediaAccess()
         val pairing = phone.pairing(tvId)?.takeIf { it.keyId == keyId }
         if (pairing == null) {
+            cancelPrompt(tvId)
             journalKnock("no_pairing")
+            TvReadyService.releaseKnockWake()
+            return
+        }
+        if (reply == KnockReply.DECLINED) {
+            journalKnock("declined")
             TvReadyService.releaseKnockWake()
             return
         }
@@ -911,7 +975,7 @@ internal class TvLibrary(
             visible = phone.visible(),
         )
         if (line == null || !check) {
-            answerKnock(pairing, knockHost, controlAlive = false)
+            answerKnock(pairing, knockHost, controlAlive = false, reply)
             return
         }
         knockCheck = scope.launch {
@@ -920,7 +984,7 @@ internal class TvLibrary(
             // A line installed while the ping was out is fresh, whatever this one did.
             val alive = verdict != Liveness.DEAD || phone.control.line() !== line
             if (!alive) FlickLog.i("library", "knock control unanswered")
-            answerKnock(pairing, knockHost, alive)
+            answerKnock(pairing, knockHost, alive, reply)
         }
     }
 
@@ -931,7 +995,7 @@ internal class TvLibrary(
         return if (endpoint.tvId == tvId && endpoint.keyId == keyId) KnockControl.THAT_TV else KnockControl.OTHER_TV
     }
 
-    private fun answerKnock(pairing: PairingStore.Pairing, knockHost: String?, controlAlive: Boolean) {
+    private fun answerKnock(pairing: PairingStore.Pairing, knockHost: String?, controlAlive: Boolean, reply: KnockReply) {
         val control = knockControl(pairing.tvId, pairing.keyId)
         val endpoint = phone.control.authenticatedEndpoint()
         val action = KnockResponse.action(
@@ -947,19 +1011,135 @@ internal class TvLibrary(
         when (action) {
             KnockAction.CAST_LIVE, KnockAction.BUSY -> TvReadyService.releaseKnockWake()
             // The resume in flight releases the lock when it fails, the first catalog when it works.
-            KnockAction.RESUMING -> Unit
+            KnockAction.RESUMING -> phone.lateResumeHint(pairing.tvId, knockHost)
             KnockAction.LINKED, KnockAction.LIBRARY -> {
                 closeLink("knock")
                 reconcile()
             }
-            KnockAction.RESUME -> if (!phone.knockResume(pairing, knockHost)) TvReadyService.releaseKnockWake()
+            KnockAction.RESUME -> {
+                if (resumeForKnock(pairing, knockHost, reply)) return
+            }
         }
         journalKnock(action.journal)
+    }
+
+    /** True when it journaled the knock itself. */
+    private fun resumeForKnock(pairing: PairingStore.Pairing, knockHost: String?, reply: KnockReply): Boolean {
+        val mode = connectMode.value
+        val visibleNow = phone.visible()
+        var step = KnockReplyPolicy.resumeStep(
+            reply,
+            mode,
+            visibleNow,
+            promptAvailable = KnockReplyPolicy.needsPromptCheck(reply, mode, visibleNow) && ConnectPrompt.available(context),
+        )
+        if (step == KnockReplyPolicy.ResumeStep.PROMPT) {
+            val posted = runCatching { ConnectPrompt.post(context, pairing.tvId, pairing.name) }.getOrDefault(false)
+            if (posted) {
+                promptHints[pairing.tvId] = knockHost
+                TvReadyService.releaseKnockWake()
+                journalKnock("asked")
+                return true
+            }
+            step = KnockReplyPolicy.ResumeStep.CONNECT_UNPROMPTED
+        }
+        if (step == KnockReplyPolicy.ResumeStep.CONNECT_UNPROMPTED) {
+            FlickLog.i("library", "prompt unavailable")
+            IncidentJournal.record("prompt_unavailable")
+        }
+        if (step == KnockReplyPolicy.ResumeStep.NOTHING) {
+            TvReadyService.releaseKnockWake()
+            return false
+        }
+        if (!phone.silentResume(pairing, knockHost, SilentResumeKind.KNOCK)) TvReadyService.releaseKnockWake()
+        return false
     }
 
     private fun journalKnock(outcome: String) {
         FlickLog.i("library", "knock outcome=$outcome")
         IncidentJournal.record("knock", "outcome" to outcome)
+    }
+
+    // --- The "Connect?" prompt (contract §13.5) --------------------------------
+
+    /** "Connect" or "Not now" on the prompt for [tvId], on main. */
+    fun onPromptChoice(tvId: String, connect: Boolean) {
+        ConnectPrompt.cancel(context, tvId)
+        val hint = promptHints.remove(tvId)
+        if (!connect) {
+            promptSnooze.snooze(tvId, now())
+            journalPrompt("later")
+            return
+        }
+        promptSnooze.clear(tvId)
+        phone.ensureMediaAccess()
+        val pairing = phone.pairing(tvId)
+        val skipped = when {
+            pairing == null -> "no_pairing"
+            phone.castLive() -> "cast_live"
+            !preference.enabled.value -> "setting"
+            else -> when (knockControl(tvId, pairing.keyId)) {
+                KnockControl.THAT_TV -> "linked"
+                KnockControl.OTHER_TV -> "other_tv"
+                KnockControl.NONE -> null
+            }
+        }
+        if (skipped != null || pairing == null) {
+            journalPrompt("connect", skipped ?: "no_pairing")
+            return
+        }
+        touchReadyWindow()
+        // A body tap reaches a stopped activity after onStart's connect-on-open has dialed.
+        val step = PromptConnectPolicy.step(
+            tvId = tvId,
+            resumingTv = phone.knockResumingTv(),
+            resumingKind = phone.silentResumeKind(),
+            dialing = phone.dialing(),
+            otherDialing = phone.dialingBesidesSilentResume(),
+        )
+        when (step) {
+            PromptConnectPolicy.Step.JOIN -> {
+                TvReadyService.acquireKnockWake(context)
+                phone.lateResumeHint(tvId, hint)
+                journalPrompt("connect", "resuming")
+                return
+            }
+            PromptConnectPolicy.Step.BUSY -> {
+                journalPrompt("connect", "busy")
+                return
+            }
+            PromptConnectPolicy.Step.SUPERSEDE -> phone.supersedeSilentResume()
+            PromptConnectPolicy.Step.START -> Unit
+        }
+        // The resume's failure path releases it, the library's first catalog its success.
+        TvReadyService.acquireKnockWake(context)
+        if (!phone.silentResume(pairing, hint, SilentResumeKind.PROMPT)) {
+            TvReadyService.releaseKnockWake()
+            journalPrompt("connect", "busy")
+            return
+        }
+        journalPrompt("connect")
+    }
+
+    private fun cancelPrompt(tvId: String) {
+        if (!promptHints.containsKey(tvId)) return
+        promptHints.remove(tvId)
+        ConnectPrompt.cancel(context, tvId)
+    }
+
+    private fun cancelPrompts() {
+        promptHints.keys.toList().forEach(::cancelPrompt)
+    }
+
+    private fun journalPrompt(choice: String, skipped: String? = null) {
+        FlickLog.i("library", "prompt choice=$choice${skipped?.let { " skipped=$it" } ?: ""}")
+        if (skipped == null) IncidentJournal.record("prompt", "choice" to choice)
+        else IncidentJournal.record("prompt", "choice" to choice, "skipped" to skipped)
+    }
+
+    /** An OPEN or PROMPT resume to [tvId] started: the person acted, so "Not now" no longer holds. */
+    fun onPersonResume(tvId: String) {
+        promptSnooze.clear(tvId)
     }
 
     // --- Helpers ------------------------------------------------------------

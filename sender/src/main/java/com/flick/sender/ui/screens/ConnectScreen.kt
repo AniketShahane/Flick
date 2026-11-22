@@ -169,9 +169,8 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
     LaunchedEffect(connection) {
         val previous = lastConnection
         lastConnection = connection
-        if (connection == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED) {
-            haptics.confirm()
-        }
+        // Read now rather than collected: the coordinator settles it before the dial connects.
+        if (connectBuzzes(previous, connection, controller.connectSilent.value)) haptics.confirm()
     }
     var lastPairError by remember { mutableStateOf(pairError) }
     LaunchedEffect(pairError) {
@@ -338,7 +337,9 @@ fun ConnectScreen(controller: FlickController, onOpenWifiSettings: () -> Unit) {
             codeRevision = codeRevision,
             // The whole confirmed record is submitted, not just its id: the endpoint
             // rendered above is the only one the typed code may be sent to.
-            onSubmit = { code -> controller.submitDiscoveredPair(target, code) },
+            onSubmit = { code ->
+                controller.submitDiscoveredPair(target, code)
+            },
             onDismiss = { controller.cancelPairing() },
         )
     } else if (scanned != null) {
@@ -434,6 +435,14 @@ internal fun pairAttemptInFlight(connection: ConnectionStatus): Boolean =
     connection == ConnectionStatus.CONNECTING ||
         connection == ConnectionStatus.PAIRING ||
         connection == ConnectionStatus.CONFIRM_ON_TV
+
+/**
+ * Whether this connection change earns the confirm haptic: reaching CONNECTED, by a dial that
+ * was not [silent] (the coordinator's `connectSilent`: a knock's, an open's or a prompt's
+ * resume, a reattach, or a name refresh).
+ */
+internal fun connectBuzzes(previous: ConnectionStatus, current: ConnectionStatus, silent: Boolean): Boolean =
+    current == ConnectionStatus.CONNECTED && previous != ConnectionStatus.CONNECTED && !silent
 
 /** A paired record only describes a live TV while the control link is actually up. */
 internal fun linkLive(connection: ConnectionStatus, connected: PairedTv?): Boolean =

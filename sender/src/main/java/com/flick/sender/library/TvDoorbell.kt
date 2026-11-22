@@ -14,9 +14,10 @@ import java.nio.charset.StandardCharsets
  * connection inline, so there is one handshake at a time and nothing runs between knocks:
  * no timer, no wake lock, no discovery.
  *
- * [keyFor] and [onKnock] are called on the listener thread. [onKnock] runs after `knockOk`
- * has been written, for a knock already verified; its `peerHost` is the address the knock came
- * from, a hint only (§13.3).
+ * [keyFor], [replyFor] and [onKnock] are called on the listener thread. [replyFor] decides
+ * which `knockOk` a verified knock gets, so it may read only state that is safe off main.
+ * [onKnock] runs after `knockOk` has been written, with the reply that was sent; its
+ * `peerHost` is the address the knock came from, a hint only (§13.3).
  *
  * [nowMs] must keep counting through deep sleep (`SystemClock.elapsedRealtime` on Android):
  * the admission limits are in real time, and a clock that stops while the phone sleeps would
@@ -24,12 +25,13 @@ import java.nio.charset.StandardCharsets
  */
 internal class TvDoorbell(
     private val keyFor: (tvId: String, keyId: String) -> String?,
-    private val onKnock: (tvId: String, keyId: String, peerHost: String) -> Unit,
+    private val onKnock: (tvId: String, keyId: String, peerHost: String, reply: KnockReply) -> Unit,
     private val nowMs: () -> Long,
     private val peerAllowed: (String?) -> Boolean = KnockPolicy::peerAllowed,
     private val nonce: () -> String = { LibraryProtocol.randomNonce() },
     private val log: (String) -> Unit = { FlickLog.i("doorbell", it) },
     private val newServer: () -> ServerSocket = ::ServerSocket,
+    private val replyFor: (tvId: String, keyId: String) -> KnockReply = { _, _ -> KnockReply.CONNECT },
 ) {
     private val gate = KnockGate()
     private val rateRefusals = ThrottledLog()
@@ -164,17 +166,23 @@ internal class TvDoorbell(
             proofRefusals.line(startedMs, "knock refused reason=proof")?.let(log)
             return
         }
+        // A reply that cannot be decided must not cost a genuine knock its answer.
+        val reply = try {
+            replyFor(verdict.tvId, verdict.keyId)
+        } catch (e: RuntimeException) {
+            KnockReply.CONNECT
+        }
         try {
             if (nowMs() >= deadline) return
             val out = peer.getOutputStream()
-            out.write((KnockProtocol.ok() + "\n").toByteArray(StandardCharsets.UTF_8))
+            out.write((KnockProtocol.ok(reply) + "\n").toByteArray(StandardCharsets.UTF_8))
             out.flush()
         } catch (e: IOException) {
             // The TV may not hear knockOk; the knock is still genuine, so the phone still answers it.
             log("knockOk unsent err=${e.javaClass.simpleName}")
         }
         log("knock ok ms=${nowMs() - startedMs}")
-        onKnock(verdict.tvId, verdict.keyId, remoteIp)
+        onKnock(verdict.tvId, verdict.keyId, remoteIp, reply)
     }
 
     private companion object {

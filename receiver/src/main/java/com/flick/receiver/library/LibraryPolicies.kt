@@ -528,3 +528,59 @@ interface CreditsLeadStorage {
     fun load(): String?
     fun save(encoded: String)
 }
+
+/** How an authenticated `/library` session ended: the log's `close reason=` and whether the link was lost. */
+enum class LibraryClose(val wire: String, val lost: Boolean) {
+    /** The phone sent a Close frame: it hung up on purpose. */
+    PEER_CLOSED("peer_closed", false),
+
+    /** The phone closed because it lost control v2, not because anyone hung up. */
+    CONTROL_LOST("control_lost", true),
+    PING_TIMEOUT("ping_timeout", true),
+
+    /** The socket went with no Close frame, or failed. */
+    DROPPED("dropped", true),
+
+    /** The TV tore the session down (its server stopping). */
+    CANCELLED("cancelled", true),
+    VIOLATION("violation", false),
+    SUPERSEDED("superseded", false),
+    FORGOTTEN("forgotten", false),
+
+    /** The phone stopped reading without closing. */
+    OUTBOX_FULL("outbox_full", true),
+    TV_CLOSED("tv_closed", false),
+    ;
+
+    companion object {
+        private const val NORMAL = 1000
+        private const val CLOSED_ABNORMALLY = 1006
+        private const val INTERNAL_ERROR = 1011
+        private const val CONTROL_TEXT = "control"
+
+        /**
+         * [tvClosed]: the reason the TV gave when it closed the socket itself, or null.
+         * [threw]: the receive loop ended with an exception rather than the channel closing.
+         * [closeCode]: the session's close code once settled, or null if it never settled.
+         * [closeText]: that close's reason text, or null.
+         *
+         * Ktor 3.1.3 settles 1006 when the socket ends without a Close frame, and its pinger
+         * settles 1011 on a ping timeout. It may close `incoming` normally rather than with
+         * the timeout's exception if the socket ended first, so 1011 is a timeout either way.
+         * The phone sends only 1000 and 1008 on purpose, and says `control` on a 1000 close
+         * only when it lost control v2. A phone from before that says nothing.
+         */
+        fun of(tvClosed: String?, threw: Boolean, closeCode: Int?, closeText: String?): LibraryClose = when {
+            tvClosed != null -> when (tvClosed) {
+                SUPERSEDED.wire -> SUPERSEDED
+                FORGOTTEN.wire -> FORGOTTEN
+                OUTBOX_FULL.wire -> OUTBOX_FULL
+                else -> TV_CLOSED
+            }
+            closeCode == INTERNAL_ERROR -> PING_TIMEOUT
+            threw || closeCode == null || closeCode == CLOSED_ABNORMALLY -> DROPPED
+            closeCode == NORMAL && closeText == CONTROL_TEXT -> CONTROL_LOST
+            else -> PEER_CLOSED
+        }
+    }
+}

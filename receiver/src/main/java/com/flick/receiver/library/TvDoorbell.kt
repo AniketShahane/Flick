@@ -1,6 +1,7 @@
 package com.flick.receiver.library
 
 import com.flick.receiver.net.StrictJson
+import com.flick.receiver.net.bool
 import com.flick.receiver.net.integer
 import com.flick.receiver.net.string
 import com.flick.receiver.util.FlickLog
@@ -84,7 +85,22 @@ object KnockWire {
         return o.string("phoneNonce")?.value?.takeIf(LibraryAuth::nonce)
     }
 
-    fun isOk(line: String): Boolean = objectOf(line, "knockOk") != null
+    fun isOk(line: String): Boolean = reply(line) != null
+
+    /**
+     * What a `knockOk` says, or null for anything else: [KnockOutcome.ANSWERED] (connecting
+     * now), [KnockOutcome.ASKED] (`"ask":true`: asking its owner first) or
+     * [KnockOutcome.DECLINED] (`"declined":true`), which wins if both are set. A field that is
+     * missing or not a boolean counts as false.
+     */
+    fun reply(line: String): KnockOutcome? {
+        val o = objectOf(line, "knockOk") ?: return null
+        return when {
+            o.bool("declined") == true -> KnockOutcome.DECLINED
+            o.bool("ask") == true -> KnockOutcome.ASKED
+            else -> KnockOutcome.ANSWERED
+        }
+    }
 
     /** A line's bytes as strict UTF-8, or null: a malformed line is a protocol failure, never repaired. */
     fun decodeLine(bytes: ByteArray): String? = try {
@@ -256,13 +272,17 @@ enum class DoorbellFace {
 
     /** A phone did not answer, or none connected after answering: today's text and the battery hint. */
     UNANSWERED,
+
+    /** A phone heard the knock and is asking its owner whether to connect. */
+    ASKING,
 }
 
 /**
  * How one knock attempt ended. NO_HELLO covers every failure after the connect and before a
- * proof went out; SILENT only a phone that said nothing after the proof.
+ * proof went out; SILENT only a phone that said nothing after the proof. ANSWERED, ASKED and
+ * DECLINED are the three `knockOk` replies (library-channel §13.2).
  */
-enum class KnockOutcome { ANSWERED, NO_LAN, UNREACHABLE, NO_HELLO, SILENT, NO_KEY, NOT_STARTED }
+enum class KnockOutcome { ANSWERED, ASKED, DECLINED, NO_LAN, UNREACHABLE, NO_HELLO, SILENT, NO_KEY, NOT_STARTED }
 
 /**
  * The doorbell's clocks (elapsed-realtime ms), held for the life of the process rather than
@@ -299,6 +319,18 @@ object KnockPolicy {
     /** How long after `knockOk` the screen keeps saying it is waking the phone. */
     const val CONNECTING_GRACE_MS = 8_000L
 
+    /** How long the screen says to check the phone after it asked its owner: its prompt's own timeout. */
+    const val ASK_WINDOW_MS = 60_000L
+
+    /** Every port the phone's listener binds before an ephemeral one (library-channel §13.1). */
+    val LISTENER_PORTS = 47_670..47_679
+
+    /**
+     * The connects of one port sweep together. A closed port on a live host refuses in
+     * milliseconds, so this only binds a host that drops the connects instead.
+     */
+    const val SWEEP_BUDGET_MS = 4_000L
+
     /**
      * Between the starts of two start rounds. The phone accepts one knock per 5 s, counted when
      * it greets (library-channel §13), so a round sooner than that is refused before its proof.
@@ -330,12 +362,40 @@ object KnockPolicy {
 
     /**
      * Whether a round moves on to its next phone after [outcome]. The control server holds one
-     * controller and a second phone's login displaces the first, so only a phone that never
-     * answered `knockOk` makes way; no LAN on the TV, or a stop, ends the round.
+     * controller and a second phone's login displaces the first, so a phone that is connecting
+     * or asking its owner keeps the round; one that will not connect makes way. No LAN on the
+     * TV, or a stop, ends the round.
      */
     fun triesNext(outcome: KnockOutcome): Boolean =
         outcome == KnockOutcome.UNREACHABLE || outcome == KnockOutcome.NO_HELLO ||
-            outcome == KnockOutcome.SILENT || outcome == KnockOutcome.NO_KEY
+            outcome == KnockOutcome.SILENT || outcome == KnockOutcome.NO_KEY || outcome == KnockOutcome.DECLINED
+
+    /**
+     * The listener ports to try, in the order the phone binds them, once [stored] refused or
+     * timed out: the phone re-binds on restart and reports its port only over a live link,
+     * so without this a moved listener is knocked at its old port forever.
+     */
+    fun sweepPorts(stored: Int): List<Int> = LISTENER_PORTS.filter { it != stored }
+
+    /** Whether [outcome] proves the listener at the swept port is this phone's: its proof was accepted. */
+    fun sweepFound(outcome: KnockOutcome): Boolean =
+        outcome == KnockOutcome.ANSWERED || outcome == KnockOutcome.ASKED || outcome == KnockOutcome.DECLINED
+
+    /**
+     * Whether the sweep tries the next port after [outcome] at a swept one. A listener that
+     * never says hello is some other service on the phone; one that said hello and then
+     * answered or went silent counted its admission there, so the sweep ends at it.
+     */
+    fun sweepGoesOn(outcome: KnockOutcome): Boolean =
+        outcome == KnockOutcome.UNREACHABLE || outcome == KnockOutcome.NO_HELLO
+
+    /** The outcome closest to a link among a round's knocks, or null when none ended. */
+    fun best(outcomes: Collection<KnockOutcome>): KnockOutcome? = outcomes.minByOrNull { BEST_FIRST.indexOf(it) }
+
+    private val BEST_FIRST = listOf(
+        KnockOutcome.ANSWERED, KnockOutcome.ASKED, KnockOutcome.DECLINED, KnockOutcome.SILENT, KnockOutcome.NO_HELLO,
+        KnockOutcome.UNREACHABLE, KnockOutcome.NO_KEY, KnockOutcome.NO_LAN, KnockOutcome.NOT_STARTED,
+    )
 
     /** A remote key on the idle screen knocks only while no phone is linked, at most once per [KEY_GAP_MS]. */
     fun keyMayKnock(anyLinked: Boolean, lastRoundAtMs: Long?, nowMs: Long): Boolean =
@@ -369,12 +429,21 @@ object KnockPolicy {
     fun retries(outcome: KnockOutcome, attempt: Int): Boolean =
         attempt < ATTEMPTS && (outcome == KnockOutcome.UNREACHABLE || outcome == KnockOutcome.NO_LAN)
 
-    /** [hinted]: some knock of the round ended in an outcome that [hints]. */
-    fun face(pending: Int, answered: Boolean, graceOver: Boolean, linked: Boolean, began: Boolean, hinted: Boolean): DoorbellFace =
+    /**
+     * [hinted]: some knock of the round ended in an outcome that [hints]. [asked]: a phone
+     * replied ASKED, and [askOver] once [ASK_WINDOW_MS] has passed since. [declined]: a phone
+     * replied DECLINED. A phone that heard the knock earns no battery hint.
+     */
+    fun face(
+        pending: Int, answered: Boolean, graceOver: Boolean, linked: Boolean, began: Boolean, hinted: Boolean,
+        asked: Boolean = false, askOver: Boolean = false, declined: Boolean = false,
+    ): DoorbellFace =
         when {
             !began || linked -> DoorbellFace.QUIET
             pending > 0 -> DoorbellFace.WAKING
             answered -> if (graceOver) DoorbellFace.UNANSWERED else DoorbellFace.WAKING
+            asked -> if (askOver) DoorbellFace.QUIET else DoorbellFace.ASKING
+            declined -> DoorbellFace.QUIET
             hinted -> DoorbellFace.UNANSWERED
             else -> DoorbellFace.QUIET
         }
@@ -383,12 +452,12 @@ object KnockPolicy {
 /** One knock exchange with a phone's listener. */
 interface KnockTransport {
     /**
-     * [connected] is called once the connect succeeds. [mayProve] is asked just before the
-     * proof is sent; false sends nothing.
+     * [connectTimeoutMs] bounds the connect alone. [connected] is called once the connect
+     * succeeds. [mayProve] is asked just before the proof is sent; false sends nothing.
      */
     suspend fun knock(
         host: String, port: Int, localHost: String, tvId: String, keyId: String, key: String,
-        connected: () -> Unit = {}, mayProve: () -> Boolean,
+        connectTimeoutMs: Int = KnockPolicy.CONNECT_TIMEOUT_MS, connected: () -> Unit = {}, mayProve: () -> Boolean,
     ): KnockOutcome
 }
 
@@ -401,11 +470,11 @@ class SocketKnockTransport(
 
     override suspend fun knock(
         host: String, port: Int, localHost: String, tvId: String, keyId: String, key: String,
-        connected: () -> Unit, mayProve: () -> Boolean,
+        connectTimeoutMs: Int, connected: () -> Unit, mayProve: () -> Boolean,
     ): KnockOutcome = coroutineScope {
         if (!KnockWire.keyUsable(key)) return@coroutineScope KnockOutcome.NO_KEY
         val socket = Socket()
-        val work = async(io) { socket.use { exchange(it, host, port, localHost, tvId, keyId, key, connected, mayProve) } }
+        val work = async(io) { socket.use { exchange(it, host, port, localHost, tvId, keyId, key, connectTimeoutMs, connected, mayProve) } }
         try {
             work.await()
         } catch (e: CancellationException) {
@@ -417,11 +486,11 @@ class SocketKnockTransport(
 
     private fun exchange(
         socket: Socket, host: String, port: Int, localHost: String, tvId: String, keyId: String, key: String,
-        connected: () -> Unit, mayProve: () -> Boolean,
+        connectTimeoutMs: Int, connected: () -> Unit, mayProve: () -> Boolean,
     ): KnockOutcome {
         try {
             socket.bind(InetSocketAddress(InetAddress.getByName(localHost), 0))
-            socket.connect(InetSocketAddress(InetAddress.getByName(host), port), KnockPolicy.CONNECT_TIMEOUT_MS)
+            socket.connect(InetSocketAddress(InetAddress.getByName(host), port), connectTimeoutMs.coerceAtLeast(1))
         } catch (_: Exception) {
             return KnockOutcome.UNREACHABLE
         }
@@ -443,7 +512,7 @@ class SocketKnockTransport(
                 flush()
             }
             val answer = readLine(socket, input, KnockPolicy.OK_TIMEOUT_MS)
-            if (answer != null && KnockWire.isOk(answer)) KnockOutcome.ANSWERED else KnockOutcome.SILENT
+            answer?.let(KnockWire::reply) ?: KnockOutcome.SILENT
         } catch (_: Exception) {
             if (proofSent) KnockOutcome.SILENT else KnockOutcome.NO_HELLO
         }
@@ -478,10 +547,13 @@ class SocketKnockTransport(
  * answer is a control resume to that server: once per start, again after the server
  * re-binds, and on [onIdleKey], always only while no phone is linked. A round wakes one phone
  * at a time, most recently proven first, moving on only when one never answered. Without a
- * LAN address it waits rather than failing.
+ * LAN address it waits rather than failing. A phone that asks its owner holds automatic
+ * rounds off for its prompt's life; a round in which phones only declined holds them off for
+ * the STARTED period.
  *
  * [keyFor] reads the pairing store and is called off the main thread with no lock held.
  * [times] outlives this object, so a reopened screen keeps the gaps of the last one.
+ * [journal] must never block: it is called under this object's lock.
  */
 class TvDoorbell(
     private val book: KnockAddressBook,
@@ -495,6 +567,7 @@ class TvDoorbell(
     private val scope: CoroutineScope,
     private val work: CoroutineDispatcher = Dispatchers.IO,
     private val times: KnockTimes = KnockTimes(),
+    private val journal: (event: String, fields: List<Pair<String, Any?>>) -> Unit = { _, _ -> },
 ) {
     private val lock = Any()
     private var started = false
@@ -503,6 +576,7 @@ class TvDoorbell(
     private var rebindOwed = false
     private var round: Job? = null
     private var grace: Job? = null
+    private var askTimer: Job? = null
     private var later: Job? = null
     private var generation = 0L
     private var began = false
@@ -510,8 +584,28 @@ class TvDoorbell(
     private var answered = false
     private var graceOver = false
     private var hinted = false
+    private var asked = false
+    private var askOver = false
+    private var declined = false
     private var notReady = false
     private var linked = false
+
+    /** A round this STARTED period ended declined: no more start or rebind rounds until the next one. */
+    private var declinedThisStart = false
+
+    /** A start or key round has made this STARTED period's start, so a later server round is a rebind. */
+    private var startMadeThisPeriod = false
+
+    /** This period's start was dropped because a phone was linked; it is owed again if the last link is lost first. */
+    private var linkedSkipOwed = false
+
+    /** Why the owed start last waited, journaled if the STARTED period ends with it still owed. */
+    private var deferredBy: String? = null
+    private val skipsJournaled = HashSet<String>()
+    private var roundTrigger = "start"
+    private var roundPhones = 0
+    private var roundSweep = SweepMark.NONE
+    private val roundOutcomes = ArrayList<KnockOutcome>()
 
     private val _face = MutableStateFlow(DoorbellFace.QUIET)
     val face: StateFlow<DoorbellFace> = _face.asStateFlow()
@@ -520,15 +614,22 @@ class TvDoorbell(
         synchronized(lock) {
             started = true
             startOwed = true
+            declinedThisStart = false
+            startMadeThisPeriod = false
+            linkedSkipOwed = false
+            deferredBy = null
+            skipsJournaled.clear()
         }
         startIfDue()
     }
 
     fun onStopped() = synchronized(lock) {
+        if (started && startOwed) deferredBy?.let(::skipLocked)
         started = false
         serverReady = false
         startOwed = false
         rebindOwed = false
+        linkedSkipOwed = false
         later?.cancel()
         later = null
         endRoundLocked()
@@ -564,38 +665,68 @@ class TvDoorbell(
 
     /**
      * Whether any phone's library socket is authenticated. A link ends the round: once it
-     * drops, the screen says nothing about a knock until a new round begins.
+     * drops, the screen says nothing about a knock until a new round begins. A start the link
+     * held off is owed again when the last link is [lost] (no close from the phone), unless a
+     * round has run since: a phone that closed its socket on purpose is not knocked back.
      */
-    fun onLinkChanged(anyLinked: Boolean) = synchronized(lock) {
-        linked = anyLinked
-        if (anyLinked) {
-            startOwed = false
-            rebindOwed = false
-            later?.cancel()
-            later = null
-            times.lastAnsweredAtMs = null
-            endRoundLocked()
-        } else {
-            publishLocked()
+    fun onLinkChanged(anyLinked: Boolean, lost: Boolean) {
+        val owedAgain = synchronized(lock) {
+            linked = anyLinked
+            if (anyLinked) {
+                if (started && startOwed) skipLinkedLocked()
+                startOwed = false
+                rebindOwed = false
+                later?.cancel()
+                later = null
+                times.lastAnsweredAtMs = null
+                endRoundLocked()
+                false
+            } else {
+                publishLocked()
+                (started && linkedSkipOwed && lost).also { owed ->
+                    linkedSkipOwed = false
+                    if (owed) startOwed = true
+                }
+            }
         }
+        if (owedAgain) startIfDue()
     }
 
     private fun startIfDue() {
-        if (!synchronized(lock) { startMayBeDueLocked() }) return
+        if (!synchronized(lock) {
+                if (started && startOwed && !serverReady) deferredBy = "not_ready"
+                startMayBeDueLocked()
+            }
+        ) return
         val linkedNow = linkedKeyIds()
         val targets = KnockPolicy.targets(pairedKeyIds(), book.snapshot(), linkedNow)
         val local = localHost()
         synchronized(lock) {
             // A round still out keeps the start owed: it is made once that round ends.
             if (!startMayBeDueLocked()) return
+            // The phone already heard this period's knock and answered with its owner's choice.
+            if (declinedThisStart) {
+                startOwed = false
+                rebindOwed = false
+                return
+            }
+            // A rebind stays owed: the ask window's end makes it.
+            if (askingLocked()) {
+                if (!rebindOwed) startOwed = false
+                return
+            }
             // A second phone's login would displace the linked one's.
             if (targets.isEmpty() || linkedNow.isNotEmpty() || linked) {
+                if (linkedNow.isNotEmpty() || linked) skipLinkedLocked() else skipLocked("no_target")
                 startOwed = false
                 rebindOwed = false
                 return
             }
             // Still owed: the next server pass, which follows every address change, tries again.
-            if (local == null) return
+            if (local == null) {
+                deferredBy = "no_lan"
+                return
+            }
             val now = clock()
             val answeredAt = times.lastAnsweredAtMs
             // A phone answering an address the TV has since re-bound away from may never arrive.
@@ -606,6 +737,7 @@ class TvDoorbell(
             }
             val wait = KnockPolicy.startWaitMs(times.lastRoundAtMs, now)
             if (wait > 0) {
+                deferredBy = "gap"
                 if (later?.isActive != true) {
                     later = scope.launch {
                         delay(wait)
@@ -622,28 +754,47 @@ class TvDoorbell(
 
     private fun startMayBeDueLocked(): Boolean = started && serverReady && startOwed && round?.isActive != true
 
+    private fun askingLocked(): Boolean = began && asked && !askOver && !answered
+
     private fun beginLocked(targets: List<String>, linkedNow: Set<String>, isStart: Boolean) {
         times.lastRoundAtMs = clock()
+        roundTrigger = when {
+            !isStart -> "key"
+            rebindOwed && startMadeThisPeriod -> "rebind"
+            else -> "start"
+        }
+        roundPhones = targets.size
+        roundSweep = SweepMark.NONE
+        roundOutcomes.clear()
+        deferredBy = null
         // Any round knocks every phone a start would, so it makes an owed start.
         val makesStart = isStart || startOwed
+        if (makesStart) startMadeThisPeriod = true
         startOwed = false
         rebindOwed = false
+        linkedSkipOwed = false
         val ofRound = ++generation
         began = true
         pending = 1
         answered = false
         graceOver = false
         hinted = false
+        asked = false
+        askOver = false
+        declined = false
         notReady = false
         linked = linkedNow.isNotEmpty()
         grace?.cancel()
         grace = null
+        askTimer?.cancel()
+        askTimer = null
         publishLocked()
         round = scope.launch {
             for (keyId in targets) {
-                val outcome = ring(keyId)
+                val (outcome, sweep) = ring(keyId, ofRound)
                 val next = synchronized(lock) {
                     if (!started || generation != ofRound) return@launch
+                    roundSweep = maxOf(roundSweep, sweep)
                     recordLocked(outcome, ofRound)
                     KnockPolicy.triesNext(outcome)
                 }
@@ -655,6 +806,12 @@ class TvDoorbell(
                 round = null
                 // A start that found no LAN address has not been made yet.
                 if (makesStart && notReady) startOwed = true
+                if (KnockPolicy.best(roundOutcomes) == KnockOutcome.DECLINED) {
+                    declinedThisStart = true
+                    startOwed = false
+                    rebindOwed = false
+                }
+                journalRoundLocked()
                 publishLocked()
             }
             startIfDue()
@@ -662,14 +819,23 @@ class TvDoorbell(
     }
 
     private fun recordLocked(outcome: KnockOutcome, ofRound: Long) {
+        roundOutcomes += outcome
         if (KnockPolicy.hints(outcome)) hinted = true
         if (outcome == KnockOutcome.NO_LAN) notReady = true
-        if (outcome == KnockOutcome.ANSWERED) {
-            times.lastAnsweredAtMs = clock()
-            if (!answered) {
-                answered = true
-                graceLocked(ofRound, KnockPolicy.CONNECTING_GRACE_MS)
+        when (outcome) {
+            KnockOutcome.ANSWERED -> {
+                times.lastAnsweredAtMs = clock()
+                if (!answered) {
+                    answered = true
+                    graceLocked(ofRound, KnockPolicy.CONNECTING_GRACE_MS)
+                }
             }
+            KnockOutcome.ASKED -> if (!asked) {
+                asked = true
+                askTimerLocked(ofRound)
+            }
+            KnockOutcome.DECLINED -> declined = true
+            else -> Unit
         }
         publishLocked()
     }
@@ -682,6 +848,11 @@ class TvDoorbell(
         answered = true
         graceOver = false
         hinted = false
+        asked = false
+        askOver = false
+        declined = false
+        askTimer?.cancel()
+        askTimer = null
         graceLocked(ofRound, KnockPolicy.CONNECTING_GRACE_MS - (nowMs - answeredAtMs))
         publishLocked()
     }
@@ -698,21 +869,43 @@ class TvDoorbell(
         }
     }
 
+    private fun askTimerLocked(ofRound: Long) {
+        askTimer?.cancel()
+        askTimer = scope.launch {
+            delay(KnockPolicy.ASK_WINDOW_MS)
+            val current = synchronized(lock) {
+                if (generation != ofRound) return@launch
+                askOver = true
+                publishLocked()
+                askTimer = null
+                true
+            }
+            if (current) startIfDue()
+        }
+    }
+
     private fun endRoundLocked() {
+        if (round?.isActive == true) journalRoundLocked()
         generation++
         round?.cancel()
         round = null
         grace?.cancel()
         grace = null
+        askTimer?.cancel()
+        askTimer = null
         began = false
         pending = 0
         answered = false
         graceOver = false
         hinted = false
+        asked = false
+        askOver = false
+        declined = false
         publishLocked()
     }
 
-    private suspend fun ring(keyId: String): KnockOutcome {
+    /** The phone's outcome, and whether a sweep ran and whether its outcome came from a swept port. */
+    private suspend fun ring(keyId: String, ofRound: Long): Pair<KnockOutcome, SweepMark> {
         book.snapshot()[keyId]?.host?.let { host ->
             val wait = KnockPolicy.admissionWaitMs(times.connectedAt(host), clock())
             if (wait > 0) delay(wait)
@@ -726,20 +919,50 @@ class TvDoorbell(
             delay(KnockPolicy.RETRY_GAP_MS)
         }
         FlickLog.i("doorbell", "knock end outcome=${outcome.name.lowercase()} attempts=$attempt")
-        return outcome
+        if (outcome != KnockOutcome.UNREACHABLE) return outcome to SweepMark.NONE
+        if (book.snapshot()[keyId]?.port == null) return outcome to SweepMark.NONE
+        synchronized(lock) { if (generation == ofRound) roundSweep = maxOf(roundSweep, SweepMark.MISSED) }
+        val swept = sweep(keyId) ?: return outcome to SweepMark.MISSED
+        FlickLog.i("doorbell", "knock sweep outcome=${swept.name.lowercase()}")
+        val fromListener = swept == KnockOutcome.SILENT || KnockPolicy.sweepFound(swept)
+        return swept to if (fromListener) SweepMark.FOUND else SweepMark.MISSED
     }
 
-    private suspend fun attempt(keyId: String): KnockOutcome {
+    /**
+     * The other listener ports on the stored host, one connect each within [KnockPolicy.SWEEP_BUDGET_MS]
+     * in total, until one says hello and then answers or goes silent. Null when none did. A port
+     * whose knock the phone accepted becomes the stored one.
+     */
+    private suspend fun sweep(keyId: String): KnockOutcome? {
+        val stored = book.snapshot()[keyId]?.port ?: return null
+        val deadline = clock() + KnockPolicy.SWEEP_BUDGET_MS
+        for (port in KnockPolicy.sweepPorts(stored)) {
+            val left = deadline - clock()
+            if (left <= 0) break
+            val outcome = attempt(keyId, port, left.coerceAtMost(KnockPolicy.CONNECT_TIMEOUT_MS.toLong()).toInt())
+            if (KnockPolicy.sweepGoesOn(outcome)) continue
+            if (KnockPolicy.sweepFound(outcome)) {
+                withContext(work) { book.recordPort(keyId, port) { keyFor(keyId) != null } }
+            }
+            return outcome
+        }
+        return null
+    }
+
+    /** One knock at [keyId]'s stored host, at [portOverride] or else its stored port. */
+    private suspend fun attempt(
+        keyId: String, portOverride: Int? = null, connectTimeoutMs: Int = KnockPolicy.CONNECT_TIMEOUT_MS,
+    ): KnockOutcome {
         if (!synchronized(lock) { started }) return KnockOutcome.NOT_STARTED
         // The key first: a phone forgotten mid-round is gone, not unreachable.
         val key = withContext(work) { keyFor(keyId) } ?: return KnockOutcome.NO_KEY
         val address = book.snapshot()[keyId]
         val host = address?.host
-        val port = address?.port
+        val port = portOverride ?: address?.port
         if (host == null || port == null) return KnockOutcome.UNREACHABLE
         val local = localHost() ?: return KnockOutcome.NO_LAN
         return transport.knock(
-            host, port, local, tvId(), keyId, key,
+            host, port, local, tvId(), keyId, key, connectTimeoutMs,
             connected = { times.onConnected(host, clock()) },
         ) { synchronized(lock) { started } }
     }
@@ -748,7 +971,30 @@ class TvDoorbell(
         FlickLog.i("doorbell", "knock begin trigger=$trigger phones=$phones")
     }
 
+    private fun journalRoundLocked() {
+        val outcome = KnockPolicy.best(roundOutcomes) ?: KnockOutcome.NOT_STARTED
+        journal(
+            "knock_round",
+            listOf(
+                "trigger" to roundTrigger, "phones" to roundPhones, "outcome" to outcome.name.lowercase(),
+                "sweep" to roundSweep.name.lowercase(),
+            ),
+        )
+    }
+
+    private fun skipLocked(reason: String) {
+        if (skipsJournaled.add(reason)) journal("knock_skip", listOf("reason" to reason))
+    }
+
+    private fun skipLinkedLocked() {
+        skipLocked("linked")
+        linkedSkipOwed = true
+    }
+
+    /** Ordered: a round reports the furthest any of its phones' sweeps got. */
+    private enum class SweepMark { NONE, MISSED, FOUND }
+
     private fun publishLocked() {
-        _face.value = KnockPolicy.face(pending, answered, graceOver, linked, began, hinted)
+        _face.value = KnockPolicy.face(pending, answered, graceOver, linked, began, hinted, asked, askOver, declined)
     }
 }

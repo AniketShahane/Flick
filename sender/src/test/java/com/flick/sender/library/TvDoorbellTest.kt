@@ -56,6 +56,9 @@ class TvDoorbellTest {
     @Test fun framesArePinned() {
         assertEquals("""{"t":"knockHello","v":1,"phoneNonce":"$phoneNonce"}""", KnockProtocol.hello(phoneNonce))
         assertEquals("""{"t":"knockOk","v":1}""", KnockProtocol.ok())
+        assertEquals("""{"t":"knockOk","v":1}""", KnockProtocol.ok(KnockReply.CONNECT))
+        assertEquals("""{"t":"knockOk","v":1,"ask":true}""", KnockProtocol.ok(KnockReply.ASK))
+        assertEquals("""{"t":"knockOk","v":1,"declined":true}""", KnockProtocol.ok(KnockReply.DECLINED))
         assertEquals("""{"t":"knockAt","v":1,"port":47670}""", LibraryFrames.knockAt(47670))
     }
 
@@ -402,15 +405,18 @@ class TvDoorbellTest {
         val knocks = CountDownLatch(1)
         @Volatile var knocked: Pair<String, String>? = null
         @Volatile var from: String? = null
+        @Volatile var reply: KnockReply? = null
+        @Volatile var answer: KnockReply = KnockReply.CONNECT
         val nonce = "MzMzMzMzMzMzMzMzMzMzMw"
     }
 
     private fun listener(clock: () -> Long, bell: Bell, newServer: () -> ServerSocket = ::ServerSocket): TvDoorbell =
         TvDoorbell(
             keyFor = keys,
-            onKnock = { t, k, peer ->
+            onKnock = { t, k, peer, reply ->
                 bell.knocked = t to k
                 bell.from = peer
+                bell.reply = reply
                 bell.knocks.countDown()
             },
             nowMs = clock,
@@ -418,6 +424,10 @@ class TvDoorbellTest {
             nonce = { bell.nonce },
             log = {},
             newServer = newServer,
+            replyFor = { t, k ->
+                assertEquals(tvId to keyId, t to k)
+                bell.answer
+            },
         )
 
     private fun validKnock(bound: Int, bell: Bell): (String) -> String = { hello ->
@@ -446,6 +456,45 @@ class TvDoorbellTest {
             assertTrue(bell.knocks.await(3, TimeUnit.SECONDS))
             assertEquals(tvId to keyId, bell.knocked)
             assertEquals("127.0.0.1", bell.from)
+            assertEquals(KnockReply.CONNECT, bell.reply)
+        } finally {
+            doorbell.shutdown()
+        }
+    }
+
+    @Test fun theReplyChosenOnTheListenerIsWhatTheTvHearsAndWhatIsHandedOn() {
+        val bell = Bell()
+        bell.answer = KnockReply.ASK
+        val doorbell = listener({ 0L }, bell)
+        val bound = doorbell.bind(InetAddress.getByName("127.0.0.1"))!!
+        try {
+            assertEquals("""{"t":"knockOk","v":1,"ask":true}""", exchange(bound, validKnock(bound, bell)))
+            assertTrue(bell.knocks.await(3, TimeUnit.SECONDS))
+            assertEquals(KnockReply.ASK, bell.reply)
+        } finally {
+            doorbell.shutdown()
+        }
+    }
+
+    @Test fun aReplyThatThrowsStillAnswersTheKnockAsAConnect() {
+        val bell = Bell()
+        val doorbell = TvDoorbell(
+            keyFor = keys,
+            onKnock = { _, _, _, reply ->
+                bell.reply = reply
+                bell.knocks.countDown()
+            },
+            nowMs = { 0L },
+            peerAllowed = { it == "127.0.0.1" },
+            nonce = { bell.nonce },
+            log = {},
+            replyFor = { _, _ -> throw IllegalStateException("boom") },
+        )
+        val bound = doorbell.bind(InetAddress.getByName("127.0.0.1"))!!
+        try {
+            assertEquals(KnockProtocol.ok(), exchange(bound, validKnock(bound, bell)))
+            assertTrue(bell.knocks.await(3, TimeUnit.SECONDS))
+            assertEquals(KnockReply.CONNECT, bell.reply)
         } finally {
             doorbell.shutdown()
         }
@@ -473,7 +522,8 @@ class TvDoorbellTest {
         val bell = Bell()
         val doorbell = TvDoorbell(
             keyFor = keys,
-            onKnock = { _, _, _ -> error("no knock here is valid") },
+            onKnock = { _, _, _, _ -> error("no knock here is valid") },
+            replyFor = { _, _ -> error("no knock here is valid") },
             nowMs = { now.get() },
             peerAllowed = { it == "127.0.0.1" },
             nonce = { bell.nonce },

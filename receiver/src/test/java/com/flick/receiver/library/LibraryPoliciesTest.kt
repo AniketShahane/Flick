@@ -483,6 +483,63 @@ class LibraryPoliciesTest {
         assertNull(UpNextPolicy.offer(e1.id, null, true, true, UpNextStreak(), 0L))
     }
 
+    // --- Session end -------------------------------------------------------------
+
+    @Test
+    fun aCloseFromThePhoneIsClosedNotLost() {
+        for (code in listOf(1000, 1001, 1008)) {
+            for (text in listOf(null, "", "invalid")) {
+                assertEquals(LibraryClose.PEER_CLOSED, LibraryClose.of(tvClosed = null, threw = false, closeCode = code, closeText = text))
+            }
+        }
+        assertFalse(LibraryClose.PEER_CLOSED.lost)
+    }
+
+    @Test
+    fun aNormalCloseSayingControlIsLostAndNothingElseIs() {
+        assertEquals(LibraryClose.CONTROL_LOST, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1000, closeText = "control"))
+        assertTrue(LibraryClose.CONTROL_LOST.lost)
+        assertEquals("control_lost", LibraryClose.CONTROL_LOST.wire)
+        // Only a normal close carries the meaning; the text is matched exactly.
+        assertEquals(LibraryClose.PEER_CLOSED, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1008, closeText = "control"))
+        assertEquals(LibraryClose.PEER_CLOSED, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1001, closeText = "control"))
+        assertEquals(LibraryClose.PEER_CLOSED, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1000, closeText = "Control"))
+        // The TV's own close and a failed receive still win.
+        assertEquals(LibraryClose.SUPERSEDED, LibraryClose.of(tvClosed = "superseded", threw = false, closeCode = 1000, closeText = "control"))
+        assertEquals(LibraryClose.DROPPED, LibraryClose.of(tvClosed = null, threw = true, closeCode = 1000, closeText = "control"))
+    }
+
+    @Test
+    fun aPingTimeoutIsLostWhetherOrNotIncomingClosedWithItsException() {
+        assertEquals(LibraryClose.PING_TIMEOUT, LibraryClose.of(tvClosed = null, threw = true, closeCode = 1011, closeText = null))
+        assertEquals(LibraryClose.PING_TIMEOUT, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1011, closeText = null))
+        assertTrue(LibraryClose.PING_TIMEOUT.lost)
+        assertEquals("ping_timeout", LibraryClose.PING_TIMEOUT.wire)
+    }
+
+    @Test
+    fun aSocketGoneWithoutACloseFrameIsLost() {
+        assertEquals(LibraryClose.DROPPED, LibraryClose.of(tvClosed = null, threw = false, closeCode = 1006, closeText = null))
+        assertEquals(LibraryClose.DROPPED, LibraryClose.of(tvClosed = null, threw = false, closeCode = null, closeText = null))
+        assertEquals(LibraryClose.DROPPED, LibraryClose.of(tvClosed = null, threw = true, closeCode = 1006, closeText = null))
+        assertEquals(LibraryClose.DROPPED, LibraryClose.of(tvClosed = null, threw = true, closeCode = null, closeText = null))
+        assertTrue(LibraryClose.DROPPED.lost)
+        assertTrue(LibraryClose.CANCELLED.lost)
+    }
+
+    @Test
+    fun aSocketTheTvClosedIsNotLostUnlessThePhoneStoppedReading() {
+        assertEquals(LibraryClose.SUPERSEDED, LibraryClose.of(tvClosed = "superseded", threw = false, closeCode = 1008, closeText = null))
+        assertEquals(LibraryClose.FORGOTTEN, LibraryClose.of(tvClosed = "forgotten", threw = true, closeCode = null, closeText = null))
+        assertEquals(LibraryClose.TV_CLOSED, LibraryClose.of(tvClosed = "other", threw = false, closeCode = 1011, closeText = null))
+        assertFalse(LibraryClose.SUPERSEDED.lost)
+        assertFalse(LibraryClose.FORGOTTEN.lost)
+        assertFalse(LibraryClose.TV_CLOSED.lost)
+        assertFalse(LibraryClose.VIOLATION.lost)
+        assertEquals(LibraryClose.OUTBOX_FULL, LibraryClose.of(tvClosed = "outbox_full", threw = false, closeCode = 1008, closeText = null))
+        assertTrue(LibraryClose.OUTBOX_FULL.lost)
+    }
+
     // --- Credits lead -------------------------------------------------------------
 
     @Test

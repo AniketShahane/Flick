@@ -20,6 +20,14 @@ import org.junit.Test
 class LibraryLinkPolicyTest {
 
     @Test
+    fun onlyAControlLossCloseCarriesItsReasonText() {
+        assertEquals("control", LibraryCloseText.of(LibraryCloseText.CONTROL))
+        for (reason in listOf("endpoint", "unsupported", "idle", "knock", "setting", "media_access")) {
+            assertEquals("", LibraryCloseText.of(reason))
+        }
+    }
+
+    @Test
     fun dialBackoffSteps2s5s15sThen60sAndResets() {
         val backoff = LibraryDialBackoff()
         assertEquals(listOf(2_000L, 5_000L, 15_000L, 60_000L, 60_000L), List(5) { backoff.next() })

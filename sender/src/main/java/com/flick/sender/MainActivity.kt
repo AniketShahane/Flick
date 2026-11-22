@@ -44,6 +44,8 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.flick.sender.library.ConnectPrompt
+import com.flick.sender.library.ConnectPromptTap
 import com.flick.sender.media.MediaAccess
 import com.flick.sender.media.mediaPermissionState
 import com.flick.sender.net.IncomingPairEvent
@@ -139,6 +141,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
+        acceptPromptTap(intent, restored = savedInstanceState != null)
         acceptPairIntent(intent)
         // Before the first composition, not from an effect inside it: a fresh process holds
         // MediaAccess.NONE until told otherwise, the library reads that as "nothing to show",
@@ -166,7 +169,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        acceptPromptTap(intent, restored = false)
         acceptPairIntent(intent)
+    }
+
+    /**
+     * The connect prompt's body tap. From onCreate it runs before ON_START's connect-on-open,
+     * which then finds the dial in flight. A stopped activity gets onRestart, onStart and only
+     * then onNewIntent, so connect-on-open dials first and the tap joins or replaces it
+     * ([com.flick.sender.library.PromptConnectPolicy]). The extras are spent here, so a
+     * recreation never repeats them; one without this install's token is only dropped.
+     */
+    private fun acceptPromptTap(incoming: Intent?, restored: Boolean) {
+        val extra = incoming?.getStringExtra(ConnectPrompt.EXTRA_OPEN_TV_ID) ?: return
+        val token = incoming.getStringExtra(ConnectPrompt.EXTRA_TAP_TOKEN)
+        incoming.removeExtra(ConnectPrompt.EXTRA_OPEN_TV_ID)
+        incoming.removeExtra(ConnectPrompt.EXTRA_TAP_TOKEN)
+        setIntent(incoming)
+        val tvId = ConnectPromptTap.tvId(extra, restored, token, ConnectPrompt.tapToken(this)) ?: return
+        (application as FlickApplication).coordinator.onConnectPromptChoice(tvId, connect = true)
     }
 
     /**

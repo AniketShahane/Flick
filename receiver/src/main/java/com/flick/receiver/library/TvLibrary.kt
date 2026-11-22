@@ -137,7 +137,10 @@ class TvLibrary(
     private val _seasons = MutableStateFlow<Map<LibrarySeasonKey, List<LibraryEpisodeInfo>>>(emptyMap())
     private val _thumbnails = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
     private val _upNext = MutableStateFlow<UpNextOffer?>(null)
-    private val _anyLinked = MutableStateFlow(false)
+    private val _links = MutableStateFlow(LinkPresence(anyLinked = false, lost = false))
+
+    /** Whether the last socket to close went without a close from its phone. */
+    private var lastCloseLost = false
 
     override val state: StateFlow<LibraryState> = _state.asStateFlow()
     override val details: StateFlow<Map<String, LibraryDetail>> = _details.asStateFlow()
@@ -145,8 +148,13 @@ class TvLibrary(
     override val thumbnails: StateFlow<Map<String, ImageBitmap>> = _thumbnails.asStateFlow()
     override val upNext: StateFlow<UpNextOffer?> = _upNext.asStateFlow()
 
-    /** Whether any phone's library socket is authenticated, shown or not: an empty library is still a link. */
-    val anyLinked: StateFlow<Boolean> = _anyLinked.asStateFlow()
+    /**
+     * Whether any phone's library socket is authenticated, shown or not: an empty library is
+     * still a link. With none, [LinkPresence.lost] says whether the close that left none was lost.
+     */
+    val links: StateFlow<LinkPresence> = _links.asStateFlow()
+
+    data class LinkPresence(val anyLinked: Boolean, val lost: Boolean)
 
     init {
         creditsStorage?.let { storage -> runCatching { storage.load() }.getOrNull()?.let(credits::decode) }
@@ -190,9 +198,11 @@ class TvLibrary(
     /** The phones whose library socket is authenticated now. */
     fun linkedKeyIds(): Set<String> = synchronized(lock) { phones.values.filter { it.link != null }.mapTo(HashSet()) { it.keyId } }
 
-    fun onClosed(link: LibraryLinkHandle) = synchronized(lock) {
+    /** [lost]: the socket went without a close from the phone (a ping timeout or a drop). */
+    fun onClosed(link: LibraryLinkHandle, lost: Boolean = true) = synchronized(lock) {
         val phone = phones.values.firstOrNull { it.link === link } ?: return@synchronized
         phone.link = null
+        lastCloseLost = lost
         phone.lostAtMs = clock()
         phone.thumbQueue.onDisconnect()
         cancelThumbTimerLocked(phone)
@@ -277,6 +287,7 @@ class TvLibrary(
     /** Forget one phone: its socket closes and everything it sent is dropped. */
     fun forget(keyId: String) = synchronized(lock) {
         val phone = phones.remove(keyId) ?: return@synchronized
+        if (phone.link != null) lastCloseLost = false
         phone.link?.close("forgotten")
         phone.link = null
         cancelThumbTimerLocked(phone)
@@ -291,6 +302,7 @@ class TvLibrary(
     }
 
     fun forgetAll() = synchronized(lock) {
+        if (phones.values.any { it.link != null }) lastCloseLost = false
         phones.values.forEach {
             it.link?.close("forgotten")
             cancelThumbTimerLocked(it)
@@ -779,7 +791,8 @@ class TvLibrary(
 
     private fun publishStateLocked() {
         reselectVisibleLocked()
-        _anyLinked.value = phones.values.any { it.link != null }
+        val anyLinked = phones.values.any { it.link != null }
+        _links.value = LinkPresence(anyLinked, lost = !anyLinked && lastCloseLost)
         // A phone sharing an empty library is not shown, even while a card holds it visible.
         val phone = visibleKeyId?.let(phones::get)?.takeUnless { it.shown?.first?.items?.isEmpty() == true }
         val shown = phone?.shown

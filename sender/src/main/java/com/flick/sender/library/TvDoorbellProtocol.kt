@@ -53,7 +53,16 @@ internal object KnockProtocol {
     fun hello(phoneNonce: String): String =
         LibraryJsonWriter().str("t", "knockHello").num("v", VERSION).str("phoneNonce", phoneNonce).build()
 
-    fun ok(): String = LibraryJsonWriter().str("t", "knockOk").num("v", VERSION).build()
+    /** §13.5: never both flags; a TV that predates them reads every form as the plain one. */
+    fun ok(reply: KnockReply = KnockReply.CONNECT): String {
+        val frame = LibraryJsonWriter().str("t", "knockOk").num("v", VERSION)
+        when (reply) {
+            KnockReply.CONNECT -> Unit
+            KnockReply.ASK -> frame.bool("ask", true)
+            KnockReply.DECLINED -> frame.bool("declined", true)
+        }
+        return frame.build()
+    }
 
     data class Knock(val tvId: String, val keyId: String, val phoneNonce: String, val tvNonce: String, val proof: String)
 

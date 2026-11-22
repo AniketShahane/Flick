@@ -17,6 +17,13 @@ class TvLibraryPreferenceStore(context: Context) {
         prefs.edit().putBoolean(ENABLED, enabled).apply()
     }
 
+    /** "When your TV opens Flick". */
+    fun connectMode(): TvConnectMode = TvConnectMode.fromStored(prefs.getString(CONNECT_MODE, null))
+
+    fun saveConnectMode(mode: TvConnectMode) {
+        prefs.edit().putString(CONNECT_MODE, mode.stored).apply()
+    }
+
     /** §8: the person pressed Stop on the ready notification and has not opened Flick since. */
     fun stoppedSinceOpened(): Boolean = prefs.getBoolean(STOPPED, false)
 
@@ -27,6 +34,7 @@ class TvLibraryPreferenceStore(context: Context) {
     private companion object {
         const val ENABLED = "enabled"
         const val STOPPED = "ready_stopped"
+        const val CONNECT_MODE = "connect_mode"
     }
 }
 
@@ -40,6 +48,21 @@ class TvLibraryPreferenceController(
     fun select(value: Boolean) {
         if (value == _enabled.value) return
         _enabled.value = value
+        persist(value)
+    }
+}
+
+/** The same shape as [TvLibraryPreferenceController], for "When your TV opens Flick". */
+class TvConnectModeController(
+    initial: TvConnectMode,
+    private val persist: (TvConnectMode) -> Unit,
+) {
+    private val _mode = MutableStateFlow(initial)
+    val mode = _mode.asStateFlow()
+
+    fun select(value: TvConnectMode) {
+        if (value == _mode.value) return
+        _mode.value = value
         persist(value)
     }
 }

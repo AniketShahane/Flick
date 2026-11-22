@@ -179,6 +179,7 @@ import com.flick.receiver.ui.theme.idleAmbientBackground
 import com.flick.receiver.ui.theme.rememberReducedMotion
 import com.flick.receiver.ui.theme.rememberTvSafeAreaPadding
 import com.flick.receiver.util.FlickLog
+import com.flick.receiver.util.IncidentJournal
 import com.flick.receiver.util.LocalWindowEntrance
 import com.flick.receiver.util.RefreshRateHelper
 import com.flick.receiver.util.ScreenWakeHelper
@@ -491,12 +492,13 @@ internal fun ReceiverApp(window: Window, remoteKeys: TvRemoteKeyDispatcher) {
             clock = { android.os.SystemClock.elapsedRealtime() },
             scope = scope,
             times = KnockTimes.process,
+            journal = { event, fields -> IncidentJournal.record(event, *fields.toTypedArray()) },
         )
     }
     val doorbellFace by doorbell.face.collectAsState()
     val libraryState = library.state.collectAsState()
     LaunchedEffect(doorbell) {
-        library.anyLinked.collect { doorbell.onLinkChanged(it) }
+        library.links.collect { doorbell.onLinkChanged(it.anyLinked, it.lost) }
     }
     // Knocks only while STARTED: a stop cancels any knock still out.
     LaunchedEffect(doorbell, lifecycleOwner) {

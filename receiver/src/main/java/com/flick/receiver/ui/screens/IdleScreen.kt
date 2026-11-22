@@ -99,7 +99,8 @@ private fun Modifier.idleStage(
     }
 }
 
-private data class IdleLine(val label: String?, val waking: Boolean)
+/** [doorbell] is QUIET unless the line speaks for a knock (WAKING or ASKING). */
+private data class IdleLine(val label: String?, val doorbell: DoorbellFace)
 
 private val IdleDotSize = 7.dp
 private val IdleDotGap = 12.dp
@@ -218,11 +219,12 @@ fun IdleScreen(
                 // Static: the dot reports that a phone is paired, which is not an
                 // event, and the drifting wash is this screen's one moving thing.
                 LiveDot(color = FlickRoom.Live, size = IdleDotSize)
-                val waking = doorbell == DoorbellFace.WAKING
-                FlickSwap(target = IdleLine(pairedLabel, waking), label = "idlePaired") { line ->
+                val lineFace = if (doorbell == DoorbellFace.WAKING || doorbell == DoorbellFace.ASKING) doorbell else DoorbellFace.QUIET
+                FlickSwap(target = IdleLine(pairedLabel, lineFace), label = "idlePaired") { line ->
                     Text(
                         text = when {
-                            line.waking -> stringResource(R.string.idle_waking)
+                            line.doorbell == DoorbellFace.WAKING -> stringResource(R.string.idle_waking)
+                            line.doorbell == DoorbellFace.ASKING -> stringResource(R.string.idle_asking)
                             line.label != null -> stringResource(R.string.idle_paired_with, line.label)
                             else -> stringResource(R.string.idle_ready)
                         },

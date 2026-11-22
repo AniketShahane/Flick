@@ -8,6 +8,8 @@ import io.ktor.websocket.DefaultWebSocketSession
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -56,6 +58,15 @@ class LibraryServer(
         tickets.forEach { it.revoked = true }
         hub.forgetAll()
         knockBook?.forgetAll()
+    }
+
+    /**
+     * A phone proven on control v2 from [peer]. The phone listens for knocks on that same
+     * host, and a DHCP move is otherwise learned only when `/library` opens, which needs a
+     * knock that reaches it first. Call with no lock of the control server held.
+     */
+    fun onControlProven(keyId: String, peer: String) {
+        knockBook?.recordPeer(keyId, peer) { findKey(tvId(), keyId) != null }
     }
 
     /** One `/library` socket that has passed the control server's binding, Host and peer gates. */
@@ -123,13 +134,18 @@ class LibraryServer(
         val outbox = Channel<String>(OUTBOX_CAPACITY)
         private val closing = AtomicBoolean(false)
 
+        /** Why the TV closed this socket itself; null while only the phone or the network can end it. */
+        @Volatile var closedByTv: String? = null
+            private set
+
         override fun send(frame: String) {
             if (closing.get()) return
-            if (outbox.trySend(frame).isFailure) close("outbox_full")
+            if (outbox.trySend(frame).isFailure) close(LibraryClose.OUTBOX_FULL.wire)
         }
 
         override fun close(reason: String) {
             if (!markClosing()) return
+            closedByTv = reason
             session.launch { session.closePolicy("library_$reason") }
         }
 
@@ -157,15 +173,31 @@ class LibraryServer(
             return closePolicy("auth_forgotten")
         }
         FlickLog.i("library", "auth ok keyIdFp=${FlickLog.fp(proven.keyId)}")
+        // A phone gone without a close (Wi-Fi drop, process kill) otherwise stays linked, and
+        // a linked phone holds every knock off. The phone's Ktor client answers pings itself.
+        timeoutMillis = PING_TIMEOUT_MS
+        pingIntervalMillis = PING_INTERVAL_MS
         val stillPaired = { findKey(tvId(), proven.keyId) != null }
         knockBook?.recordPeer(proven.keyId, peer, stillPaired)
         // runCatching: a send that fails because the socket went is the reader's to report.
         val writer = launch {
             runCatching { for (frame in link.outbox) send(Frame.Text(frame)) }
         }
-        var reason = "peer_closed"
+        var violation: String? = null
+        var end = LibraryClose.CANCELLED
+        var threw = false
         try {
-            for (frame in incoming) {
+            while (true) {
+                // Only the receive's own failure (a ping timeout, a broken socket) is the
+                // socket's end; anything the loop body throws is a bug and reaches Ktor's log.
+                val received = incoming.receiveCatching()
+                val frame = received.getOrNull()
+                if (frame == null) {
+                    val cause = received.exceptionOrNull()
+                    if (cause is CancellationException) throw cause
+                    threw = cause != null
+                    break
+                }
                 val verdict = when (frame) {
                     is Frame.Text -> if (!frame.fin) {
                         TvLibrary.Verdict.CLOSE
@@ -186,17 +218,36 @@ class LibraryServer(
                     else -> TvLibrary.Verdict.CLOSE
                 }
                 if (verdict == TvLibrary.Verdict.CLOSE) {
-                    reason = "violation frame=${frame.frameType.name}"
+                    violation = frame.frameType.name
                     link.markClosing()
                     closePolicy("library_violation")
                     break
                 }
             }
+            end = if (violation != null) {
+                LibraryClose.VIOLATION
+            } else {
+                val tvClosed = link.closedByTv
+                // Ktor settles the close code on its writer, which can lag `incoming` closing.
+                val reason = if (tvClosed != null) null else withTimeoutOrNull(CLOSE_SETTLE_MS) { closeReason.await() }
+                LibraryClose.of(tvClosed, threw, reason?.code?.toInt(), reason?.message)
+            }
+        } catch (failure: Throwable) {
+            // A bug in the loop body: the socket may be healthy, so no close code is coming.
+            if (failure !is CancellationException) {
+                threw = true
+                end = LibraryClose.of(link.closedByTv, threw = true, closeCode = null, closeText = null)
+            }
+            throw failure
         } finally {
-            hub.onClosed(link)
+            hub.onClosed(link, end.lost)
             link.markClosing()
             writer.cancel()
-            FlickLog.i("library", "close reason=$reason keyIdFp=${FlickLog.fp(proven.keyId)}")
+            // Returning normally makes Ktor wait for its reader, which a dead socket holds for
+            // minutes. A phone's own close still has its close handshake to finish.
+            if (threw || (end.lost && end != LibraryClose.CONTROL_LOST)) cancel()
+            val frame = violation?.let { " frame=$it" } ?: ""
+            FlickLog.i("library", "close reason=${end.wire}$frame keyIdFp=${FlickLog.fp(proven.keyId)}")
         }
     }
 
@@ -204,6 +255,9 @@ class LibraryServer(
         const val MAX_PREAUTH_CONNECTIONS = 2
         const val MAX_PREAUTH_CONNECTIONS_PER_PEER = 1
         const val AUTH_TIMEOUT_MS = 6_000L
+        const val PING_INTERVAL_MS = 60_000L
+        const val PING_TIMEOUT_MS = 20_000L
+        const val CLOSE_SETTLE_MS = 2_000L
 
         /** Far above any burst the hub sends; reaching it means the phone stopped reading. */
         const val OUTBOX_CAPACITY = 512

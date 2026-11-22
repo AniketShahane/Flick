@@ -40,4 +40,6 @@
     -->
     <exclude domain="file" path="datastore/flick_watched.preferences_pb" />
     <exclude domain="sharedpref" path="flick_tv_seasons.xml" />
+    <!-- The connect prompt's tap token belongs to this install alone. -->
+    <exclude domain="sharedpref" path="flick_prompt_token.xml" />
 </full-backup-content>
